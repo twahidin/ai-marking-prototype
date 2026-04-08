@@ -255,36 +255,65 @@ def make_ai_api_call(client, model_name, provider, system_prompt, messages_conte
 
 
 def parse_ai_response(response_text):
-    """Parse AI response JSON, handling markdown fences and truncation."""
+    """Parse AI response JSON, handling markdown fences, Qwen thinking text, and truncation."""
     if not response_text or not response_text.strip():
         return {'error': 'Empty response'}
 
     text = response_text.strip()
-    if text.startswith('```'):
+
+    # Replace smart quotes with regular quotes (Qwen sometimes uses these)
+    text = text.replace('\u201c', '"').replace('\u201d', '"')
+    text = text.replace('\u2018', "'").replace('\u2019', "'")
+
+    # Strip markdown code fences — handle fences anywhere in text, not just start/end
+    fence_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+    if fence_match:
+        text = fence_match.group(1)
+    else:
+        # Fallback: strip fences at boundaries
         text = re.sub(r'^```(?:json)?\s*', '', text)
         text = re.sub(r'\s*```\s*$', '', text)
 
+    # Find the outermost JSON object
     json_match = re.search(r'\{[\s\S]*\}', text)
     if not json_match:
+        logger.warning(f"No JSON found in response (length={len(text)}). First 500 chars: {text[:500]}")
         return {'error': 'Could not parse response', 'raw': response_text}
 
+    raw_json = json_match.group()
+
+    # Attempt 1: direct parse
     try:
-        return json.loads(json_match.group())
+        return json.loads(raw_json)
     except json.JSONDecodeError:
-        # Try to repair truncated JSON
-        cleaned = json_match.group().rstrip()
-        quote_count = len(re.findall(r'(?<!\\)"', cleaned))
-        if quote_count % 2 != 0:
-            cleaned += '"'
-        cleaned = re.sub(r',\s*"[^"]*"\s*:\s*"?[^"{}[\]]*$', '', cleaned)
-        cleaned = re.sub(r',\s*$', '', cleaned)
-        open_braces = cleaned.count('{') - cleaned.count('}')
-        open_brackets = cleaned.count('[') - cleaned.count(']')
-        cleaned += ']' * max(0, open_brackets) + '}' * max(0, open_braces)
+        pass
+
+    # Attempt 2: repair truncated JSON
+    cleaned = raw_json.rstrip()
+    quote_count = len(re.findall(r'(?<!\\)"', cleaned))
+    if quote_count % 2 != 0:
+        cleaned += '"'
+    cleaned = re.sub(r',\s*"[^"]*"\s*:\s*"?[^"{}[\]]*$', '', cleaned)
+    cleaned = re.sub(r',\s*$', '', cleaned)
+    open_braces = cleaned.count('{') - cleaned.count('}')
+    open_brackets = cleaned.count('[') - cleaned.count(']')
+    cleaned += ']' * max(0, open_brackets) + '}' * max(0, open_braces)
+    try:
+        return json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Attempt 3: try each JSON object in response (Qwen sometimes adds extra text with braces)
+    for m in re.finditer(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text):
         try:
-            return json.loads(cleaned)
+            obj = json.loads(m.group())
+            if 'questions' in obj:
+                return obj
         except (json.JSONDecodeError, ValueError):
-            return {'error': 'Could not parse response', 'raw': response_text}
+            continue
+
+    logger.warning(f"All parse attempts failed. First 500 chars: {text[:500]}")
+    return {'error': 'Could not parse response', 'raw': response_text}
 
 
 def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,

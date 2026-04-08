@@ -12,506 +12,240 @@
             color: #333;
             min-height: 100vh;
         }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 40px 20px;
-        }
+        .container { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
 
         /* Access Gate */
-        .gate {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-        }
+        .gate { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
         .gate-card {
-            background: white;
-            border-radius: 16px;
-            padding: 48px 40px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.08);
-            text-align: center;
-            width: 100%;
-            max-width: 420px;
+            background: white; border-radius: 16px; padding: 48px 40px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: center;
+            width: 100%; max-width: 420px;
         }
-        .gate-card h1 {
-            font-size: 24px;
-            font-weight: 700;
-            color: #333;
-            margin-bottom: 8px;
-        }
-        .gate-card p {
-            color: #888;
-            font-size: 14px;
-            margin-bottom: 28px;
-        }
+        .gate-card h1 { font-size: 24px; font-weight: 700; color: #333; margin-bottom: 8px; }
+        .gate-card p { color: #888; font-size: 14px; margin-bottom: 28px; }
         .gate-input {
-            width: 100%;
-            padding: 14px 16px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 16px;
-            text-align: center;
-            letter-spacing: 3px;
-            font-weight: 600;
-            transition: border-color 0.2s;
-            outline: none;
+            width: 100%; padding: 14px 16px; border: 2px solid #e0e0e0; border-radius: 10px;
+            font-size: 16px; text-align: center; letter-spacing: 3px; font-weight: 600;
+            transition: border-color 0.2s; outline: none;
         }
         .gate-input:focus { border-color: #667eea; }
         .gate-input.error { border-color: #dc3545; }
-        .gate-error {
-            color: #dc3545;
-            font-size: 13px;
-            margin-top: 10px;
-            display: none;
-        }
+        .gate-error { color: #dc3545; font-size: 13px; margin-top: 10px; display: none; }
         .gate-btn {
-            width: 100%;
-            padding: 14px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            margin-top: 20px;
-            transition: background 0.2s;
+            width: 100%; padding: 14px; background: #667eea; color: white; border: none;
+            border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer;
+            margin-top: 20px; transition: background 0.2s;
         }
         .gate-btn:hover { background: #5a6fd6; }
 
         /* Marking Page */
-        .header {
-            text-align: center;
-            margin-bottom: 32px;
-        }
-        .header h1 {
-            font-size: 28px;
-            font-weight: 700;
-            color: #333;
-        }
-        .header p {
-            color: #888;
-            font-size: 14px;
-            margin-top: 4px;
-        }
+        .header { text-align: center; margin-bottom: 32px; }
+        .header h1 { font-size: 28px; font-weight: 700; color: #333; }
+        .header p { color: #888; font-size: 14px; margin-top: 4px; }
         .card {
-            background: white;
-            border-radius: 16px;
-            padding: 32px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.08);
-            margin-bottom: 24px;
+            background: white; border-radius: 16px; padding: 32px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.08); margin-bottom: 24px;
         }
-        .card h2 {
-            font-size: 16px;
-            font-weight: 700;
-            color: #333;
-            margin-bottom: 20px;
-        }
+        .card h2 { font-size: 16px; font-weight: 700; color: #333; margin-bottom: 20px; }
 
-        /* Provider selector */
-        .provider-group {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 16px;
-            flex-wrap: wrap;
+        /* Selectors */
+        .sel-group { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+        .sel-option { flex: 1; min-width: 120px; }
+        .sel-option input { display: none; }
+        .sel-option label {
+            display: block; padding: 14px 16px; border: 2px solid #e0e0e0; border-radius: 10px;
+            text-align: center; font-size: 14px; font-weight: 600; cursor: pointer;
+            transition: all 0.2s; color: #555;
         }
-        .provider-option {
-            flex: 1;
-            min-width: 140px;
-        }
-        .provider-option input { display: none; }
-        .provider-option label {
-            display: block;
-            padding: 14px 16px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            text-align: center;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-            color: #555;
-        }
-        .provider-option input:checked + label {
-            border-color: #667eea;
-            background: #f0f2ff;
-            color: #667eea;
-        }
-        .provider-option label:hover {
-            border-color: #b0b8f0;
-        }
+        .sel-option input:checked + label { border-color: #667eea; background: #f0f2ff; color: #667eea; }
+        .sel-option label:hover { border-color: #b0b8f0; }
         .model-select {
-            width: 100%;
-            padding: 10px 14px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 14px;
-            outline: none;
-            transition: border-color 0.2s;
-            font-family: inherit;
-            background: white;
-            margin-bottom: 24px;
-            color: #333;
+            width: 100%; padding: 10px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
+            font-size: 14px; outline: none; background: white; margin-bottom: 24px; color: #333;
         }
-        .model-select:focus { border-color: #667eea; }
 
-        /* Type selector (reuse provider style) */
-        .type-group {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 16px;
-        }
-        .type-option { flex: 1; }
-        .type-option input { display: none; }
-        .type-option label {
-            display: block;
-            padding: 14px 16px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            text-align: center;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-            color: #555;
-        }
-        .type-option input:checked + label {
-            border-color: #667eea;
-            background: #f0f2ff;
-            color: #667eea;
-        }
-        .type-option label:hover { border-color: #b0b8f0; }
-
-        /* Toggle switch */
-        .toggle-row {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 16px;
-        }
-        .toggle-row .toggle-label {
-            font-size: 14px;
-            font-weight: 600;
-            color: #555;
-        }
-        .toggle {
-            position: relative;
-            width: 48px;
-            height: 26px;
-            flex-shrink: 0;
-        }
+        /* Toggle */
+        .toggle-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+        .toggle-row .toggle-label { font-size: 14px; font-weight: 600; color: #555; }
+        .toggle { position: relative; width: 48px; height: 26px; flex-shrink: 0; }
         .toggle input { display: none; }
         .toggle .slider {
-            position: absolute;
-            inset: 0;
-            background: #ccc;
-            border-radius: 26px;
-            cursor: pointer;
-            transition: 0.2s;
+            position: absolute; inset: 0; background: #ccc; border-radius: 26px;
+            cursor: pointer; transition: 0.2s;
         }
         .toggle .slider::before {
-            content: '';
-            position: absolute;
-            width: 20px;
-            height: 20px;
-            left: 3px;
-            bottom: 3px;
-            background: white;
-            border-radius: 50%;
-            transition: 0.2s;
+            content: ''; position: absolute; width: 20px; height: 20px; left: 3px; bottom: 3px;
+            background: white; border-radius: 50%; transition: 0.2s;
         }
         .toggle input:checked + .slider { background: #667eea; }
         .toggle input:checked + .slider::before { transform: translateX(22px); }
-
-        /* Marks input */
         .marks-input {
-            width: 100px;
-            padding: 10px 14px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 16px;
-            font-weight: 600;
-            text-align: center;
-            outline: none;
-            transition: border-color 0.2s;
-        }
-        .marks-input:focus { border-color: #667eea; }
-
-        /* Summary with marks */
-        .summary-marks {
-            background: #f0f2ff;
-            color: #667eea;
+            width: 100px; padding: 10px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
+            font-size: 16px; font-weight: 600; text-align: center; outline: none;
         }
 
         /* File uploads */
-        .upload-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 12px;
-            margin-bottom: 20px;
-        }
-        @media (max-width: 600px) {
-            .upload-grid { grid-template-columns: 1fr; }
-        }
+        .upload-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+        @media (max-width: 600px) { .upload-grid { grid-template-columns: 1fr; } }
         .upload-zone {
-            border: 2px dashed #d0d0d0;
-            border-radius: 10px;
-            padding: 20px 12px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.2s;
-            position: relative;
+            border: 2px dashed #d0d0d0; border-radius: 10px; padding: 20px 12px;
+            text-align: center; cursor: pointer; transition: all 0.2s;
         }
         .upload-zone:hover { border-color: #667eea; background: #fafafe; }
         .upload-zone.has-file { border-color: #28a745; background: #f0fdf4; }
         .upload-zone input { display: none; }
         .upload-zone .icon { font-size: 28px; margin-bottom: 6px; }
-        .upload-zone .label {
-            font-size: 13px;
-            font-weight: 600;
-            color: #555;
-        }
-        .upload-zone .filename {
-            font-size: 11px;
-            color: #28a745;
-            margin-top: 6px;
-            word-break: break-all;
-        }
-        .upload-zone .hint {
-            font-size: 11px;
-            color: #aaa;
-            margin-top: 4px;
-        }
-
-        /* Collapsible rubrics */
+        .upload-zone .label { font-size: 13px; font-weight: 600; color: #555; }
+        .upload-zone .filename { font-size: 11px; color: #28a745; margin-top: 6px; word-break: break-all; }
+        .upload-zone .hint { font-size: 11px; color: #aaa; margin-top: 4px; }
         .collapsible-header {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            cursor: pointer;
-            user-select: none;
-            padding: 10px 0;
-            color: #667eea;
-            font-size: 14px;
-            font-weight: 600;
+            display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+            padding: 10px 0; color: #667eea; font-size: 14px; font-weight: 600;
         }
-        .collapsible-header .arrow {
-            transition: transform 0.2s;
-            font-size: 12px;
-        }
+        .collapsible-header .arrow { transition: transform 0.2s; font-size: 12px; }
         .collapsible-header.open .arrow { transform: rotate(90deg); }
-        .collapsible-body {
-            display: none;
-            padding: 12px 0;
-        }
+        .collapsible-body { display: none; padding: 12px 0; }
         .collapsible-body.open { display: block; }
 
-        /* Form fields */
+        /* Form */
         .form-group { margin-bottom: 16px; }
-        .form-group label {
-            display: block;
-            font-size: 13px;
-            font-weight: 600;
-            color: #555;
-            margin-bottom: 6px;
-        }
+        .form-group label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 6px; }
         .form-input, .form-textarea {
-            width: 100%;
-            padding: 12px 14px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 14px;
-            outline: none;
-            transition: border-color 0.2s;
-            font-family: inherit;
+            width: 100%; padding: 12px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
+            font-size: 14px; outline: none; font-family: inherit;
         }
-        .form-input:focus, .form-textarea:focus { border-color: #667eea; }
         .form-textarea { resize: vertical; min-height: 80px; }
-
-        /* Submit button */
         .mark-btn {
-            width: 100%;
-            padding: 16px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 12px;
-            font-size: 16px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: background 0.2s;
+            width: 100%; padding: 16px; background: #667eea; color: white; border: none;
+            border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer;
         }
         .mark-btn:hover { background: #5a6fd6; }
-        .mark-btn:disabled {
-            background: #ccc;
-            cursor: not-allowed;
+        .mark-btn:disabled { background: #ccc; cursor: not-allowed; }
+        .error-msg {
+            background: #fdecea; color: #dc3545; padding: 16px; border-radius: 10px;
+            font-size: 14px; margin-bottom: 16px; display: none;
         }
 
-        /* Processing spinner */
-        .processing {
-            text-align: center;
-            padding: 40px 20px;
-            display: none;
+        /* ===== MODAL OVERLAY ===== */
+        .modal-overlay {
+            display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+            z-index: 1000; align-items: center; justify-content: center;
+            backdrop-filter: blur(4px);
         }
-        .spinner {
-            width: 40px;
-            height: 40px;
-            border: 4px solid #e0e0e0;
-            border-top-color: #667eea;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-            margin: 0 auto 16px;
+        .modal-overlay.active { display: flex; }
+        .modal-box {
+            background: white; border-radius: 20px; padding: 40px; text-align: center;
+            width: 90%; max-width: 420px; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
         }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .processing p { color: #888; font-size: 14px; }
+        .modal-box h3 { font-size: 20px; font-weight: 700; color: #333; margin-bottom: 8px; }
+        .modal-box p { color: #888; font-size: 14px; margin-bottom: 24px; }
+        .modal-box .warning { color: #e68a00; font-size: 13px; font-weight: 600; margin-top: 16px; }
+        .progress-bar-track {
+            width: 100%; height: 8px; background: #e8e8e8; border-radius: 8px; overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%; background: linear-gradient(90deg, #667eea, #764ba2);
+            border-radius: 8px; width: 0%; transition: width 0.5s ease;
+        }
+        .progress-bar-fill.indeterminate {
+            width: 30%; animation: indeterminate 1.5s ease-in-out infinite;
+        }
+        @keyframes indeterminate {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(400%); }
+        }
+        .modal-status { font-size: 13px; color: #667eea; margin-top: 12px; font-weight: 600; }
 
-        /* Results */
+        /* ===== RESULTS ===== */
         .results { display: none; }
-        .summary-bar {
-            display: flex;
-            gap: 12px;
-            margin-bottom: 24px;
-            flex-wrap: wrap;
-        }
+        .summary-bar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
         .summary-item {
-            flex: 1;
-            min-width: 120px;
-            padding: 16px;
-            border-radius: 10px;
-            text-align: center;
-            font-weight: 700;
-            font-size: 14px;
+            flex: 1; min-width: 100px; padding: 14px; border-radius: 10px;
+            text-align: center; font-weight: 700; font-size: 14px;
         }
         .summary-correct { background: #e8f5e9; color: #28a745; }
         .summary-partial { background: #fff8e1; color: #e68a00; }
         .summary-incorrect { background: #fdecea; color: #dc3545; }
+        .summary-marks { background: #f0f2ff; color: #667eea; }
 
-        /* Question cards */
-        .question-card {
-            border: 1px solid #e8e8e8;
-            border-radius: 10px;
-            margin-bottom: 12px;
-            overflow: hidden;
+        /* Question pagination */
+        .q-nav {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 16px; gap: 8px;
         }
-        .question-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 14px 16px;
-            cursor: pointer;
-            user-select: none;
+        .q-nav-btn {
+            padding: 10px 20px; background: #667eea; color: white; border: none;
+            border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;
         }
-        .question-header:hover { background: #fafafa; }
-        .question-num {
-            font-weight: 700;
-            font-size: 14px;
+        .q-nav-btn:hover { background: #5a6fd6; }
+        .q-nav-btn:disabled { background: #ddd; color: #999; cursor: not-allowed; }
+        .q-nav-info { font-size: 14px; font-weight: 700; color: #555; }
+        .q-dots { display: flex; gap: 6px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap; }
+        .q-dot {
+            width: 28px; height: 28px; border-radius: 50%; border: 2px solid #ddd;
+            font-size: 11px; font-weight: 700; display: flex; align-items: center;
+            justify-content: center; cursor: pointer; transition: all 0.2s; color: #888;
         }
+        .q-dot.active { border-color: #667eea; color: #667eea; background: #f0f2ff; }
+        .q-dot.correct { border-color: #28a745; color: #28a745; }
+        .q-dot.partially_correct { border-color: #f0ad4e; color: #e68a00; }
+        .q-dot.incorrect { border-color: #dc3545; color: #dc3545; }
+
+        /* Single question view */
+        .q-card {
+            border: 1px solid #e8e8e8; border-radius: 12px; overflow: hidden;
+            margin-bottom: 16px;
+        }
+        .q-card-header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 16px 20px; background: #fafafa;
+        }
+        .q-card-header .q-num { font-weight: 700; font-size: 16px; }
         .status-badge {
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 700;
-            color: white;
+            padding: 5px 14px; border-radius: 20px; font-size: 12px;
+            font-weight: 700; color: white;
         }
         .status-correct { background: #28a745; }
         .status-partially_correct { background: #f0ad4e; }
         .status-incorrect { background: #dc3545; }
-
-        .question-body {
-            display: none;
-            padding: 0 16px 16px;
-            border-top: 1px solid #f0f0f0;
+        .q-card-body { padding: 20px; }
+        .q-field { margin-bottom: 16px; }
+        .q-field-label {
+            font-size: 11px; font-weight: 700; color: #999; text-transform: uppercase;
+            letter-spacing: 0.5px; margin-bottom: 4px;
         }
-        .question-body.open { display: block; padding-top: 16px; }
-        .detail-row {
-            margin-bottom: 12px;
+        .q-field-value { font-size: 14px; color: #333; line-height: 1.6; }
+        .q-field-value.feedback {
+            background: #f8f9fa; padding: 12px; border-radius: 8px; border-left: 3px solid #667eea;
         }
-        .detail-label {
-            font-size: 11px;
-            font-weight: 700;
-            color: #888;
-            text-transform: uppercase;
-            margin-bottom: 4px;
-        }
-        .detail-value {
-            font-size: 14px;
-            color: #333;
-            line-height: 1.5;
+        .q-field-value.improvement {
+            background: #fff8e1; padding: 12px; border-radius: 8px; border-left: 3px solid #f0ad4e;
         }
 
-        /* Overall feedback */
-        .overall-section { margin-top: 24px; }
-        .overall-section h3 {
-            font-size: 15px;
-            font-weight: 700;
-            color: #333;
-            margin-bottom: 10px;
+        /* Overall section */
+        .overall-box {
+            background: #f8f9fa; border-radius: 12px; padding: 20px; margin-top: 20px;
         }
-        .overall-section p, .overall-section li {
-            font-size: 14px;
-            color: #555;
-            line-height: 1.6;
-        }
-        .overall-section ul {
-            padding-left: 20px;
-            margin-top: 8px;
-        }
-        .overall-section li { margin-bottom: 4px; }
+        .overall-box h3 { font-size: 15px; font-weight: 700; color: #333; margin-bottom: 8px; }
+        .overall-box p, .overall-box li { font-size: 14px; color: #555; line-height: 1.6; }
+        .overall-box ul { padding-left: 20px; margin-top: 8px; }
+        .overall-box li { margin-bottom: 4px; }
 
-        /* Download button */
-        .download-btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 14px 28px;
-            background: #28a745;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            font-size: 15px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: background 0.2s;
-            margin-top: 16px;
+        /* Action buttons */
+        .action-row { display: flex; gap: 12px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }
+        .action-btn {
+            padding: 14px 28px; border: none; border-radius: 10px;
+            font-size: 15px; font-weight: 700; cursor: pointer;
         }
-        .download-btn:hover { background: #218838; }
-
-        /* Reset button */
-        .reset-btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 14px 28px;
-            background: #6c757d;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            font-size: 15px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: background 0.2s;
-            margin-top: 16px;
-            margin-left: 12px;
-        }
-        .reset-btn:hover { background: #5a6268; }
-
-        /* Error */
-        .error-msg {
-            background: #fdecea;
-            color: #dc3545;
-            padding: 16px;
-            border-radius: 10px;
-            font-size: 14px;
-            margin-bottom: 16px;
-            display: none;
-        }
+        .action-btn.download { background: #28a745; color: white; }
+        .action-btn.download:hover { background: #218838; }
+        .action-btn.reset { background: #6c757d; color: white; }
+        .action-btn.reset:hover { background: #5a6268; }
     </style>
 </head>
 <body>
 
 {% if not authenticated %}
-<!-- Access Gate -->
 <div class="gate">
     <div class="gate-card">
         <h1>AI Marking Demo</h1>
@@ -521,113 +255,89 @@
         <button class="gate-btn" id="gateBtn" onclick="verifyCode()">Enter</button>
     </div>
 </div>
-
 <script>
-document.getElementById('codeInput').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') verifyCode();
-});
-
+document.getElementById('codeInput').addEventListener('keydown', e => { if (e.key === 'Enter') verifyCode(); });
 async function verifyCode() {
     const code = document.getElementById('codeInput').value.trim();
     if (!code) return;
-
     const btn = document.getElementById('gateBtn');
-    btn.disabled = true;
-    btn.textContent = 'Verifying...';
-
+    btn.disabled = true; btn.textContent = 'Verifying...';
     try {
-        const res = await fetch('/verify-code', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({code})
-        });
-        if (res.ok) {
-            window.location.reload();
-        } else {
-            document.getElementById('gateError').style.display = 'block';
-            document.getElementById('codeInput').classList.add('error');
-            btn.disabled = false;
-            btn.textContent = 'Enter';
-        }
-    } catch (err) {
-        document.getElementById('gateError').textContent = 'Connection error. Please try again.';
-        document.getElementById('gateError').style.display = 'block';
-        btn.disabled = false;
-        btn.textContent = 'Enter';
-    }
+        const res = await fetch('/verify-code', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({code}) });
+        if (res.ok) { window.location.reload(); }
+        else { document.getElementById('gateError').style.display = 'block'; document.getElementById('codeInput').classList.add('error'); btn.disabled = false; btn.textContent = 'Enter'; }
+    } catch (err) { document.getElementById('gateError').textContent = 'Connection error.'; document.getElementById('gateError').style.display = 'block'; btn.disabled = false; btn.textContent = 'Enter'; }
 }
 </script>
 
 {% else %}
-<!-- Marking Page -->
+
+<!-- Modal Overlay -->
+<div class="modal-overlay" id="modal">
+    <div class="modal-box">
+        <h3>AI is Marking</h3>
+        <p id="modalProvider">Analysing your script...</p>
+        <div class="progress-bar-track">
+            <div class="progress-bar-fill indeterminate" id="progressBar"></div>
+        </div>
+        <div class="modal-status" id="modalStatus">Processing...</div>
+        <p class="warning">Please do not close or leave this page</p>
+    </div>
+</div>
+
 <div class="container">
     <div class="header">
         <h1>AI Marking Demo</h1>
         <p>Upload a student script with question paper and answer key to generate AI feedback</p>
     </div>
 
-    <!-- Marking Form -->
+    <!-- Form -->
     <div class="card" id="formCard">
-        <h2>Setup</h2>
-
-        <!-- Provider Selection -->
-        <div class="provider-group">
+        <h2>AI Provider</h2>
+        <div class="sel-group">
             {% for key, config in providers.items() %}
-            <div class="provider-option">
+            <div class="sel-option">
                 <input type="radio" name="provider" id="provider_{{ key }}" value="{{ key }}" {% if loop.first %}checked{% endif %} onchange="updateModelSelect()">
                 <label for="provider_{{ key }}">{{ config.label }}</label>
             </div>
             {% endfor %}
         </div>
+        <select class="model-select" id="modelSelect"></select>
 
-        <!-- Model Selection -->
-        <select class="model-select" id="modelSelect">
-            <!-- Populated by JS based on selected provider -->
-        </select>
-
-        <!-- Subject -->
         <div class="form-group">
             <label for="subject">Subject</label>
             <input type="text" class="form-input" id="subject" placeholder="e.g. Mathematics, English, Science">
         </div>
 
-        <!-- Assignment Type -->
         <h2 style="margin-top: 24px;">Assignment Type</h2>
-        <div class="type-group">
-            <div class="type-option">
+        <div class="sel-group">
+            <div class="sel-option">
                 <input type="radio" name="assign_type" id="type_short" value="short_answer" checked onchange="updateAssignType()">
                 <label for="type_short">Short Answer</label>
             </div>
-            <div class="type-option">
+            <div class="sel-option">
                 <input type="radio" name="assign_type" id="type_rubric" value="rubrics" onchange="updateAssignType()">
                 <label for="type_rubric">Rubrics / Essay</label>
             </div>
         </div>
 
-        <!-- Marks options (for short answer) -->
         <div id="shortAnswerOptions">
             <div class="toggle-row">
-                <label class="toggle">
-                    <input type="checkbox" id="allocateMarks" onchange="updateMarksVisibility()">
-                    <span class="slider"></span>
-                </label>
-                <span class="toggle-label">Allocate marks (otherwise: Correct / Partially Correct / Incorrect)</span>
+                <label class="toggle"><input type="checkbox" id="allocateMarks" onchange="updateMarksVis()"><span class="slider"></span></label>
+                <span class="toggle-label">Allocate marks</span>
             </div>
-            <div class="form-group" id="totalMarksGroup" style="display: none;">
+            <div class="form-group" id="totalMarksGroup" style="display:none;">
                 <label for="totalMarks">Total Marks</label>
                 <input type="number" class="marks-input" id="totalMarks" min="1" max="999" placeholder="100">
             </div>
         </div>
-
-        <!-- Marks options (for rubrics — always requires marks) -->
-        <div id="rubricOptions" style="display: none;">
+        <div id="rubricOptions" style="display:none;">
             <div class="form-group">
                 <label for="totalMarksRubric">Total Marks</label>
                 <input type="number" class="marks-input" id="totalMarksRubric" min="1" max="999" placeholder="100">
             </div>
         </div>
 
-        <!-- File Uploads -->
         <h2 style="margin-top: 24px;">Upload Files</h2>
         <div class="upload-grid">
             <div class="upload-zone" onclick="this.querySelector('input').click()">
@@ -653,7 +363,6 @@ async function verifyCode() {
             </div>
         </div>
 
-        <!-- Rubrics upload -->
         <div id="rubricUploadSection">
             <div class="collapsible-header" id="rubricToggle" onclick="toggleRubrics()">
                 <span class="arrow">&#9654;</span>
@@ -670,7 +379,6 @@ async function verifyCode() {
             </div>
         </div>
 
-        <!-- Custom Instructions -->
         <h2 style="margin-top: 24px;">Instructions (Optional)</h2>
         <div class="form-group">
             <label for="review_instructions">Review Instructions</label>
@@ -678,37 +386,38 @@ async function verifyCode() {
         </div>
         <div class="form-group">
             <label for="marking_instructions">Marking Instructions</label>
-            <textarea class="form-textarea" id="marking_instructions" placeholder="How should answers be evaluated? e.g. strictness, what to accept, partial credit rules..."></textarea>
+            <textarea class="form-textarea" id="marking_instructions" placeholder="How should answers be evaluated? e.g. strictness, what to accept..."></textarea>
         </div>
 
-        <!-- Error -->
         <div class="error-msg" id="errorMsg"></div>
-
-        <!-- Submit -->
         <button class="mark-btn" id="markBtn" onclick="startMarking()">Mark Script</button>
-    </div>
-
-    <!-- Processing -->
-    <div class="processing" id="processing">
-        <div class="spinner"></div>
-        <p>AI is marking the script...</p>
-        <p style="font-size: 12px; color: #bbb; margin-top: 8px;">This may take 30-60 seconds</p>
     </div>
 
     <!-- Results -->
     <div class="results" id="results">
         <div class="card">
             <h2>Results</h2>
-
             <div class="summary-bar" id="summaryBar"></div>
 
-            <div id="questionsContainer"></div>
+            <!-- Question dots -->
+            <div class="q-dots" id="qDots"></div>
 
-            <div class="overall-section" id="overallSection"></div>
+            <!-- Navigation -->
+            <div class="q-nav">
+                <button class="q-nav-btn" id="prevBtn" onclick="navQ(-1)">&larr; Prev</button>
+                <span class="q-nav-info" id="qNavInfo">Q1 of 3</span>
+                <button class="q-nav-btn" id="nextBtn" onclick="navQ(1)">Next &rarr;</button>
+            </div>
 
-            <div style="text-align: center;">
-                <button class="download-btn" id="downloadBtn" onclick="downloadPdf()">Download PDF Report</button>
-                <button class="reset-btn" onclick="resetForm()">Mark Another</button>
+            <!-- Single question card -->
+            <div id="qCardContainer"></div>
+
+            <!-- Overall -->
+            <div id="overallSection"></div>
+
+            <div class="action-row">
+                <button class="action-btn download" onclick="downloadPdf()">Download PDF Report</button>
+                <button class="action-btn reset" onclick="resetForm()">Mark Another</button>
             </div>
         </div>
     </div>
@@ -716,137 +425,112 @@ async function verifyCode() {
 
 <script>
 let currentJobId = null;
+let resultQuestions = [];
+let currentQ = 0;
 
-// Provider model data from server
 const PROVIDER_MODELS = {{ providers | tojson }};
+const STATUS_LABELS = { correct: 'Correct', partially_correct: 'Partially Correct', incorrect: 'Incorrect' };
 
 function updateModelSelect() {
-    const provider = document.querySelector('input[name="provider"]:checked')?.value;
-    const select = document.getElementById('modelSelect');
-    select.innerHTML = '';
-
-    if (provider && PROVIDER_MODELS[provider]) {
-        const models = PROVIDER_MODELS[provider].models;
-        const defaultModel = PROVIDER_MODELS[provider].default;
-        for (const [modelId, modelLabel] of Object.entries(models)) {
-            const opt = document.createElement('option');
-            opt.value = modelId;
-            opt.textContent = modelLabel;
-            if (modelId === defaultModel) opt.selected = true;
-            select.appendChild(opt);
+    const prov = document.querySelector('input[name="provider"]:checked')?.value;
+    const sel = document.getElementById('modelSelect');
+    sel.innerHTML = '';
+    if (prov && PROVIDER_MODELS[prov]) {
+        const m = PROVIDER_MODELS[prov].models, d = PROVIDER_MODELS[prov].default;
+        for (const [id, label] of Object.entries(m)) {
+            const o = document.createElement('option');
+            o.value = id; o.textContent = label; if (id === d) o.selected = true;
+            sel.appendChild(o);
         }
     }
 }
-
-// Initialize on load
 updateModelSelect();
 
 function updateAssignType() {
-    const type = document.querySelector('input[name="assign_type"]:checked')?.value;
-    const shortOpts = document.getElementById('shortAnswerOptions');
-    const rubricOpts = document.getElementById('rubricOptions');
-    const rubricToggle = document.getElementById('rubricToggle');
-    const rubricBody = document.getElementById('rubricBody');
-    const rubricLabel = document.getElementById('rubricLabel');
-
-    if (type === 'rubrics') {
-        shortOpts.style.display = 'none';
-        rubricOpts.style.display = 'block';
-        // Make rubrics upload required and auto-open
-        rubricLabel.textContent = 'Rubrics (Required)';
-        rubricToggle.classList.add('open');
-        rubricBody.classList.add('open');
-    } else {
-        shortOpts.style.display = 'block';
-        rubricOpts.style.display = 'none';
-        rubricLabel.textContent = 'Rubrics (Optional)';
-    }
+    const t = document.querySelector('input[name="assign_type"]:checked')?.value;
+    document.getElementById('shortAnswerOptions').style.display = t === 'rubrics' ? 'none' : 'block';
+    document.getElementById('rubricOptions').style.display = t === 'rubrics' ? 'block' : 'none';
+    const rl = document.getElementById('rubricLabel');
+    if (t === 'rubrics') {
+        rl.textContent = 'Rubrics (Required)';
+        document.getElementById('rubricToggle').classList.add('open');
+        document.getElementById('rubricBody').classList.add('open');
+    } else { rl.textContent = 'Rubrics (Optional)'; }
 }
 
-function updateMarksVisibility() {
-    const checked = document.getElementById('allocateMarks').checked;
-    document.getElementById('totalMarksGroup').style.display = checked ? 'block' : 'none';
+function updateMarksVis() {
+    document.getElementById('totalMarksGroup').style.display = document.getElementById('allocateMarks').checked ? 'block' : 'none';
 }
 
 function fileSelected(input) {
     const zone = input.closest('.upload-zone');
     const nameEl = document.getElementById(input.id + '_name');
     const count = input.files.length;
-    if (count > 5) {
-        alert('Maximum 5 files allowed. Please select fewer files.');
-        input.value = '';
-        zone.classList.remove('has-file');
-        nameEl.textContent = '';
-        return;
-    }
-    if (count > 0) {
-        zone.classList.add('has-file');
-        if (count === 1) {
-            nameEl.textContent = input.files[0].name;
-        } else {
-            nameEl.textContent = count + ' files selected';
-        }
-    } else {
-        zone.classList.remove('has-file');
-        nameEl.textContent = '';
-    }
+    if (count > 5) { alert('Maximum 5 files.'); input.value = ''; zone.classList.remove('has-file'); nameEl.textContent = ''; return; }
+    if (count > 0) { zone.classList.add('has-file'); nameEl.textContent = count === 1 ? input.files[0].name : count + ' files'; }
+    else { zone.classList.remove('has-file'); nameEl.textContent = ''; }
 }
 
 function toggleRubrics() {
-    const header = document.getElementById('rubricToggle');
-    const body = document.getElementById('rubricBody');
-    header.classList.toggle('open');
-    body.classList.toggle('open');
+    document.getElementById('rubricToggle').classList.toggle('open');
+    document.getElementById('rubricBody').classList.toggle('open');
 }
 
-function showError(msg) {
-    const el = document.getElementById('errorMsg');
-    el.textContent = msg;
-    el.style.display = 'block';
-}
+function showError(msg) { const el = document.getElementById('errorMsg'); el.textContent = msg; el.style.display = 'block'; }
+function hideError() { document.getElementById('errorMsg').style.display = 'none'; }
 
-function hideError() {
-    document.getElementById('errorMsg').style.display = 'none';
+// Modal
+let pollTimer = null;
+let elapsed = 0;
+function showModal() {
+    const prov = document.querySelector('input[name="provider"]:checked')?.value || '';
+    const modelSel = document.getElementById('modelSelect');
+    const modelLabel = modelSel.options[modelSel.selectedIndex]?.textContent || '';
+    document.getElementById('modalProvider').textContent = 'Using ' + modelLabel + ' to mark your script...';
+    document.getElementById('progressBar').className = 'progress-bar-fill indeterminate';
+    document.getElementById('modalStatus').textContent = 'Sending to AI...';
+    document.getElementById('modal').classList.add('active');
+    elapsed = 0;
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(() => {
+        elapsed++;
+        const msgs = ['Sending to AI...', 'AI is reading the question paper...', 'AI is reading the answer key...', 'AI is evaluating the script...', 'Generating feedback...', 'Almost done...'];
+        const idx = Math.min(Math.floor(elapsed / 5), msgs.length - 1);
+        document.getElementById('modalStatus').textContent = msgs[idx];
+    }, 1000);
+}
+function hideModal() {
+    document.getElementById('modal').classList.remove('active');
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 }
 
 async function startMarking() {
     hideError();
-
-    // Validate
-    const qpFiles = document.getElementById('question_paper').files;
-    const akFiles = document.getElementById('answer_key').files;
-    const scFiles = document.getElementById('script').files;
-
-    if (!qpFiles.length) return showError('Please upload a question paper.');
-    if (!akFiles.length) return showError('Please upload an answer key.');
-    if (!scFiles.length) return showError('Please upload a student script.');
+    const qp = document.getElementById('question_paper').files;
+    const ak = document.getElementById('answer_key').files;
+    const sc = document.getElementById('script').files;
+    if (!qp.length) return showError('Please upload a question paper.');
+    if (!ak.length) return showError('Please upload an answer key.');
+    if (!sc.length) return showError('Please upload a student script.');
 
     const provider = document.querySelector('input[name="provider"]:checked')?.value;
     if (!provider) return showError('Please select an AI provider.');
 
     const assignType = document.querySelector('input[name="assign_type"]:checked')?.value || 'short_answer';
     const rubricFiles = document.getElementById('rubrics').files;
-
-    // Validate rubrics type requires rubrics upload and total marks
     if (assignType === 'rubrics') {
         if (!rubricFiles.length) return showError('Rubrics file is required for Rubrics / Essay type.');
-        const tm = document.getElementById('totalMarksRubric').value;
-        if (!tm || parseInt(tm) <= 0) return showError('Please enter total marks for rubrics marking.');
+        if (!document.getElementById('totalMarksRubric').value) return showError('Please enter total marks.');
     }
 
-    // Determine scoring mode
-    let scoringMode = 'status'; // correct/partial/incorrect
-    let totalMarks = '';
+    let scoringMode = 'status', totalMarks = '';
     if (assignType === 'rubrics') {
-        scoringMode = 'marks';
-        totalMarks = document.getElementById('totalMarksRubric').value;
+        scoringMode = 'marks'; totalMarks = document.getElementById('totalMarksRubric').value;
     } else if (document.getElementById('allocateMarks').checked) {
-        scoringMode = 'marks';
-        totalMarks = document.getElementById('totalMarks').value;
+        scoringMode = 'marks'; totalMarks = document.getElementById('totalMarks').value;
         if (!totalMarks || parseInt(totalMarks) <= 0) return showError('Please enter total marks.');
     }
 
-    // Build form data — append multiple files per field
     const fd = new FormData();
     fd.append('provider', provider);
     fd.append('model', document.getElementById('modelSelect').value);
@@ -856,195 +540,161 @@ async function startMarking() {
     fd.append('total_marks', totalMarks);
     fd.append('review_instructions', document.getElementById('review_instructions').value);
     fd.append('marking_instructions', document.getElementById('marking_instructions').value);
-    for (const f of qpFiles) fd.append('question_paper', f);
-    for (const f of akFiles) fd.append('answer_key', f);
-    for (const f of scFiles) fd.append('script', f);
-
+    for (const f of qp) fd.append('question_paper', f);
+    for (const f of ak) fd.append('answer_key', f);
+    for (const f of sc) fd.append('script', f);
     for (const f of rubricFiles) fd.append('rubrics', f);
 
-    // Show processing
-    const btn = document.getElementById('markBtn');
-    btn.disabled = true;
-    document.getElementById('processing').style.display = 'block';
+    document.getElementById('markBtn').disabled = true;
     document.getElementById('results').style.display = 'none';
+    showModal();
 
     try {
         const res = await fetch('/mark', { method: 'POST', body: fd });
         const data = await res.json();
-        if (!data.success) {
-            showError(data.error || 'Failed to start marking.');
-            btn.disabled = false;
-            document.getElementById('processing').style.display = 'none';
-            return;
-        }
-
+        if (!data.success) { hideModal(); showError(data.error || 'Failed.'); document.getElementById('markBtn').disabled = false; return; }
         currentJobId = data.job_id;
         pollStatus();
     } catch (err) {
-        showError('Connection error. Please try again.');
-        btn.disabled = false;
-        document.getElementById('processing').style.display = 'none';
+        hideModal(); showError('Connection error.'); document.getElementById('markBtn').disabled = false;
     }
 }
 
 async function pollStatus() {
     if (!currentJobId) return;
-
     try {
         const res = await fetch('/status/' + currentJobId);
         const data = await res.json();
-
-        if (data.status === 'processing') {
-            setTimeout(pollStatus, 2000);
-            return;
-        }
-
-        document.getElementById('processing').style.display = 'none';
+        if (data.status === 'processing') { setTimeout(pollStatus, 2000); return; }
+        hideModal();
         document.getElementById('markBtn').disabled = false;
-
-        if (data.status === 'error') {
-            showError(data.result?.error || 'An error occurred during marking.');
-            return;
-        }
-
-        // Show results
+        if (data.status === 'error') { showError(data.result?.error || 'Marking failed.'); return; }
         renderResults(data.result);
-    } catch (err) {
-        setTimeout(pollStatus, 3000);
-    }
+    } catch (err) { setTimeout(pollStatus, 3000); }
 }
 
-const STATUS_LABELS = {
-    'correct': 'Correct',
-    'partially_correct': 'Partially Correct',
-    'incorrect': 'Incorrect'
-};
-
 function renderResults(result) {
-    if (result.error) {
-        showError(result.error);
-        return;
-    }
+    if (result.error) { showError(result.error); return; }
 
-    const questions = result.questions || [];
-    const hasMarks = questions.some(q => q.marks_awarded != null);
+    resultQuestions = result.questions || [];
+    const hasMarks = resultQuestions.some(q => q.marks_awarded != null);
 
     // Summary
     if (hasMarks) {
-        let totalAwarded = 0;
-        let totalPossible = 0;
-        questions.forEach(q => {
-            totalAwarded += (q.marks_awarded || 0);
-            totalPossible += (q.marks_total || 0);
-        });
-        const pct = totalPossible > 0 ? Math.round(totalAwarded / totalPossible * 100) : 0;
-        document.getElementById('summaryBar').innerHTML = `
-            <div class="summary-item summary-marks">${totalAwarded} / ${totalPossible} marks</div>
-            <div class="summary-item summary-marks">${pct}%</div>
-        `;
+        let ta = 0, tp = 0;
+        resultQuestions.forEach(q => { ta += (q.marks_awarded || 0); tp += (q.marks_total || 0); });
+        const pct = tp > 0 ? Math.round(ta / tp * 100) : 0;
+        document.getElementById('summaryBar').innerHTML =
+            `<div class="summary-item summary-marks">${ta} / ${tp} marks</div>
+             <div class="summary-item summary-marks">${pct}%</div>`;
     } else {
-        let counts = {correct: 0, partially_correct: 0, incorrect: 0};
-        questions.forEach(q => {
-            if (counts.hasOwnProperty(q.status)) counts[q.status]++;
-        });
-        document.getElementById('summaryBar').innerHTML = `
-            <div class="summary-item summary-correct">${counts.correct} Correct</div>
-            <div class="summary-item summary-partial">${counts.partially_correct} Partially Correct</div>
-            <div class="summary-item summary-incorrect">${counts.incorrect} Incorrect</div>
-        `;
+        let c = {correct: 0, partially_correct: 0, incorrect: 0};
+        resultQuestions.forEach(q => { if (c.hasOwnProperty(q.status)) c[q.status]++; });
+        document.getElementById('summaryBar').innerHTML =
+            `<div class="summary-item summary-correct">${c.correct} Correct</div>
+             <div class="summary-item summary-partial">${c.partially_correct} Partial</div>
+             <div class="summary-item summary-incorrect">${c.incorrect} Incorrect</div>`;
     }
 
-    // Questions
-    let html = '';
-    questions.forEach((q, i) => {
-        const status = q.status || 'incorrect';
-        const label = STATUS_LABELS[status] || status;
-
-        // Badge: show marks if available, otherwise status
-        let badgeHtml;
-        if (hasMarks && q.marks_awarded != null) {
-            badgeHtml = `<span class="status-badge status-${status}">${q.marks_awarded} / ${q.marks_total || '?'}</span>`;
-        } else {
-            badgeHtml = `<span class="status-badge status-${status}">${label}</span>`;
-        }
-
-        html += `
-        <div class="question-card">
-            <div class="question-header" onclick="this.nextElementSibling.classList.toggle('open')">
-                <span class="question-num">Question ${q.question_num || (i+1)}</span>
-                ${badgeHtml}
-            </div>
-            <div class="question-body open">
-                <div class="detail-row">
-                    <div class="detail-label">Student's Answer</div>
-                    <div class="detail-value">${escHtml(q.student_answer || 'N/A')}</div>
-                </div>
-                <div class="detail-row">
-                    <div class="detail-label">Correct Answer</div>
-                    <div class="detail-value">${escHtml(q.correct_answer || 'N/A')}</div>
-                </div>
-                ${q.feedback ? `<div class="detail-row">
-                    <div class="detail-label">Feedback</div>
-                    <div class="detail-value">${escHtml(q.feedback)}</div>
-                </div>` : ''}
-                ${q.improvement ? `<div class="detail-row">
-                    <div class="detail-label">Suggested Improvement</div>
-                    <div class="detail-value">${escHtml(q.improvement)}</div>
-                </div>` : ''}
-            </div>
-        </div>`;
+    // Question dots
+    let dots = '';
+    resultQuestions.forEach((q, i) => {
+        const s = q.status || 'incorrect';
+        dots += `<div class="q-dot ${s} ${i === 0 ? 'active' : ''}" onclick="goQ(${i})">${q.question_num || i+1}</div>`;
     });
-    document.getElementById('questionsContainer').innerHTML = html;
+    document.getElementById('qDots').innerHTML = dots;
 
-    // Overall feedback
-    let overallHtml = '';
+    // Overall
+    let oh = '';
     if (result.overall_feedback) {
-        overallHtml += `<h3>Overall Feedback</h3><p>${escHtml(result.overall_feedback)}</p>`;
+        oh += `<div class="overall-box"><h3>Overall Feedback</h3><p>${esc(result.overall_feedback)}</p></div>`;
     }
     const actions = result.recommended_actions || [];
-    if (actions.length > 0) {
-        overallHtml += `<h3 style="margin-top: 16px;">Recommended Actions</h3><ul>`;
-        actions.forEach(a => { overallHtml += `<li>${escHtml(a)}</li>`; });
-        overallHtml += '</ul>';
+    if (actions.length) {
+        oh += `<div class="overall-box" style="margin-top:12px;"><h3>Recommended Actions</h3><ul>`;
+        actions.forEach(a => { oh += `<li>${esc(a)}</li>`; });
+        oh += '</ul></div>';
     }
-    document.getElementById('overallSection').innerHTML = overallHtml;
+    document.getElementById('overallSection').innerHTML = oh;
 
+    currentQ = 0;
+    renderQuestion();
     document.getElementById('results').style.display = 'block';
-
-    // Scroll to results
-    document.getElementById('results').scrollIntoView({behavior: 'smooth', block: 'start'});
+    document.getElementById('results').scrollIntoView({behavior: 'smooth'});
 }
 
-function escHtml(text) {
+function renderQuestion() {
+    if (!resultQuestions.length) return;
+    const q = resultQuestions[currentQ];
+    const s = q.status || 'incorrect';
+    const label = STATUS_LABELS[s] || s;
+    const hasMarks = q.marks_awarded != null;
+    const badge = hasMarks
+        ? `<span class="status-badge status-${s}">${q.marks_awarded}/${q.marks_total || '?'}</span>`
+        : `<span class="status-badge status-${s}">${label}</span>`;
+
+    document.getElementById('qCardContainer').innerHTML = `
+    <div class="q-card">
+        <div class="q-card-header">
+            <span class="q-num">Question ${q.question_num || currentQ+1}</span>
+            ${badge}
+        </div>
+        <div class="q-card-body">
+            <div class="q-field">
+                <div class="q-field-label">Student's Answer</div>
+                <div class="q-field-value">${esc(q.student_answer || 'N/A')}</div>
+            </div>
+            <div class="q-field">
+                <div class="q-field-label">Correct Answer</div>
+                <div class="q-field-value">${esc(q.correct_answer || 'N/A')}</div>
+            </div>
+            ${q.feedback ? `<div class="q-field">
+                <div class="q-field-label">Feedback</div>
+                <div class="q-field-value feedback">${esc(q.feedback)}</div>
+            </div>` : ''}
+            ${q.improvement ? `<div class="q-field">
+                <div class="q-field-label">Suggested Improvement</div>
+                <div class="q-field-value improvement">${esc(q.improvement)}</div>
+            </div>` : ''}
+        </div>
+    </div>`;
+
+    // Update nav
+    document.getElementById('qNavInfo').textContent = `Q${currentQ+1} of ${resultQuestions.length}`;
+    document.getElementById('prevBtn').disabled = currentQ === 0;
+    document.getElementById('nextBtn').disabled = currentQ === resultQuestions.length - 1;
+
+    // Update dots
+    document.querySelectorAll('.q-dot').forEach((d, i) => {
+        d.classList.toggle('active', i === currentQ);
+    });
+}
+
+function navQ(dir) { goQ(currentQ + dir); }
+function goQ(idx) {
+    if (idx < 0 || idx >= resultQuestions.length) return;
+    currentQ = idx;
+    renderQuestion();
+}
+
+function esc(text) {
     if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    const d = document.createElement('div'); d.textContent = text; return d.innerHTML;
 }
 
-function downloadPdf() {
-    if (currentJobId) {
-        window.open('/download/' + currentJobId, '_blank');
-    }
-}
+function downloadPdf() { if (currentJobId) window.open('/download/' + currentJobId, '_blank'); }
 
 function resetForm() {
     document.getElementById('results').style.display = 'none';
     document.getElementById('formCard').scrollIntoView({behavior: 'smooth'});
-
-    // Clear file inputs
     ['question_paper', 'answer_key', 'script', 'rubrics'].forEach(id => {
-        const input = document.getElementById(id);
-        input.value = '';
-        const zone = input.closest('.upload-zone');
-        zone.classList.remove('has-file');
+        const inp = document.getElementById(id); inp.value = '';
+        inp.closest('.upload-zone').classList.remove('has-file');
         document.getElementById(id + '_name').textContent = '';
     });
-
-    currentJobId = null;
+    currentJobId = null; resultQuestions = []; currentQ = 0;
 }
 </script>
 {% endif %}
-
 </body>
 </html>
