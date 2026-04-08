@@ -264,6 +264,9 @@ def parse_ai_response(response_text):
 
     text = response_text.strip()
 
+    # Strip Qwen <think>...</think> reasoning blocks before parsing
+    text = re.sub(r'<think>[\s\S]*?</think>', '', text).strip()
+
     # Replace smart quotes with regular quotes (Qwen sometimes uses these)
     text = text.replace('\u201c', '"').replace('\u201d', '"')
     text = text.replace('\u2018', "'").replace('\u2019', "'")
