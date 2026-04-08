@@ -1,0 +1,377 @@
+import os
+import logging
+import base64
+import json
+import re
+import io
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+# Import providers
+from anthropic import Anthropic
+
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
+try:
+    from pdf2image import convert_from_bytes
+    from PIL import Image
+    PDF2IMAGE_AVAILABLE = True
+except ImportError:
+    PDF2IMAGE_AVAILABLE = False
+
+# Model mappings
+MODEL_MAPPINGS = {
+    'anthropic': 'claude-sonnet-4-6',
+    'openai': 'gpt-4.1-2025-04-14',
+    'qwen': 'qwen-vl-max',
+}
+
+PROVIDER_LABELS = {
+    'anthropic': 'Anthropic (Claude)',
+    'openai': 'OpenAI (GPT-4.1)',
+    'qwen': 'Qwen (VL Max)',
+}
+
+
+def get_available_providers():
+    """Return dict of provider -> True if API key is configured."""
+    available = {}
+    available['anthropic'] = bool(os.getenv('ANTHROPIC_API_KEY'))
+    available['openai'] = bool(os.getenv('OPENAI_API_KEY') and OPENAI_AVAILABLE)
+    available['qwen'] = bool(os.getenv('QWEN_API_KEY') and OPENAI_AVAILABLE)
+    return {k: v for k, v in available.items() if v}
+
+
+def get_ai_client(provider):
+    """Get AI client for a provider. Returns (client, model_name, provider) or (None, None, None)."""
+    if provider == 'anthropic':
+        api_key = os.getenv('ANTHROPIC_API_KEY')
+        if not api_key:
+            return None, None, None
+        return Anthropic(api_key=api_key), MODEL_MAPPINGS['anthropic'], 'anthropic'
+
+    elif provider == 'openai':
+        if not OPENAI_AVAILABLE:
+            return None, None, None
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            return None, None, None
+        return OpenAI(api_key=api_key), MODEL_MAPPINGS['openai'], 'openai'
+
+    elif provider == 'qwen':
+        if not OPENAI_AVAILABLE:
+            return None, None, None
+        api_key = os.getenv('QWEN_API_KEY')
+        if not api_key:
+            return None, None, None
+        client = OpenAI(api_key=api_key, base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+        return client, MODEL_MAPPINGS['qwen'], 'qwen'
+
+    return None, None, None
+
+
+def convert_pdf_to_images(pdf_bytes, max_pages=10):
+    """Convert PDF pages to base64-encoded JPEG images."""
+    if not PDF2IMAGE_AVAILABLE:
+        return []
+    try:
+        images = convert_from_bytes(pdf_bytes, first_page=1, last_page=max_pages)
+        result = []
+        for img in images:
+            buf = io.BytesIO()
+            if img.mode in ('RGBA', 'P'):
+                img = img.convert('RGB')
+            img.save(buf, format='JPEG', quality=85)
+            buf.seek(0)
+            result.append(base64.b64encode(buf.read()).decode('utf-8'))
+        return result
+    except Exception as e:
+        logger.error(f"Error converting PDF to images: {e}")
+        return []
+
+
+def resize_image_for_ai(image_bytes, max_dimension=1200, quality=85):
+    """Resize image to reduce payload size for AI APIs."""
+    if not PDF2IMAGE_AVAILABLE:
+        return image_bytes
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        if img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+        w, h = img.size
+        if w <= max_dimension and h <= max_dimension:
+            out = io.BytesIO()
+            img.save(out, format='JPEG', quality=quality)
+            return out.getvalue()
+        ratio = min(max_dimension / w, max_dimension / h)
+        img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+        out = io.BytesIO()
+        img.save(out, format='JPEG', quality=quality)
+        return out.getvalue()
+    except Exception:
+        return image_bytes
+
+
+def build_content_block(file_bytes):
+    """Build API content block based on file type (PDF or image)."""
+    if file_bytes[:5] == b'%PDF-':
+        return {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": base64.standard_b64encode(file_bytes).decode('utf-8')
+            }
+        }
+
+    # Detect image type
+    if file_bytes[:3] == b'\xff\xd8\xff':
+        media_type = "image/jpeg"
+    elif file_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+        media_type = "image/png"
+    elif file_bytes[:4] in (b'GIF8',):
+        media_type = "image/gif"
+    elif file_bytes[:4] == b'RIFF' and len(file_bytes) > 12 and file_bytes[8:12] == b'WEBP':
+        media_type = "image/webp"
+    else:
+        # Default to PDF
+        return {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": base64.standard_b64encode(file_bytes).decode('utf-8')
+            }
+        }
+
+    resized = resize_image_for_ai(file_bytes)
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": media_type,
+            "data": base64.standard_b64encode(resized).decode('utf-8')
+        }
+    }
+
+
+def make_ai_api_call(client, model_name, provider, system_prompt, messages_content, max_tokens=16384):
+    """Unified API call across providers."""
+    if provider == 'anthropic':
+        message = client.messages.create(
+            model=model_name,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": messages_content}],
+            system=system_prompt
+        )
+        return message.content[0].text
+
+    elif provider in ('openai', 'qwen'):
+        openai_messages = []
+        if system_prompt:
+            openai_messages.append({"role": "system", "content": system_prompt})
+
+        user_content = []
+        for item in messages_content:
+            if isinstance(item, dict):
+                if item.get('type') == 'text':
+                    user_content.append({"type": "text", "text": item.get('text', '')})
+                elif item.get('type') == 'image':
+                    image_data = item['source']['data']
+                    media_type = item['source'].get('media_type', 'image/jpeg')
+                    user_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{media_type};base64,{image_data}"}
+                    })
+                elif item.get('type') == 'document':
+                    pdf_data = item['source']['data']
+                    pdf_bytes = base64.b64decode(pdf_data)
+                    pdf_images = convert_pdf_to_images(pdf_bytes, max_pages=10)
+                    if pdf_images:
+                        for page_num, img_b64 in enumerate(pdf_images, 1):
+                            user_content.append({
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                            })
+                            user_content.append({"type": "text", "text": f"(PDF Page {page_num})"})
+                    else:
+                        user_content.append({"type": "text", "text": "[PDF document could not be converted to images]"})
+
+        # Combine text and images for OpenAI format
+        text_parts = [c.get('text', '') for c in user_content if c.get('type') == 'text']
+        image_parts = [c for c in user_content if c.get('type') == 'image_url']
+
+        if image_parts:
+            content_list = []
+            for text in text_parts:
+                if text.strip():
+                    content_list.append({"type": "text", "text": text})
+            content_list.extend(image_parts)
+            user_content = content_list
+        else:
+            user_content = [{"type": "text", "text": " ".join(text_parts)}]
+
+        openai_messages.append({"role": "user", "content": user_content})
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=openai_messages,
+            max_tokens=max_tokens
+        )
+        return response.choices[0].message.content
+
+    raise ValueError(f"Unknown provider: {provider}")
+
+
+def parse_ai_response(response_text):
+    """Parse AI response JSON, handling markdown fences and truncation."""
+    if not response_text or not response_text.strip():
+        return {'error': 'Empty response'}
+
+    text = response_text.strip()
+    if text.startswith('```'):
+        text = re.sub(r'^```(?:json)?\s*', '', text)
+        text = re.sub(r'\s*```\s*$', '', text)
+
+    json_match = re.search(r'\{[\s\S]*\}', text)
+    if not json_match:
+        return {'error': 'Could not parse response', 'raw': response_text}
+
+    try:
+        return json.loads(json_match.group())
+    except json.JSONDecodeError:
+        # Try to repair truncated JSON
+        cleaned = json_match.group().rstrip()
+        quote_count = len(re.findall(r'(?<!\\)"', cleaned))
+        if quote_count % 2 != 0:
+            cleaned += '"'
+        cleaned = re.sub(r',\s*"[^"]*"\s*:\s*"?[^"{}[\]]*$', '', cleaned)
+        cleaned = re.sub(r',\s*$', '', cleaned)
+        open_braces = cleaned.count('{') - cleaned.count('}')
+        open_brackets = cleaned.count('[') - cleaned.count(']')
+        cleaned += ']' * max(0, open_brackets) + '}' * max(0, open_braces)
+        try:
+            return json.loads(cleaned)
+        except (json.JSONDecodeError, ValueError):
+            return {'error': 'Could not parse response', 'raw': response_text}
+
+
+def mark_script(provider, question_paper_bytes, answer_key_bytes, script_bytes,
+                subject='', rubrics_bytes=None, review_instructions='', marking_instructions=''):
+    """
+    Mark a student script using AI vision.
+
+    Returns dict with questions, overall_feedback, recommended_actions.
+    """
+    client, model_name, prov = get_ai_client(provider)
+    if not client:
+        return {'error': f'AI provider "{provider}" is not available (no API key configured)'}
+
+    # Build system prompt
+    rubrics_section = ""
+    if rubrics_bytes:
+        rubrics_section = "\nGRADING RUBRICS have been provided — use them to evaluate subjective answers."
+
+    review_section = ""
+    if review_instructions.strip():
+        review_section = f"\n\nREVIEW INSTRUCTIONS (follow these for how to write feedback):\n{review_instructions.strip()}"
+
+    marking_section = ""
+    if marking_instructions.strip():
+        marking_section = f"\n\nMARKING INSTRUCTIONS (follow these for how to evaluate answers):\n{marking_instructions.strip()}"
+
+    system_prompt = f"""You are an experienced teacher marking a student's assignment script.
+
+Subject: {subject or 'General'}
+{rubrics_section}
+{review_section}
+{marking_section}
+
+Your task:
+1. Read the QUESTION PAPER to understand what was asked
+2. Read the ANSWER KEY to know the correct answers
+3. Read the STUDENT SCRIPT and evaluate each answer
+4. If RUBRICS are provided, use them for evaluation criteria
+
+SCORING: For each question, assign one of these statuses:
+- "correct" — answer is accurate and complete
+- "partially_correct" — answer shows understanding but is incomplete or has minor errors
+- "incorrect" — answer is wrong or fundamentally flawed
+
+HANDWRITING RULES:
+- IGNORE crossed-out or struck-through text — treat as deleted
+- A caret (^) or insertion mark means the student wants to INSERT text at that point
+- Focus on the student's FINAL intended answer, not drafts or corrections
+
+FORMATTING:
+- Use LaTeX in $ delimiters for math: $x^2 + 3x = 0$
+- Use $$ for display equations: $$E = mc^2$$
+
+Respond ONLY with valid JSON:
+{{
+    "questions": [
+        {{
+            "question_num": 1,
+            "student_answer": "transcribed answer from the script",
+            "correct_answer": "answer from the answer key",
+            "status": "correct | partially_correct | incorrect",
+            "feedback": "specific constructive feedback",
+            "improvement": "recommended action for improvement"
+        }}
+    ],
+    "overall_feedback": "general assessment of the submission",
+    "recommended_actions": ["action 1", "action 2", "action 3"]
+}}"""
+
+    # Build content array
+    content = []
+
+    # Question paper
+    content.append({"type": "text", "text": "QUESTION PAPER:"})
+    content.append(build_content_block(question_paper_bytes))
+
+    # Answer key
+    content.append({"type": "text", "text": "\nANSWER KEY (use for marking):"})
+    content.append(build_content_block(answer_key_bytes))
+
+    # Rubrics (optional)
+    if rubrics_bytes:
+        content.append({"type": "text", "text": "\nGRADING RUBRICS:"})
+        content.append(build_content_block(rubrics_bytes))
+
+    # Student script
+    content.append({"type": "text", "text": "\nSTUDENT SCRIPT (evaluate this):"})
+    content.append(build_content_block(script_bytes))
+
+    content.append({"type": "text", "text": "\nAnalyze this submission and provide JSON feedback:"})
+
+    try:
+        response_text = make_ai_api_call(
+            client=client,
+            model_name=model_name,
+            provider=prov,
+            system_prompt=system_prompt,
+            messages_content=content,
+            max_tokens=16384
+        )
+
+        result = parse_ai_response(response_text)
+        result['generated_at'] = datetime.utcnow().isoformat()
+        result['provider'] = provider
+        result['provider_label'] = PROVIDER_LABELS.get(provider, provider)
+        return result
+
+    except Exception as e:
+        logger.error(f"Error marking script with {provider}: {e}")
+        err_str = str(e)
+        is_413 = '413' in err_str or 'request_too_large' in err_str.lower()
+        return {
+            'error': (
+                'Files too large for AI processing. Try smaller images or fewer pages.'
+                if is_413 else f'Error from {provider}: {err_str}'
+            )
+        }

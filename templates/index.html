@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Marking Demo</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f7;
+            color: #333;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        /* Access Gate */
+        .gate {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        .gate-card {
+            background: white;
+            border-radius: 16px;
+            padding: 48px 40px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.08);
+            text-align: center;
+            width: 100%;
+            max-width: 420px;
+        }
+        .gate-card h1 {
+            font-size: 24px;
+            font-weight: 700;
+            color: #333;
+            margin-bottom: 8px;
+        }
+        .gate-card p {
+            color: #888;
+            font-size: 14px;
+            margin-bottom: 28px;
+        }
+        .gate-input {
+            width: 100%;
+            padding: 14px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 16px;
+            text-align: center;
+            letter-spacing: 3px;
+            font-weight: 600;
+            transition: border-color 0.2s;
+            outline: none;
+        }
+        .gate-input:focus { border-color: #667eea; }
+        .gate-input.error { border-color: #dc3545; }
+        .gate-error {
+            color: #dc3545;
+            font-size: 13px;
+            margin-top: 10px;
+            display: none;
+        }
+        .gate-btn {
+            width: 100%;
+            padding: 14px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 20px;
+            transition: background 0.2s;
+        }
+        .gate-btn:hover { background: #5a6fd6; }
+
+        /* Marking Page */
+        .header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+        .header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            color: #333;
+        }
+        .header p {
+            color: #888;
+            font-size: 14px;
+            margin-top: 4px;
+        }
+        .card {
+            background: white;
+            border-radius: 16px;
+            padding: 32px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.08);
+            margin-bottom: 24px;
+        }
+        .card h2 {
+            font-size: 16px;
+            font-weight: 700;
+            color: #333;
+            margin-bottom: 20px;
+        }
+
+        /* Provider selector */
+        .provider-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+        .provider-option {
+            flex: 1;
+            min-width: 140px;
+        }
+        .provider-option input { display: none; }
+        .provider-option label {
+            display: block;
+            padding: 14px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            text-align: center;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: #555;
+        }
+        .provider-option input:checked + label {
+            border-color: #667eea;
+            background: #f0f2ff;
+            color: #667eea;
+        }
+        .provider-option label:hover {
+            border-color: #b0b8f0;
+        }
+
+        /* File uploads */
+        .upload-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        @media (max-width: 600px) {
+            .upload-grid { grid-template-columns: 1fr; }
+        }
+        .upload-zone {
+            border: 2px dashed #d0d0d0;
+            border-radius: 10px;
+            padding: 20px 12px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+        }
+        .upload-zone:hover { border-color: #667eea; background: #fafafe; }
+        .upload-zone.has-file { border-color: #28a745; background: #f0fdf4; }
+        .upload-zone input { display: none; }
+        .upload-zone .icon { font-size: 28px; margin-bottom: 6px; }
+        .upload-zone .label {
+            font-size: 13px;
+            font-weight: 600;
+            color: #555;
+        }
+        .upload-zone .filename {
+            font-size: 11px;
+            color: #28a745;
+            margin-top: 6px;
+            word-break: break-all;
+        }
+        .upload-zone .hint {
+            font-size: 11px;
+            color: #aaa;
+            margin-top: 4px;
+        }
+
+        /* Collapsible rubrics */
+        .collapsible-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none;
+            padding: 10px 0;
+            color: #667eea;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .collapsible-header .arrow {
+            transition: transform 0.2s;
+            font-size: 12px;
+        }
+        .collapsible-header.open .arrow { transform: rotate(90deg); }
+        .collapsible-body {
+            display: none;
+            padding: 12px 0;
+        }
+        .collapsible-body.open { display: block; }
+
+        /* Form fields */
+        .form-group { margin-bottom: 16px; }
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: #555;
+            margin-bottom: 6px;
+        }
+        .form-input, .form-textarea {
+            width: 100%;
+            padding: 12px 14px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+            font-family: inherit;
+        }
+        .form-input:focus, .form-textarea:focus { border-color: #667eea; }
+        .form-textarea { resize: vertical; min-height: 80px; }
+
+        /* Submit button */
+        .mark-btn {
+            width: 100%;
+            padding: 16px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .mark-btn:hover { background: #5a6fd6; }
+        .mark-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        /* Processing spinner */
+        .processing {
+            text-align: center;
+            padding: 40px 20px;
+            display: none;
+        }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #e0e0e0;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 16px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .processing p { color: #888; font-size: 14px; }
+
+        /* Results */
+        .results { display: none; }
+        .summary-bar {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+        .summary-item {
+            flex: 1;
+            min-width: 120px;
+            padding: 16px;
+            border-radius: 10px;
+            text-align: center;
+            font-weight: 700;
+            font-size: 14px;
+        }
+        .summary-correct { background: #e8f5e9; color: #28a745; }
+        .summary-partial { background: #fff8e1; color: #e68a00; }
+        .summary-incorrect { background: #fdecea; color: #dc3545; }
+
+        /* Question cards */
+        .question-card {
+            border: 1px solid #e8e8e8;
+            border-radius: 10px;
+            margin-bottom: 12px;
+            overflow: hidden;
+        }
+        .question-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 16px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .question-header:hover { background: #fafafa; }
+        .question-num {
+            font-weight: 700;
+            font-size: 14px;
+        }
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 700;
+            color: white;
+        }
+        .status-correct { background: #28a745; }
+        .status-partially_correct { background: #f0ad4e; }
+        .status-incorrect { background: #dc3545; }
+
+        .question-body {
+            display: none;
+            padding: 0 16px 16px;
+            border-top: 1px solid #f0f0f0;
+        }
+        .question-body.open { display: block; padding-top: 16px; }
+        .detail-row {
+            margin-bottom: 12px;
+        }
+        .detail-label {
+            font-size: 11px;
+            font-weight: 700;
+            color: #888;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .detail-value {
+            font-size: 14px;
+            color: #333;
+            line-height: 1.5;
+        }
+
+        /* Overall feedback */
+        .overall-section { margin-top: 24px; }
+        .overall-section h3 {
+            font-size: 15px;
+            font-weight: 700;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .overall-section p, .overall-section li {
+            font-size: 14px;
+            color: #555;
+            line-height: 1.6;
+        }
+        .overall-section ul {
+            padding-left: 20px;
+            margin-top: 8px;
+        }
+        .overall-section li { margin-bottom: 4px; }
+
+        /* Download button */
+        .download-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 28px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background 0.2s;
+            margin-top: 16px;
+        }
+        .download-btn:hover { background: #218838; }
+
+        /* Reset button */
+        .reset-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 28px;
+            background: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background 0.2s;
+            margin-top: 16px;
+            margin-left: 12px;
+        }
+        .reset-btn:hover { background: #5a6268; }
+
+        /* Error */
+        .error-msg {
+            background: #fdecea;
+            color: #dc3545;
+            padding: 16px;
+            border-radius: 10px;
+            font-size: 14px;
+            margin-bottom: 16px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+{% if not authenticated %}
+<!-- Access Gate -->
+<div class="gate">
+    <div class="gate-card">
+        <h1>AI Marking Demo</h1>
+        <p>Enter the access code to continue</p>
+        <input type="text" class="gate-input" id="codeInput" placeholder="ACCESS CODE" autocomplete="off" autofocus>
+        <div class="gate-error" id="gateError">Invalid access code. Please try again.</div>
+        <button class="gate-btn" id="gateBtn" onclick="verifyCode()">Enter</button>
+    </div>
+</div>
+
+<script>
+document.getElementById('codeInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') verifyCode();
+});
+
+async function verifyCode() {
+    const code = document.getElementById('codeInput').value.trim();
+    if (!code) return;
+
+    const btn = document.getElementById('gateBtn');
+    btn.disabled = true;
+    btn.textContent = 'Verifying...';
+
+    try {
+        const res = await fetch('/verify-code', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({code})
+        });
+        if (res.ok) {
+            window.location.reload();
+        } else {
+            document.getElementById('gateError').style.display = 'block';
+            document.getElementById('codeInput').classList.add('error');
+            btn.disabled = false;
+            btn.textContent = 'Enter';
+        }
+    } catch (err) {
+        document.getElementById('gateError').textContent = 'Connection error. Please try again.';
+        document.getElementById('gateError').style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Enter';
+    }
+}
+</script>
+
+{% else %}
+<!-- Marking Page -->
+<div class="container">
+    <div class="header">
+        <h1>AI Marking Demo</h1>
+        <p>Upload a student script with question paper and answer key to generate AI feedback</p>
+    </div>
+
+    <!-- Marking Form -->
+    <div class="card" id="formCard">
+        <h2>Setup</h2>
+
+        <!-- Provider Selection -->
+        <div class="provider-group">
+            {% for key, label in providers.items() %}
+            <div class="provider-option">
+                <input type="radio" name="provider" id="provider_{{ key }}" value="{{ key }}" {% if loop.first %}checked{% endif %}>
+                <label for="provider_{{ key }}">{{ label }}</label>
+            </div>
+            {% endfor %}
+        </div>
+
+        <!-- Subject -->
+        <div class="form-group">
+            <label for="subject">Subject</label>
+            <input type="text" class="form-input" id="subject" placeholder="e.g. Mathematics, English, Science">
+        </div>
+
+        <!-- File Uploads -->
+        <h2 style="margin-top: 24px;">Upload Files</h2>
+        <div class="upload-grid">
+            <div class="upload-zone" onclick="this.querySelector('input').click()">
+                <input type="file" id="question_paper" accept=".pdf,.jpg,.jpeg,.png" onchange="fileSelected(this)">
+                <div class="icon">&#128196;</div>
+                <div class="label">Question Paper</div>
+                <div class="filename" id="question_paper_name"></div>
+                <div class="hint">PDF or Image</div>
+            </div>
+            <div class="upload-zone" onclick="this.querySelector('input').click()">
+                <input type="file" id="answer_key" accept=".pdf,.jpg,.jpeg,.png" onchange="fileSelected(this)">
+                <div class="icon">&#9989;</div>
+                <div class="label">Answer Key</div>
+                <div class="filename" id="answer_key_name"></div>
+                <div class="hint">PDF or Image</div>
+            </div>
+            <div class="upload-zone" onclick="this.querySelector('input').click()">
+                <input type="file" id="script" accept=".pdf,.jpg,.jpeg,.png" onchange="fileSelected(this)">
+                <div class="icon">&#9997;&#65039;</div>
+                <div class="label">Student Script</div>
+                <div class="filename" id="script_name"></div>
+                <div class="hint">PDF or Image</div>
+            </div>
+        </div>
+
+        <!-- Rubrics (collapsible) -->
+        <div class="collapsible-header" id="rubricToggle" onclick="toggleRubrics()">
+            <span class="arrow">&#9654;</span>
+            Rubrics (Optional)
+        </div>
+        <div class="collapsible-body" id="rubricBody">
+            <div class="upload-zone" style="max-width: 260px;" onclick="this.querySelector('input').click()">
+                <input type="file" id="rubrics" accept=".pdf,.jpg,.jpeg,.png" onchange="fileSelected(this)">
+                <div class="icon">&#128203;</div>
+                <div class="label">Rubrics</div>
+                <div class="filename" id="rubrics_name"></div>
+                <div class="hint">PDF or Image</div>
+            </div>
+        </div>
+
+        <!-- Custom Instructions -->
+        <h2 style="margin-top: 24px;">Instructions (Optional)</h2>
+        <div class="form-group">
+            <label for="review_instructions">Review Instructions</label>
+            <textarea class="form-textarea" id="review_instructions" placeholder="How should feedback be written? e.g. tone, detail level, language..."></textarea>
+        </div>
+        <div class="form-group">
+            <label for="marking_instructions">Marking Instructions</label>
+            <textarea class="form-textarea" id="marking_instructions" placeholder="How should answers be evaluated? e.g. strictness, what to accept, partial credit rules..."></textarea>
+        </div>
+
+        <!-- Error -->
+        <div class="error-msg" id="errorMsg"></div>
+
+        <!-- Submit -->
+        <button class="mark-btn" id="markBtn" onclick="startMarking()">Mark Script</button>
+    </div>
+
+    <!-- Processing -->
+    <div class="processing" id="processing">
+        <div class="spinner"></div>
+        <p>AI is marking the script...</p>
+        <p style="font-size: 12px; color: #bbb; margin-top: 8px;">This may take 30-60 seconds</p>
+    </div>
+
+    <!-- Results -->
+    <div class="results" id="results">
+        <div class="card">
+            <h2>Results</h2>
+
+            <div class="summary-bar" id="summaryBar"></div>
+
+            <div id="questionsContainer"></div>
+
+            <div class="overall-section" id="overallSection"></div>
+
+            <div style="text-align: center;">
+                <button class="download-btn" id="downloadBtn" onclick="downloadPdf()">Download PDF Report</button>
+                <button class="reset-btn" onclick="resetForm()">Mark Another</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let currentJobId = null;
+
+function fileSelected(input) {
+    const zone = input.closest('.upload-zone');
+    const nameEl = document.getElementById(input.id + '_name');
+    if (input.files.length > 0) {
+        zone.classList.add('has-file');
+        nameEl.textContent = input.files[0].name;
+    } else {
+        zone.classList.remove('has-file');
+        nameEl.textContent = '';
+    }
+}
+
+function toggleRubrics() {
+    const header = document.getElementById('rubricToggle');
+    const body = document.getElementById('rubricBody');
+    header.classList.toggle('open');
+    body.classList.toggle('open');
+}
+
+function showError(msg) {
+    const el = document.getElementById('errorMsg');
+    el.textContent = msg;
+    el.style.display = 'block';
+}
+
+function hideError() {
+    document.getElementById('errorMsg').style.display = 'none';
+}
+
+async function startMarking() {
+    hideError();
+
+    // Validate
+    const qp = document.getElementById('question_paper').files[0];
+    const ak = document.getElementById('answer_key').files[0];
+    const sc = document.getElementById('script').files[0];
+
+    if (!qp) return showError('Please upload a question paper.');
+    if (!ak) return showError('Please upload an answer key.');
+    if (!sc) return showError('Please upload a student script.');
+
+    const provider = document.querySelector('input[name="provider"]:checked')?.value;
+    if (!provider) return showError('Please select an AI provider.');
+
+    // Build form data
+    const fd = new FormData();
+    fd.append('provider', provider);
+    fd.append('subject', document.getElementById('subject').value);
+    fd.append('review_instructions', document.getElementById('review_instructions').value);
+    fd.append('marking_instructions', document.getElementById('marking_instructions').value);
+    fd.append('question_paper', qp);
+    fd.append('answer_key', ak);
+    fd.append('script', sc);
+
+    const rubrics = document.getElementById('rubrics').files[0];
+    if (rubrics) fd.append('rubrics', rubrics);
+
+    // Show processing
+    const btn = document.getElementById('markBtn');
+    btn.disabled = true;
+    document.getElementById('processing').style.display = 'block';
+    document.getElementById('results').style.display = 'none';
+
+    try {
+        const res = await fetch('/mark', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!data.success) {
+            showError(data.error || 'Failed to start marking.');
+            btn.disabled = false;
+            document.getElementById('processing').style.display = 'none';
+            return;
+        }
+
+        currentJobId = data.job_id;
+        pollStatus();
+    } catch (err) {
+        showError('Connection error. Please try again.');
+        btn.disabled = false;
+        document.getElementById('processing').style.display = 'none';
+    }
+}
+
+async function pollStatus() {
+    if (!currentJobId) return;
+
+    try {
+        const res = await fetch('/status/' + currentJobId);
+        const data = await res.json();
+
+        if (data.status === 'processing') {
+            setTimeout(pollStatus, 2000);
+            return;
+        }
+
+        document.getElementById('processing').style.display = 'none';
+        document.getElementById('markBtn').disabled = false;
+
+        if (data.status === 'error') {
+            showError(data.result?.error || 'An error occurred during marking.');
+            return;
+        }
+
+        // Show results
+        renderResults(data.result);
+    } catch (err) {
+        setTimeout(pollStatus, 3000);
+    }
+}
+
+const STATUS_LABELS = {
+    'correct': 'Correct',
+    'partially_correct': 'Partially Correct',
+    'incorrect': 'Incorrect'
+};
+
+function renderResults(result) {
+    if (result.error) {
+        showError(result.error);
+        return;
+    }
+
+    const questions = result.questions || [];
+
+    // Summary
+    let counts = {correct: 0, partially_correct: 0, incorrect: 0};
+    questions.forEach(q => {
+        if (counts.hasOwnProperty(q.status)) counts[q.status]++;
+    });
+
+    document.getElementById('summaryBar').innerHTML = `
+        <div class="summary-item summary-correct">${counts.correct} Correct</div>
+        <div class="summary-item summary-partial">${counts.partially_correct} Partially Correct</div>
+        <div class="summary-item summary-incorrect">${counts.incorrect} Incorrect</div>
+    `;
+
+    // Questions
+    let html = '';
+    questions.forEach((q, i) => {
+        const status = q.status || 'incorrect';
+        const label = STATUS_LABELS[status] || status;
+        html += `
+        <div class="question-card">
+            <div class="question-header" onclick="this.nextElementSibling.classList.toggle('open')">
+                <span class="question-num">Question ${q.question_num || (i+1)}</span>
+                <span class="status-badge status-${status}">${label}</span>
+            </div>
+            <div class="question-body">
+                <div class="detail-row">
+                    <div class="detail-label">Student's Answer</div>
+                    <div class="detail-value">${escHtml(q.student_answer || 'N/A')}</div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Correct Answer</div>
+                    <div class="detail-value">${escHtml(q.correct_answer || 'N/A')}</div>
+                </div>
+                ${q.feedback ? `<div class="detail-row">
+                    <div class="detail-label">Feedback</div>
+                    <div class="detail-value">${escHtml(q.feedback)}</div>
+                </div>` : ''}
+                ${q.improvement ? `<div class="detail-row">
+                    <div class="detail-label">Suggested Improvement</div>
+                    <div class="detail-value">${escHtml(q.improvement)}</div>
+                </div>` : ''}
+            </div>
+        </div>`;
+    });
+    document.getElementById('questionsContainer').innerHTML = html;
+
+    // Overall feedback
+    let overallHtml = '';
+    if (result.overall_feedback) {
+        overallHtml += `<h3>Overall Feedback</h3><p>${escHtml(result.overall_feedback)}</p>`;
+    }
+    const actions = result.recommended_actions || [];
+    if (actions.length > 0) {
+        overallHtml += `<h3 style="margin-top: 16px;">Recommended Actions</h3><ul>`;
+        actions.forEach(a => { overallHtml += `<li>${escHtml(a)}</li>`; });
+        overallHtml += '</ul>';
+    }
+    document.getElementById('overallSection').innerHTML = overallHtml;
+
+    document.getElementById('results').style.display = 'block';
+
+    // Scroll to results
+    document.getElementById('results').scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+function escHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function downloadPdf() {
+    if (currentJobId) {
+        window.open('/download/' + currentJobId, '_blank');
+    }
+}
+
+function resetForm() {
+    document.getElementById('results').style.display = 'none';
+    document.getElementById('formCard').scrollIntoView({behavior: 'smooth'});
+
+    // Clear file inputs
+    ['question_paper', 'answer_key', 'script', 'rubrics'].forEach(id => {
+        const input = document.getElementById(id);
+        input.value = '';
+        const zone = input.closest('.upload-zone');
+        zone.classList.remove('has-file');
+        document.getElementById(id + '_name').textContent = '';
+    });
+
+    currentJobId = null;
+}
+</script>
+{% endif %}
+
+</body>
+</html>
