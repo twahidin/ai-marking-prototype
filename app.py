@@ -32,7 +32,8 @@ def cleanup_old_jobs():
 
 
 def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pages,
-                    script_pages, subject, rubrics_pages, review_instructions, marking_instructions,
+                    script_pages, subject, rubrics_pages, reference_pages,
+                    review_instructions, marking_instructions,
                     assign_type, scoring_mode, total_marks):
     """Background thread for AI marking."""
     try:
@@ -43,6 +44,7 @@ def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pa
             script_pages=script_pages,
             subject=subject,
             rubrics_pages=rubrics_pages,
+            reference_pages=reference_pages,
             review_instructions=review_instructions,
             marking_instructions=marking_instructions,
             model=model,
@@ -82,8 +84,13 @@ def mark():
     if not session.get('authenticated'):
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
-    # Validate required files
-    for field in ('question_paper', 'answer_key', 'script'):
+    assign_type = request.form.get('assign_type', 'short_answer')
+
+    # Validate required files (answer_key not required for rubrics mode)
+    required_fields = ['question_paper', 'script']
+    if assign_type != 'rubrics':
+        required_fields.append('answer_key')
+    for field in required_fields:
         files = request.files.getlist(field)
         if not files or not files[0].filename:
             return jsonify({'success': False, 'error': f'Missing required file: {field}'}), 400
@@ -93,7 +100,6 @@ def mark():
     provider = request.form.get('provider', 'anthropic')
     model = request.form.get('model', '')
     subject = request.form.get('subject', '')
-    assign_type = request.form.get('assign_type', 'short_answer')
     scoring_mode = request.form.get('scoring_mode', 'status')
     total_marks = request.form.get('total_marks', '')
     review_instructions = request.form.get('review_instructions', '')
@@ -105,6 +111,7 @@ def mark():
     script_pages = [f.read() for f in request.files.getlist('script') if f.filename]
 
     rubrics_pages = [f.read() for f in request.files.getlist('rubrics') if f.filename]
+    reference_pages = [f.read() for f in request.files.getlist('reference') if f.filename]
 
     # Cleanup old jobs periodically
     cleanup_old_jobs()
@@ -122,7 +129,8 @@ def mark():
     thread = threading.Thread(
         target=run_marking_job,
         args=(job_id, provider, model, question_paper_pages, answer_key_pages,
-              script_pages, subject, rubrics_pages, review_instructions, marking_instructions,
+              script_pages, subject, rubrics_pages, reference_pages,
+              review_instructions, marking_instructions,
               assign_type, scoring_mode, total_marks),
         daemon=True
     )

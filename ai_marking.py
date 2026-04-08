@@ -322,41 +322,111 @@ def parse_ai_response(response_text):
     return {'error': 'Could not parse response', 'raw': response_text}
 
 
-def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
-                subject='', rubrics_pages=None, review_instructions='', marking_instructions='',
-                model=None, assign_type='short_answer', scoring_mode='status', total_marks=''):
-    """
-    Mark a student script using AI vision.
+def _append_pages(content, label, pages):
+    """Append one or more file pages to the content array."""
+    content.append({"type": "text", "text": label})
+    for i, page_bytes in enumerate(pages):
+        content.append(build_content_block(page_bytes))
+        if len(pages) > 1:
+            content.append({"type": "text", "text": f"(Page {i + 1})"})
 
-    Args:
-        question_paper_pages: List of file bytes (each is a PDF or image)
-        answer_key_pages: List of file bytes
-        script_pages: List of file bytes
-        rubrics_pages: Optional list of file bytes
-        assign_type: 'short_answer' or 'rubrics'
-        scoring_mode: 'status' (correct/partial/incorrect) or 'marks' (numerical)
-        total_marks: Total marks for the assignment (when scoring_mode is 'marks')
 
-    Returns dict with questions, overall_feedback, recommended_actions.
-    """
-    client, model_name, prov = get_ai_client(provider, model=model)
-    if not client:
-        return {'error': f'AI provider "{provider}" is not available (no API key configured)'}
+def _build_rubrics_prompt(subject, rubrics_pages, reference_pages, question_paper_pages,
+                          script_pages, review_section, marking_section, total_marks):
+    """Build system prompt and content for rubrics/essay marking."""
+    total_marks_str = total_marks or '100'
+    reference_section = ""
+    if reference_pages:
+        reference_section = "\nREFERENCE MATERIALS (sample works or other references) have been provided — use them to calibrate your expectations."
 
-    # Build system prompt
+    system_prompt = f"""You are an experienced teacher marking a student's essay/extended response using rubrics.
+
+Subject: {subject or 'General'}
+{reference_section}
+{review_section}
+{marking_section}
+
+Total Marks for this assessment: {total_marks_str}
+
+Your task:
+1. Read the QUESTION PAPER to understand the essay prompt/task
+2. Read the GRADING RUBRICS carefully — these are your PRIMARY evaluation criteria
+3. Read the STUDENT SCRIPT thoroughly
+4. If REFERENCE MATERIALS are provided, use them to calibrate expectations
+5. Evaluate the essay against EACH rubric criterion and determine which band the student falls into
+6. Identify specific line-by-line errors (grammar, spelling, punctuation, factual, logical)
+
+RUBRIC EVALUATION:
+- For each criterion in the rubrics, determine which band/level the student's work falls into
+- Quote the band descriptor that best matches the student's performance
+- Award marks proportionally within that band
+- Assign a status: "correct" (top band), "partially_correct" (middle bands), "incorrect" (lowest band)
+
+LINE-BY-LINE ERROR IDENTIFICATION:
+- Find specific errors in the student's writing
+- Include the original text, the correction, and the error type
+- Error types: grammar, spelling, punctuation, vocabulary, factual, logical, style
+- Quote the exact text from the essay
+
+HANDWRITING RULES:
+- IGNORE crossed-out or struck-through text — treat as deleted
+- A caret (^) or insertion mark means the student wants to INSERT text at that point
+- Focus on the student's FINAL intended answer, not drafts or corrections
+
+FORMATTING:
+- Use LaTeX in $ delimiters for math: $x^2 + 3x = 0$
+
+Respond ONLY with valid JSON:
+{{
+    "questions": [
+        {{
+            "question_num": 1,
+            "student_answer": "summary of what the student demonstrated for this criterion",
+            "correct_answer": "the band descriptor that best matches the student's level",
+            "status": "correct | partially_correct | incorrect",
+            "marks_awarded": number,
+            "marks_total": number,
+            "feedback": "detailed feedback referencing the rubric band",
+            "improvement": "specific actions to reach the next band"
+        }}
+    ],
+    "errors": [
+        {{
+            "location": "Paragraph X, Line Y or quote context",
+            "original": "exact text with the error",
+            "correction": "corrected version",
+            "type": "grammar | spelling | punctuation | vocabulary | factual | logical | style"
+        }}
+    ],
+    "overall_feedback": "holistic assessment of the essay with band placement summary",
+    "recommended_actions": ["action 1", "action 2", "action 3"]
+}}
+
+IMPORTANT: Each entry in "questions" should correspond to ONE rubric criterion (e.g. Content, Language, Organisation). Use the criterion name as the context for question_num (1, 2, 3...)."""
+
+    content = []
+    _append_pages(content, "QUESTION PAPER / ESSAY PROMPT:", question_paper_pages)
+
+    if reference_pages:
+        _append_pages(content, "\nREFERENCE MATERIALS (sample works for calibration):", reference_pages)
+
+    if rubrics_pages:
+        _append_pages(content, "\nGRADING RUBRICS (use these as primary evaluation criteria):", rubrics_pages)
+
+    _append_pages(content, "\nSTUDENT SCRIPT (evaluate this essay):", script_pages)
+
+    content.append({"type": "text", "text": "\nEvaluate this essay against the rubrics and identify line-by-line errors. Provide JSON feedback:"})
+
+    return system_prompt, content
+
+
+def _build_short_answer_prompt(subject, rubrics_pages, answer_key_pages, question_paper_pages,
+                               script_pages, review_section, marking_section, scoring_mode, total_marks):
+    """Build system prompt and content for short answer marking."""
     rubrics_section = ""
     if rubrics_pages:
         rubrics_section = "\nGRADING RUBRICS have been provided — use them to evaluate subjective answers."
 
-    review_section = ""
-    if review_instructions.strip():
-        review_section = f"\n\nREVIEW INSTRUCTIONS (follow these for how to write feedback):\n{review_instructions.strip()}"
-
-    marking_section = ""
-    if marking_instructions.strip():
-        marking_section = f"\n\nMARKING INSTRUCTIONS (follow these for how to evaluate answers):\n{marking_instructions.strip()}"
-
-    # Build scoring instructions based on mode
     if scoring_mode == 'marks':
         total_marks_str = total_marks or '100'
         scoring_instructions = f"""SCORING: Award numerical marks for each question.
@@ -390,14 +460,9 @@ Total Marks for this assessment: {total_marks_str}
             "improvement": "recommended action for improvement"
         }}"""
 
-    type_context = ""
-    if assign_type == 'rubrics':
-        type_context = "\nThis is a RUBRICS-BASED assessment (essay / extended response). Use the provided rubrics as the primary evaluation criteria."
-
     system_prompt = f"""You are an experienced teacher marking a student's assignment script.
 
 Subject: {subject or 'General'}
-{type_context}
 {rubrics_section}
 {review_section}
 {marking_section}
@@ -428,31 +493,62 @@ Respond ONLY with valid JSON:
     "recommended_actions": ["action 1", "action 2", "action 3"]
 }}"""
 
-    # Build content array
     content = []
+    _append_pages(content, "QUESTION PAPER:", question_paper_pages)
+    _append_pages(content, "\nANSWER KEY (use for marking):", answer_key_pages)
 
-    def append_pages(label, pages):
-        """Append one or more file pages to the content array."""
-        content.append({"type": "text", "text": label})
-        for i, page_bytes in enumerate(pages):
-            content.append(build_content_block(page_bytes))
-            if len(pages) > 1:
-                content.append({"type": "text", "text": f"(Page {i + 1})"})
-
-    # Question paper
-    append_pages("QUESTION PAPER:", question_paper_pages)
-
-    # Answer key
-    append_pages("\nANSWER KEY (use for marking):", answer_key_pages)
-
-    # Rubrics (optional)
     if rubrics_pages:
-        append_pages("\nGRADING RUBRICS:", rubrics_pages)
+        _append_pages(content, "\nGRADING RUBRICS:", rubrics_pages)
 
-    # Student script
-    append_pages("\nSTUDENT SCRIPT (evaluate this):", script_pages)
+    _append_pages(content, "\nSTUDENT SCRIPT (evaluate this):", script_pages)
 
     content.append({"type": "text", "text": "\nAnalyze this submission and provide JSON feedback:"})
+
+    return system_prompt, content
+
+
+def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
+                subject='', rubrics_pages=None, reference_pages=None,
+                review_instructions='', marking_instructions='',
+                model=None, assign_type='short_answer', scoring_mode='status', total_marks=''):
+    """
+    Mark a student script using AI vision.
+
+    Args:
+        question_paper_pages: List of file bytes (each is a PDF or image)
+        answer_key_pages: List of file bytes (used for short_answer mode)
+        script_pages: List of file bytes
+        rubrics_pages: Optional list of file bytes
+        reference_pages: Optional list of file bytes (sample works / reference for rubrics mode)
+        assign_type: 'short_answer' or 'rubrics'
+        scoring_mode: 'status' (correct/partial/incorrect) or 'marks' (numerical)
+        total_marks: Total marks for the assignment (when scoring_mode is 'marks')
+
+    Returns dict with questions, overall_feedback, recommended_actions.
+    For rubrics mode, also returns errors (line-by-line) and assign_type.
+    """
+    client, model_name, prov = get_ai_client(provider, model=model)
+    if not client:
+        return {'error': f'AI provider "{provider}" is not available (no API key configured)'}
+
+    review_section = ""
+    if review_instructions.strip():
+        review_section = f"\n\nREVIEW INSTRUCTIONS (follow these for how to write feedback):\n{review_instructions.strip()}"
+
+    marking_section = ""
+    if marking_instructions.strip():
+        marking_section = f"\n\nMARKING INSTRUCTIONS (follow these for how to evaluate answers):\n{marking_instructions.strip()}"
+
+    if assign_type == 'rubrics':
+        system_prompt, content = _build_rubrics_prompt(
+            subject, rubrics_pages, reference_pages, question_paper_pages, script_pages,
+            review_section, marking_section, total_marks
+        )
+    else:
+        system_prompt, content = _build_short_answer_prompt(
+            subject, rubrics_pages, answer_key_pages, question_paper_pages, script_pages,
+            review_section, marking_section, scoring_mode, total_marks
+        )
 
     try:
         response_text = make_ai_api_call(
@@ -465,6 +561,7 @@ Respond ONLY with valid JSON:
         )
 
         result = parse_ai_response(response_text)
+        result['assign_type'] = assign_type
         result['generated_at'] = datetime.utcnow().isoformat()
         result['provider'] = provider
         result['model'] = model_name

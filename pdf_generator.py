@@ -216,8 +216,14 @@ def generate_report_pdf(result, subject=''):
     story.append(summary_table)
     story.append(Spacer(1, 20))
 
-    # Per-question details
-    story.append(Paragraph("Question-by-Question Feedback", styles['Heading_Custom']))
+    # Per-question/criterion details
+    is_rubrics = result.get('assign_type') == 'rubrics'
+    section_title = "Rubric Criteria Feedback" if is_rubrics else "Question-by-Question Feedback"
+    item_label = "Criterion" if is_rubrics else "Question"
+    ans_label = "Assessment" if is_rubrics else "Student Answer"
+    ref_label = "Band Descriptor" if is_rubrics else "Correct Answer"
+
+    story.append(Paragraph(section_title, styles['Heading_Custom']))
     story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
     story.append(Spacer(1, 10))
 
@@ -232,7 +238,7 @@ def generate_report_pdf(result, subject=''):
         if q.get('marks_awarded') is not None:
             marks_text = f" ({q['marks_awarded']}/{q.get('marks_total', '?')})"
         header_data = [[
-            Paragraph(f"<b>Question {q_num}</b>", ParagraphStyle('QH', parent=styles['TableCell'], textColor=white)),
+            Paragraph(f"<b>{item_label} {q_num}</b>", ParagraphStyle('QH', parent=styles['TableCell'], textColor=white)),
             Paragraph(f"<b>{status_label}{marks_text}</b>", ParagraphStyle('QS', parent=styles['TableCell'], textColor=white, alignment=TA_CENTER)),
         ]]
         header_table = Table(header_data, colWidths=[12 * cm, 4 * cm])
@@ -253,11 +259,11 @@ def generate_report_pdf(result, subject=''):
         improvement = clean_for_pdf(q.get('improvement', ''))
 
         detail_rows.append([
-            Paragraph('<b>Student Answer</b>', bold_cell),
+            Paragraph(f'<b>{ans_label}</b>', bold_cell),
             Paragraph(student_ans, cell)
         ])
         detail_rows.append([
-            Paragraph('<b>Correct Answer</b>', bold_cell),
+            Paragraph(f'<b>{ref_label}</b>', bold_cell),
             Paragraph(correct_ans, cell)
         ])
         if feedback:
@@ -281,6 +287,42 @@ def generate_report_pdf(result, subject=''):
         ]))
         story.append(detail_table)
         story.append(Spacer(1, 12))
+
+    # Line-by-line errors (rubrics mode)
+    errors = result.get('errors', [])
+    if errors:
+        story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
+        story.append(Spacer(1, 10))
+        story.append(Paragraph(f"Line-by-Line Errors ({len(errors)})", styles['Heading_Custom']))
+        story.append(Spacer(1, 6))
+
+        error_header = [[
+            Paragraph('<b>Type</b>', styles['TableHeader']),
+            Paragraph('<b>Location</b>', styles['TableHeader']),
+            Paragraph('<b>Original</b>', styles['TableHeader']),
+            Paragraph('<b>Correction</b>', styles['TableHeader']),
+        ]]
+        error_rows = error_header
+        for err in errors:
+            error_rows.append([
+                Paragraph(clean_for_pdf(err.get('type', '')).upper(), cell),
+                Paragraph(clean_for_pdf(err.get('location', '')), cell),
+                Paragraph(clean_for_pdf(err.get('original', '')), cell),
+                Paragraph(clean_for_pdf(err.get('correction', '')), cell),
+            ])
+
+        error_table = Table(error_rows, colWidths=[2.5 * cm, 3.5 * cm, 5 * cm, 5 * cm])
+        error_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), PRIMARY_COLOR),
+            ('TEXTCOLOR', (0, 0), (-1, 0), white),
+            ('BACKGROUND', (0, 1), (-1, -1), LIGHT_GRAY),
+            ('BOX', (0, 0), (-1, -1), 1, BORDER_COLOR),
+            ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
+            ('PADDING', (0, 0), (-1, -1), 6),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]))
+        story.append(error_table)
+        story.append(Spacer(1, 15))
 
     # Overall feedback
     story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))

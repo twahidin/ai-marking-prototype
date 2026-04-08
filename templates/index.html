@@ -347,12 +347,12 @@ async function verifyCode() {
                 <div class="filename" id="question_paper_name"></div>
                 <div class="hint">PDF or up to 5 images</div>
             </div>
-            <div class="upload-zone" onclick="this.querySelector('input').click()">
+            <div class="upload-zone" id="answerKeyZone" onclick="this.querySelector('input').click()">
                 <input type="file" id="answer_key" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this)">
-                <div class="icon">&#9989;</div>
-                <div class="label">Answer Key</div>
+                <div class="icon" id="answerKeyIcon">&#9989;</div>
+                <div class="label" id="answerKeyLabel">Answer Key</div>
                 <div class="filename" id="answer_key_name"></div>
-                <div class="hint">PDF or up to 5 images</div>
+                <div class="hint" id="answerKeyHint">PDF or up to 5 images</div>
             </div>
             <div class="upload-zone" onclick="this.querySelector('input').click()">
                 <input type="file" id="script" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this)">
@@ -426,6 +426,8 @@ async function verifyCode() {
 <script>
 let currentJobId = null;
 let resultQuestions = [];
+let resultErrors = [];
+let resultAssignType = 'short_answer';
 let currentQ = 0;
 
 const PROVIDER_MODELS = {{ providers | tojson }};
@@ -451,11 +453,31 @@ function updateAssignType() {
     document.getElementById('shortAnswerOptions').style.display = t === 'rubrics' ? 'none' : 'block';
     document.getElementById('rubricOptions').style.display = t === 'rubrics' ? 'block' : 'none';
     const rl = document.getElementById('rubricLabel');
+    // Swap answer key ↔ reference materials
+    const akLabel = document.getElementById('answerKeyLabel');
+    const akIcon = document.getElementById('answerKeyIcon');
+    const akHint = document.getElementById('answerKeyHint');
+    const akInput = document.getElementById('answer_key');
     if (t === 'rubrics') {
         rl.textContent = 'Rubrics (Required)';
         document.getElementById('rubricToggle').classList.add('open');
         document.getElementById('rubricBody').classList.add('open');
-    } else { rl.textContent = 'Rubrics (Optional)'; }
+        akLabel.textContent = 'Reference Materials';
+        akIcon.innerHTML = '&#128218;';
+        akHint.textContent = 'Optional: sample works, etc.';
+        akInput.id = 'reference';
+        document.getElementById('answer_key_name').id = 'reference_name';
+    } else {
+        rl.textContent = 'Rubrics (Optional)';
+        akLabel.textContent = 'Answer Key';
+        akIcon.innerHTML = '&#9989;';
+        akHint.textContent = 'PDF or up to 5 images';
+        // Restore IDs if switched back
+        const refInput = document.getElementById('reference');
+        if (refInput) { refInput.id = 'answer_key'; }
+        const refName = document.getElementById('reference_name');
+        if (refName) { refName.id = 'answer_key_name'; }
+    }
 }
 
 function updateMarksVis() {
@@ -464,7 +486,7 @@ function updateMarksVis() {
 
 function fileSelected(input) {
     const zone = input.closest('.upload-zone');
-    const nameEl = document.getElementById(input.id + '_name');
+    const nameEl = zone.querySelector('.filename');
     const count = input.files.length;
     if (count > 5) { alert('Maximum 5 files.'); input.value = ''; zone.classList.remove('has-file'); nameEl.textContent = ''; return; }
     if (count > 0) { zone.classList.add('has-file'); nameEl.textContent = count === 1 ? input.files[0].name : count + ' files'; }
@@ -507,10 +529,8 @@ function hideModal() {
 async function startMarking() {
     hideError();
     const qp = document.getElementById('question_paper').files;
-    const ak = document.getElementById('answer_key').files;
     const sc = document.getElementById('script').files;
     if (!qp.length) return showError('Please upload a question paper.');
-    if (!ak.length) return showError('Please upload an answer key.');
     if (!sc.length) return showError('Please upload a student script.');
 
     const provider = document.querySelector('input[name="provider"]:checked')?.value;
@@ -521,6 +541,9 @@ async function startMarking() {
     if (assignType === 'rubrics') {
         if (!rubricFiles.length) return showError('Rubrics file is required for Rubrics / Essay type.');
         if (!document.getElementById('totalMarksRubric').value) return showError('Please enter total marks.');
+    } else {
+        const ak = document.getElementById('answer_key')?.files;
+        if (!ak || !ak.length) return showError('Please upload an answer key.');
     }
 
     let scoringMode = 'status', totalMarks = '';
@@ -541,9 +564,15 @@ async function startMarking() {
     fd.append('review_instructions', document.getElementById('review_instructions').value);
     fd.append('marking_instructions', document.getElementById('marking_instructions').value);
     for (const f of qp) fd.append('question_paper', f);
-    for (const f of ak) fd.append('answer_key', f);
     for (const f of sc) fd.append('script', f);
     for (const f of rubricFiles) fd.append('rubrics', f);
+    if (assignType === 'rubrics') {
+        const refFiles = document.getElementById('reference')?.files || [];
+        for (const f of refFiles) fd.append('reference', f);
+    } else {
+        const akFiles = document.getElementById('answer_key')?.files || [];
+        for (const f of akFiles) fd.append('answer_key', f);
+    }
 
     document.getElementById('markBtn').disabled = true;
     document.getElementById('results').style.display = 'none';
@@ -577,6 +606,8 @@ function renderResults(result) {
     if (result.error) { showError(result.error); return; }
 
     resultQuestions = result.questions || [];
+    resultErrors = result.errors || [];
+    resultAssignType = result.assign_type || 'short_answer';
     const hasMarks = resultQuestions.some(q => q.marks_awarded != null);
 
     // Summary
@@ -604,11 +635,27 @@ function renderResults(result) {
     });
     document.getElementById('qDots').innerHTML = dots;
 
+    // Line-by-line errors (rubrics mode)
+    let errHtml = '';
+    if (resultErrors.length) {
+        errHtml += `<div class="overall-box" style="margin-top:12px;"><h3>Line-by-Line Errors (${resultErrors.length})</h3><div style="margin-top:8px;">`;
+        resultErrors.forEach((e, i) => {
+            const typeColor = {grammar:'#dc3545',spelling:'#dc3545',punctuation:'#e68a00',vocabulary:'#667eea',factual:'#dc3545',logical:'#dc3545',style:'#888'}[e.type] || '#555';
+            errHtml += `<div style="padding:10px 12px;background:${i%2===0?'#fff':'#fafafa'};border-left:3px solid ${typeColor};margin-bottom:4px;border-radius:4px;">`;
+            errHtml += `<span style="font-size:11px;font-weight:700;color:${typeColor};text-transform:uppercase;">${esc(e.type||'error')}</span>`;
+            if (e.location) errHtml += `<span style="font-size:11px;color:#999;margin-left:8px;">${esc(e.location)}</span>`;
+            errHtml += `<div style="margin-top:4px;font-size:13px;"><span style="text-decoration:line-through;color:#dc3545;">${esc(e.original||'')}</span> &rarr; <span style="color:#28a745;">${esc(e.correction||'')}</span></div>`;
+            errHtml += '</div>';
+        });
+        errHtml += '</div></div>';
+    }
+
     // Overall
     let oh = '';
     if (result.overall_feedback) {
         oh += `<div class="overall-box"><h3>Overall Feedback</h3><p>${esc(result.overall_feedback)}</p></div>`;
     }
+    if (errHtml) oh += errHtml;
     const actions = result.recommended_actions || [];
     if (actions.length) {
         oh += `<div class="overall-box" style="margin-top:12px;"><h3>Recommended Actions</h3><ul>`;
@@ -633,19 +680,24 @@ function renderQuestion() {
         ? `<span class="status-badge status-${s}">${q.marks_awarded}/${q.marks_total || '?'}</span>`
         : `<span class="status-badge status-${s}">${label}</span>`;
 
+    const isRubrics = resultAssignType === 'rubrics';
+    const headerLabel = isRubrics ? 'Criterion' : 'Question';
+    const ansLabel = isRubrics ? 'Assessment' : "Student's Answer";
+    const refLabel = isRubrics ? 'Band Descriptor' : 'Correct Answer';
+
     document.getElementById('qCardContainer').innerHTML = `
     <div class="q-card">
         <div class="q-card-header">
-            <span class="q-num">Question ${q.question_num || currentQ+1}</span>
+            <span class="q-num">${headerLabel} ${q.question_num || currentQ+1}</span>
             ${badge}
         </div>
         <div class="q-card-body">
             <div class="q-field">
-                <div class="q-field-label">Student's Answer</div>
+                <div class="q-field-label">${ansLabel}</div>
                 <div class="q-field-value">${esc(q.student_answer || 'N/A')}</div>
             </div>
             <div class="q-field">
-                <div class="q-field-label">Correct Answer</div>
+                <div class="q-field-label">${refLabel}</div>
                 <div class="q-field-value">${esc(q.correct_answer || 'N/A')}</div>
             </div>
             ${q.feedback ? `<div class="q-field">
@@ -687,12 +739,15 @@ function downloadPdf() { if (currentJobId) window.open('/download/' + currentJob
 function resetForm() {
     document.getElementById('results').style.display = 'none';
     document.getElementById('formCard').scrollIntoView({behavior: 'smooth'});
-    ['question_paper', 'answer_key', 'script', 'rubrics'].forEach(id => {
-        const inp = document.getElementById(id); inp.value = '';
+    // answer_key may currently be 'reference' if in rubrics mode
+    const akId = document.getElementById('reference') ? 'reference' : 'answer_key';
+    [['question_paper','question_paper_name'], [akId, akId+'_name'], ['script','script_name'], ['rubrics','rubrics_name']].forEach(([inputId, nameId]) => {
+        const inp = document.getElementById(inputId); if (!inp) return;
+        inp.value = '';
         inp.closest('.upload-zone').classList.remove('has-file');
-        document.getElementById(id + '_name').textContent = '';
+        const nameEl = document.getElementById(nameId); if (nameEl) nameEl.textContent = '';
     });
-    currentJobId = null; resultQuestions = []; currentQ = 0;
+    currentJobId = null; resultQuestions = []; resultErrors = []; currentQ = 0;
 }
 </script>
 {% endif %}
