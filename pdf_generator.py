@@ -62,7 +62,7 @@ def clean_for_pdf(text):
 
     # Handle \\frac{a}{b} specially
     text = re.sub(r'\\frac\{([^}]*)\}\{([^}]*)\}', r'(\1)/(\2)', text)
-    text = re.sub(r'\\sqrt\{([^}]*)\}', r'\u221a(\1)', text)
+    text = re.sub(r'\\sqrt\{([^}]*)\}', '\u221a(\\1)', text)
 
     for cmd, repl in replacements.items():
         if not callable(repl):
