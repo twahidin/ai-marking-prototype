@@ -289,7 +289,7 @@ def parse_ai_response(response_text):
 
 def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
                 subject='', rubrics_pages=None, review_instructions='', marking_instructions='',
-                model=None):
+                model=None, assign_type='short_answer', scoring_mode='status', total_marks=''):
     """
     Mark a student script using AI vision.
 
@@ -298,6 +298,9 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
         answer_key_pages: List of file bytes
         script_pages: List of file bytes
         rubrics_pages: Optional list of file bytes
+        assign_type: 'short_answer' or 'rubrics'
+        scoring_mode: 'status' (correct/partial/incorrect) or 'marks' (numerical)
+        total_marks: Total marks for the assignment (when scoring_mode is 'marks')
 
     Returns dict with questions, overall_feedback, recommended_actions.
     """
@@ -318,9 +321,48 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
     if marking_instructions.strip():
         marking_section = f"\n\nMARKING INSTRUCTIONS (follow these for how to evaluate answers):\n{marking_instructions.strip()}"
 
+    # Build scoring instructions based on mode
+    if scoring_mode == 'marks':
+        total_marks_str = total_marks or '100'
+        scoring_instructions = f"""SCORING: Award numerical marks for each question.
+Total Marks for this assessment: {total_marks_str}
+- Award marks out of each question's total based on correctness and completeness
+- Also assign a status: "correct", "partially_correct", or "incorrect"
+- Include "marks_awarded" and "marks_total" for each question"""
+
+        question_schema = """{{
+            "question_num": 1,
+            "student_answer": "transcribed answer from the script",
+            "correct_answer": "answer from the answer key",
+            "status": "correct | partially_correct | incorrect",
+            "marks_awarded": number,
+            "marks_total": number,
+            "feedback": "specific constructive feedback",
+            "improvement": "recommended action for improvement"
+        }}"""
+    else:
+        scoring_instructions = """SCORING: For each question, assign one of these statuses:
+- "correct" — answer is accurate and complete
+- "partially_correct" — answer shows understanding but is incomplete or has minor errors
+- "incorrect" — answer is wrong or fundamentally flawed"""
+
+        question_schema = """{{
+            "question_num": 1,
+            "student_answer": "transcribed answer from the script",
+            "correct_answer": "answer from the answer key",
+            "status": "correct | partially_correct | incorrect",
+            "feedback": "specific constructive feedback",
+            "improvement": "recommended action for improvement"
+        }}"""
+
+    type_context = ""
+    if assign_type == 'rubrics':
+        type_context = "\nThis is a RUBRICS-BASED assessment (essay / extended response). Use the provided rubrics as the primary evaluation criteria."
+
     system_prompt = f"""You are an experienced teacher marking a student's assignment script.
 
 Subject: {subject or 'General'}
+{type_context}
 {rubrics_section}
 {review_section}
 {marking_section}
@@ -331,10 +373,7 @@ Your task:
 3. Read the STUDENT SCRIPT and evaluate each answer
 4. If RUBRICS are provided, use them for evaluation criteria
 
-SCORING: For each question, assign one of these statuses:
-- "correct" — answer is accurate and complete
-- "partially_correct" — answer shows understanding but is incomplete or has minor errors
-- "incorrect" — answer is wrong or fundamentally flawed
+{scoring_instructions}
 
 HANDWRITING RULES:
 - IGNORE crossed-out or struck-through text — treat as deleted
@@ -348,14 +387,7 @@ FORMATTING:
 Respond ONLY with valid JSON:
 {{
     "questions": [
-        {{
-            "question_num": 1,
-            "student_answer": "transcribed answer from the script",
-            "correct_answer": "answer from the answer key",
-            "status": "correct | partially_correct | incorrect",
-            "feedback": "specific constructive feedback",
-            "improvement": "recommended action for improvement"
-        }}
+        {question_schema}
     ],
     "overall_feedback": "general assessment of the submission",
     "recommended_actions": ["action 1", "action 2", "action 3"]

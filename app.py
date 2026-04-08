@@ -32,7 +32,8 @@ def cleanup_old_jobs():
 
 
 def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pages,
-                    script_pages, subject, rubrics_pages, review_instructions, marking_instructions):
+                    script_pages, subject, rubrics_pages, review_instructions, marking_instructions,
+                    assign_type, scoring_mode, total_marks):
     """Background thread for AI marking."""
     try:
         result = mark_script(
@@ -45,6 +46,9 @@ def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pa
             review_instructions=review_instructions,
             marking_instructions=marking_instructions,
             model=model,
+            assign_type=assign_type,
+            scoring_mode=scoring_mode,
+            total_marks=total_marks,
         )
         jobs[job_id]['result'] = result
         jobs[job_id]['status'] = 'error' if result.get('error') else 'done'
@@ -89,6 +93,9 @@ def mark():
     provider = request.form.get('provider', 'anthropic')
     model = request.form.get('model', '')
     subject = request.form.get('subject', '')
+    assign_type = request.form.get('assign_type', 'short_answer')
+    scoring_mode = request.form.get('scoring_mode', 'status')
+    total_marks = request.form.get('total_marks', '')
     review_instructions = request.form.get('review_instructions', '')
     marking_instructions = request.form.get('marking_instructions', '')
 
@@ -115,7 +122,8 @@ def mark():
     thread = threading.Thread(
         target=run_marking_job,
         args=(job_id, provider, model, question_paper_pages, answer_key_pages,
-              script_pages, subject, rubrics_pages, review_instructions, marking_instructions),
+              script_pages, subject, rubrics_pages, review_instructions, marking_instructions,
+              assign_type, scoring_mode, total_marks),
         daemon=True
     )
     thread.start()

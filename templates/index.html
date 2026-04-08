@@ -156,6 +156,94 @@
         }
         .model-select:focus { border-color: #667eea; }
 
+        /* Type selector (reuse provider style) */
+        .type-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .type-option { flex: 1; }
+        .type-option input { display: none; }
+        .type-option label {
+            display: block;
+            padding: 14px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            text-align: center;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: #555;
+        }
+        .type-option input:checked + label {
+            border-color: #667eea;
+            background: #f0f2ff;
+            color: #667eea;
+        }
+        .type-option label:hover { border-color: #b0b8f0; }
+
+        /* Toggle switch */
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        .toggle-row .toggle-label {
+            font-size: 14px;
+            font-weight: 600;
+            color: #555;
+        }
+        .toggle {
+            position: relative;
+            width: 48px;
+            height: 26px;
+            flex-shrink: 0;
+        }
+        .toggle input { display: none; }
+        .toggle .slider {
+            position: absolute;
+            inset: 0;
+            background: #ccc;
+            border-radius: 26px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .toggle .slider::before {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            left: 3px;
+            bottom: 3px;
+            background: white;
+            border-radius: 50%;
+            transition: 0.2s;
+        }
+        .toggle input:checked + .slider { background: #667eea; }
+        .toggle input:checked + .slider::before { transform: translateX(22px); }
+
+        /* Marks input */
+        .marks-input {
+            width: 100px;
+            padding: 10px 14px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            text-align: center;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .marks-input:focus { border-color: #667eea; }
+
+        /* Summary with marks */
+        .summary-marks {
+            background: #f0f2ff;
+            color: #667eea;
+        }
+
         /* File uploads */
         .upload-grid {
             display: grid;
@@ -503,6 +591,42 @@ async function verifyCode() {
             <input type="text" class="form-input" id="subject" placeholder="e.g. Mathematics, English, Science">
         </div>
 
+        <!-- Assignment Type -->
+        <h2 style="margin-top: 24px;">Assignment Type</h2>
+        <div class="type-group">
+            <div class="type-option">
+                <input type="radio" name="assign_type" id="type_short" value="short_answer" checked onchange="updateAssignType()">
+                <label for="type_short">Short Answer</label>
+            </div>
+            <div class="type-option">
+                <input type="radio" name="assign_type" id="type_rubric" value="rubrics" onchange="updateAssignType()">
+                <label for="type_rubric">Rubrics / Essay</label>
+            </div>
+        </div>
+
+        <!-- Marks options (for short answer) -->
+        <div id="shortAnswerOptions">
+            <div class="toggle-row">
+                <label class="toggle">
+                    <input type="checkbox" id="allocateMarks" onchange="updateMarksVisibility()">
+                    <span class="slider"></span>
+                </label>
+                <span class="toggle-label">Allocate marks (otherwise: Correct / Partially Correct / Incorrect)</span>
+            </div>
+            <div class="form-group" id="totalMarksGroup" style="display: none;">
+                <label for="totalMarks">Total Marks</label>
+                <input type="number" class="marks-input" id="totalMarks" min="1" max="999" placeholder="100">
+            </div>
+        </div>
+
+        <!-- Marks options (for rubrics — always requires marks) -->
+        <div id="rubricOptions" style="display: none;">
+            <div class="form-group">
+                <label for="totalMarksRubric">Total Marks</label>
+                <input type="number" class="marks-input" id="totalMarksRubric" min="1" max="999" placeholder="100">
+            </div>
+        </div>
+
         <!-- File Uploads -->
         <h2 style="margin-top: 24px;">Upload Files</h2>
         <div class="upload-grid">
@@ -529,18 +653,20 @@ async function verifyCode() {
             </div>
         </div>
 
-        <!-- Rubrics (collapsible) -->
-        <div class="collapsible-header" id="rubricToggle" onclick="toggleRubrics()">
-            <span class="arrow">&#9654;</span>
-            Rubrics (Optional)
-        </div>
-        <div class="collapsible-body" id="rubricBody">
-            <div class="upload-zone" style="max-width: 260px;" onclick="this.querySelector('input').click()">
-                <input type="file" id="rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this)">
-                <div class="icon">&#128203;</div>
-                <div class="label">Rubrics</div>
-                <div class="filename" id="rubrics_name"></div>
-                <div class="hint">PDF or up to 5 images</div>
+        <!-- Rubrics upload -->
+        <div id="rubricUploadSection">
+            <div class="collapsible-header" id="rubricToggle" onclick="toggleRubrics()">
+                <span class="arrow">&#9654;</span>
+                <span id="rubricLabel">Rubrics (Optional)</span>
+            </div>
+            <div class="collapsible-body" id="rubricBody">
+                <div class="upload-zone" style="max-width: 260px;" onclick="this.querySelector('input').click()">
+                    <input type="file" id="rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this)">
+                    <div class="icon">&#128203;</div>
+                    <div class="label">Rubrics</div>
+                    <div class="filename" id="rubrics_name"></div>
+                    <div class="hint">PDF or up to 5 images</div>
+                </div>
             </div>
         </div>
 
@@ -615,6 +741,33 @@ function updateModelSelect() {
 // Initialize on load
 updateModelSelect();
 
+function updateAssignType() {
+    const type = document.querySelector('input[name="assign_type"]:checked')?.value;
+    const shortOpts = document.getElementById('shortAnswerOptions');
+    const rubricOpts = document.getElementById('rubricOptions');
+    const rubricToggle = document.getElementById('rubricToggle');
+    const rubricBody = document.getElementById('rubricBody');
+    const rubricLabel = document.getElementById('rubricLabel');
+
+    if (type === 'rubrics') {
+        shortOpts.style.display = 'none';
+        rubricOpts.style.display = 'block';
+        // Make rubrics upload required and auto-open
+        rubricLabel.textContent = 'Rubrics (Required)';
+        rubricToggle.classList.add('open');
+        rubricBody.classList.add('open');
+    } else {
+        shortOpts.style.display = 'block';
+        rubricOpts.style.display = 'none';
+        rubricLabel.textContent = 'Rubrics (Optional)';
+    }
+}
+
+function updateMarksVisibility() {
+    const checked = document.getElementById('allocateMarks').checked;
+    document.getElementById('totalMarksGroup').style.display = checked ? 'block' : 'none';
+}
+
 function fileSelected(input) {
     const zone = input.closest('.upload-zone');
     const nameEl = document.getElementById(input.id + '_name');
@@ -671,18 +824,42 @@ async function startMarking() {
     const provider = document.querySelector('input[name="provider"]:checked')?.value;
     if (!provider) return showError('Please select an AI provider.');
 
+    const assignType = document.querySelector('input[name="assign_type"]:checked')?.value || 'short_answer';
+    const rubricFiles = document.getElementById('rubrics').files;
+
+    // Validate rubrics type requires rubrics upload and total marks
+    if (assignType === 'rubrics') {
+        if (!rubricFiles.length) return showError('Rubrics file is required for Rubrics / Essay type.');
+        const tm = document.getElementById('totalMarksRubric').value;
+        if (!tm || parseInt(tm) <= 0) return showError('Please enter total marks for rubrics marking.');
+    }
+
+    // Determine scoring mode
+    let scoringMode = 'status'; // correct/partial/incorrect
+    let totalMarks = '';
+    if (assignType === 'rubrics') {
+        scoringMode = 'marks';
+        totalMarks = document.getElementById('totalMarksRubric').value;
+    } else if (document.getElementById('allocateMarks').checked) {
+        scoringMode = 'marks';
+        totalMarks = document.getElementById('totalMarks').value;
+        if (!totalMarks || parseInt(totalMarks) <= 0) return showError('Please enter total marks.');
+    }
+
     // Build form data — append multiple files per field
     const fd = new FormData();
     fd.append('provider', provider);
     fd.append('model', document.getElementById('modelSelect').value);
     fd.append('subject', document.getElementById('subject').value);
+    fd.append('assign_type', assignType);
+    fd.append('scoring_mode', scoringMode);
+    fd.append('total_marks', totalMarks);
     fd.append('review_instructions', document.getElementById('review_instructions').value);
     fd.append('marking_instructions', document.getElementById('marking_instructions').value);
     for (const f of qpFiles) fd.append('question_paper', f);
     for (const f of akFiles) fd.append('answer_key', f);
     for (const f of scFiles) fd.append('script', f);
 
-    const rubricFiles = document.getElementById('rubrics').files;
     for (const f of rubricFiles) fd.append('rubrics', f);
 
     // Show processing
@@ -750,31 +927,54 @@ function renderResults(result) {
     }
 
     const questions = result.questions || [];
+    const hasMarks = questions.some(q => q.marks_awarded != null);
 
     // Summary
-    let counts = {correct: 0, partially_correct: 0, incorrect: 0};
-    questions.forEach(q => {
-        if (counts.hasOwnProperty(q.status)) counts[q.status]++;
-    });
-
-    document.getElementById('summaryBar').innerHTML = `
-        <div class="summary-item summary-correct">${counts.correct} Correct</div>
-        <div class="summary-item summary-partial">${counts.partially_correct} Partially Correct</div>
-        <div class="summary-item summary-incorrect">${counts.incorrect} Incorrect</div>
-    `;
+    if (hasMarks) {
+        let totalAwarded = 0;
+        let totalPossible = 0;
+        questions.forEach(q => {
+            totalAwarded += (q.marks_awarded || 0);
+            totalPossible += (q.marks_total || 0);
+        });
+        const pct = totalPossible > 0 ? Math.round(totalAwarded / totalPossible * 100) : 0;
+        document.getElementById('summaryBar').innerHTML = `
+            <div class="summary-item summary-marks">${totalAwarded} / ${totalPossible} marks</div>
+            <div class="summary-item summary-marks">${pct}%</div>
+        `;
+    } else {
+        let counts = {correct: 0, partially_correct: 0, incorrect: 0};
+        questions.forEach(q => {
+            if (counts.hasOwnProperty(q.status)) counts[q.status]++;
+        });
+        document.getElementById('summaryBar').innerHTML = `
+            <div class="summary-item summary-correct">${counts.correct} Correct</div>
+            <div class="summary-item summary-partial">${counts.partially_correct} Partially Correct</div>
+            <div class="summary-item summary-incorrect">${counts.incorrect} Incorrect</div>
+        `;
+    }
 
     // Questions
     let html = '';
     questions.forEach((q, i) => {
         const status = q.status || 'incorrect';
         const label = STATUS_LABELS[status] || status;
+
+        // Badge: show marks if available, otherwise status
+        let badgeHtml;
+        if (hasMarks && q.marks_awarded != null) {
+            badgeHtml = `<span class="status-badge status-${status}">${q.marks_awarded} / ${q.marks_total || '?'}</span>`;
+        } else {
+            badgeHtml = `<span class="status-badge status-${status}">${label}</span>`;
+        }
+
         html += `
         <div class="question-card">
             <div class="question-header" onclick="this.nextElementSibling.classList.toggle('open')">
                 <span class="question-num">Question ${q.question_num || (i+1)}</span>
-                <span class="status-badge status-${status}">${label}</span>
+                ${badgeHtml}
             </div>
-            <div class="question-body">
+            <div class="question-body open">
                 <div class="detail-row">
                     <div class="detail-label">Student's Answer</div>
                     <div class="detail-value">${escHtml(q.student_answer || 'N/A')}</div>

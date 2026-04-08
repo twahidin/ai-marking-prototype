@@ -166,33 +166,53 @@ def generate_report_pdf(result, subject=''):
 
     # Summary bar
     questions = result.get('questions', [])
-    counts = {'correct': 0, 'partially_correct': 0, 'incorrect': 0}
-    for q in questions:
-        status = q.get('status', 'incorrect')
-        if status in counts:
-            counts[status] += 1
+    has_marks = any(q.get('marks_awarded') is not None for q in questions)
 
-    summary_data = [[
-        Paragraph(f"<b>Correct: {counts['correct']}</b>", styles['TableCell']),
-        Paragraph(f"<b>Partially Correct: {counts['partially_correct']}</b>", styles['TableCell']),
-        Paragraph(f"<b>Incorrect: {counts['incorrect']}</b>", styles['TableCell']),
-        Paragraph(f"<b>Total: {len(questions)}</b>", styles['TableCell']),
-    ]]
+    if has_marks:
+        total_awarded = sum(q.get('marks_awarded', 0) for q in questions)
+        total_possible = sum(q.get('marks_total', 0) for q in questions)
+        pct = round(total_awarded / total_possible * 100) if total_possible > 0 else 0
 
-    summary_table = Table(summary_data, colWidths=[4 * cm, 4 * cm, 4 * cm, 4 * cm])
+        summary_data = [[
+            Paragraph(f"<b>Score: {total_awarded} / {total_possible}</b>", styles['TableCell']),
+            Paragraph(f"<b>{pct}%</b>", styles['TableCell']),
+            Paragraph(f"<b>Questions: {len(questions)}</b>", styles['TableCell']),
+        ]]
+        summary_table = Table(summary_data, colWidths=[5.33 * cm, 5.33 * cm, 5.33 * cm])
+        summary_table.setStyle(TableStyle([
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('PADDING', (0, 0), (-1, -1), 10),
+            ('BOX', (0, 0), (-1, -1), 2, PRIMARY_COLOR),
+            ('TEXTCOLOR', (0, 0), (-1, -1), PRIMARY_COLOR),
+            ('BACKGROUND', (0, 0), (-1, -1), white),
+        ]))
+    else:
+        counts = {'correct': 0, 'partially_correct': 0, 'incorrect': 0}
+        for q in questions:
+            status = q.get('status', 'incorrect')
+            if status in counts:
+                counts[status] += 1
 
-    summary_style = [
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('PADDING', (0, 0), (-1, -1), 10),
-        ('BOX', (0, 0), (-1, -1), 2, PRIMARY_COLOR),
-        ('TEXTCOLOR', (0, 0), (0, 0), SUCCESS_COLOR),
-        ('TEXTCOLOR', (1, 0), (1, 0), WARNING_COLOR),
-        ('TEXTCOLOR', (2, 0), (2, 0), DANGER_COLOR),
-        ('TEXTCOLOR', (3, 0), (3, 0), PRIMARY_COLOR),
-        ('BACKGROUND', (0, 0), (-1, -1), white),
-    ]
-    summary_table.setStyle(TableStyle(summary_style))
+        summary_data = [[
+            Paragraph(f"<b>Correct: {counts['correct']}</b>", styles['TableCell']),
+            Paragraph(f"<b>Partially Correct: {counts['partially_correct']}</b>", styles['TableCell']),
+            Paragraph(f"<b>Incorrect: {counts['incorrect']}</b>", styles['TableCell']),
+            Paragraph(f"<b>Total: {len(questions)}</b>", styles['TableCell']),
+        ]]
+        summary_table = Table(summary_data, colWidths=[4 * cm, 4 * cm, 4 * cm, 4 * cm])
+        summary_table.setStyle(TableStyle([
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('PADDING', (0, 0), (-1, -1), 10),
+            ('BOX', (0, 0), (-1, -1), 2, PRIMARY_COLOR),
+            ('TEXTCOLOR', (0, 0), (0, 0), SUCCESS_COLOR),
+            ('TEXTCOLOR', (1, 0), (1, 0), WARNING_COLOR),
+            ('TEXTCOLOR', (2, 0), (2, 0), DANGER_COLOR),
+            ('TEXTCOLOR', (3, 0), (3, 0), PRIMARY_COLOR),
+            ('BACKGROUND', (0, 0), (-1, -1), white),
+        ]))
+
     story.append(summary_table)
     story.append(Spacer(1, 20))
 
@@ -207,10 +227,13 @@ def generate_report_pdf(result, subject=''):
         status_label = STATUS_LABELS.get(status, status)
         status_color = STATUS_COLORS.get(status, DANGER_COLOR)
 
-        # Question header with status
+        # Question header with status (and marks if available)
+        marks_text = ''
+        if q.get('marks_awarded') is not None:
+            marks_text = f" ({q['marks_awarded']}/{q.get('marks_total', '?')})"
         header_data = [[
             Paragraph(f"<b>Question {q_num}</b>", ParagraphStyle('QH', parent=styles['TableCell'], textColor=white)),
-            Paragraph(f"<b>{status_label}</b>", ParagraphStyle('QS', parent=styles['TableCell'], textColor=white, alignment=TA_CENTER)),
+            Paragraph(f"<b>{status_label}{marks_text}</b>", ParagraphStyle('QS', parent=styles['TableCell'], textColor=white, alignment=TA_CENTER)),
         ]]
         header_table = Table(header_data, colWidths=[12 * cm, 4 * cm])
         header_table.setStyle(TableStyle([
