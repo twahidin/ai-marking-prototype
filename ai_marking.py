@@ -334,7 +334,6 @@ def _append_pages(content, label, pages):
 def _build_rubrics_prompt(subject, rubrics_pages, reference_pages, question_paper_pages,
                           script_pages, review_section, marking_section, total_marks):
     """Build system prompt and content for rubrics/essay marking."""
-    total_marks_str = total_marks or '100'
     reference_section = ""
     if reference_pages:
         reference_section = "\nREFERENCE MATERIALS (sample works or other references) have been provided — use them to calibrate your expectations."
@@ -346,8 +345,6 @@ Subject: {subject or 'General'}
 {review_section}
 {marking_section}
 
-Total Marks for this assessment: {total_marks_str}
-
 Your task:
 1. Read the QUESTION PAPER to understand the essay prompt/task
 2. Read the GRADING RUBRICS carefully — these are your PRIMARY evaluation criteria
@@ -356,11 +353,19 @@ Your task:
 5. Evaluate the essay against EACH rubric criterion and determine which band the student falls into
 6. Identify specific line-by-line errors (grammar, spelling, punctuation, factual, logical)
 
+CRITICAL — EXTRACTING CRITERIA FROM THE RUBRICS:
+- The rubrics document contains one or more TABLES. Each table represents ONE criterion.
+- You MUST identify each distinct criterion table (e.g. "Task Fulfilment", "Language", "Content", "Organisation").
+- The number of criteria = the number of band descriptor tables in the rubrics. Do NOT invent extra criteria.
+- For each criterion, read the Band and Marks columns to find the EXACT mark range (e.g. Band 5 = 17-20).
+- "marks_total" for each criterion = the MAXIMUM marks shown in that criterion's table (the highest number in the Marks column).
+- Award "marks_awarded" within the mark range of the band the student falls into.
+- The sum of all criteria marks_total should equal the total across all rubric tables.
+
 RUBRIC EVALUATION:
-- For each criterion in the rubrics, determine which band/level the student's work falls into
+- For each criterion, determine which band the student's work falls into
 - Quote the band descriptor that best matches the student's performance
-- Award marks proportionally within that band
-- Assign a status: "correct" (top band), "partially_correct" (middle bands), "incorrect" (lowest band)
+- Assign a status: "correct" (top bands), "partially_correct" (middle bands), "incorrect" (lowest bands)
 
 LINE-BY-LINE ERROR IDENTIFICATION:
 - Find specific errors in the student's writing
@@ -381,12 +386,14 @@ Respond ONLY with valid JSON:
     "questions": [
         {{
             "question_num": 1,
+            "criterion_name": "the exact criterion name from the rubrics table heading",
+            "band": "Band X (mark range)",
             "student_answer": "summary of what the student demonstrated for this criterion",
-            "correct_answer": "the band descriptor that best matches the student's level",
+            "correct_answer": "the band descriptor text that best matches the student's level",
             "status": "correct | partially_correct | incorrect",
             "marks_awarded": number,
             "marks_total": number,
-            "feedback": "detailed feedback referencing the rubric band",
+            "feedback": "detailed feedback referencing the specific rubric band",
             "improvement": "specific actions to reach the next band"
         }}
     ],
@@ -402,7 +409,10 @@ Respond ONLY with valid JSON:
     "recommended_actions": ["action 1", "action 2", "action 3"]
 }}
 
-IMPORTANT: Each entry in "questions" should correspond to ONE rubric criterion (e.g. Content, Language, Organisation). Use the criterion name as the context for question_num (1, 2, 3...)."""
+IMPORTANT:
+- The number of entries in "questions" MUST equal the number of criteria tables in the rubrics.
+- Use the EXACT criterion name from the rubrics as "criterion_name" (e.g. "Task Fulfilment", "Language").
+- Use the EXACT mark ranges from the rubrics — do NOT assume all criteria have the same max marks."""
 
     content = []
     _append_pages(content, "QUESTION PAPER / ESSAY PROMPT:", question_paper_pages)

@@ -631,7 +631,8 @@ function renderResults(result) {
     let dots = '';
     resultQuestions.forEach((q, i) => {
         const s = q.status || 'incorrect';
-        dots += `<div class="q-dot ${s} ${i === 0 ? 'active' : ''}" onclick="goQ(${i})">${q.question_num || i+1}</div>`;
+        const dotLabel = (resultAssignType === 'rubrics' && q.criterion_name) ? q.criterion_name.substring(0, 2).toUpperCase() : (q.question_num || i+1);
+        dots += `<div class="q-dot ${s} ${i === 0 ? 'active' : ''}" onclick="goQ(${i})" title="${esc(q.criterion_name || '')}">${dotLabel}</div>`;
     });
     document.getElementById('qDots').innerHTML = dots;
 
@@ -681,14 +682,15 @@ function renderQuestion() {
         : `<span class="status-badge status-${s}">${label}</span>`;
 
     const isRubrics = resultAssignType === 'rubrics';
-    const headerLabel = isRubrics ? 'Criterion' : 'Question';
+    const headerLabel = isRubrics ? (q.criterion_name || 'Criterion ' + (q.question_num || currentQ+1)) : 'Question ' + (q.question_num || currentQ+1);
     const ansLabel = isRubrics ? 'Assessment' : "Student's Answer";
     const refLabel = isRubrics ? 'Band Descriptor' : 'Correct Answer';
+    const bandInfo = (isRubrics && q.band) ? `<span style="font-size:12px;color:#667eea;font-weight:600;margin-left:8px;">${esc(q.band)}</span>` : '';
 
     document.getElementById('qCardContainer').innerHTML = `
     <div class="q-card">
         <div class="q-card-header">
-            <span class="q-num">${headerLabel} ${q.question_num || currentQ+1}</span>
+            <span class="q-num">${esc(headerLabel)}${bandInfo}</span>
             ${badge}
         </div>
         <div class="q-card-body">

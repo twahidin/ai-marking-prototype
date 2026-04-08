@@ -237,8 +237,18 @@ def generate_report_pdf(result, subject=''):
         marks_text = ''
         if q.get('marks_awarded') is not None:
             marks_text = f" ({q['marks_awarded']}/{q.get('marks_total', '?')})"
+        # Use criterion_name if available (rubrics mode)
+        criterion_name = q.get('criterion_name', '')
+        band_info = q.get('band', '')
+        if is_rubrics and criterion_name:
+            header_left = f"<b>{clean_for_pdf(criterion_name)}</b>"
+            if band_info:
+                header_left += f" — {clean_for_pdf(band_info)}"
+        else:
+            header_left = f"<b>{item_label} {q_num}</b>"
+
         header_data = [[
-            Paragraph(f"<b>{item_label} {q_num}</b>", ParagraphStyle('QH', parent=styles['TableCell'], textColor=white)),
+            Paragraph(header_left, ParagraphStyle('QH', parent=styles['TableCell'], textColor=white)),
             Paragraph(f"<b>{status_label}{marks_text}</b>", ParagraphStyle('QS', parent=styles['TableCell'], textColor=white, alignment=TA_CENTER)),
         ]]
         header_table = Table(header_data, colWidths=[12 * cm, 4 * cm])
