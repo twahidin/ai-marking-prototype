@@ -507,25 +507,25 @@ async function verifyCode() {
         <h2 style="margin-top: 24px;">Upload Files</h2>
         <div class="upload-grid">
             <div class="upload-zone" onclick="this.querySelector('input').click()">
-                <input type="file" id="question_paper" accept=".pdf,.jpg,.jpeg,.png" onchange="fileSelected(this)">
+                <input type="file" id="question_paper" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this)">
                 <div class="icon">&#128196;</div>
                 <div class="label">Question Paper</div>
                 <div class="filename" id="question_paper_name"></div>
-                <div class="hint">PDF or Image</div>
+                <div class="hint">PDF or up to 5 images</div>
             </div>
             <div class="upload-zone" onclick="this.querySelector('input').click()">
-                <input type="file" id="answer_key" accept=".pdf,.jpg,.jpeg,.png" onchange="fileSelected(this)">
+                <input type="file" id="answer_key" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this)">
                 <div class="icon">&#9989;</div>
                 <div class="label">Answer Key</div>
                 <div class="filename" id="answer_key_name"></div>
-                <div class="hint">PDF or Image</div>
+                <div class="hint">PDF or up to 5 images</div>
             </div>
             <div class="upload-zone" onclick="this.querySelector('input').click()">
-                <input type="file" id="script" accept=".pdf,.jpg,.jpeg,.png" onchange="fileSelected(this)">
+                <input type="file" id="script" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this)">
                 <div class="icon">&#9997;&#65039;</div>
                 <div class="label">Student Script</div>
                 <div class="filename" id="script_name"></div>
-                <div class="hint">PDF or Image</div>
+                <div class="hint">PDF or up to 5 images</div>
             </div>
         </div>
 
@@ -536,11 +536,11 @@ async function verifyCode() {
         </div>
         <div class="collapsible-body" id="rubricBody">
             <div class="upload-zone" style="max-width: 260px;" onclick="this.querySelector('input').click()">
-                <input type="file" id="rubrics" accept=".pdf,.jpg,.jpeg,.png" onchange="fileSelected(this)">
+                <input type="file" id="rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this)">
                 <div class="icon">&#128203;</div>
                 <div class="label">Rubrics</div>
                 <div class="filename" id="rubrics_name"></div>
-                <div class="hint">PDF or Image</div>
+                <div class="hint">PDF or up to 5 images</div>
             </div>
         </div>
 
@@ -618,9 +618,21 @@ updateModelSelect();
 function fileSelected(input) {
     const zone = input.closest('.upload-zone');
     const nameEl = document.getElementById(input.id + '_name');
-    if (input.files.length > 0) {
+    const count = input.files.length;
+    if (count > 5) {
+        alert('Maximum 5 files allowed. Please select fewer files.');
+        input.value = '';
+        zone.classList.remove('has-file');
+        nameEl.textContent = '';
+        return;
+    }
+    if (count > 0) {
         zone.classList.add('has-file');
-        nameEl.textContent = input.files[0].name;
+        if (count === 1) {
+            nameEl.textContent = input.files[0].name;
+        } else {
+            nameEl.textContent = count + ' files selected';
+        }
     } else {
         zone.classList.remove('has-file');
         nameEl.textContent = '';
@@ -648,30 +660,30 @@ async function startMarking() {
     hideError();
 
     // Validate
-    const qp = document.getElementById('question_paper').files[0];
-    const ak = document.getElementById('answer_key').files[0];
-    const sc = document.getElementById('script').files[0];
+    const qpFiles = document.getElementById('question_paper').files;
+    const akFiles = document.getElementById('answer_key').files;
+    const scFiles = document.getElementById('script').files;
 
-    if (!qp) return showError('Please upload a question paper.');
-    if (!ak) return showError('Please upload an answer key.');
-    if (!sc) return showError('Please upload a student script.');
+    if (!qpFiles.length) return showError('Please upload a question paper.');
+    if (!akFiles.length) return showError('Please upload an answer key.');
+    if (!scFiles.length) return showError('Please upload a student script.');
 
     const provider = document.querySelector('input[name="provider"]:checked')?.value;
     if (!provider) return showError('Please select an AI provider.');
 
-    // Build form data
+    // Build form data — append multiple files per field
     const fd = new FormData();
     fd.append('provider', provider);
     fd.append('model', document.getElementById('modelSelect').value);
     fd.append('subject', document.getElementById('subject').value);
     fd.append('review_instructions', document.getElementById('review_instructions').value);
     fd.append('marking_instructions', document.getElementById('marking_instructions').value);
-    fd.append('question_paper', qp);
-    fd.append('answer_key', ak);
-    fd.append('script', sc);
+    for (const f of qpFiles) fd.append('question_paper', f);
+    for (const f of akFiles) fd.append('answer_key', f);
+    for (const f of scFiles) fd.append('script', f);
 
-    const rubrics = document.getElementById('rubrics').files[0];
-    if (rubrics) fd.append('rubrics', rubrics);
+    const rubricFiles = document.getElementById('rubrics').files;
+    for (const f of rubricFiles) fd.append('rubrics', f);
 
     // Show processing
     const btn = document.getElementById('markBtn');

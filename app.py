@@ -31,17 +31,17 @@ def cleanup_old_jobs():
         del jobs[jid]
 
 
-def run_marking_job(job_id, provider, model, question_paper_bytes, answer_key_bytes,
-                    script_bytes, subject, rubrics_bytes, review_instructions, marking_instructions):
+def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pages,
+                    script_pages, subject, rubrics_pages, review_instructions, marking_instructions):
     """Background thread for AI marking."""
     try:
         result = mark_script(
             provider=provider,
-            question_paper_bytes=question_paper_bytes,
-            answer_key_bytes=answer_key_bytes,
-            script_bytes=script_bytes,
+            question_paper_pages=question_paper_pages,
+            answer_key_pages=answer_key_pages,
+            script_pages=script_pages,
             subject=subject,
-            rubrics_bytes=rubrics_bytes,
+            rubrics_pages=rubrics_pages,
             review_instructions=review_instructions,
             marking_instructions=marking_instructions,
             model=model,
@@ -80,8 +80,11 @@ def mark():
 
     # Validate required files
     for field in ('question_paper', 'answer_key', 'script'):
-        if field not in request.files or not request.files[field].filename:
+        files = request.files.getlist(field)
+        if not files or not files[0].filename:
             return jsonify({'success': False, 'error': f'Missing required file: {field}'}), 400
+        if len(files) > 5:
+            return jsonify({'success': False, 'error': f'Maximum 5 files per upload ({field})'}), 400
 
     provider = request.form.get('provider', 'anthropic')
     model = request.form.get('model', '')
@@ -89,14 +92,12 @@ def mark():
     review_instructions = request.form.get('review_instructions', '')
     marking_instructions = request.form.get('marking_instructions', '')
 
-    # Read file bytes
-    question_paper_bytes = request.files['question_paper'].read()
-    answer_key_bytes = request.files['answer_key'].read()
-    script_bytes = request.files['script'].read()
+    # Read file bytes — list of bytes for each field (supports multi-image uploads)
+    question_paper_pages = [f.read() for f in request.files.getlist('question_paper') if f.filename]
+    answer_key_pages = [f.read() for f in request.files.getlist('answer_key') if f.filename]
+    script_pages = [f.read() for f in request.files.getlist('script') if f.filename]
 
-    rubrics_bytes = None
-    if 'rubrics' in request.files and request.files['rubrics'].filename:
-        rubrics_bytes = request.files['rubrics'].read()
+    rubrics_pages = [f.read() for f in request.files.getlist('rubrics') if f.filename]
 
     # Cleanup old jobs periodically
     cleanup_old_jobs()
@@ -113,8 +114,8 @@ def mark():
     # Run in background thread
     thread = threading.Thread(
         target=run_marking_job,
-        args=(job_id, provider, model, question_paper_bytes, answer_key_bytes,
-              script_bytes, subject, rubrics_bytes, review_instructions, marking_instructions),
+        args=(job_id, provider, model, question_paper_pages, answer_key_pages,
+              script_pages, subject, rubrics_pages, review_instructions, marking_instructions),
         daemon=True
     )
     thread.start()

@@ -287,11 +287,17 @@ def parse_ai_response(response_text):
             return {'error': 'Could not parse response', 'raw': response_text}
 
 
-def mark_script(provider, question_paper_bytes, answer_key_bytes, script_bytes,
-                subject='', rubrics_bytes=None, review_instructions='', marking_instructions='',
+def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
+                subject='', rubrics_pages=None, review_instructions='', marking_instructions='',
                 model=None):
     """
     Mark a student script using AI vision.
+
+    Args:
+        question_paper_pages: List of file bytes (each is a PDF or image)
+        answer_key_pages: List of file bytes
+        script_pages: List of file bytes
+        rubrics_pages: Optional list of file bytes
 
     Returns dict with questions, overall_feedback, recommended_actions.
     """
@@ -301,7 +307,7 @@ def mark_script(provider, question_paper_bytes, answer_key_bytes, script_bytes,
 
     # Build system prompt
     rubrics_section = ""
-    if rubrics_bytes:
+    if rubrics_pages:
         rubrics_section = "\nGRADING RUBRICS have been provided — use them to evaluate subjective answers."
 
     review_section = ""
@@ -358,22 +364,26 @@ Respond ONLY with valid JSON:
     # Build content array
     content = []
 
+    def append_pages(label, pages):
+        """Append one or more file pages to the content array."""
+        content.append({"type": "text", "text": label})
+        for i, page_bytes in enumerate(pages):
+            content.append(build_content_block(page_bytes))
+            if len(pages) > 1:
+                content.append({"type": "text", "text": f"(Page {i + 1})"})
+
     # Question paper
-    content.append({"type": "text", "text": "QUESTION PAPER:"})
-    content.append(build_content_block(question_paper_bytes))
+    append_pages("QUESTION PAPER:", question_paper_pages)
 
     # Answer key
-    content.append({"type": "text", "text": "\nANSWER KEY (use for marking):"})
-    content.append(build_content_block(answer_key_bytes))
+    append_pages("\nANSWER KEY (use for marking):", answer_key_pages)
 
     # Rubrics (optional)
-    if rubrics_bytes:
-        content.append({"type": "text", "text": "\nGRADING RUBRICS:"})
-        content.append(build_content_block(rubrics_bytes))
+    if rubrics_pages:
+        append_pages("\nGRADING RUBRICS:", rubrics_pages)
 
     # Student script
-    content.append({"type": "text", "text": "\nSTUDENT SCRIPT (evaluate this):"})
-    content.append(build_content_block(script_bytes))
+    append_pages("\nSTUDENT SCRIPT (evaluate this):", script_pages)
 
     content.append({"type": "text", "text": "\nAnalyze this submission and provide JSON feedback:"})
 
