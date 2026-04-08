@@ -244,10 +244,13 @@ def make_ai_api_call(client, model_name, provider, system_prompt, messages_conte
             user_content = [{"type": "text", "text": " ".join(text_parts)}]
 
         openai_messages.append({"role": "user", "content": user_content})
+
+        # OpenAI GPT-5+ uses max_completion_tokens; Qwen uses max_tokens
+        token_param = 'max_completion_tokens' if provider == 'openai' else 'max_tokens'
         response = client.chat.completions.create(
             model=model_name,
             messages=openai_messages,
-            max_tokens=max_tokens
+            **{token_param: max_tokens}
         )
         return response.choices[0].message.content
 
