@@ -6,7 +6,7 @@ import time
 from flask import Flask, render_template, request, jsonify, session, send_file
 import io
 
-from ai_marking import mark_script, get_available_providers, PROVIDER_LABELS
+from ai_marking import mark_script, get_available_providers
 from pdf_generator import generate_report_pdf
 
 logging.basicConfig(level=logging.INFO)
@@ -31,7 +31,7 @@ def cleanup_old_jobs():
         del jobs[jid]
 
 
-def run_marking_job(job_id, provider, question_paper_bytes, answer_key_bytes,
+def run_marking_job(job_id, provider, model, question_paper_bytes, answer_key_bytes,
                     script_bytes, subject, rubrics_bytes, review_instructions, marking_instructions):
     """Background thread for AI marking."""
     try:
@@ -44,6 +44,7 @@ def run_marking_job(job_id, provider, question_paper_bytes, answer_key_bytes,
             rubrics_bytes=rubrics_bytes,
             review_instructions=review_instructions,
             marking_instructions=marking_instructions,
+            model=model,
         )
         jobs[job_id]['result'] = result
         jobs[job_id]['status'] = 'error' if result.get('error') else 'done'
@@ -57,10 +58,9 @@ def run_marking_job(job_id, provider, question_paper_bytes, answer_key_bytes,
 def index():
     authenticated = session.get('authenticated', False)
     providers = get_available_providers()
-    provider_info = {k: PROVIDER_LABELS.get(k, k) for k in providers}
     return render_template('index.html',
                            authenticated=authenticated,
-                           providers=provider_info)
+                           providers=providers)
 
 
 @app.route('/verify-code', methods=['POST'])
@@ -84,6 +84,7 @@ def mark():
             return jsonify({'success': False, 'error': f'Missing required file: {field}'}), 400
 
     provider = request.form.get('provider', 'anthropic')
+    model = request.form.get('model', '')
     subject = request.form.get('subject', '')
     review_instructions = request.form.get('review_instructions', '')
     marking_instructions = request.form.get('marking_instructions', '')
@@ -112,7 +113,7 @@ def mark():
     # Run in background thread
     thread = threading.Thread(
         target=run_marking_job,
-        args=(job_id, provider, question_paper_bytes, answer_key_bytes,
+        args=(job_id, provider, model, question_paper_bytes, answer_key_bytes,
               script_bytes, subject, rubrics_bytes, review_instructions, marking_instructions),
         daemon=True
     )

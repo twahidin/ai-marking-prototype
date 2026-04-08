@@ -24,36 +24,63 @@ try:
 except ImportError:
     PDF2IMAGE_AVAILABLE = False
 
-# Model mappings
-MODEL_MAPPINGS = {
-    'anthropic': 'claude-sonnet-4-6',
-    'openai': 'gpt-4.1-2025-04-14',
-    'qwen': 'qwen-vl-max',
-}
-
-PROVIDER_LABELS = {
-    'anthropic': 'Anthropic (Claude)',
-    'openai': 'OpenAI (GPT-4.1)',
-    'qwen': 'Qwen (VL Max)',
+# Provider and model configuration
+PROVIDERS = {
+    'anthropic': {
+        'label': 'Anthropic',
+        'models': {
+            'claude-sonnet-4-6': 'Claude Sonnet 4.6',
+            'claude-haiku-4-5-20251001': 'Claude Haiku 4.5',
+        },
+        'default': 'claude-sonnet-4-6',
+    },
+    'openai': {
+        'label': 'OpenAI',
+        'models': {
+            'gpt-5.4': 'GPT-5.4',
+            'gpt-5.4-mini': 'GPT-5.4 Mini',
+        },
+        'default': 'gpt-5.4',
+    },
+    'qwen': {
+        'label': 'Qwen',
+        'models': {
+            'qwen3.6-plus-2026-04-02': 'Qwen 3.6 Plus',
+            'qwen3.5-plus-2026-02-15': 'Qwen 3.5 Plus',
+        },
+        'default': 'qwen3.6-plus-2026-04-02',
+    },
 }
 
 
 def get_available_providers():
-    """Return dict of provider -> True if API key is configured."""
+    """Return dict of provider -> config for providers with API keys configured."""
     available = {}
-    available['anthropic'] = bool(os.getenv('ANTHROPIC_API_KEY'))
-    available['openai'] = bool(os.getenv('OPENAI_API_KEY') and OPENAI_AVAILABLE)
-    available['qwen'] = bool(os.getenv('QWEN_API_KEY') and OPENAI_AVAILABLE)
-    return {k: v for k, v in available.items() if v}
+    if os.getenv('ANTHROPIC_API_KEY'):
+        available['anthropic'] = PROVIDERS['anthropic']
+    if os.getenv('OPENAI_API_KEY') and OPENAI_AVAILABLE:
+        available['openai'] = PROVIDERS['openai']
+    if os.getenv('QWEN_API_KEY') and OPENAI_AVAILABLE:
+        available['qwen'] = PROVIDERS['qwen']
+    return available
 
 
-def get_ai_client(provider):
+def get_ai_client(provider, model=None):
     """Get AI client for a provider. Returns (client, model_name, provider) or (None, None, None)."""
+    prov_config = PROVIDERS.get(provider)
+    if not prov_config:
+        return None, None, None
+
+    # Validate model choice, fall back to default
+    valid_models = prov_config['models']
+    if not model or model not in valid_models:
+        model = prov_config['default']
+
     if provider == 'anthropic':
         api_key = os.getenv('ANTHROPIC_API_KEY')
         if not api_key:
             return None, None, None
-        return Anthropic(api_key=api_key), MODEL_MAPPINGS['anthropic'], 'anthropic'
+        return Anthropic(api_key=api_key), model, 'anthropic'
 
     elif provider == 'openai':
         if not OPENAI_AVAILABLE:
@@ -61,7 +88,7 @@ def get_ai_client(provider):
         api_key = os.getenv('OPENAI_API_KEY')
         if not api_key:
             return None, None, None
-        return OpenAI(api_key=api_key), MODEL_MAPPINGS['openai'], 'openai'
+        return OpenAI(api_key=api_key), model, 'openai'
 
     elif provider == 'qwen':
         if not OPENAI_AVAILABLE:
@@ -70,7 +97,7 @@ def get_ai_client(provider):
         if not api_key:
             return None, None, None
         client = OpenAI(api_key=api_key, base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-        return client, MODEL_MAPPINGS['qwen'], 'qwen'
+        return client, model, 'qwen'
 
     return None, None, None
 
@@ -261,13 +288,14 @@ def parse_ai_response(response_text):
 
 
 def mark_script(provider, question_paper_bytes, answer_key_bytes, script_bytes,
-                subject='', rubrics_bytes=None, review_instructions='', marking_instructions=''):
+                subject='', rubrics_bytes=None, review_instructions='', marking_instructions='',
+                model=None):
     """
     Mark a student script using AI vision.
 
     Returns dict with questions, overall_feedback, recommended_actions.
     """
-    client, model_name, prov = get_ai_client(provider)
+    client, model_name, prov = get_ai_client(provider, model=model)
     if not client:
         return {'error': f'AI provider "{provider}" is not available (no API key configured)'}
 
@@ -362,7 +390,10 @@ Respond ONLY with valid JSON:
         result = parse_ai_response(response_text)
         result['generated_at'] = datetime.utcnow().isoformat()
         result['provider'] = provider
-        result['provider_label'] = PROVIDER_LABELS.get(provider, provider)
+        result['model'] = model_name
+        prov_config = PROVIDERS.get(provider, {})
+        model_label = prov_config.get('models', {}).get(model_name, model_name)
+        result['provider_label'] = f"{prov_config.get('label', provider)} — {model_label}"
         return result
 
     except Exception as e:

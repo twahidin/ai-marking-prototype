@@ -113,7 +113,7 @@
         .provider-group {
             display: flex;
             gap: 10px;
-            margin-bottom: 24px;
+            margin-bottom: 16px;
             flex-wrap: wrap;
         }
         .provider-option {
@@ -141,6 +141,20 @@
         .provider-option label:hover {
             border-color: #b0b8f0;
         }
+        .model-select {
+            width: 100%;
+            padding: 10px 14px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+            font-family: inherit;
+            background: white;
+            margin-bottom: 24px;
+            color: #333;
+        }
+        .model-select:focus { border-color: #667eea; }
 
         /* File uploads */
         .upload-grid {
@@ -470,13 +484,18 @@ async function verifyCode() {
 
         <!-- Provider Selection -->
         <div class="provider-group">
-            {% for key, label in providers.items() %}
+            {% for key, config in providers.items() %}
             <div class="provider-option">
-                <input type="radio" name="provider" id="provider_{{ key }}" value="{{ key }}" {% if loop.first %}checked{% endif %}>
-                <label for="provider_{{ key }}">{{ label }}</label>
+                <input type="radio" name="provider" id="provider_{{ key }}" value="{{ key }}" {% if loop.first %}checked{% endif %} onchange="updateModelSelect()">
+                <label for="provider_{{ key }}">{{ config.label }}</label>
             </div>
             {% endfor %}
         </div>
+
+        <!-- Model Selection -->
+        <select class="model-select" id="modelSelect">
+            <!-- Populated by JS based on selected provider -->
+        </select>
 
         <!-- Subject -->
         <div class="form-group">
@@ -572,6 +591,30 @@ async function verifyCode() {
 <script>
 let currentJobId = null;
 
+// Provider model data from server
+const PROVIDER_MODELS = {{ providers | tojson }};
+
+function updateModelSelect() {
+    const provider = document.querySelector('input[name="provider"]:checked')?.value;
+    const select = document.getElementById('modelSelect');
+    select.innerHTML = '';
+
+    if (provider && PROVIDER_MODELS[provider]) {
+        const models = PROVIDER_MODELS[provider].models;
+        const defaultModel = PROVIDER_MODELS[provider].default;
+        for (const [modelId, modelLabel] of Object.entries(models)) {
+            const opt = document.createElement('option');
+            opt.value = modelId;
+            opt.textContent = modelLabel;
+            if (modelId === defaultModel) opt.selected = true;
+            select.appendChild(opt);
+        }
+    }
+}
+
+// Initialize on load
+updateModelSelect();
+
 function fileSelected(input) {
     const zone = input.closest('.upload-zone');
     const nameEl = document.getElementById(input.id + '_name');
@@ -619,6 +662,7 @@ async function startMarking() {
     // Build form data
     const fd = new FormData();
     fd.append('provider', provider);
+    fd.append('model', document.getElementById('modelSelect').value);
     fd.append('subject', document.getElementById('subject').value);
     fd.append('review_instructions', document.getElementById('review_instructions').value);
     fd.append('marking_instructions', document.getElementById('marking_instructions').value);
