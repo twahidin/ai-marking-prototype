@@ -272,7 +272,8 @@ def parse_ai_response(response_text):
     text = text.replace('\u2018', "'").replace('\u2019', "'")
 
     # Strip markdown code fences — handle fences anywhere in text, not just start/end
-    fence_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+    # Use greedy match inside fences so nested JSON objects are captured fully
+    fence_match = re.search(r'```(?:json)?\s*(\{[\s\S]*\})\s*```', text)
     if fence_match:
         text = fence_match.group(1)
     else:
