@@ -320,9 +320,7 @@ async function verifyCode() {
     <!-- Tab Bar -->
     <div class="tabs-bar">
         <button class="tab-btn active" id="tabBtnUpload" onclick="switchTab('upload')">Upload All Scripts</button>
-        {% if not provide_keys %}
         <button class="tab-btn" id="tabBtnSubmissions" onclick="switchTab('submissions')">Student Submission</button>
-        {% endif %}
     </div>
 
     <!-- ==================== TAB 1: Upload All Scripts (Bulk) ==================== -->
@@ -480,7 +478,6 @@ async function verifyCode() {
     </div>
 
     <!-- ==================== TAB 2: Student Submission (Teacher Dashboard) ==================== -->
-    {% if not provide_keys %}
     <div class="tab-content" id="tabSubmissions">
 
         <!-- Create Assignment -->
@@ -643,7 +640,6 @@ async function verifyCode() {
             {% endif %}
         </div>
     </div>
-    {% endif %}
 </div>
 
 <script>
@@ -1134,12 +1130,10 @@ async function createAssignment() {
     fd.append('review_instructions', document.getElementById('teacher_review_instructions').value);
     fd.append('marking_instructions', document.getElementById('teacher_marking_instructions').value);
 
-    // API keys from local state (only when server doesn't provide keys)
-    if (!PROVIDE_KEYS) {
-        if (savedKeys.anthropic) fd.append('api_key_anthropic', savedKeys.anthropic);
-        if (savedKeys.openai) fd.append('api_key_openai', savedKeys.openai);
-        if (savedKeys.qwen) fd.append('api_key_qwen', savedKeys.qwen);
-    }
+    // API keys from local state (when server doesn't provide keys)
+    if (savedKeys.anthropic) fd.append('api_key_anthropic', savedKeys.anthropic);
+    if (savedKeys.openai) fd.append('api_key_openai', savedKeys.openai);
+    if (savedKeys.qwen) fd.append('api_key_qwen', savedKeys.qwen);
 
     // Files
     for (const f of cl) fd.append('class_list', f);

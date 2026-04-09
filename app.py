@@ -526,7 +526,7 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
                 assign_type=asn.assign_type,
                 scoring_mode=asn.scoring_mode,
                 total_marks=asn.total_marks,
-                session_keys=asn.get_api_keys(),
+                session_keys=asn.get_api_keys() or None,  # env keys used as fallback in get_ai_client
             )
 
             sub.set_result(result)
@@ -551,18 +551,18 @@ def teacher_create():
     if not session.get('authenticated'):
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
-    if PROVIDE_KEYS:
-        return jsonify({'success': False, 'error': 'Student submission is not available in demo mode. Deploy your own instance to use this feature.'}), 403
-
-    # API keys from user input (self-hosted mode only)
+    # API keys: use server env keys if available, otherwise require user input
+    # Keys are NOT stored in DB — the marking job reads from env at runtime
     api_keys = {}
-    for prov in ('anthropic', 'openai', 'qwen'):
-        val = request.form.get(f'api_key_{prov}', '').strip()
+    from ai_marking import PROVIDER_KEY_MAP
+    for prov, env_name in PROVIDER_KEY_MAP.items():
+        # Check env vars first, then form input
+        val = os.getenv(env_name, '') or request.form.get(f'api_key_{prov}', '').strip()
         if val:
             api_keys[prov] = val
 
     if not api_keys:
-        return jsonify({'success': False, 'error': 'Please enter at least one API key'}), 400
+        return jsonify({'success': False, 'error': 'No API keys available. Configure server keys or enter your own.'}), 400
 
     # Parse class list
     cl_file = request.files.get('class_list')
@@ -623,7 +623,13 @@ def teacher_create():
         rubrics=rub_bytes,
         reference=ref_bytes,
     )
-    asn.set_api_keys(api_keys)
+    # Only store user-provided keys (not env keys) — env keys are read at runtime
+    user_keys = {}
+    for prov in ('anthropic', 'openai', 'qwen'):
+        val = request.form.get(f'api_key_{prov}', '').strip()
+        if val:
+            user_keys[prov] = val
+    asn.set_api_keys(user_keys)
     db.session.add(asn)
 
     for s in students_data:
