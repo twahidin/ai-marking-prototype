@@ -1,15 +1,19 @@
 import os
 import csv
 import uuid
+import string
+import random
 import logging
 import threading
 import time
 import zipfile
-from flask import Flask, render_template, request, jsonify, session, send_file
+from datetime import datetime, timezone
+from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for
 import io
 
 from ai_marking import mark_script, get_available_providers, PROVIDERS
 from pdf_generator import generate_report_pdf
+from db import db, init_db, Assignment, Student, Submission
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,6 +23,9 @@ app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-product
 
 ACCESS_CODE = os.getenv('ACCESS_CODE', 'DEMO2026')
 PROVIDE_KEYS = os.getenv('PROVIDE_KEYS', 'TRUE').upper() == 'TRUE'
+
+# Initialize database
+init_db(app)
 
 # In-memory job store (thread-safe via GIL for dict ops)
 jobs = {}
@@ -432,6 +439,340 @@ def bulk_download(job_id):
         as_attachment=True,
         download_name='Bulk_Marking_Reports.zip'
     )
+
+
+# ---------------------------------------------------------------------------
+# Teacher dashboard & student submission portal
+# ---------------------------------------------------------------------------
+
+def _generate_classroom_code():
+    """Generate a short unique classroom code like ENG3E."""
+    chars = string.ascii_uppercase + string.digits
+    while True:
+        code = ''.join(random.choices(chars, k=6))
+        if not Assignment.query.filter_by(classroom_code=code).first():
+            return code
+
+
+def _run_submission_marking(app_obj, submission_id, assignment_id):
+    """Background thread: mark a student submission."""
+    with app_obj.app_context():
+        sub = Submission.query.get(submission_id)
+        asn = Assignment.query.get(assignment_id)
+        if not sub or not asn:
+            return
+
+        sub.status = 'processing'
+        db.session.commit()
+
+        try:
+            qp = [asn.question_paper] if asn.question_paper else []
+            ak = [asn.answer_key] if asn.answer_key else []
+            rub = [asn.rubrics] if asn.rubrics else []
+            ref = [asn.reference] if asn.reference else []
+            script = [sub.script_bytes] if sub.script_bytes else []
+
+            result = mark_script(
+                provider=asn.provider,
+                question_paper_pages=qp,
+                answer_key_pages=ak,
+                script_pages=script,
+                subject=asn.subject,
+                rubrics_pages=rub,
+                reference_pages=ref,
+                review_instructions=asn.review_instructions,
+                marking_instructions=asn.marking_instructions,
+                model=asn.model,
+                assign_type=asn.assign_type,
+                scoring_mode=asn.scoring_mode,
+                total_marks=asn.total_marks,
+                session_keys=asn.get_api_keys(),
+            )
+
+            sub.set_result(result)
+            sub.status = 'error' if result.get('error') else 'done'
+            sub.marked_at = datetime.now(timezone.utc)
+        except Exception as e:
+            logger.error(f"Submission {submission_id} marking failed: {e}")
+            sub.set_result({'error': str(e)})
+            sub.status = 'error'
+            sub.marked_at = datetime.now(timezone.utc)
+
+        db.session.commit()
+
+
+@app.route('/teacher')
+def teacher_page():
+    authenticated = session.get('authenticated', False)
+    assignments = []
+    if authenticated:
+        assignments = Assignment.query.order_by(Assignment.created_at.desc()).all()
+    return render_template('teacher.html',
+                           authenticated=authenticated,
+                           assignments=assignments,
+                           all_providers=PROVIDERS)
+
+
+@app.route('/teacher/create', methods=['POST'])
+def teacher_create():
+    if not session.get('authenticated'):
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    # API keys
+    api_keys = {}
+    for prov in ('anthropic', 'openai', 'qwen'):
+        val = request.form.get(f'api_key_{prov}', '').strip()
+        if val:
+            api_keys[prov] = val
+
+    if not api_keys:
+        return jsonify({'success': False, 'error': 'Please enter at least one API key'}), 400
+
+    # Parse class list
+    cl_file = request.files.get('class_list')
+    if not cl_file or not cl_file.filename:
+        return jsonify({'success': False, 'error': 'Please upload a class list CSV'}), 400
+    students_data = _parse_class_list(cl_file.read(), cl_file.filename)
+    if not students_data:
+        return jsonify({'success': False, 'error': 'Could not parse class list'}), 400
+
+    # Question paper
+    qp_files = request.files.getlist('question_paper')
+    if not qp_files or not qp_files[0].filename:
+        return jsonify({'success': False, 'error': 'Please upload a question paper'}), 400
+
+    assign_type = request.form.get('assign_type', 'short_answer')
+
+    # Answer key (not required for rubrics)
+    ak_bytes = None
+    if assign_type != 'rubrics':
+        ak_files = request.files.getlist('answer_key')
+        if not ak_files or not ak_files[0].filename:
+            return jsonify({'success': False, 'error': 'Please upload an answer key'}), 400
+        ak_bytes = ak_files[0].read()
+
+    # Rubrics
+    rub_bytes = None
+    rub_files = request.files.getlist('rubrics')
+    if rub_files and rub_files[0].filename:
+        rub_bytes = rub_files[0].read()
+
+    if assign_type == 'rubrics' and not rub_bytes:
+        return jsonify({'success': False, 'error': 'Rubrics file required for essay type'}), 400
+
+    # Reference
+    ref_bytes = None
+    ref_files = request.files.getlist('reference')
+    if ref_files and ref_files[0].filename:
+        ref_bytes = ref_files[0].read()
+
+    provider = request.form.get('provider', '')
+    if provider not in api_keys:
+        return jsonify({'success': False, 'error': 'Selected provider has no API key'}), 400
+
+    asn = Assignment(
+        id=str(uuid.uuid4()),
+        classroom_code=_generate_classroom_code(),
+        subject=request.form.get('subject', ''),
+        assign_type=assign_type,
+        scoring_mode=request.form.get('scoring_mode', 'status'),
+        total_marks=request.form.get('total_marks', ''),
+        provider=provider,
+        model=request.form.get('model', ''),
+        show_results=request.form.get('show_results') == 'on',
+        review_instructions=request.form.get('review_instructions', ''),
+        marking_instructions=request.form.get('marking_instructions', ''),
+        question_paper=qp_files[0].read(),
+        answer_key=ak_bytes,
+        rubrics=rub_bytes,
+        reference=ref_bytes,
+    )
+    asn.set_api_keys(api_keys)
+    db.session.add(asn)
+
+    for s in students_data:
+        db.session.add(Student(
+            assignment_id=asn.id,
+            index_number=s['index'],
+            name=s['name'],
+        ))
+
+    db.session.commit()
+
+    return jsonify({
+        'success': True,
+        'assignment_id': asn.id,
+        'classroom_code': asn.classroom_code,
+    })
+
+
+@app.route('/teacher/assignment/<assignment_id>')
+def teacher_assignment_detail(assignment_id):
+    if not session.get('authenticated'):
+        return redirect(url_for('teacher_page'))
+
+    asn = Assignment.query.get_or_404(assignment_id)
+    students = Student.query.filter_by(assignment_id=assignment_id).order_by(Student.index_number).all()
+
+    student_data = []
+    for s in students:
+        sub = Submission.query.filter_by(student_id=s.id, assignment_id=assignment_id).first()
+        result = sub.get_result() if sub else {}
+        questions = result.get('questions', [])
+        has_marks = any(q.get('marks_awarded') is not None for q in questions)
+
+        score = None
+        if sub and sub.status == 'done' and not result.get('error'):
+            if has_marks:
+                ta = sum(q.get('marks_awarded', 0) for q in questions)
+                tp = sum(q.get('marks_total', 0) for q in questions)
+                score = f"{ta}/{tp}"
+            else:
+                correct = sum(1 for q in questions if q.get('status') == 'correct')
+                score = f"{correct}/{len(questions)}"
+
+        student_data.append({
+            'index': s.index_number,
+            'name': s.name,
+            'status': sub.status if sub else 'not_submitted',
+            'score': score,
+            'submitted_at': sub.submitted_at.strftime('%d %b %H:%M') if sub and sub.submitted_at else None,
+        })
+
+    return render_template('teacher_detail.html',
+                           assignment=asn,
+                           students=student_data)
+
+
+@app.route('/teacher/assignment/<assignment_id>/download')
+def teacher_download_all(assignment_id):
+    if not session.get('authenticated'):
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    asn = Assignment.query.get_or_404(assignment_id)
+    submissions = Submission.query.filter_by(assignment_id=assignment_id, status='done').all()
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for sub in submissions:
+            result = sub.get_result()
+            if result.get('error'):
+                continue
+            student = Student.query.get(sub.student_id)
+            if not student:
+                continue
+            pdf_bytes = generate_report_pdf(result, subject=asn.subject)
+            safe_name = student.name.replace('/', '_').replace('\\', '_')
+            zf.writestr(f"{student.index_number}_{safe_name}_report.pdf", pdf_bytes)
+    buf.seek(0)
+
+    return send_file(buf, mimetype='application/zip', as_attachment=True,
+                     download_name=f'{asn.classroom_code}_reports.zip')
+
+
+@app.route('/teacher/assignment/<assignment_id>/delete', methods=['POST'])
+def teacher_delete_assignment(assignment_id):
+    if not session.get('authenticated'):
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    asn = Assignment.query.get_or_404(assignment_id)
+    db.session.delete(asn)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+# --- Student submission ---
+
+@app.route('/submit/<assignment_id>')
+def student_page(assignment_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    return render_template('submit.html', assignment_id=assignment_id, subject=asn.subject)
+
+
+@app.route('/submit/<assignment_id>/verify', methods=['POST'])
+def student_verify(assignment_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    data = request.get_json()
+    code = (data.get('code') or '').strip().upper()
+    if code != asn.classroom_code:
+        return jsonify({'success': False, 'error': 'Invalid classroom code'}), 401
+
+    students = Student.query.filter_by(assignment_id=assignment_id).order_by(Student.index_number).all()
+    student_list = [{'id': s.id, 'index': s.index_number, 'name': s.name} for s in students]
+
+    session[f'student_auth_{assignment_id}'] = True
+    return jsonify({'success': True, 'students': student_list})
+
+
+@app.route('/submit/<assignment_id>/upload', methods=['POST'])
+def student_upload(assignment_id):
+    if not session.get(f'student_auth_{assignment_id}'):
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    asn = Assignment.query.get_or_404(assignment_id)
+
+    student_id = request.form.get('student_id')
+    if not student_id:
+        return jsonify({'success': False, 'error': 'Please select your name'}), 400
+
+    student = Student.query.get(student_id)
+    if not student or student.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid student'}), 400
+
+    script_files = request.files.getlist('script')
+    if not script_files or not script_files[0].filename:
+        return jsonify({'success': False, 'error': 'Please upload your script'}), 400
+
+    # Read first file only (single PDF or image)
+    script_bytes = script_files[0].read()
+
+    # Delete existing submission if re-submitting
+    existing = Submission.query.filter_by(student_id=student.id, assignment_id=assignment_id).first()
+    if existing:
+        db.session.delete(existing)
+        db.session.flush()
+
+    sub = Submission(
+        student_id=student.id,
+        assignment_id=assignment_id,
+        script_bytes=script_bytes,
+        status='pending',
+    )
+    db.session.add(sub)
+    db.session.commit()
+
+    # Start marking in background
+    thread = threading.Thread(
+        target=_run_submission_marking,
+        args=(app, sub.id, assignment_id),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({
+        'success': True,
+        'submission_id': sub.id,
+        'show_results': asn.show_results,
+    })
+
+
+@app.route('/submit/<assignment_id>/status/<int:submission_id>')
+def student_submission_status(assignment_id, submission_id):
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Not found'}), 404
+
+    asn = Assignment.query.get(assignment_id)
+    response = {'success': True, 'status': sub.status}
+
+    if sub.status in ('done', 'error'):
+        result = sub.get_result()
+        if asn and asn.show_results:
+            response['result'] = result
+        elif result.get('error'):
+            response['result'] = {'error': result['error']}
+
+    return jsonify(response)
 
 
 if __name__ == '__main__':

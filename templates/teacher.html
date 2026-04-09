@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teacher Dashboard - AI Marking</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f7;
+            color: #333;
+            min-height: 100vh;
+        }
+        .container { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
+
+        /* Access Gate */
+        .gate { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+        .gate-card {
+            background: white; border-radius: 16px; padding: 48px 40px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: center;
+            width: 100%; max-width: 420px;
+        }
+        .gate-card h1 { font-size: 24px; font-weight: 700; color: #333; margin-bottom: 8px; }
+        .gate-card p { color: #888; font-size: 14px; margin-bottom: 28px; }
+        .gate-input {
+            width: 100%; padding: 14px 16px; border: 2px solid #e0e0e0; border-radius: 10px;
+            font-size: 16px; text-align: center; letter-spacing: 3px; font-weight: 600;
+            transition: border-color 0.2s; outline: none;
+        }
+        .gate-input:focus { border-color: #667eea; }
+        .gate-input.error { border-color: #dc3545; }
+        .gate-error { color: #dc3545; font-size: 13px; margin-top: 10px; display: none; }
+        .gate-btn {
+            width: 100%; padding: 14px; background: #667eea; color: white; border: none;
+            border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer;
+            margin-top: 20px; transition: background 0.2s;
+        }
+        .gate-btn:hover { background: #5a6fd6; }
+
+        /* Header */
+        .header { text-align: center; margin-bottom: 32px; }
+        .header h1 { font-size: 28px; font-weight: 700; color: #333; }
+        .header p { color: #888; font-size: 14px; margin-top: 4px; }
+        .header-links { margin-top: 12px; display: flex; gap: 20px; justify-content: center; }
+        .header-links a {
+            color: #667eea; font-weight: 600; font-size: 13px; text-decoration: none;
+        }
+        .header-links a:hover { text-decoration: underline; }
+
+        /* Cards */
+        .card {
+            background: white; border-radius: 16px; padding: 32px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.08); margin-bottom: 24px;
+        }
+        .card h2 { font-size: 16px; font-weight: 700; color: #333; margin-bottom: 20px; }
+
+        /* Selectors (radio buttons styled as pills) */
+        .sel-group { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+        .sel-option { flex: 1; min-width: 120px; }
+        .sel-option input { display: none; }
+        .sel-option label {
+            display: block; padding: 14px 16px; border: 2px solid #e0e0e0; border-radius: 10px;
+            text-align: center; font-size: 14px; font-weight: 600; cursor: pointer;
+            transition: all 0.2s; color: #555;
+        }
+        .sel-option input:checked + label { border-color: #667eea; background: #f0f2ff; color: #667eea; }
+        .sel-option label:hover { border-color: #b0b8f0; }
+        .sel-option input:disabled + label { opacity: 0.4; cursor: not-allowed; }
+
+        /* Model dropdown */
+        .model-select {
+            width: 100%; padding: 10px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
+            font-size: 14px; outline: none; background: white; margin-bottom: 24px; color: #333;
+        }
+
+        /* Form */
+        .form-group { margin-bottom: 16px; }
+        .form-group label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 6px; }
+        .form-input, .form-textarea {
+            width: 100%; padding: 12px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
+            font-size: 14px; outline: none; font-family: inherit;
+        }
+        .form-textarea { resize: vertical; min-height: 80px; }
+        .marks-input {
+            width: 100px; padding: 10px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
+            font-size: 16px; font-weight: 600; text-align: center; outline: none;
+        }
+
+        /* Toggle */
+        .toggle-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+        .toggle-row .toggle-label { font-size: 14px; font-weight: 600; color: #555; }
+        .toggle { position: relative; width: 48px; height: 26px; flex-shrink: 0; }
+        .toggle input { display: none; }
+        .toggle .slider {
+            position: absolute; inset: 0; background: #ccc; border-radius: 26px;
+            cursor: pointer; transition: 0.2s;
+        }
+        .toggle .slider::before {
+            content: ''; position: absolute; width: 20px; height: 20px; left: 3px; bottom: 3px;
+            background: white; border-radius: 50%; transition: 0.2s;
+        }
+        .toggle input:checked + .slider { background: #667eea; }
+        .toggle input:checked + .slider::before { transform: translateX(22px); }
+
+        /* Checkbox row */
+        .check-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+        .check-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: #667eea; cursor: pointer; }
+        .check-row label { font-size: 14px; font-weight: 600; color: #555; cursor: pointer; }
+
+        /* File uploads */
+        .upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+        @media (max-width: 600px) { .upload-grid { grid-template-columns: 1fr; } }
+        .upload-zone {
+            border: 2px dashed #d0d0d0; border-radius: 10px; padding: 20px 12px;
+            text-align: center; cursor: pointer; transition: all 0.2s;
+        }
+        .upload-zone:hover { border-color: #667eea; background: #fafafe; }
+        .upload-zone.has-file { border-color: #28a745; background: #f0fdf4; }
+        .upload-zone input { display: none; }
+        .upload-zone .icon { font-size: 28px; margin-bottom: 6px; }
+        .upload-zone .label { font-size: 13px; font-weight: 600; color: #555; }
+        .upload-zone .filename { font-size: 11px; color: #28a745; margin-top: 6px; word-break: break-all; }
+        .upload-zone .hint { font-size: 11px; color: #aaa; margin-top: 4px; }
+
+        /* Buttons */
+        .mark-btn {
+            width: 100%; padding: 16px; background: #667eea; color: white; border: none;
+            border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer;
+        }
+        .mark-btn:hover { background: #5a6fd6; }
+        .mark-btn:disabled { background: #ccc; cursor: not-allowed; }
+        .error-msg {
+            background: #fdecea; color: #dc3545; padding: 16px; border-radius: 10px;
+            font-size: 14px; margin-bottom: 16px; display: none;
+        }
+        .success-msg {
+            background: #e8f5e9; color: #28a745; padding: 20px; border-radius: 10px;
+            font-size: 14px; margin-bottom: 16px; display: none;
+        }
+        .success-msg strong { font-size: 15px; }
+        .success-msg .code {
+            display: inline-block; background: #d4edda; padding: 6px 14px; border-radius: 8px;
+            font-size: 18px; font-weight: 700; letter-spacing: 2px; margin: 8px 0;
+        }
+        .success-msg a { color: #28a745; font-weight: 600; word-break: break-all; }
+
+        /* Key status badges */
+        .key-badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+        .key-badge {
+            display: inline-flex; align-items: center; gap: 4px;
+            padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+        }
+        .key-badge.saved { background: #e8f5e9; color: #28a745; }
+        .key-badge.empty { background: #f5f5f5; color: #aaa; }
+
+        /* Assignment list */
+        .assignment-item {
+            border: 1px solid #e8e8e8; border-radius: 12px; padding: 20px;
+            margin-bottom: 12px; transition: box-shadow 0.2s;
+        }
+        .assignment-item:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+        .assignment-item-header {
+            display: flex; justify-content: space-between; align-items: flex-start;
+            margin-bottom: 10px; gap: 12px;
+        }
+        .assignment-subject { font-size: 16px; font-weight: 700; color: #333; }
+        .assignment-meta { font-size: 12px; color: #888; margin-top: 4px; }
+        .assignment-meta span { margin-right: 16px; }
+        .assignment-code {
+            display: inline-block; background: #f0f2ff; color: #667eea;
+            padding: 4px 12px; border-radius: 8px; font-size: 13px; font-weight: 700;
+            letter-spacing: 1px;
+        }
+        .assignment-link {
+            font-size: 12px; color: #667eea; word-break: break-all; display: block; margin-top: 6px;
+        }
+        .assignment-stats {
+            display: flex; gap: 16px; align-items: center; margin-top: 10px; flex-wrap: wrap;
+        }
+        .stat-chip {
+            font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px;
+        }
+        .stat-chip.submissions { background: #f0f2ff; color: #667eea; }
+        .stat-chip.results-on { background: #e8f5e9; color: #28a745; }
+        .stat-chip.results-off { background: #fdecea; color: #dc3545; }
+        .assignment-actions { display: flex; gap: 8px; margin-top: 12px; }
+        .btn-sm {
+            padding: 8px 16px; border: none; border-radius: 8px;
+            font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none;
+            display: inline-block; text-align: center;
+        }
+        .btn-sm.view { background: #667eea; color: white; }
+        .btn-sm.view:hover { background: #5a6fd6; }
+        .btn-sm.delete { background: #fdecea; color: #dc3545; }
+        .btn-sm.delete:hover { background: #f5c6cb; }
+
+        .empty-state {
+            text-align: center; padding: 40px 20px; color: #aaa;
+        }
+        .empty-state .icon { font-size: 40px; margin-bottom: 12px; }
+        .empty-state p { font-size: 14px; }
+    </style>
+</head>
+<body>
+
+{% if not authenticated %}
+<div class="gate">
+    <div class="gate-card">
+        <h1>Teacher Dashboard</h1>
+        <p>Enter the access code to continue</p>
+        <input type="text" class="gate-input" id="codeInput" placeholder="ACCESS CODE" autocomplete="off" autofocus>
+        <div class="gate-error" id="gateError">Invalid access code. Please try again.</div>
+        <button class="gate-btn" id="gateBtn" onclick="verifyCode()">Enter</button>
+    </div>
+</div>
+<script>
+document.getElementById('codeInput').addEventListener('keydown', e => { if (e.key === 'Enter') verifyCode(); });
+async function verifyCode() {
+    const code = document.getElementById('codeInput').value.trim();
+    if (!code) return;
+    const btn = document.getElementById('gateBtn');
+    btn.disabled = true; btn.textContent = 'Verifying...';
+    try {
+        const res = await fetch('/verify-code', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({code}) });
+        if (res.ok) { window.location.reload(); }
+        else { document.getElementById('gateError').style.display = 'block'; document.getElementById('codeInput').classList.add('error'); btn.disabled = false; btn.textContent = 'Enter'; }
+    } catch (err) { document.getElementById('gateError').textContent = 'Connection error.'; document.getElementById('gateError').style.display = 'block'; btn.disabled = false; btn.textContent = 'Enter'; }
+}
+</script>
+
+{% else %}
+
+<div class="container">
+    <div class="header">
+        <h1>Teacher Dashboard</h1>
+        <p>Create assignments and track student submissions</p>
+        <div class="header-links">
+            <a href="/">Single Marking &rarr;</a>
+            <a href="/bulk">Bulk Marking &rarr;</a>
+        </div>
+    </div>
+
+    <!-- API Key Section -->
+    <div class="card" id="keyCard">
+        <h2>API Keys</h2>
+        <p style="font-size:13px;color:#888;margin-bottom:16px;">
+            Save your API keys here. They will be included when you create an assignment so the AI can mark student submissions.
+        </p>
+        <div class="sel-group">
+            {% for key, config in all_providers.items() %}
+            <div class="sel-option">
+                <input type="radio" name="key_provider" id="kp_{{ key }}" value="{{ key }}" {% if loop.first %}checked{% endif %} onchange="updateKeyPlaceholder()">
+                <label for="kp_{{ key }}">{{ config.label }}</label>
+            </div>
+            {% endfor %}
+        </div>
+        <div style="display:flex;gap:8px;">
+            <input type="password" class="form-input" id="apiKeyInput" placeholder="Paste your API key here..." style="flex:1;">
+            <button class="mark-btn" style="width:auto;padding:12px 24px;" onclick="saveKey()">Save</button>
+        </div>
+        <div class="key-badges" id="keyBadges"></div>
+    </div>
+
+    <!-- Create Assignment -->
+    <div class="card" id="createCard">
+        <h2>Create Assignment</h2>
+
+        <!-- Provider (only those with keys) -->
+        <div style="font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">AI Provider</div>
+        <div class="sel-group" id="providerGroup"></div>
+        <div id="noProviderMsg" style="color:#e68a00;font-size:13px;font-weight:600;margin-bottom:16px;">
+            Please save an API key above to enable a provider.
+        </div>
+
+        <!-- Model -->
+        <select class="model-select" id="modelSelect"></select>
+
+        <!-- Subject -->
+        <div class="form-group">
+            <label for="subject">Subject</label>
+            <input type="text" class="form-input" id="subject" placeholder="e.g. Mathematics, English, Science">
+        </div>
+
+        <!-- Assignment Type -->
+        <div style="font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">Assignment Type</div>
+        <div class="sel-group">
+            <div class="sel-option">
+                <input type="radio" name="assign_type" id="type_short" value="short_answer" checked onchange="updateAssignType()">
+                <label for="type_short">Short Answer</label>
+            </div>
+            <div class="sel-option">
+                <input type="radio" name="assign_type" id="type_rubric" value="rubrics" onchange="updateAssignType()">
+                <label for="type_rubric">Rubrics / Essay</label>
+            </div>
+        </div>
+
+        <!-- Short answer options -->
+        <div id="shortAnswerOptions">
+            <div class="toggle-row">
+                <label class="toggle"><input type="checkbox" id="allocateMarks" onchange="updateMarksVis()"><span class="slider"></span></label>
+                <span class="toggle-label">Allocate marks</span>
+            </div>
+            <div class="form-group" id="totalMarksGroup" style="display:none;">
+                <label for="totalMarks">Total Marks</label>
+                <input type="number" class="marks-input" id="totalMarks" min="1" max="999" placeholder="100">
+            </div>
+        </div>
+
+        <!-- Rubric options -->
+        <div id="rubricOptions" style="display:none;">
+            <div class="form-group">
+                <label for="totalMarksRubric">Total Marks</label>
+                <input type="number" class="marks-input" id="totalMarksRubric" min="1" max="999" placeholder="100">
+            </div>
+            <div class="form-group">
+                <label>Rubrics File</label>
+                <div class="upload-zone" style="max-width:260px;" onclick="this.querySelector('input').click()">
+                    <input type="file" id="rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this)">
+                    <div class="icon">&#128203;</div>
+                    <div class="label">Rubrics</div>
+                    <div class="filename"></div>
+                    <div class="hint">PDF or up to 5 images</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Show results toggle -->
+        <div class="check-row">
+            <input type="checkbox" id="showResults" checked>
+            <label for="showResults">Allow students to see AI feedback immediately</label>
+        </div>
+
+        <!-- Class list -->
+        <div style="font-size:13px;font-weight:600;color:#555;margin-bottom:6px; margin-top:24px;">Upload Files</div>
+        <div class="form-group">
+            <label>Class List (CSV: Index, Name)</label>
+            <div class="upload-zone" style="max-width:100%;" onclick="this.querySelector('input').click()">
+                <input type="file" id="class_list" accept=".csv" onchange="fileSelected(this)">
+                <div class="icon">&#128203;</div>
+                <div class="label">Class List</div>
+                <div class="filename"></div>
+                <div class="hint">CSV file with columns: Index, Name</div>
+            </div>
+        </div>
+
+        <!-- Question paper + answer key -->
+        <div class="upload-grid">
+            <div class="upload-zone" onclick="this.querySelector('input').click()">
+                <input type="file" id="question_paper" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this)">
+                <div class="icon">&#128196;</div>
+                <div class="label">Question Paper</div>
+                <div class="filename"></div>
+                <div class="hint">PDF or up to 5 images</div>
+            </div>
+            <div class="upload-zone" id="answerKeyZone" onclick="this.querySelector('input').click()">
+                <input type="file" id="answer_key" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this)">
+                <div class="icon" id="answerKeyIcon">&#9989;</div>
+                <div class="label" id="answerKeyLabel">Answer Key</div>
+                <div class="filename"></div>
+                <div class="hint" id="answerKeyHint">PDF or up to 5 images</div>
+            </div>
+        </div>
+
+        <!-- Instructions -->
+        <div style="font-size:13px;font-weight:600;color:#555;margin-bottom:6px; margin-top:24px;">Instructions (Optional)</div>
+        <div class="form-group">
+            <label for="review_instructions">Review Instructions</label>
+            <textarea class="form-textarea" id="review_instructions" placeholder="How should feedback be written? e.g. tone, detail level, language..."></textarea>
+        </div>
+        <div class="form-group">
+            <label for="marking_instructions">Marking Instructions</label>
+            <textarea class="form-textarea" id="marking_instructions" placeholder="How should answers be evaluated? e.g. strictness, what to accept..."></textarea>
+        </div>
+
+        <div class="error-msg" id="errorMsg"></div>
+        <div class="success-msg" id="successMsg"></div>
+        <button class="mark-btn" id="createBtn" onclick="createAssignment()">Create Assignment</button>
+    </div>
+
+    <!-- My Assignments -->
+    <div class="card">
+        <h2>My Assignments</h2>
+        {% if assignments %}
+        <div id="assignmentList">
+            {% for asn in assignments %}
+            <div class="assignment-item" id="asn_{{ asn.id }}">
+                <div class="assignment-item-header">
+                    <div>
+                        <div class="assignment-subject">{{ asn.subject or 'Untitled Assignment' }}</div>
+                        <div class="assignment-meta">
+                            <span>Created {{ asn.created_at.strftime('%d %b %Y, %H:%M') }}</span>
+                        </div>
+                    </div>
+                    <div class="assignment-code">{{ asn.classroom_code }}</div>
+                </div>
+                <div class="assignment-link">
+                    Student link: <a href="/submit/{{ asn.id }}" target="_blank">{{ request.host_url }}submit/{{ asn.id }}</a>
+                </div>
+                <div class="assignment-stats">
+                    <span class="stat-chip submissions">
+                        {{ asn.submissions | length }} / {{ asn.students | length }} submitted
+                    </span>
+                    {% if asn.show_results %}
+                    <span class="stat-chip results-on">Results visible</span>
+                    {% else %}
+                    <span class="stat-chip results-off">Results hidden</span>
+                    {% endif %}
+                </div>
+                <div class="assignment-actions">
+                    <a href="/teacher/assignment/{{ asn.id }}" class="btn-sm view">View</a>
+                    <button class="btn-sm delete" onclick="deleteAssignment('{{ asn.id }}', '{{ asn.subject | e }}')">Delete</button>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <div class="icon">&#128218;</div>
+            <p>No assignments yet. Create one above to get started.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+const ALL_PROVIDERS = {{ all_providers | tojson }};
+const savedKeys = {};
+
+// --- Key management (local state) ---
+function updateKeyPlaceholder() {
+    const prov = document.querySelector('input[name="key_provider"]:checked')?.value || '';
+    const ph = {anthropic: 'sk-ant-...', openai: 'sk-...', qwen: 'sk-...'}[prov] || 'API key';
+    document.getElementById('apiKeyInput').placeholder = ph;
+}
+
+function saveKey() {
+    const prov = document.querySelector('input[name="key_provider"]:checked')?.value;
+    const key = document.getElementById('apiKeyInput')?.value.trim();
+    if (!prov || !key) return;
+    savedKeys[prov] = key;
+    document.getElementById('apiKeyInput').value = '';
+    renderKeyBadges();
+    renderProviderGroup();
+}
+
+function renderKeyBadges() {
+    const container = document.getElementById('keyBadges');
+    container.innerHTML = '';
+    for (const [key, config] of Object.entries(ALL_PROVIDERS)) {
+        const saved = !!savedKeys[key];
+        const badge = document.createElement('span');
+        badge.className = 'key-badge ' + (saved ? 'saved' : 'empty');
+        badge.textContent = config.label + (saved ? ' \u2713' : '');
+        container.appendChild(badge);
+    }
+}
+
+// --- Provider selection (only providers with keys) ---
+function renderProviderGroup() {
+    const group = document.getElementById('providerGroup');
+    group.innerHTML = '';
+    const availableProviders = Object.keys(savedKeys);
+    if (availableProviders.length === 0) {
+        document.getElementById('noProviderMsg').style.display = 'block';
+        updateModelSelect();
+        return;
+    }
+    document.getElementById('noProviderMsg').style.display = 'none';
+    let first = true;
+    for (const prov of availableProviders) {
+        const config = ALL_PROVIDERS[prov];
+        if (!config) continue;
+        const div = document.createElement('div');
+        div.className = 'sel-option';
+        div.innerHTML = `<input type="radio" name="provider" id="provider_${prov}" value="${prov}" ${first ? 'checked' : ''} onchange="updateModelSelect()"><label for="provider_${prov}">${config.label}</label>`;
+        group.appendChild(div);
+        first = false;
+    }
+    updateModelSelect();
+}
+
+function updateModelSelect() {
+    const prov = document.querySelector('input[name="provider"]:checked')?.value;
+    const sel = document.getElementById('modelSelect');
+    sel.innerHTML = '';
+    if (prov && ALL_PROVIDERS[prov]) {
+        const m = ALL_PROVIDERS[prov].models, d = ALL_PROVIDERS[prov].default;
+        for (const [id, label] of Object.entries(m)) {
+            const o = document.createElement('option');
+            o.value = id; o.textContent = label; if (id === d) o.selected = true;
+            sel.appendChild(o);
+        }
+    }
+}
+
+// --- Assignment type ---
+function updateAssignType() {
+    const t = document.querySelector('input[name="assign_type"]:checked')?.value;
+    document.getElementById('shortAnswerOptions').style.display = t === 'rubrics' ? 'none' : 'block';
+    document.getElementById('rubricOptions').style.display = t === 'rubrics' ? 'block' : 'none';
+    const akLabel = document.getElementById('answerKeyLabel');
+    const akIcon = document.getElementById('answerKeyIcon');
+    const akHint = document.getElementById('answerKeyHint');
+    const akInput = document.getElementById('answer_key') || document.getElementById('reference');
+    if (t === 'rubrics') {
+        akLabel.textContent = 'Reference Materials';
+        akIcon.innerHTML = '&#128218;';
+        akHint.textContent = 'Optional: sample works, etc.';
+        if (akInput) akInput.id = 'reference';
+    } else {
+        akLabel.textContent = 'Answer Key';
+        akIcon.innerHTML = '&#9989;';
+        akHint.textContent = 'PDF or up to 5 images';
+        const refInput = document.getElementById('reference');
+        if (refInput) refInput.id = 'answer_key';
+    }
+}
+
+function updateMarksVis() {
+    document.getElementById('totalMarksGroup').style.display = document.getElementById('allocateMarks').checked ? 'block' : 'none';
+}
+
+function fileSelected(input) {
+    const zone = input.closest('.upload-zone');
+    const nameEl = zone.querySelector('.filename');
+    const count = input.files.length;
+    if (count > 5 && input.id !== 'class_list') {
+        alert('Maximum 5 files.'); input.value = ''; zone.classList.remove('has-file'); nameEl.textContent = ''; return;
+    }
+    if (count > 0) { zone.classList.add('has-file'); nameEl.textContent = count === 1 ? input.files[0].name : count + ' files'; }
+    else { zone.classList.remove('has-file'); nameEl.textContent = ''; }
+}
+
+function showError(msg) { const el = document.getElementById('errorMsg'); el.textContent = msg; el.style.display = 'block'; }
+function hideError() { document.getElementById('errorMsg').style.display = 'none'; }
+function hideSuccess() { document.getElementById('successMsg').style.display = 'none'; }
+
+// --- Create assignment ---
+async function createAssignment() {
+    hideError();
+    hideSuccess();
+
+    const availableProviders = Object.keys(savedKeys);
+    if (availableProviders.length === 0) return showError('Please save at least one API key above.');
+
+    const provider = document.querySelector('input[name="provider"]:checked')?.value;
+    if (!provider) return showError('Please select an AI provider.');
+
+    const model = document.getElementById('modelSelect').value;
+    const subject = document.getElementById('subject').value.trim();
+
+    const assignType = document.querySelector('input[name="assign_type"]:checked')?.value || 'short_answer';
+
+    // Validate files
+    const cl = document.getElementById('class_list').files;
+    const qp = document.getElementById('question_paper').files;
+    if (!cl.length) return showError('Please upload a class list CSV.');
+    if (!qp.length) return showError('Please upload a question paper.');
+
+    if (assignType !== 'rubrics') {
+        const ak = document.getElementById('answer_key')?.files;
+        if (!ak || !ak.length) return showError('Please upload an answer key.');
+    }
+
+    if (assignType === 'rubrics') {
+        const rub = document.getElementById('rubrics').files;
+        if (!rub.length) return showError('Rubrics file is required for Rubrics / Essay type.');
+        if (!document.getElementById('totalMarksRubric').value) return showError('Please enter total marks.');
+    }
+
+    // Scoring mode
+    let scoringMode = 'status', totalMarks = '';
+    if (assignType === 'rubrics') {
+        scoringMode = 'marks';
+        totalMarks = document.getElementById('totalMarksRubric').value;
+    } else if (document.getElementById('allocateMarks').checked) {
+        scoringMode = 'marks';
+        totalMarks = document.getElementById('totalMarks').value;
+        if (!totalMarks || parseInt(totalMarks) <= 0) return showError('Please enter total marks.');
+    }
+
+    const showResults = document.getElementById('showResults').checked;
+
+    // Build FormData
+    const fd = new FormData();
+    fd.append('provider', provider);
+    fd.append('model', model);
+    fd.append('subject', subject);
+    fd.append('assign_type', assignType);
+    fd.append('scoring_mode', scoringMode);
+    fd.append('total_marks', totalMarks);
+    fd.append('show_results', showResults ? 'on' : '');
+    fd.append('review_instructions', document.getElementById('review_instructions').value);
+    fd.append('marking_instructions', document.getElementById('marking_instructions').value);
+
+    // API keys from local state
+    if (savedKeys.anthropic) fd.append('api_key_anthropic', savedKeys.anthropic);
+    if (savedKeys.openai) fd.append('api_key_openai', savedKeys.openai);
+    if (savedKeys.qwen) fd.append('api_key_qwen', savedKeys.qwen);
+
+    // Files
+    for (const f of cl) fd.append('class_list', f);
+    for (const f of qp) fd.append('question_paper', f);
+
+    if (assignType === 'rubrics') {
+        const rub = document.getElementById('rubrics').files;
+        for (const f of rub) fd.append('rubrics', f);
+        const refFiles = document.getElementById('reference')?.files || [];
+        for (const f of refFiles) fd.append('reference', f);
+    } else {
+        const akFiles = document.getElementById('answer_key')?.files || [];
+        for (const f of akFiles) fd.append('answer_key', f);
+    }
+
+    const btn = document.getElementById('createBtn');
+    btn.disabled = true;
+    btn.textContent = 'Creating...';
+
+    try {
+        const res = await fetch('/teacher/create', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!data.success) {
+            showError(data.error || 'Failed to create assignment.');
+            btn.disabled = false;
+            btn.textContent = 'Create Assignment';
+            return;
+        }
+        // Show success
+        const successEl = document.getElementById('successMsg');
+        const studentUrl = window.location.origin + '/submit/' + data.assignment_id;
+        successEl.innerHTML = '<strong>Assignment created!</strong><br><br>' +
+            'Classroom Code: <span class="code">' + data.classroom_code + '</span><br><br>' +
+            'Student Link: <a href="' + studentUrl + '" target="_blank">' + studentUrl + '</a><br><br>' +
+            '<span style="font-size:12px;color:#666;">Share the code and link with your students. They will enter the classroom code and upload their scripts.</span>';
+        successEl.style.display = 'block';
+        successEl.scrollIntoView({ behavior: 'smooth' });
+
+        btn.disabled = false;
+        btn.textContent = 'Create Assignment';
+
+        // Reload after short delay to show new assignment in list
+        setTimeout(() => { window.location.reload(); }, 4000);
+    } catch (err) {
+        showError('Connection error. Please try again.');
+        btn.disabled = false;
+        btn.textContent = 'Create Assignment';
+    }
+}
+
+// --- Delete assignment ---
+async function deleteAssignment(id, subject) {
+    if (!confirm('Delete assignment "' + (subject || 'Untitled') + '"? This cannot be undone.')) return;
+    try {
+        const res = await fetch('/teacher/assignment/' + id + '/delete', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            const el = document.getElementById('asn_' + id);
+            if (el) el.remove();
+            // If no more assignments, show empty state
+            const list = document.getElementById('assignmentList');
+            if (list && list.children.length === 0) {
+                list.innerHTML = '<div class="empty-state"><div class="icon">&#128218;</div><p>No assignments yet. Create one above to get started.</p></div>';
+            }
+        } else {
+            alert(data.error || 'Failed to delete.');
+        }
+    } catch (err) {
+        alert('Connection error.');
+    }
+}
+
+// --- Init ---
+renderKeyBadges();
+renderProviderGroup();
+updateKeyPlaceholder();
+</script>
+{% endif %}
+</body>
+</html>
