@@ -292,7 +292,7 @@ async function verifyCode() {
         <p style="margin-top:8px;"><a href="/" style="color:#667eea;font-weight:600;font-size:13px;">&larr; Back to Home</a></p>
     </div>
 
-    {% if not provide_keys %}
+    {% if not demo_mode %}
     <!-- API Key Input -->
     <div class="card" id="keyCard">
         <h2>Your API Key</h2>
@@ -454,10 +454,10 @@ let currentQ = 0;
 
 let PROVIDER_MODELS = {{ providers | tojson }};
 const ALL_PROVIDERS = {{ all_providers | tojson }};
-const PROVIDE_KEYS = {{ provide_keys | tojson }};
+const DEMO_MODE = {{ demo_mode | tojson }};
 const STATUS_LABELS = { correct: 'Correct', partially_correct: 'Partially Correct', incorrect: 'Incorrect' };
 
-// --- API key management (when PROVIDE_KEYS is false) ---
+// --- API key management (when DEMO_MODE is false) ---
 function updateKeyInput() {
     const prov = document.querySelector('input[name="key_provider"]:checked')?.value || '';
     const placeholder = {anthropic: 'sk-ant-...', openai: 'sk-...', qwen: 'sk-...'}[prov] || 'API key';
@@ -496,7 +496,7 @@ async function saveApiKey() {
 }
 
 // Clear keys on page close
-if (!PROVIDE_KEYS) {
+if (!DEMO_MODE) {
     window.addEventListener('beforeunload', () => {
         navigator.sendBeacon('/clear-keys', '');
     });

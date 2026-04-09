@@ -648,7 +648,7 @@ async function verifyCode() {
    ===================================================================== */
 const ALL_PROVIDERS = {{ all_providers | tojson }};
 let BULK_PROVIDER_MODELS = {{ providers | tojson }};
-const PROVIDE_KEYS = {{ provide_keys | tojson }};
+const DEMO_MODE = {{ demo_mode | tojson }};
 const savedKeys = {};
 let bulkJobId = null;
 
@@ -1003,7 +1003,7 @@ function renderTeacherProviderGroup() {
     const group = document.getElementById('teacherProviderGroup');
     group.innerHTML = '';
     // When server provides keys, use server providers; otherwise use savedKeys
-    const availableProviders = PROVIDE_KEYS ? Object.keys(BULK_PROVIDER_MODELS) : Object.keys(savedKeys);
+    const availableProviders = DEMO_MODE ? Object.keys(BULK_PROVIDER_MODELS) : Object.keys(savedKeys);
     if (availableProviders.length === 0) {
         document.getElementById('teacherNoProviderMsg').style.display = 'block';
         updateTeacherModelSelect();
@@ -1077,8 +1077,8 @@ async function createAssignment() {
     hideTeacherError();
     hideTeacherSuccess();
 
-    const availableProviders = PROVIDE_KEYS ? Object.keys(BULK_PROVIDER_MODELS) : Object.keys(savedKeys);
-    if (availableProviders.length === 0) return showTeacherError(PROVIDE_KEYS ? 'No AI providers configured on the server.' : 'Please save at least one API key above.');
+    const availableProviders = DEMO_MODE ? Object.keys(BULK_PROVIDER_MODELS) : Object.keys(savedKeys);
+    if (availableProviders.length === 0) return showTeacherError(DEMO_MODE ? 'No AI providers configured on the server.' : 'Please save at least one API key above.');
 
     const provider = document.querySelector('input[name="teacher_provider"]:checked')?.value;
     if (!provider) return showTeacherError('Please select an AI provider.');

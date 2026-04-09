@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
 
-ACCESS_CODE = os.getenv('ACCESS_CODE', 'DEMO2026')
-PROVIDE_KEYS = os.getenv('PROVIDE_KEYS', 'TRUE').upper() == 'TRUE'
+ACCESS_CODE = os.getenv('ACCESS_CODE', '').strip()
+DEMO_MODE = os.getenv('DEMO_MODE', 'FALSE').upper() == 'TRUE'
 
 # Initialize database
 init_db(app)
@@ -41,15 +41,25 @@ def cleanup_old_jobs():
 
 
 def _get_session_keys():
-    """Get session-stored API keys (used when PROVIDE_KEYS is FALSE or for bulk)."""
+    """Get session-stored API keys (used when DEMO_MODE is FALSE or for bulk)."""
     return session.get('api_keys') or {}
 
 
 def _effective_keys(force_session=False):
-    """Return session keys dict if server keys are disabled or force_session is True."""
-    if force_session or not PROVIDE_KEYS:
+    """Return session keys for single marking. In demo mode, use server env keys."""
+    if force_session:
         return _get_session_keys()
-    return None  # Use server env keys
+    # In demo mode, single marking uses server env keys (return None)
+    # In self-hosted, also use server env keys but supplement with session keys
+    sk = _get_session_keys()
+    return sk if sk else None
+
+
+def _is_authenticated():
+    """Check if user is authenticated. Auto-auth if no ACCESS_CODE is set."""
+    if not ACCESS_CODE:
+        return True
+    return session.get('authenticated', False)
 
 
 # ---------------------------------------------------------------------------
@@ -88,25 +98,25 @@ def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pa
 
 @app.route('/')
 def hub():
-    authenticated = session.get('authenticated', False)
+    authenticated = _is_authenticated()
     return render_template('hub.html', authenticated=authenticated)
 
 
 @app.route('/mark')
 def single_mark_page():
-    authenticated = session.get('authenticated', False)
+    authenticated = _is_authenticated()
     sk = _effective_keys()
     providers = get_available_providers(session_keys=sk)
     return render_template('index.html',
                            authenticated=authenticated,
                            providers=providers,
-                           provide_keys=PROVIDE_KEYS,
+                           demo_mode=DEMO_MODE,
                            all_providers=PROVIDERS)
 
 
 @app.route('/class')
 def class_page():
-    authenticated = session.get('authenticated', False)
+    authenticated = _is_authenticated()
     sk = _get_session_keys()
     providers = get_available_providers(session_keys=sk)
     assignments = []
@@ -115,7 +125,7 @@ def class_page():
     return render_template('class.html',
                            authenticated=authenticated,
                            providers=providers,
-                           provide_keys=PROVIDE_KEYS,
+                           demo_mode=DEMO_MODE,
                            all_providers=PROVIDERS,
                            assignments=assignments)
 
@@ -142,7 +152,7 @@ def save_keys():
         if val:
             keys[prov] = val
     session['api_keys'] = keys
-    sk = keys if (not PROVIDE_KEYS) else None
+    sk = keys if (not DEMO_MODE) else None
     providers = get_available_providers(session_keys=sk)
     return jsonify({'success': True, 'providers': {k: v for k, v in providers.items()}})
 
@@ -760,7 +770,7 @@ def teacher_delete_assignment(assignment_id):
 @app.route('/submit/<assignment_id>')
 def student_page(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)
-    return render_template('submit.html', assignment_id=assignment_id, subject=asn.subject, demo_mode=PROVIDE_KEYS)
+    return render_template('submit.html', assignment_id=assignment_id, subject=asn.subject, demo_mode=DEMO_MODE)
 
 
 @app.route('/submit/<assignment_id>/verify', methods=['POST'])
