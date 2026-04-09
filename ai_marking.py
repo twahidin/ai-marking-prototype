@@ -53,19 +53,34 @@ PROVIDERS = {
 }
 
 
-def get_available_providers():
-    """Return dict of provider -> config for providers with API keys configured."""
+PROVIDER_KEY_MAP = {
+    'anthropic': 'ANTHROPIC_API_KEY',
+    'openai': 'OPENAI_API_KEY',
+    'qwen': 'QWEN_API_KEY',
+}
+
+
+def _resolve_api_key(provider, session_keys=None):
+    """Get API key from session keys (if provided) or environment."""
+    env_name = PROVIDER_KEY_MAP.get(provider)
+    if session_keys and session_keys.get(provider):
+        return session_keys[provider]
+    return os.getenv(env_name) if env_name else None
+
+
+def get_available_providers(session_keys=None):
+    """Return dict of provider -> config for providers with API keys available."""
     available = {}
-    if os.getenv('ANTHROPIC_API_KEY'):
+    if _resolve_api_key('anthropic', session_keys):
         available['anthropic'] = PROVIDERS['anthropic']
-    if os.getenv('OPENAI_API_KEY') and OPENAI_AVAILABLE:
+    if _resolve_api_key('openai', session_keys) and OPENAI_AVAILABLE:
         available['openai'] = PROVIDERS['openai']
-    if os.getenv('QWEN_API_KEY') and OPENAI_AVAILABLE:
+    if _resolve_api_key('qwen', session_keys) and OPENAI_AVAILABLE:
         available['qwen'] = PROVIDERS['qwen']
     return available
 
 
-def get_ai_client(provider, model=None):
+def get_ai_client(provider, model=None, session_keys=None):
     """Get AI client for a provider. Returns (client, model_name, provider) or (None, None, None)."""
     prov_config = PROVIDERS.get(provider)
     if not prov_config:
@@ -76,25 +91,20 @@ def get_ai_client(provider, model=None):
     if not model or model not in valid_models:
         model = prov_config['default']
 
+    api_key = _resolve_api_key(provider, session_keys)
+    if not api_key:
+        return None, None, None
+
     if provider == 'anthropic':
-        api_key = os.getenv('ANTHROPIC_API_KEY')
-        if not api_key:
-            return None, None, None
         return Anthropic(api_key=api_key), model, 'anthropic'
 
     elif provider == 'openai':
         if not OPENAI_AVAILABLE:
             return None, None, None
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
-            return None, None, None
         return OpenAI(api_key=api_key), model, 'openai'
 
     elif provider == 'qwen':
         if not OPENAI_AVAILABLE:
-            return None, None, None
-        api_key = os.getenv('QWEN_API_KEY')
-        if not api_key:
             return None, None, None
         client = OpenAI(api_key=api_key, base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
         return client, model, 'qwen'
@@ -521,7 +531,8 @@ Respond ONLY with valid JSON:
 def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
                 subject='', rubrics_pages=None, reference_pages=None,
                 review_instructions='', marking_instructions='',
-                model=None, assign_type='short_answer', scoring_mode='status', total_marks=''):
+                model=None, assign_type='short_answer', scoring_mode='status', total_marks='',
+                session_keys=None):
     """
     Mark a student script using AI vision.
 
@@ -538,7 +549,7 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
     Returns dict with questions, overall_feedback, recommended_actions.
     For rubrics mode, also returns errors (line-by-line) and assign_type.
     """
-    client, model_name, prov = get_ai_client(provider, model=model)
+    client, model_name, prov = get_ai_client(provider, model=model, session_keys=session_keys)
     if not client:
         return {'error': f'AI provider "{provider}" is not available (no API key configured)'}
 

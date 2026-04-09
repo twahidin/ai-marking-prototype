@@ -289,12 +289,34 @@ async function verifyCode() {
     <div class="header">
         <h1>AI Marking Demo</h1>
         <p>Upload a student script with question paper and answer key to generate AI feedback</p>
+        <p style="margin-top:8px;"><a href="/bulk" style="color:#667eea;font-weight:600;font-size:13px;">Bulk Marking (mark entire class) &rarr;</a></p>
     </div>
+
+    {% if not provide_keys %}
+    <!-- API Key Input -->
+    <div class="card" id="keyCard">
+        <h2>Your API Key</h2>
+        <p style="font-size:13px;color:#888;margin-bottom:16px;">Enter your own API key to use this tool. Keys are stored in your browser session only.</p>
+        <div class="sel-group">
+            {% for key, config in all_providers.items() %}
+            <div class="sel-option">
+                <input type="radio" name="key_provider" id="kp_{{ key }}" value="{{ key }}" {% if loop.first %}checked{% endif %} onchange="updateKeyInput()">
+                <label for="kp_{{ key }}">{{ config.label }}</label>
+            </div>
+            {% endfor %}
+        </div>
+        <div style="display:flex;gap:8px;">
+            <input type="password" class="form-input" id="apiKeyInput" placeholder="Paste your API key here..." style="flex:1;">
+            <button class="mark-btn" style="width:auto;padding:12px 24px;" onclick="saveApiKey()">Save</button>
+        </div>
+        <div id="keyStatus" style="font-size:12px;margin-top:8px;color:#28a745;display:none;"></div>
+    </div>
+    {% endif %}
 
     <!-- Form -->
     <div class="card" id="formCard">
         <h2>AI Provider</h2>
-        <div class="sel-group">
+        <div class="sel-group" id="providerGroup">
             {% for key, config in providers.items() %}
             <div class="sel-option">
                 <input type="radio" name="provider" id="provider_{{ key }}" value="{{ key }}" {% if loop.first %}checked{% endif %} onchange="updateModelSelect()">
@@ -430,8 +452,55 @@ let resultErrors = [];
 let resultAssignType = 'short_answer';
 let currentQ = 0;
 
-const PROVIDER_MODELS = {{ providers | tojson }};
+let PROVIDER_MODELS = {{ providers | tojson }};
+const ALL_PROVIDERS = {{ all_providers | tojson }};
+const PROVIDE_KEYS = {{ provide_keys | tojson }};
 const STATUS_LABELS = { correct: 'Correct', partially_correct: 'Partially Correct', incorrect: 'Incorrect' };
+
+// --- API key management (when PROVIDE_KEYS is false) ---
+function updateKeyInput() {
+    const prov = document.querySelector('input[name="key_provider"]:checked')?.value || '';
+    const placeholder = {anthropic: 'sk-ant-...', openai: 'sk-...', qwen: 'sk-...'}[prov] || 'API key';
+    const input = document.getElementById('apiKeyInput');
+    if (input) input.placeholder = placeholder;
+}
+
+async function saveApiKey() {
+    const prov = document.querySelector('input[name="key_provider"]:checked')?.value;
+    const key = document.getElementById('apiKeyInput')?.value.trim();
+    if (!prov || !key) return;
+    const keys = {};
+    keys[prov] = key;
+    try {
+        const res = await fetch('/save-keys', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(keys)});
+        const data = await res.json();
+        if (data.success) {
+            PROVIDER_MODELS = data.providers;
+            // Refresh provider radio buttons
+            const group = document.getElementById('providerGroup');
+            group.innerHTML = '';
+            let first = true;
+            for (const [k, config] of Object.entries(PROVIDER_MODELS)) {
+                const div = document.createElement('div');
+                div.className = 'sel-option';
+                div.innerHTML = `<input type="radio" name="provider" id="provider_${k}" value="${k}" ${first?'checked':''} onchange="updateModelSelect()"><label for="provider_${k}">${config.label}</label>`;
+                group.appendChild(div);
+                first = false;
+            }
+            updateModelSelect();
+            const st = document.getElementById('keyStatus');
+            if (st) { st.textContent = ALL_PROVIDERS[prov].label + ' key saved for this session.'; st.style.display = 'block'; }
+            document.getElementById('apiKeyInput').value = '';
+        }
+    } catch(e) { console.error(e); }
+}
+
+// Clear keys on page close
+if (!PROVIDE_KEYS) {
+    window.addEventListener('beforeunload', () => {
+        navigator.sendBeacon('/clear-keys', '');
+    });
+}
 
 function updateModelSelect() {
     const prov = document.querySelector('input[name="provider"]:checked')?.value;

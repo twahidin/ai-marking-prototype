@@ -5,3 +5,4 @@ openai>=1.50
 reportlab>=4.0
 pdf2image>=1.16
 Pillow>=10.0
+pypdf>=4.0
