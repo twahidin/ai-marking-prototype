@@ -346,8 +346,8 @@ def bulk_mark():
     if not session.get('authenticated'):
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
-    session_keys = _get_session_keys()
-    if not session_keys:
+    session_keys = _effective_keys(force_session=not PROVIDE_KEYS)
+    if not PROVIDE_KEYS and not session_keys:
         return jsonify({'success': False, 'error': 'Please enter your API key first'}), 400
 
     # Validate files
@@ -550,15 +550,23 @@ def teacher_create():
     if not session.get('authenticated'):
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
-    # API keys
+    # API keys — use server env keys if PROVIDE_KEYS is true, otherwise require user input
     api_keys = {}
-    for prov in ('anthropic', 'openai', 'qwen'):
-        val = request.form.get(f'api_key_{prov}', '').strip()
-        if val:
-            api_keys[prov] = val
+    if PROVIDE_KEYS:
+        # Use server-configured keys
+        from ai_marking import PROVIDER_KEY_MAP
+        for prov, env_name in PROVIDER_KEY_MAP.items():
+            val = os.getenv(env_name, '')
+            if val:
+                api_keys[prov] = val
+    else:
+        for prov in ('anthropic', 'openai', 'qwen'):
+            val = request.form.get(f'api_key_{prov}', '').strip()
+            if val:
+                api_keys[prov] = val
 
     if not api_keys:
-        return jsonify({'success': False, 'error': 'Please enter at least one API key'}), 400
+        return jsonify({'success': False, 'error': 'No API keys available. Please enter at least one API key.'}), 400
 
     # Parse class list
     cl_file = request.files.get('class_list')
