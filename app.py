@@ -87,7 +87,13 @@ def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pa
 
 
 @app.route('/')
-def index():
+def hub():
+    authenticated = session.get('authenticated', False)
+    return render_template('hub.html', authenticated=authenticated)
+
+
+@app.route('/mark')
+def single_mark_page():
     authenticated = session.get('authenticated', False)
     sk = _effective_keys()
     providers = get_available_providers(session_keys=sk)
@@ -96,6 +102,22 @@ def index():
                            providers=providers,
                            provide_keys=PROVIDE_KEYS,
                            all_providers=PROVIDERS)
+
+
+@app.route('/class')
+def class_page():
+    authenticated = session.get('authenticated', False)
+    sk = _get_session_keys()
+    providers = get_available_providers(session_keys=sk)
+    assignments = []
+    if authenticated:
+        assignments = Assignment.query.order_by(Assignment.created_at.desc()).all()
+    return render_template('class.html',
+                           authenticated=authenticated,
+                           providers=providers,
+                           provide_keys=PROVIDE_KEYS,
+                           all_providers=PROVIDERS,
+                           assignments=assignments)
 
 
 @app.route('/verify-code', methods=['POST'])
@@ -316,13 +338,7 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
 
 @app.route('/bulk')
 def bulk_page():
-    authenticated = session.get('authenticated', False)
-    sk = _get_session_keys()
-    providers = get_available_providers(session_keys=sk)
-    return render_template('bulk.html',
-                           authenticated=authenticated,
-                           providers=providers,
-                           all_providers=PROVIDERS)
+    return redirect(url_for('class_page'))
 
 
 @app.route('/bulk/mark', methods=['POST'])
@@ -526,14 +542,7 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
 
 @app.route('/teacher')
 def teacher_page():
-    authenticated = session.get('authenticated', False)
-    assignments = []
-    if authenticated:
-        assignments = Assignment.query.order_by(Assignment.created_at.desc()).all()
-    return render_template('teacher.html',
-                           authenticated=authenticated,
-                           assignments=assignments,
-                           all_providers=PROVIDERS)
+    return redirect(url_for('class_page', _anchor='submissions'))
 
 
 @app.route('/teacher/create', methods=['POST'])
