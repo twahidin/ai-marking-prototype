@@ -275,7 +275,15 @@
             </div>
 
             <div class="error-msg" id="formError"></div>
+            {% if demo_mode %}
+            <div style="background:#fff8e1;border:1px solid #f0ad4e;border-radius:10px;padding:16px;margin-bottom:16px;text-align:center;">
+                <div style="font-size:14px;font-weight:600;color:#e68a00;">Demo Mode</div>
+                <div style="font-size:13px;color:#888;margin-top:4px;">Submission is disabled in demo mode. Deploy your own instance to enable student submissions.</div>
+            </div>
+            <button class="submit-btn" disabled style="opacity:0.5;cursor:not-allowed;">Submit (Disabled in Demo)</button>
+            {% else %}
             <button class="submit-btn" id="submitBtn" onclick="submitWork()">Submit</button>
+            {% endif %}
         </div>
     </div>
 </div>

@@ -296,8 +296,8 @@ async function verifyCode() {
         </p>
     </div>
 
-    <!-- Shared API Key Card (hidden when server provides keys) -->
-    <div class="card" id="keyCard" {% if provide_keys %}style="display:none;"{% endif %}>
+    <!-- API Key Card (always shown — bulk always needs own keys) -->
+    <div class="card" id="keyCard">
         <h2>API Keys</h2>
         <p style="font-size:13px;color:#888;margin-bottom:16px;">
             Save your API keys here. Keys are stored in your browser session only and cleared when you leave.
@@ -320,7 +320,9 @@ async function verifyCode() {
     <!-- Tab Bar -->
     <div class="tabs-bar">
         <button class="tab-btn active" id="tabBtnUpload" onclick="switchTab('upload')">Upload All Scripts</button>
+        {% if not provide_keys %}
         <button class="tab-btn" id="tabBtnSubmissions" onclick="switchTab('submissions')">Student Submission</button>
+        {% endif %}
     </div>
 
     <!-- ==================== TAB 1: Upload All Scripts (Bulk) ==================== -->
@@ -478,6 +480,7 @@ async function verifyCode() {
     </div>
 
     <!-- ==================== TAB 2: Student Submission (Teacher Dashboard) ==================== -->
+    {% if not provide_keys %}
     <div class="tab-content" id="tabSubmissions">
 
         <!-- Create Assignment -->
@@ -640,6 +643,7 @@ async function verifyCode() {
             {% endif %}
         </div>
     </div>
+    {% endif %}
 </div>
 
 <script>
