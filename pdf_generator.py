@@ -358,3 +358,299 @@ def generate_report_pdf(result, subject=''):
 
     doc.build(story)
     return buffer.getvalue()
+
+
+def generate_overview_pdf(student_results, subject=''):
+    """
+    Generate a class overview PDF with item analysis.
+
+    Args:
+        student_results: List of dicts with {name, index, result} where result
+                        is the marking result dict (with questions, etc.)
+        subject: Subject name for the header
+
+    Returns:
+        PDF content as bytes
+    """
+    from statistics import mean, median, stdev
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4,
+        rightMargin=1.5 * cm, leftMargin=1.5 * cm,
+        topMargin=1.5 * cm, bottomMargin=1.5 * cm
+    )
+
+    styles = get_styles()
+    story = []
+
+    # Title
+    story.append(Paragraph("Class Overview &amp; Item Analysis", styles['Title_Custom']))
+    story.append(Spacer(1, 5))
+
+    cell = styles['TableCell']
+    bold_cell = ParagraphStyle('InfoBold', parent=cell, fontName='Helvetica-Bold')
+
+    now = datetime.now(timezone.utc).strftime('%d %B %Y, %H:%M UTC')
+    info_data = [
+        [Paragraph('Subject:', bold_cell), Paragraph(clean_for_pdf(subject or 'General'), cell),
+         Paragraph('Date:', bold_cell), Paragraph(now, cell)],
+        [Paragraph('Total Students:', bold_cell), Paragraph(str(len(student_results)), cell),
+         Paragraph('', bold_cell), Paragraph('', cell)],
+    ]
+    info_table = Table(info_data, colWidths=[2.5 * cm, 5.5 * cm, 2.5 * cm, 5.5 * cm])
+    info_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), LIGHT_GRAY),
+        ('BOX', (0, 0), (-1, -1), 1, BORDER_COLOR),
+        ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
+        ('PADDING', (0, 0), (-1, -1), 6),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+    ]))
+    story.append(info_table)
+    story.append(Spacer(1, 20))
+
+    # --- Collect scores ---
+    valid_results = [sr for sr in student_results if sr.get('result') and not sr['result'].get('error')]
+    scores = []  # (name, index, total_awarded, total_possible, pct)
+    has_marks = False
+
+    for sr in valid_results:
+        questions = sr['result'].get('questions', [])
+        if any(q.get('marks_awarded') is not None for q in questions):
+            has_marks = True
+            ta = sum(q.get('marks_awarded', 0) for q in questions)
+            tp = sum(q.get('marks_total', 0) for q in questions)
+            pct = round(ta / tp * 100, 1) if tp > 0 else 0
+            scores.append({'name': sr.get('name', ''), 'index': sr.get('index', ''),
+                           'awarded': ta, 'possible': tp, 'pct': pct})
+        else:
+            correct = sum(1 for q in questions if q.get('status') == 'correct')
+            total = len(questions)
+            pct = round(correct / total * 100, 1) if total > 0 else 0
+            scores.append({'name': sr.get('name', ''), 'index': sr.get('index', ''),
+                           'awarded': correct, 'possible': total, 'pct': pct})
+
+    # --- Class Summary ---
+    story.append(Paragraph("Class Summary", styles['Heading_Custom']))
+    story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
+    story.append(Spacer(1, 10))
+
+    if scores:
+        pcts = [s['pct'] for s in scores]
+        avg_pct = round(mean(pcts), 1)
+        med_pct = round(median(pcts), 1)
+        high_pct = max(pcts)
+        low_pct = min(pcts)
+        std_pct = round(stdev(pcts), 1) if len(pcts) > 1 else 0
+        pass_count = sum(1 for p in pcts if p >= 50)
+        pass_rate = round(pass_count / len(pcts) * 100)
+
+        stat_header = ['Mean', 'Median', 'Highest', 'Lowest', 'Std Dev', 'Pass Rate']
+        stat_values = [f'{avg_pct}%', f'{med_pct}%', f'{high_pct}%', f'{low_pct}%',
+                       f'{std_pct}%', f'{pass_rate}% ({pass_count}/{len(scores)})']
+
+        stat_data = [
+            [Paragraph(f'<b>{h}</b>', styles['TableHeader']) for h in stat_header],
+            [Paragraph(v, ParagraphStyle('StatVal', parent=cell, alignment=TA_CENTER)) for v in stat_values],
+        ]
+        stat_table = Table(stat_data, colWidths=[2.67 * cm] * 6)
+        stat_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), PRIMARY_COLOR),
+            ('BACKGROUND', (0, 1), (-1, 1), white),
+            ('BOX', (0, 0), (-1, -1), 1, BORDER_COLOR),
+            ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
+            ('PADDING', (0, 0), (-1, -1), 8),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        story.append(stat_table)
+        story.append(Spacer(1, 10))
+
+        # Score distribution bands
+        bands = [('0-24%', 0, 24), ('25-49%', 25, 49), ('50-74%', 50, 74), ('75-100%', 75, 100)]
+        band_counts = []
+        for label, lo, hi in bands:
+            count = sum(1 for p in pcts if lo <= p <= hi)
+            band_counts.append(count)
+
+        dist_data = [
+            [Paragraph(f'<b>{b[0]}</b>', styles['TableHeader']) for b in bands],
+            [Paragraph(str(c), ParagraphStyle('DistVal', parent=cell, alignment=TA_CENTER))
+             for c in band_counts],
+        ]
+        story.append(Spacer(1, 5))
+        story.append(Paragraph("Score Distribution", ParagraphStyle(
+            'DistTitle', parent=styles['Body_Custom'], fontName='Helvetica-Bold', fontSize=11)))
+        dist_table = Table(dist_data, colWidths=[4 * cm] * 4)
+        dist_colors = [DANGER_COLOR, WARNING_COLOR, HexColor('#5cb85c'), SUCCESS_COLOR]
+        dist_style = [
+            ('BOX', (0, 0), (-1, -1), 1, BORDER_COLOR),
+            ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
+            ('PADDING', (0, 0), (-1, -1), 8),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('BACKGROUND', (0, 1), (-1, 1), white),
+        ]
+        for i, color in enumerate(dist_colors):
+            dist_style.append(('BACKGROUND', (i, 0), (i, 0), color))
+        dist_table.setStyle(TableStyle(dist_style))
+        story.append(dist_table)
+    else:
+        story.append(Paragraph("No scored results available.", styles['Body_Custom']))
+
+    story.append(Spacer(1, 20))
+
+    # --- Item Analysis ---
+    story.append(Paragraph("Item Analysis", styles['Heading_Custom']))
+    story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
+    story.append(Spacer(1, 10))
+
+    # Collect per-question stats
+    question_stats = {}  # q_num -> {correct, partial, incorrect, total, marks_sum, marks_max}
+    for sr in valid_results:
+        questions = sr['result'].get('questions', [])
+        for q in questions:
+            qn = q.get('question_num', '?')
+            key = str(qn)
+            if key not in question_stats:
+                question_stats[key] = {
+                    'num': qn,
+                    'criterion_name': q.get('criterion_name', ''),
+                    'correct': 0, 'partial': 0, 'incorrect': 0, 'total': 0,
+                    'marks_sum': 0, 'marks_max': 0,
+                }
+            qs = question_stats[key]
+            qs['total'] += 1
+            status = q.get('status', 'incorrect')
+            if status == 'correct':
+                qs['correct'] += 1
+            elif status == 'partially_correct':
+                qs['partial'] += 1
+            else:
+                qs['incorrect'] += 1
+            if q.get('marks_awarded') is not None:
+                qs['marks_sum'] += q.get('marks_awarded', 0)
+                qs['marks_max'] = max(qs['marks_max'], q.get('marks_total', 0))
+
+    if question_stats:
+        # Sort by question number
+        sorted_qs = sorted(question_stats.values(), key=lambda x: (
+            int(x['num']) if str(x['num']).isdigit() else 999, str(x['num'])))
+
+        is_rubrics = any(qs['criterion_name'] for qs in sorted_qs)
+        q_label = 'Criterion' if is_rubrics else 'Q#'
+
+        if has_marks:
+            header_row = [q_label, 'Correct', 'Partial', 'Incorrect', 'Avg Marks', 'Max', 'Difficulty']
+            col_widths = [2.8 * cm, 1.8 * cm, 1.8 * cm, 1.8 * cm, 2.2 * cm, 1.5 * cm, 2.2 * cm]
+        else:
+            header_row = [q_label, 'Correct', 'Partial', 'Incorrect', 'Difficulty']
+            col_widths = [3 * cm, 2.5 * cm, 2.5 * cm, 2.5 * cm, 3 * cm]
+
+        item_data = [[Paragraph(f'<b>{h}</b>', styles['TableHeader']) for h in header_row]]
+
+        center_cell = ParagraphStyle('CenterCell', parent=cell, alignment=TA_CENTER)
+
+        for qs in sorted_qs:
+            n = qs['total'] or 1
+            pct_correct = round(qs['correct'] / n * 100)
+            pct_partial = round(qs['partial'] / n * 100)
+            pct_incorrect = round(qs['incorrect'] / n * 100)
+
+            # Difficulty index: % who got it fully correct
+            difficulty = pct_correct
+            diff_label = 'Easy' if difficulty >= 70 else ('Moderate' if difficulty >= 40 else 'Hard')
+            diff_color = SUCCESS_COLOR if difficulty >= 70 else (WARNING_COLOR if difficulty >= 40 else DANGER_COLOR)
+
+            q_name = qs['criterion_name'] if is_rubrics and qs['criterion_name'] else str(qs['num'])
+
+            row = [
+                Paragraph(clean_for_pdf(q_name), cell),
+                Paragraph(f'{qs["correct"]} ({pct_correct}%)', center_cell),
+                Paragraph(f'{qs["partial"]} ({pct_partial}%)', center_cell),
+                Paragraph(f'{qs["incorrect"]} ({pct_incorrect}%)', center_cell),
+            ]
+            if has_marks:
+                avg_marks = round(qs['marks_sum'] / n, 1)
+                row.append(Paragraph(str(avg_marks), center_cell))
+                row.append(Paragraph(str(qs['marks_max']), center_cell))
+            row.append(Paragraph(f'<b>{diff_label}</b> ({difficulty}%)',
+                                 ParagraphStyle('DiffCell', parent=center_cell,
+                                                textColor=diff_color, fontName='Helvetica-Bold')))
+            item_data.append(row)
+
+        item_table = Table(item_data, colWidths=col_widths)
+        item_style = [
+            ('BACKGROUND', (0, 0), (-1, 0), PRIMARY_COLOR),
+            ('BOX', (0, 0), (-1, -1), 1, BORDER_COLOR),
+            ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
+            ('PADDING', (0, 0), (-1, -1), 6),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]
+        # Alternate row colors
+        for i in range(1, len(item_data)):
+            if i % 2 == 0:
+                item_style.append(('BACKGROUND', (0, i), (-1, i), LIGHT_GRAY))
+        item_table.setStyle(TableStyle(item_style))
+        story.append(item_table)
+        story.append(Spacer(1, 15))
+
+        # Weak areas
+        weak = [qs for qs in sorted_qs if (qs['correct'] / max(qs['total'], 1) * 100) < 40]
+        if weak:
+            story.append(Paragraph("Areas Needing Attention", styles['Heading_Custom']))
+            story.append(Spacer(1, 5))
+            for qs in weak:
+                q_name = qs['criterion_name'] if is_rubrics and qs['criterion_name'] else f"Question {qs['num']}"
+                pct = round(qs['correct'] / max(qs['total'], 1) * 100)
+                story.append(Paragraph(
+                    f"<b>{clean_for_pdf(q_name)}</b> — Only {pct}% of students answered correctly. "
+                    f"({qs['incorrect']} incorrect, {qs['partial']} partially correct out of {qs['total']})",
+                    styles['Body_Custom']))
+            story.append(Spacer(1, 15))
+
+    story.append(Spacer(1, 10))
+
+    # --- Student Scores Table ---
+    story.append(Paragraph("Individual Scores", styles['Heading_Custom']))
+    story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
+    story.append(Spacer(1, 10))
+
+    if scores:
+        sorted_scores = sorted(scores, key=lambda x: x['pct'], reverse=True)
+        score_header = ['Rank', 'Index', 'Name', 'Score', '%']
+        score_data = [[Paragraph(f'<b>{h}</b>', styles['TableHeader']) for h in score_header]]
+        center_cell = ParagraphStyle('CenterCell2', parent=cell, alignment=TA_CENTER)
+
+        for rank, s in enumerate(sorted_scores, 1):
+            score_str = f"{s['awarded']}/{s['possible']}" if has_marks else f"{s['awarded']}/{s['possible']}"
+            pct_color = SUCCESS_COLOR if s['pct'] >= 50 else DANGER_COLOR
+            score_data.append([
+                Paragraph(str(rank), center_cell),
+                Paragraph(str(s['index']), cell),
+                Paragraph(clean_for_pdf(s['name']), cell),
+                Paragraph(score_str, center_cell),
+                Paragraph(f"{s['pct']}%", ParagraphStyle('PctCell', parent=center_cell, textColor=pct_color)),
+            ])
+
+        score_table = Table(score_data, colWidths=[1.5 * cm, 2.5 * cm, 6 * cm, 3 * cm, 3 * cm])
+        score_style = [
+            ('BACKGROUND', (0, 0), (-1, 0), PRIMARY_COLOR),
+            ('BOX', (0, 0), (-1, -1), 1, BORDER_COLOR),
+            ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
+            ('PADDING', (0, 0), (-1, -1), 6),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]
+        for i in range(1, len(score_data)):
+            if i % 2 == 0:
+                score_style.append(('BACKGROUND', (0, i), (-1, i), LIGHT_GRAY))
+        score_table.setStyle(TableStyle(score_style))
+        story.append(score_table)
+
+    # Footer
+    story.append(Spacer(1, 20))
+    story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("Generated by AI Marking Demo", styles['Footer']))
+
+    doc.build(story)
+    return buffer.getvalue()

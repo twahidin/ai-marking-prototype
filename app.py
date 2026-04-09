@@ -12,7 +12,7 @@ from flask import Flask, render_template, request, jsonify, session, send_file, 
 import io
 
 from ai_marking import mark_script, get_available_providers, PROVIDERS
-from pdf_generator import generate_report_pdf
+from pdf_generator import generate_report_pdf, generate_overview_pdf
 from db import db, init_db, Assignment, Student, Submission
 
 logging.basicConfig(level=logging.INFO)
@@ -441,6 +441,29 @@ def bulk_download(job_id):
     )
 
 
+@app.route('/bulk/overview/<job_id>')
+def bulk_overview(job_id):
+    if not session.get('authenticated'):
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    job = jobs.get(job_id)
+    if not job or job['status'] != 'done' or not job.get('results'):
+        return jsonify({'success': False, 'error': 'No results available'}), 404
+
+    student_results = [
+        {'name': item['name'], 'index': item['index'], 'result': item['result']}
+        for item in job['results']
+    ]
+    pdf_bytes = generate_overview_pdf(student_results, subject=job.get('subject', ''))
+
+    return send_file(
+        io.BytesIO(pdf_bytes),
+        mimetype='application/pdf',
+        as_attachment=True,
+        download_name='Class_Overview_Report.pdf'
+    )
+
+
 # ---------------------------------------------------------------------------
 # Teacher dashboard & student submission portal
 # ---------------------------------------------------------------------------
@@ -668,6 +691,38 @@ def teacher_download_all(assignment_id):
 
     return send_file(buf, mimetype='application/zip', as_attachment=True,
                      download_name=f'{asn.classroom_code}_reports.zip')
+
+
+@app.route('/teacher/assignment/<assignment_id>/overview')
+def teacher_overview(assignment_id):
+    if not session.get('authenticated'):
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    asn = Assignment.query.get_or_404(assignment_id)
+    submissions = Submission.query.filter_by(assignment_id=assignment_id, status='done').all()
+
+    student_results = []
+    for sub in submissions:
+        result = sub.get_result()
+        if result.get('error'):
+            continue
+        student = Student.query.get(sub.student_id)
+        if not student:
+            continue
+        student_results.append({
+            'name': student.name,
+            'index': student.index_number,
+            'result': result,
+        })
+
+    pdf_bytes = generate_overview_pdf(student_results, subject=asn.subject)
+
+    return send_file(
+        io.BytesIO(pdf_bytes),
+        mimetype='application/pdf',
+        as_attachment=True,
+        download_name=f'{asn.classroom_code}_overview.pdf'
+    )
 
 
 @app.route('/teacher/assignment/<assignment_id>/delete', methods=['POST'])

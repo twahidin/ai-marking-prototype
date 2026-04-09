@@ -361,7 +361,8 @@ async function verifyCode() {
             <tbody id="resultsBody"></tbody>
         </table>
         <div class="action-row">
-            <button class="action-btn download" id="downloadBtn" onclick="downloadZip()">Download All Reports (ZIP)</button>
+            <button class="action-btn download" onclick="downloadZip()">Download All Reports (ZIP)</button>
+            <button class="action-btn download" style="background:#667eea;" onclick="downloadOverview()">Download Class Overview</button>
             <button class="action-btn reset" onclick="resetBulk()">Mark Another Class</button>
         </div>
     </div>
@@ -651,6 +652,10 @@ async function renderBulkResults() {
 
 function downloadZip() {
     if (bulkJobId) window.open('/bulk/download/' + bulkJobId, '_blank');
+}
+
+function downloadOverview() {
+    if (bulkJobId) window.open('/bulk/overview/' + bulkJobId, '_blank');
 }
 
 function resetBulk() {
