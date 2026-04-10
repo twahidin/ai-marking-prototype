@@ -1,0 +1,320 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Department - AI Marking{% endblock %}
+
+{% block head %}
+<style>
+    .manage-page { max-width: 1100px; margin: 0 auto; padding: 40px 20px; }
+    .manage-header { margin-bottom: 24px; }
+    .manage-header h1 { font-size: 28px; font-weight: 700; color: #333; margin-bottom: 4px; }
+    .manage-header p { color: #888; font-size: 14px; }
+
+    .manage-nav { display: flex; gap: 16px; margin-bottom: 24px; }
+    .manage-nav a {
+        padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
+        text-decoration: none; color: #667eea; background: #f0f2ff; transition: all 0.2s;
+    }
+    .manage-nav a:hover { background: #667eea; color: white; }
+
+    .manage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
+    @media (max-width: 768px) { .manage-grid { grid-template-columns: 1fr; } }
+
+    .manage-card {
+        background: white; border-radius: 16px; padding: 28px;
+        box-shadow: 0 2px 20px rgba(0,0,0,0.08);
+    }
+    .manage-card h2 { font-size: 18px; font-weight: 700; color: #333; margin-bottom: 16px; }
+
+    .add-form { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+    .add-form input, .add-form select {
+        padding: 8px 12px; border: 2px solid #e0e0e0; border-radius: 8px;
+        font-size: 14px; outline: none; transition: border-color 0.2s;
+    }
+    .add-form input:focus, .add-form select:focus { border-color: #667eea; }
+    .add-form input { flex: 1; min-width: 120px; }
+    .add-btn {
+        padding: 8px 16px; border: none; border-radius: 8px;
+        background: #667eea; color: white; font-weight: 600; font-size: 13px;
+        cursor: pointer; transition: background 0.2s; white-space: nowrap;
+    }
+    .add-btn:hover { background: #5a6fd6; }
+
+    .item-list { list-style: none; }
+    .item-card {
+        border: 1px solid #e8e8e8; border-radius: 10px; padding: 14px 16px;
+        margin-bottom: 10px; transition: box-shadow 0.2s;
+    }
+    .item-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+    .item-header { display: flex; justify-content: space-between; align-items: center; }
+    .item-name { font-weight: 600; font-size: 15px; color: #333; }
+    .item-meta { font-size: 12px; color: #888; margin-top: 4px; }
+    .item-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+    .badge {
+        display: inline-flex; align-items: center; gap: 4px;
+        padding: 4px 10px; border-radius: 16px; font-size: 11px; font-weight: 600;
+    }
+    .badge-hod { background: #f0e6ff; color: #7c3aed; }
+    .badge-teacher { background: #e0f0ff; color: #2563eb; }
+    .badge-remove {
+        background: none; border: none; color: #999; cursor: pointer;
+        font-size: 14px; padding: 0 2px; line-height: 1;
+    }
+    .badge-remove:hover { color: #dc3545; }
+
+    .assign-row { display: flex; gap: 8px; margin-top: 8px; }
+    .assign-row select {
+        flex: 1; padding: 6px 10px; border: 1px solid #e0e0e0; border-radius: 6px;
+        font-size: 12px;
+    }
+    .assign-btn {
+        padding: 6px 12px; border: none; border-radius: 6px;
+        background: #f0f2ff; color: #667eea; font-weight: 600; font-size: 12px;
+        cursor: pointer;
+    }
+    .assign-btn:hover { background: #667eea; color: white; }
+
+    .code-display {
+        font-family: 'SF Mono', 'Consolas', monospace; font-size: 13px;
+        background: #f5f5f7; padding: 4px 10px; border-radius: 6px;
+        color: #667eea; font-weight: 600; letter-spacing: 1px; cursor: pointer;
+    }
+    .code-display:hover { background: #e8e8ee; }
+
+    .delete-btn {
+        background: none; border: none; color: #ccc; cursor: pointer;
+        font-size: 18px; padding: 4px; line-height: 1;
+    }
+    .delete-btn:hover { color: #dc3545; }
+    .delete-btn:disabled { color: #e8e8e8; cursor: not-allowed; }
+
+    .keys-card {
+        background: white; border-radius: 16px; padding: 28px;
+        box-shadow: 0 2px 20px rgba(0,0,0,0.08);
+    }
+    .keys-card h2 { font-size: 18px; font-weight: 700; color: #333; margin-bottom: 4px; }
+    .keys-card .keys-note { font-size: 12px; color: #888; margin-bottom: 16px; }
+    .key-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .key-row label { width: 80px; font-size: 13px; font-weight: 600; color: #555; }
+    .key-row input {
+        flex: 1; padding: 8px 12px; border: 2px solid #e0e0e0; border-radius: 8px;
+        font-size: 13px; outline: none;
+    }
+    .key-row input:focus { border-color: #667eea; }
+    .save-keys-btn {
+        padding: 10px 24px; border: none; border-radius: 8px;
+        background: #667eea; color: white; font-weight: 600; font-size: 14px;
+        cursor: pointer; margin-top: 8px;
+    }
+    .save-keys-btn:hover { background: #5a6fd6; }
+    .toast {
+        position: fixed; bottom: 24px; right: 24px; padding: 12px 20px;
+        border-radius: 8px; font-size: 14px; font-weight: 600; color: white;
+        opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 100;
+    }
+    .toast.success { background: #28a745; }
+    .toast.error { background: #dc3545; }
+    .toast.show { opacity: 1; }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="manage-page">
+    <div class="manage-nav">
+        <a href="/">Home</a>
+        <a href="/department">Dashboard</a>
+        <a href="/department/insights">Insights</a>
+    </div>
+
+    <div class="manage-header">
+        <h1>Manage Department</h1>
+        <p>Create classes, add teachers, and configure API keys</p>
+    </div>
+
+    <div class="manage-grid">
+        <!-- Classes Column -->
+        <div class="manage-card">
+            <h2>Classes</h2>
+            <div class="add-form">
+                <input type="text" id="className" placeholder="Class name (e.g. 3A)">
+                <input type="text" id="classLevel" placeholder="Level (e.g. Sec 3)" style="max-width:140px;">
+                <button class="add-btn" onclick="addClass()">Add Class</button>
+            </div>
+            <div id="classList" class="item-list">
+                {% for cls in classes %}
+                <div class="item-card" id="class-{{ cls.id }}">
+                    <div class="item-header">
+                        <div>
+                            <span class="item-name">{{ cls.name }}</span>
+                            {% if cls.level %}<span class="item-meta"> — {{ cls.level }}</span>{% endif %}
+                        </div>
+                        <button class="delete-btn" onclick="deleteClass('{{ cls.id }}')" title="Delete class">&times;</button>
+                    </div>
+                    <div class="item-badges" id="class-teachers-{{ cls.id }}">
+                        {% for t in cls.teachers %}
+                        <span class="badge badge-teacher">
+                            {{ t.name }}
+                            <button class="badge-remove" onclick="unassignTeacher('{{ cls.id }}', '{{ t.id }}')">&times;</button>
+                        </span>
+                        {% endfor %}
+                    </div>
+                    <div class="assign-row">
+                        <select id="assign-select-{{ cls.id }}">
+                            <option value="">Assign teacher...</option>
+                            {% for t in teachers %}
+                            {% if t.role == 'teacher' %}
+                            <option value="{{ t.id }}">{{ t.name }}</option>
+                            {% endif %}
+                            {% endfor %}
+                        </select>
+                        <button class="assign-btn" onclick="assignTeacher('{{ cls.id }}')">Assign</button>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Teachers Column -->
+        <div class="manage-card">
+            <h2>Teachers</h2>
+            <div class="add-form">
+                <input type="text" id="teacherName" placeholder="Teacher name">
+                <select id="teacherRole" style="max-width:120px;">
+                    <option value="teacher">Teacher</option>
+                    <option value="hod">HOD</option>
+                </select>
+                <button class="add-btn" onclick="addTeacher()">Add Teacher</button>
+            </div>
+            <div id="teacherList" class="item-list">
+                {% for t in teachers %}
+                <div class="item-card" id="teacher-{{ t.id }}">
+                    <div class="item-header">
+                        <div>
+                            <span class="item-name">{{ t.name }}</span>
+                            <span class="badge {{ 'badge-hod' if t.role == 'hod' else 'badge-teacher' }}" style="margin-left:8px;">{{ t.role|upper }}</span>
+                        </div>
+                        <button class="delete-btn" onclick="deleteTeacher('{{ t.id }}')" {% if t.role == 'hod' %}disabled title="Cannot delete HOD"{% else %}title="Delete teacher"{% endif %}>&times;</button>
+                    </div>
+                    <div class="item-meta" style="margin-top:6px;">
+                        Code: <span class="code-display" onclick="navigator.clipboard.writeText(this.textContent)" title="Click to copy">{{ t.code }}</span>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <!-- API Keys Section -->
+    <div class="keys-card">
+        <h2>Department API Keys</h2>
+        <p class="keys-note">These keys are used for all marking in the department. At least one is required.</p>
+        <div class="key-row">
+            <label>Anthropic</label>
+            <input type="password" id="key_anthropic" placeholder="sk-ant-...">
+        </div>
+        <div class="key-row">
+            <label>OpenAI</label>
+            <input type="password" id="key_openai" placeholder="sk-...">
+        </div>
+        <div class="key-row">
+            <label>Qwen</label>
+            <input type="password" id="key_qwen" placeholder="sk-...">
+        </div>
+        <button class="save-keys-btn" onclick="saveKeys()">Save Keys</button>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function showToast(msg, type) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast ' + type + ' show';
+    setTimeout(function() { t.classList.remove('show'); }, 2500);
+}
+
+function addClass() {
+    var name = document.getElementById('className').value.trim();
+    var level = document.getElementById('classLevel').value.trim();
+    if (!name) return;
+    fetch('/department/class/create', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name, level: level})
+    }).then(r => r.json()).then(data => {
+        if (data.success) { showToast('Class created', 'success'); location.reload(); }
+        else { showToast(data.error || 'Error', 'error'); }
+    });
+}
+
+function deleteClass(id) {
+    if (!confirm('Delete this class? This cannot be undone.')) return;
+    fetch('/department/class/' + id + '/delete', { method: 'POST' })
+    .then(r => r.json()).then(data => {
+        if (data.success) { document.getElementById('class-' + id).remove(); showToast('Class deleted', 'success'); }
+        else { showToast(data.error || 'Error', 'error'); }
+    });
+}
+
+function assignTeacher(classId) {
+    var sel = document.getElementById('assign-select-' + classId);
+    var teacherId = sel.value;
+    if (!teacherId) return;
+    fetch('/department/class/' + classId + '/assign', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({teacher_id: teacherId})
+    }).then(r => r.json()).then(data => {
+        if (data.success) { showToast('Teacher assigned', 'success'); location.reload(); }
+        else { showToast(data.error || 'Error', 'error'); }
+    });
+}
+
+function unassignTeacher(classId, teacherId) {
+    fetch('/department/class/' + classId + '/unassign', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({teacher_id: teacherId})
+    }).then(r => r.json()).then(data => {
+        if (data.success) { location.reload(); }
+        else { showToast(data.error || 'Error', 'error'); }
+    });
+}
+
+function addTeacher() {
+    var name = document.getElementById('teacherName').value.trim();
+    var role = document.getElementById('teacherRole').value;
+    if (!name) return;
+    fetch('/department/teacher/create', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name, role: role})
+    }).then(r => r.json()).then(data => {
+        if (data.success) { showToast('Teacher created — code: ' + data.teacher.code, 'success'); location.reload(); }
+        else { showToast(data.error || 'Error', 'error'); }
+    });
+}
+
+function deleteTeacher(id) {
+    if (!confirm('Delete this teacher?')) return;
+    fetch('/department/teacher/' + id + '/delete', { method: 'POST' })
+    .then(r => r.json()).then(data => {
+        if (data.success) { document.getElementById('teacher-' + id).remove(); showToast('Teacher deleted', 'success'); }
+        else { showToast(data.error || 'Error', 'error'); }
+    });
+}
+
+function saveKeys() {
+    var keys = {
+        anthropic: document.getElementById('key_anthropic').value.trim(),
+        openai: document.getElementById('key_openai').value.trim(),
+        qwen: document.getElementById('key_qwen').value.trim()
+    };
+    fetch('/department/keys', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(keys)
+    }).then(r => r.json()).then(data => {
+        if (data.success) { showToast('API keys saved', 'success'); }
+        else { showToast(data.error || 'Error', 'error'); }
+    });
+}
+</script>
+{% endblock %}

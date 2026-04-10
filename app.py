@@ -413,6 +413,172 @@ def department_page():
 
 
 # ---------------------------------------------------------------------------
+# Class & Teacher Management
+# ---------------------------------------------------------------------------
+
+@app.route('/department/classes')
+def department_manage():
+    err = _require_hod()
+    if err:
+        return redirect(url_for('hub'))
+
+    teacher = _current_teacher()
+    classes = Class.query.order_by(Class.name).all()
+    teachers = Teacher.query.order_by(Teacher.role.desc(), Teacher.name).all()
+
+    return render_template('department_manage.html',
+                           teacher=teacher,
+                           classes=classes,
+                           teachers=teachers,
+                           dept_mode=DEPT_MODE,
+                           demo_mode=DEMO_MODE)
+
+
+def _generate_teacher_code():
+    """Generate a unique 8-char teacher code."""
+    chars = string.ascii_uppercase + string.digits
+    while True:
+        code = ''.join(random.choices(chars, k=8))
+        if not Teacher.query.filter_by(code=code).first():
+            return code
+
+
+@app.route('/department/teacher/create', methods=['POST'])
+def dept_create_teacher():
+    err = _require_hod()
+    if err:
+        return err
+
+    data = request.get_json()
+    name = (data.get('name') or '').strip()
+    role = data.get('role', 'teacher')
+    if not name:
+        return jsonify({'success': False, 'error': 'Name is required'}), 400
+    if role not in ('teacher', 'hod'):
+        return jsonify({'success': False, 'error': 'Invalid role'}), 400
+
+    t = Teacher(
+        id=str(uuid.uuid4()),
+        name=name,
+        code=_generate_teacher_code(),
+        role=role,
+    )
+    db.session.add(t)
+    db.session.commit()
+
+    return jsonify({'success': True, 'teacher': {
+        'id': t.id, 'name': t.name,
+        'code': t.code, 'role': t.role,
+    }})
+
+
+@app.route('/department/teacher/<teacher_id>/delete', methods=['POST'])
+def dept_delete_teacher(teacher_id):
+    err = _require_hod()
+    if err:
+        return err
+
+    t = Teacher.query.get_or_404(teacher_id)
+    if t.role == 'hod':
+        return jsonify({'success': False, 'error': 'Cannot delete HOD'}), 400
+    db.session.delete(t)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/department/class/create', methods=['POST'])
+def dept_create_class():
+    err = _require_hod()
+    if err:
+        return err
+
+    data = request.get_json()
+    name = (data.get('name') or '').strip()
+    level = (data.get('level') or '').strip()
+    if not name:
+        return jsonify({'success': False, 'error': 'Class name is required'}), 400
+
+    cls = Class(id=str(uuid.uuid4()), name=name, level=level)
+    db.session.add(cls)
+    db.session.commit()
+
+    return jsonify({'success': True, 'cls': {
+        'id': cls.id, 'name': cls.name, 'level': cls.level,
+    }})
+
+
+@app.route('/department/class/<class_id>/delete', methods=['POST'])
+def dept_delete_class(class_id):
+    err = _require_hod()
+    if err:
+        return err
+
+    cls = Class.query.get_or_404(class_id)
+    TeacherClass.query.filter_by(class_id=class_id).delete()
+    db.session.delete(cls)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/department/class/<class_id>/assign', methods=['POST'])
+def dept_assign_teacher(class_id):
+    err = _require_hod()
+    if err:
+        return err
+
+    data = request.get_json()
+    teacher_id = data.get('teacher_id')
+    if not teacher_id:
+        return jsonify({'success': False, 'error': 'Teacher ID required'}), 400
+
+    Class.query.get_or_404(class_id)
+    Teacher.query.get_or_404(teacher_id)
+
+    existing = TeacherClass.query.filter_by(teacher_id=teacher_id, class_id=class_id).first()
+    if not existing:
+        db.session.add(TeacherClass(teacher_id=teacher_id, class_id=class_id))
+        db.session.commit()
+
+    return jsonify({'success': True})
+
+
+@app.route('/department/class/<class_id>/unassign', methods=['POST'])
+def dept_unassign_teacher(class_id):
+    err = _require_hod()
+    if err:
+        return err
+
+    data = request.get_json()
+    teacher_id = data.get('teacher_id')
+    TeacherClass.query.filter_by(teacher_id=teacher_id, class_id=class_id).delete()
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/department/keys', methods=['POST'])
+def dept_save_keys():
+    err = _require_hod()
+    if err:
+        return err
+
+    from db import _get_fernet
+    data = request.get_json()
+    for prov in ('anthropic', 'openai', 'qwen'):
+        val = (data.get(prov) or '').strip()
+        cfg = DepartmentConfig.query.filter_by(key=f'api_key_{prov}').first()
+        if val:
+            if not cfg:
+                cfg = DepartmentConfig(key=f'api_key_{prov}')
+                db.session.add(cfg)
+            f = _get_fernet()
+            cfg.value = f.encrypt(val.encode()).decode() if f else val
+        elif cfg:
+            db.session.delete(cfg)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+# ---------------------------------------------------------------------------
 # Bulk marking
 # ---------------------------------------------------------------------------
 
