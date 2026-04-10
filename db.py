@@ -45,6 +45,14 @@ def _migrate_add_columns(app):
                 db.session.execute(text("ALTER TABLE assignments ADD COLUMN title VARCHAR(300) DEFAULT ''"))
                 db.session.commit()
                 logger.info('Added title column to assignments table')
+            if 'class_id' not in columns:
+                db.session.execute(text("ALTER TABLE assignments ADD COLUMN class_id VARCHAR(36)"))
+                db.session.commit()
+                logger.info('Added class_id column to assignments table')
+            if 'teacher_id' not in columns:
+                db.session.execute(text("ALTER TABLE assignments ADD COLUMN teacher_id VARCHAR(36)"))
+                db.session.commit()
+                logger.info('Added teacher_id column to assignments table')
 
 
 def init_db(app):
@@ -62,6 +70,39 @@ def init_db(app):
         _migrate_add_columns(app)
 
 
+class Teacher(db.Model):
+    __tablename__ = 'teachers'
+    id = db.Column(db.String(36), primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    code = db.Column(db.String(20), unique=True, nullable=False, index=True)
+    role = db.Column(db.String(10), default='teacher')  # 'hod' or 'teacher'
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    classes = db.relationship('Class', secondary='teacher_classes', back_populates='teachers')
+
+
+class Class(db.Model):
+    __tablename__ = 'classes'
+    id = db.Column(db.String(36), primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    level = db.Column(db.String(100), default='')
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    teachers = db.relationship('Teacher', secondary='teacher_classes', back_populates='classes')
+    assignments = db.relationship('Assignment', backref='dept_class', lazy=True)
+
+
+class TeacherClass(db.Model):
+    __tablename__ = 'teacher_classes'
+    teacher_id = db.Column(db.String(36), db.ForeignKey('teachers.id'), primary_key=True)
+    class_id = db.Column(db.String(36), db.ForeignKey('classes.id'), primary_key=True)
+
+
+class DepartmentConfig(db.Model):
+    __tablename__ = 'department_config'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    key = db.Column(db.String(100), unique=True, nullable=False)
+    value = db.Column(db.Text, default='')
+
+
 class Assignment(db.Model):
     __tablename__ = 'assignments'
 
@@ -77,6 +118,10 @@ class Assignment(db.Model):
     show_results = db.Column(db.Boolean, default=True)
     review_instructions = db.Column(db.Text, default='')
     marking_instructions = db.Column(db.Text, default='')
+
+    # Department mode foreign keys
+    class_id = db.Column(db.String(36), db.ForeignKey('classes.id'), nullable=True)
+    teacher_id = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=True)
 
     # File storage as binary
     question_paper = db.Column(db.LargeBinary)
