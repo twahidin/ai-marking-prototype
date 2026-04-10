@@ -104,10 +104,10 @@
             <div class="form-group">
                 <label>Your Script</label>
                 <div class="upload-zone" id="uploadZone" onclick="document.getElementById('scriptInput').click()">
-                    <input type="file" id="scriptInput" accept=".pdf,.jpg,.jpeg,.png,.heic" capture="environment" onchange="fileSelected(this)">
+                    <input type="file" id="scriptInput" accept=".pdf,.jpg,.jpeg,.png,.heic" capture="environment" multiple onchange="fileSelected(this, 10)">
                     <div class="icon">&#128247;</div>
                     <div class="label">Tap to upload or take a photo</div>
-                    <div class="hint">PDF, JPG, PNG, or HEIC</div>
+                    <div class="hint">PDF or up to 10 images (JPG, PNG, HEIC)</div>
                     <div class="filename" id="fileName"></div>
                 </div>
             </div>
@@ -259,11 +259,19 @@ async function submitWork() {
     var scriptInput = document.getElementById('scriptInput');
     if (!scriptInput.files.length) return showFormError('Please upload your script.');
 
+    // Confirm student identity before submitting
+    var sel = document.getElementById('studentSelect');
+    var selectedText = sel.options[sel.selectedIndex].textContent;
+    var studentName = selectedText.split(' - ').slice(1).join(' - ');
+    if (!confirm('Please confirm you are:\n\n' + studentName)) return;
+
     var btn = document.getElementById('submitBtn');
     btn.disabled = true; btn.textContent = 'Uploading...';
     var fd = new FormData();
     fd.append('student_id', studentId);
-    fd.append('script', scriptInput.files[0]);
+    for (var i = 0; i < scriptInput.files.length; i++) {
+        fd.append('script', scriptInput.files[i]);
+    }
 
     try {
         var res = await fetch('/submit/' + ASSIGNMENT_ID + '/upload', { method: 'POST', body: fd });

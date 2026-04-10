@@ -221,8 +221,8 @@ def mark():
         files = request.files.getlist(field)
         if not files or not files[0].filename:
             return jsonify({'success': False, 'error': f'Missing required file: {field}'}), 400
-        if len(files) > 5:
-            return jsonify({'success': False, 'error': f'Maximum 5 files per upload ({field})'}), 400
+        if len(files) > 10:
+            return jsonify({'success': False, 'error': f'Maximum 10 files per upload ({field})'}), 400
 
     provider = request.form.get('provider', 'anthropic')
     model = request.form.get('model', '')
@@ -537,6 +537,17 @@ def bulk_overview(job_id):
 # Teacher dashboard & student submission portal
 # ---------------------------------------------------------------------------
 
+def _sort_by_index(items, key='index_number'):
+    """Sort items by index numerically (1, 2, ... 10), then non-numeric alphabetically."""
+    def sort_key(item):
+        val = getattr(item, key) if hasattr(item, key) else item.get(key, '')
+        try:
+            return (0, int(val), '')
+        except (ValueError, TypeError):
+            return (1, 0, str(val))
+    return sorted(items, key=sort_key)
+
+
 def _generate_classroom_code():
     """Generate a short unique classroom code like ENG3E."""
     chars = string.ascii_uppercase + string.digits
@@ -562,7 +573,7 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
             ak = [asn.answer_key] if asn.answer_key else []
             rub = [asn.rubrics] if asn.rubrics else []
             ref = [asn.reference] if asn.reference else []
-            script = [sub.script_bytes] if sub.script_bytes else []
+            script = sub.get_script_pages()
 
             result = mark_script(
                 provider=asn.provider,
@@ -706,7 +717,7 @@ def teacher_assignment_detail(assignment_id):
         return redirect(url_for('teacher_page'))
 
     asn = Assignment.query.get_or_404(assignment_id)
-    students = Student.query.filter_by(assignment_id=assignment_id).order_by(Student.index_number).all()
+    students = _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
 
     student_data = []
     for s in students:
@@ -825,7 +836,7 @@ def student_verify(assignment_id):
     if code != asn.classroom_code:
         return jsonify({'success': False, 'error': 'Invalid classroom code'}), 401
 
-    students = Student.query.filter_by(assignment_id=assignment_id).order_by(Student.index_number).all()
+    students = _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
     student_list = [{'id': s.id, 'index': s.index_number, 'name': s.name} for s in students]
 
     session[f'student_auth_{assignment_id}'] = True
@@ -850,9 +861,10 @@ def student_upload(assignment_id):
     script_files = request.files.getlist('script')
     if not script_files or not script_files[0].filename:
         return jsonify({'success': False, 'error': 'Please upload your script'}), 400
+    if len(script_files) > 10:
+        return jsonify({'success': False, 'error': 'Maximum 10 files per submission'}), 400
 
-    # Read first file only (single PDF or image)
-    script_bytes = script_files[0].read()
+    script_pages = [f.read() for f in script_files if f.filename]
 
     # Delete existing submission if re-submitting
     existing = Submission.query.filter_by(student_id=student.id, assignment_id=assignment_id).first()
@@ -863,9 +875,10 @@ def student_upload(assignment_id):
     sub = Submission(
         student_id=student.id,
         assignment_id=assignment_id,
-        script_bytes=script_bytes,
+        script_bytes=script_pages[0] if script_pages else None,
         status='pending',
     )
+    sub.set_script_pages(script_pages)
     db.session.add(sub)
     db.session.commit()
 

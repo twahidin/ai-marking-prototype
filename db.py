@@ -113,12 +113,26 @@ class Submission(db.Model):
     student_id = db.Column(db.Integer, db.ForeignKey('students.id'), nullable=False)
     assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False)
     script_bytes = db.Column(db.LargeBinary)
+    script_pages_json = db.Column(db.Text)  # JSON list of base64-encoded file bytes
     status = db.Column(db.String(20), default='pending')  # pending, processing, done, error
     result_json = db.Column(db.Text)
     submitted_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     marked_at = db.Column(db.DateTime)
 
     assignment = db.relationship('Assignment', backref='submissions')
+
+    def get_script_pages(self):
+        """Return list of file bytes for all uploaded pages."""
+        if self.script_pages_json:
+            pages = json.loads(self.script_pages_json)
+            return [base64.b64decode(p) for p in pages]
+        if self.script_bytes:
+            return [self.script_bytes]
+        return []
+
+    def set_script_pages(self, pages_list):
+        """Store list of file bytes as base64 JSON."""
+        self.script_pages_json = json.dumps([base64.b64encode(p).decode() for p in pages_list])
 
     def get_result(self):
         try:
