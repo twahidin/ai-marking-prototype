@@ -200,13 +200,14 @@ def build_content_block(file_bytes):
 def make_ai_api_call(client, model_name, provider, system_prompt, messages_content, max_tokens=32000):
     """Unified API call across providers."""
     if provider == 'anthropic':
-        message = client.messages.create(
+        # Use streaming to avoid 10-minute timeout on large requests
+        with client.messages.stream(
             model=model_name,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": messages_content}],
             system=system_prompt
-        )
-        return message.content[0].text
+        ) as stream:
+            return stream.get_final_text()
 
     elif provider in ('openai', 'qwen'):
         openai_messages = []
