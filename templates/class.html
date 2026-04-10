@@ -92,8 +92,8 @@
         </p>
     </div>
 
-    <!-- API Key Card (always shown — bulk always needs own keys) -->
-    <div class="card" id="keyCard">
+    <!-- API Key Card (only shown when no server env keys are configured) -->
+    <div class="card" id="keyCard" {% if providers %}style="display:none;"{% endif %}
         <h2>API Keys</h2>
         <p style="font-size:13px;color:#888;margin-bottom:16px;">
             Save your API keys here. Keys are stored in your browser session only and cleared when you leave.
@@ -773,7 +773,7 @@ function renderTeacherProviderGroup() {
     const group = document.getElementById('teacherProviderGroup');
     group.innerHTML = '';
     // When server provides keys, use server providers; otherwise use savedKeys
-    const availableProviders = DEMO_MODE ? Object.keys(BULK_PROVIDER_MODELS) : Object.keys(savedKeys);
+    const availableProviders = Object.keys(BULK_PROVIDER_MODELS).length > 0 ? Object.keys(BULK_PROVIDER_MODELS) : Object.keys(savedKeys);
     if (availableProviders.length === 0) {
         document.getElementById('teacherNoProviderMsg').style.display = 'block';
         updateTeacherModelSelect();
@@ -847,8 +847,8 @@ async function createAssignment() {
     hideTeacherError();
     hideTeacherSuccess();
 
-    const availableProviders = DEMO_MODE ? Object.keys(BULK_PROVIDER_MODELS) : Object.keys(savedKeys);
-    if (availableProviders.length === 0) return showTeacherError(DEMO_MODE ? 'No AI providers configured on the server.' : 'Please save at least one API key above.');
+    const availableProviders = Object.keys(BULK_PROVIDER_MODELS).length > 0 ? Object.keys(BULK_PROVIDER_MODELS) : Object.keys(savedKeys);
+    if (availableProviders.length === 0) return showTeacherError('No AI providers available. Configure server API keys or save your own above.');
 
     const provider = document.querySelector('input[name="teacher_provider"]:checked')?.value;
     if (!provider) return showTeacherError('Please select an AI provider.');

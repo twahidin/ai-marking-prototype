@@ -398,10 +398,8 @@ def bulk_mark():
     if not session.get('authenticated'):
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
-    # Bulk always requires user's own session keys
-    session_keys = _get_session_keys()
-    if not session_keys:
-        return jsonify({'success': False, 'error': 'Please enter your API key first'}), 400
+    # Use session keys if provided, otherwise fall back to server env keys
+    session_keys = _get_session_keys() or None
 
     # Validate files
     for field in ('class_list', 'question_paper', 'bulk_scripts'):

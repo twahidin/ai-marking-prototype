@@ -34,8 +34,8 @@
         <p style="margin-top:8px;"><a href="/" style="color:#667eea;font-weight:600;font-size:13px;">&larr; Back to Home</a></p>
     </div>
 
-    {% if not demo_mode %}
-    <!-- API Key Input -->
+    {% if not demo_mode and not providers %}
+    <!-- API Key Input (only shown when no server env keys are configured) -->
     <div class="card" id="keyCard">
         <h2>Your API Key</h2>
         <p style="font-size:13px;color:#888;margin-bottom:16px;">Enter your own API key to use this tool. Keys are stored in your browser session only.</p>
