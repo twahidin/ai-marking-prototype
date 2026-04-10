@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Assignment: {{ assignment.subject }} - AI Marking{% endblock %}
+{% block title %}{{ assignment.title or assignment.subject or 'Assignment' }} - AI Marking{% endblock %}
 
 {% block head %}
 <style>
@@ -92,7 +92,8 @@
 
     <div class="header">
         <h1>
-            Assignment: {{ assignment.subject }}
+            {{ assignment.title or assignment.subject or 'Assignment' }}
+            {% if assignment.title and assignment.subject %}<span style="font-size:16px;font-weight:400;color:#888;margin-left:8px;">{{ assignment.subject }}</span>{% endif %}
             <span class="classroom-code-inline">{{ assignment.classroom_code }}</span>
         </h1>
     </div>

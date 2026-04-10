@@ -39,6 +39,12 @@ def _migrate_add_columns(app):
                 db.session.execute(text('ALTER TABLE submissions ADD COLUMN script_pages_json TEXT'))
                 db.session.commit()
                 logger.info('Added script_pages_json column to submissions table')
+        if 'assignments' in inspector.get_table_names():
+            columns = [c['name'] for c in inspector.get_columns('assignments')]
+            if 'title' not in columns:
+                db.session.execute(text("ALTER TABLE assignments ADD COLUMN title VARCHAR(300) DEFAULT ''"))
+                db.session.commit()
+                logger.info('Added title column to assignments table')
 
 
 def init_db(app):
@@ -61,6 +67,7 @@ class Assignment(db.Model):
 
     id = db.Column(db.String(36), primary_key=True)
     classroom_code = db.Column(db.String(10), unique=True, nullable=False, index=True)
+    title = db.Column(db.String(300), default='')
     subject = db.Column(db.String(200), default='')
     assign_type = db.Column(db.String(20), default='short_answer')
     scoring_mode = db.Column(db.String(20), default='status')

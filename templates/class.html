@@ -315,7 +315,11 @@
             <!-- Model -->
             <select class="model-select" id="teacherModelSelect"></select>
 
-            <!-- Subject -->
+            <!-- Title & Subject -->
+            <div class="form-group">
+                <label for="teacherTitle">Assignment Title</label>
+                <input type="text" class="form-input" id="teacherTitle" placeholder="e.g. Mid-Year Exam 2026, Quiz 3, Essay Assignment">
+            </div>
             <div class="form-group">
                 <label for="teacherSubject">Subject</label>
                 <input type="text" class="form-input" id="teacherSubject" placeholder="e.g. Mathematics, English, Science">
@@ -426,7 +430,8 @@
                 <div class="assignment-item" id="asn_{{ asn.id }}">
                     <div class="assignment-item-header">
                         <div>
-                            <div class="assignment-subject">{{ asn.subject or 'Untitled Assignment' }}</div>
+                            <div class="assignment-subject">{{ asn.title or asn.subject or 'Untitled Assignment' }}</div>
+                            {% if asn.title and asn.subject %}<div class="assignment-meta" style="margin-top:2px;"><span>{{ asn.subject }}</span></div>{% endif %}
                             <div class="assignment-meta">
                                 <span>Created {{ asn.created_at.strftime('%d %b %Y, %H:%M') }}</span>
                             </div>
@@ -965,6 +970,7 @@ async function createAssignment() {
     if (!provider) return showTeacherError('Please select an AI provider.');
 
     const model = document.getElementById('teacherModelSelect').value;
+    const title = document.getElementById('teacherTitle').value.trim();
     const subject = document.getElementById('teacherSubject').value.trim();
 
     const assignType = document.querySelector('input[name="teacher_assign_type"]:checked')?.value || 'short_answer';
@@ -1003,6 +1009,7 @@ async function createAssignment() {
     const fd = new FormData();
     fd.append('provider', provider);
     fd.append('model', model);
+    fd.append('title', title);
     fd.append('subject', subject);
     fd.append('assign_type', assignType);
     fd.append('scoring_mode', scoringMode);

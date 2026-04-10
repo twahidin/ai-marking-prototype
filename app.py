@@ -702,6 +702,7 @@ def teacher_create():
     asn = Assignment(
         id=str(uuid.uuid4()),
         classroom_code=_generate_classroom_code(),
+        title=request.form.get('title', ''),
         subject=request.form.get('subject', ''),
         assign_type=assign_type,
         scoring_mode=request.form.get('scoring_mode', 'status'),
