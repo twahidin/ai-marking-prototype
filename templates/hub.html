@@ -33,12 +33,51 @@
 
 {% block body %}
 {% if not authenticated %}
-{% set gate_title = 'AI Marking Demo' %}
+{% set gate_title = 'Department Login' if dept_mode else 'AI Marking Demo' %}
 {% include '_gate.html' %}
 
 {% else %}
 <div class="hub">
     <div class="hub-container">
+        {% if dept_mode and teacher %}
+        <h1>{{ teacher.name }}</h1>
+        <p class="subtitle">{{ 'Head of Department' if teacher.role == 'hod' else 'Teacher' }}</p>
+
+        <div class="hub-cards">
+            {% if teacher.role == 'hod' %}
+            <a class="hub-card" href="/department">
+                <div class="icon">&#127979;</div>
+                <h2>Department</h2>
+                <p>Overview of all classes, teachers, assignments, and student performance across the department.</p>
+                <span class="tag">Dashboard</span>
+            </a>
+            <a class="hub-card" href="/department/classes">
+                <div class="icon">&#9881;</div>
+                <h2>Manage</h2>
+                <p>Create classes, add teachers, assign teachers to classes, and configure API keys.</p>
+                <span class="tag">Setup</span>
+            </a>
+            {% else %}
+            <a class="hub-card" href="/dashboard">
+                <div class="icon">&#128203;</div>
+                <h2>My Dashboard</h2>
+                <p>View your assigned classes, create assignments, and monitor student submissions.</p>
+                <span class="tag">Your classes</span>
+            </a>
+            {% endif %}
+            <a class="hub-card" href="/class">
+                <div class="icon">&#128218;</div>
+                <h2>Mark a Class</h2>
+                <p>Upload all scripts in one PDF, or create an assignment link and let students submit their own work.</p>
+                <span class="tag">Bulk &amp; submissions</span>
+            </a>
+        </div>
+
+        <div class="hub-footer">
+            <a href="/logout" style="color:#667eea; text-decoration:none;">Logout</a>
+        </div>
+
+        {% else %}
         <h1>AI Marking Demo</h1>
         <p class="subtitle">Choose how you'd like to mark</p>
 
@@ -60,6 +99,7 @@
         <div class="hub-footer">
             Powered by Anthropic Claude, OpenAI GPT &amp; Alibaba Qwen
         </div>
+        {% endif %}
     </div>
 </div>
 {% endif %}

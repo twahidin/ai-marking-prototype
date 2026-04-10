@@ -51,7 +51,12 @@ async function verifyAccessCode() {
             body: JSON.stringify({ code: code })
         });
         if (res.ok) {
-            window.location.reload();
+            var data = await res.json();
+            if (data.redirect) {
+                window.location.href = data.redirect;
+            } else {
+                window.location.reload();
+            }
         } else {
             document.getElementById('gateError').style.display = 'block';
             document.getElementById('codeInput').classList.add('error');

@@ -167,12 +167,28 @@ def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pa
 
 @app.route('/')
 def hub():
+    if DEPT_MODE:
+        if not Teacher.query.filter_by(role='hod').first():
+            return redirect(url_for('department_setup'))
     authenticated = _is_authenticated()
-    return render_template('hub.html', authenticated=authenticated)
+    teacher = _current_teacher() if DEPT_MODE else None
+    return render_template('hub.html',
+                           authenticated=authenticated,
+                           dept_mode=DEPT_MODE,
+                           demo_mode=DEMO_MODE,
+                           teacher=teacher)
+
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('hub'))
 
 
 @app.route('/mark')
 def single_mark_page():
+    if DEPT_MODE:
+        return redirect(url_for('hub'))
     authenticated = _is_authenticated()
     sk = _effective_keys()
     providers = get_available_providers(session_keys=sk)
