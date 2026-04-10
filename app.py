@@ -579,6 +579,72 @@ def dept_save_keys():
 
 
 # ---------------------------------------------------------------------------
+# Teacher Dashboard
+# ---------------------------------------------------------------------------
+
+@app.route('/dashboard')
+def teacher_dashboard():
+    if not DEPT_MODE or not _is_authenticated():
+        return redirect(url_for('hub'))
+
+    teacher = _current_teacher()
+    if not teacher or teacher.role == 'hod':
+        return redirect(url_for('hub'))
+
+    class_data = []
+    for cls in teacher.classes:
+        assignments = Assignment.query.filter_by(class_id=cls.id, teacher_id=teacher.id)\
+            .order_by(Assignment.created_at.desc()).all()
+        asn_data = []
+        for asn in assignments:
+            students_count = Student.query.filter_by(assignment_id=asn.id).count()
+            subs = Submission.query.filter_by(assignment_id=asn.id).all()
+            done = [s for s in subs if s.status == 'done']
+
+            avg_score = None
+            if done:
+                scores = []
+                for s in done:
+                    result = s.get_result()
+                    qs = result.get('questions', [])
+                    if qs:
+                        has_marks = any(q.get('marks_awarded') is not None for q in qs)
+                        if has_marks:
+                            total_a = sum(q.get('marks_awarded', 0) for q in qs)
+                            total_p = sum(q.get('marks_total', 0) for q in qs)
+                            scores.append(total_a / total_p * 100 if total_p else 0)
+                        else:
+                            correct = sum(1 for q in qs if q.get('status') == 'correct')
+                            scores.append(correct / len(qs) * 100 if qs else 0)
+                if scores:
+                    avg_score = round(sum(scores) / len(scores), 1)
+
+            asn_data.append({
+                'id': asn.id,
+                'title': asn.title or asn.subject or 'Untitled',
+                'subject': asn.subject,
+                'classroom_code': asn.classroom_code,
+                'total_students': students_count,
+                'submitted': len(subs),
+                'done': len(done),
+                'avg_score': avg_score,
+            })
+
+        class_data.append({
+            'id': cls.id,
+            'name': cls.name,
+            'level': cls.level,
+            'assignments': asn_data,
+        })
+
+    return render_template('dashboard.html',
+                           teacher=teacher,
+                           classes=class_data,
+                           dept_mode=DEPT_MODE,
+                           demo_mode=DEMO_MODE)
+
+
+# ---------------------------------------------------------------------------
 # Bulk marking
 # ---------------------------------------------------------------------------
 
