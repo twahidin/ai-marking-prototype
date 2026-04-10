@@ -51,6 +51,33 @@
         display: inline-flex; align-items: center; gap: 6px;
         font-size: 12px; color: #667eea; font-weight: 600; margin-left: 12px;
     }
+    .upload-btn {
+        padding: 6px 14px; border: 1px solid #667eea; border-radius: 8px;
+        background: white; color: #667eea; font-size: 12px; font-weight: 600;
+        cursor: pointer; transition: all 0.2s;
+    }
+    .upload-btn:hover { background: #667eea; color: white; }
+
+    .upload-modal {
+        display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+        z-index: 1000; align-items: center; justify-content: center;
+        backdrop-filter: blur(4px);
+    }
+    .upload-modal.active { display: flex; }
+    .upload-modal-box {
+        background: white; border-radius: 16px; padding: 32px; width: 90%; max-width: 480px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+    .upload-modal-box h3 { font-size: 18px; font-weight: 700; color: #333; margin-bottom: 6px; }
+    .upload-modal-box .student-name { font-size: 14px; color: #667eea; font-weight: 600; margin-bottom: 20px; }
+    .upload-modal-box .modal-actions { display: flex; gap: 10px; margin-top: 20px; }
+    .upload-modal-box .modal-actions button { flex: 1; padding: 12px; border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; border: none; }
+    .modal-cancel { background: #f0f0f0; color: #666; }
+    .modal-cancel:hover { background: #e0e0e0; }
+    .modal-submit { background: #667eea; color: white; }
+    .modal-submit:hover { background: #5a6fd6; }
+    .modal-submit:disabled { background: #ccc; cursor: not-allowed; }
+
     .refresh-dot {
         width: 8px; height: 8px; border-radius: 50%; background: #667eea;
         animation: pulse 1.5s ease-in-out infinite;
@@ -153,7 +180,7 @@
             <div class="table-wrap">
                 <table class="results-table">
                     <thead>
-                        <tr><th>Index</th><th>Name</th><th>Status</th><th>Score</th><th>Submitted</th></tr>
+                        <tr><th>Index</th><th>Name</th><th>Status</th><th>Score</th><th>Submitted</th><th>Actions</th></tr>
                     </thead>
                     <tbody>
                         {% for s in students %}
@@ -170,12 +197,36 @@
                             </td>
                             <td>{{ s.score if s.score else '-' }}</td>
                             <td style="color:#888; font-size:13px;">{{ s.submitted_at if s.submitted_at else '-' }}</td>
+                            <td>
+                                <button class="upload-btn" onclick="openUploadModal('{{ s.student_id }}', '{{ s.name | e }}')">
+                                    {% if s.status == 'not_submitted' %}Upload{% else %}Re-upload{% endif %}
+                                </button>
+                            </td>
                         </tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
         {% endif %}
+    </div>
+</div>
+
+<!-- Upload Modal -->
+<div class="upload-modal" id="uploadModal">
+    <div class="upload-modal-box">
+        <h3>Upload Script</h3>
+        <div class="student-name" id="uploadStudentName"></div>
+        <div class="upload-zone" onclick="document.getElementById('teacherScriptInput').click()">
+            <input type="file" id="teacherScriptInput" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 10)">
+            <div class="icon">&#128247;</div>
+            <div class="label">Upload script (PDF or up to 10 images)</div>
+            <div class="filename"></div>
+        </div>
+        <div class="error-msg" id="uploadError"></div>
+        <div class="modal-actions">
+            <button class="modal-cancel" onclick="closeUploadModal()">Cancel</button>
+            <button class="modal-submit" id="uploadSubmitBtn" onclick="submitForStudent()">Upload &amp; Mark</button>
+        </div>
     </div>
 </div>
 {% endblock %}
@@ -209,6 +260,74 @@ function copyText(text, el) {
     });
     if (count > 0) document.getElementById('avgScore').textContent = Math.round(total / count) + '%';
 })();
+
+/* --- Teacher upload for student --- */
+var uploadStudentId = null;
+
+function openUploadModal(studentId, studentName) {
+    uploadStudentId = studentId;
+    document.getElementById('uploadStudentName').textContent = studentName;
+    document.getElementById('teacherScriptInput').value = '';
+    var zone = document.getElementById('teacherScriptInput').closest('.upload-zone');
+    zone.classList.remove('has-file');
+    zone.querySelector('.filename').textContent = '';
+    document.getElementById('uploadError').style.display = 'none';
+    document.getElementById('uploadSubmitBtn').disabled = false;
+    document.getElementById('uploadSubmitBtn').textContent = 'Upload & Mark';
+    document.getElementById('uploadModal').classList.add('active');
+}
+
+function closeUploadModal() {
+    document.getElementById('uploadModal').classList.remove('active');
+    uploadStudentId = null;
+}
+
+async function submitForStudent() {
+    var input = document.getElementById('teacherScriptInput');
+    if (!input.files.length) {
+        var errEl = document.getElementById('uploadError');
+        errEl.textContent = 'Please select files to upload.';
+        errEl.style.display = 'block';
+        return;
+    }
+    document.getElementById('uploadError').style.display = 'none';
+    var btn = document.getElementById('uploadSubmitBtn');
+    btn.disabled = true;
+    btn.textContent = 'Uploading...';
+
+    var fd = new FormData();
+    for (var i = 0; i < input.files.length; i++) {
+        fd.append('script', input.files[i]);
+    }
+
+    try {
+        var res = await fetch('/teacher/assignment/{{ assignment.id }}/submit/' + uploadStudentId, {
+            method: 'POST', body: fd
+        });
+        var data = await res.json();
+        if (data.success) {
+            closeUploadModal();
+            window.location.reload();
+        } else {
+            var errEl = document.getElementById('uploadError');
+            errEl.textContent = data.error || 'Upload failed.';
+            errEl.style.display = 'block';
+            btn.disabled = false;
+            btn.textContent = 'Upload & Mark';
+        }
+    } catch (err) {
+        var errEl = document.getElementById('uploadError');
+        errEl.textContent = 'Connection error. Please try again.';
+        errEl.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Upload & Mark';
+    }
+}
+
+// Close modal on backdrop click
+document.getElementById('uploadModal').addEventListener('click', function(e) {
+    if (e.target === this) closeUploadModal();
+});
 
 {% set processing_count = students | selectattr('status', 'in', ['pending', 'processing']) | list | length %}
 {% if processing_count > 0 %}

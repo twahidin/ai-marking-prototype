@@ -737,6 +737,7 @@ def teacher_assignment_detail(assignment_id):
                 score = f"{correct}/{len(questions)}"
 
         student_data.append({
+            'student_id': s.id,
             'index': s.index_number,
             'name': s.name,
             'status': sub.status if sub else 'not_submitted',
@@ -805,6 +806,50 @@ def teacher_overview(assignment_id):
         as_attachment=True,
         download_name=f'{asn.classroom_code}_overview.pdf'
     )
+
+
+@app.route('/teacher/assignment/<assignment_id>/submit/<int:student_id>', methods=['POST'])
+def teacher_submit_for_student(assignment_id, student_id):
+    """Teacher uploads a script on behalf of a student."""
+    if not session.get('authenticated'):
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    asn = Assignment.query.get_or_404(assignment_id)
+    student = Student.query.get(student_id)
+    if not student or student.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid student'}), 400
+
+    script_files = request.files.getlist('script')
+    if not script_files or not script_files[0].filename:
+        return jsonify({'success': False, 'error': 'Please upload a script'}), 400
+    if len(script_files) > 10:
+        return jsonify({'success': False, 'error': 'Maximum 10 files'}), 400
+
+    script_pages = [f.read() for f in script_files if f.filename]
+
+    existing = Submission.query.filter_by(student_id=student.id, assignment_id=assignment_id).first()
+    if existing:
+        db.session.delete(existing)
+        db.session.flush()
+
+    sub = Submission(
+        student_id=student.id,
+        assignment_id=assignment_id,
+        script_bytes=script_pages[0] if script_pages else None,
+        status='pending',
+    )
+    sub.set_script_pages(script_pages)
+    db.session.add(sub)
+    db.session.commit()
+
+    thread = threading.Thread(
+        target=_run_submission_marking,
+        args=(app, sub.id, assignment_id),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({'success': True})
 
 
 @app.route('/teacher/assignment/<assignment_id>/delete', methods=['POST'])
