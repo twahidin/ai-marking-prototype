@@ -131,6 +131,26 @@ def _require_hod():
     return None
 
 
+def _get_dept_keys():
+    """Get department-level API keys from DepartmentConfig."""
+    if not DEPT_MODE:
+        return {}
+    from db import _get_fernet
+    keys = {}
+    for prov in ('anthropic', 'openai', 'qwen'):
+        cfg = DepartmentConfig.query.filter_by(key=f'api_key_{prov}').first()
+        if cfg and cfg.value:
+            f = _get_fernet()
+            if f:
+                try:
+                    keys[prov] = f.decrypt(cfg.value.encode()).decode()
+                    continue
+                except Exception:
+                    pass
+            keys[prov] = cfg.value
+    return keys
+
+
 # ---------------------------------------------------------------------------
 # Single marking
 # ---------------------------------------------------------------------------
@@ -205,12 +225,23 @@ def class_page():
     sk = _get_session_keys()
     providers = get_available_providers(session_keys=sk)
     assignments = []
+    teacher = None
     if authenticated:
-        assignments = Assignment.query.order_by(Assignment.created_at.desc()).all()
+        if DEPT_MODE:
+            teacher = _current_teacher()
+            if teacher and teacher.role == 'hod':
+                assignments = Assignment.query.order_by(Assignment.created_at.desc()).all()
+            elif teacher:
+                assignments = Assignment.query.filter_by(teacher_id=teacher.id)\
+                    .order_by(Assignment.created_at.desc()).all()
+        else:
+            assignments = Assignment.query.order_by(Assignment.created_at.desc()).all()
     return render_template('class.html',
                            authenticated=authenticated,
                            providers=providers,
                            demo_mode=DEMO_MODE,
+                           dept_mode=DEPT_MODE,
+                           teacher=teacher,
                            all_providers=PROVIDERS,
                            assignments=assignments)
 
@@ -997,6 +1028,27 @@ def teacher_create():
     if not api_keys:
         return jsonify({'success': False, 'error': 'No API keys available. Configure server keys or enter your own.'}), 400
 
+    # In dept mode, require class_id and set teacher_id
+    class_id = None
+    teacher_obj = None
+    if DEPT_MODE:
+        class_id = request.form.get('class_id')
+        if not class_id:
+            return jsonify({'success': False, 'error': 'Class is required in department mode'}), 400
+        teacher_obj = _current_teacher()
+        if not teacher_obj:
+            return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+        # Verify teacher is assigned to this class (unless HOD)
+        if teacher_obj.role != 'hod':
+            tc = TeacherClass.query.filter_by(teacher_id=teacher_obj.id, class_id=class_id).first()
+            if not tc:
+                return jsonify({'success': False, 'error': 'Not assigned to this class'}), 403
+        # Use dept keys if no per-assignment keys
+        if not api_keys or all(not v for v in api_keys.values()):
+            dept_keys = _get_dept_keys()
+            if dept_keys:
+                api_keys = dept_keys
+
     # Parse class list
     cl_file = request.files.get('class_list')
     if not cl_file or not cl_file.filename:
@@ -1056,6 +1108,8 @@ def teacher_create():
         answer_key=ak_bytes,
         rubrics=rub_bytes,
         reference=ref_bytes,
+        class_id=class_id,
+        teacher_id=teacher_obj.id if teacher_obj else None,
     )
     # Only store user-provided keys (not env keys) — env keys are read at runtime
     user_keys = {}

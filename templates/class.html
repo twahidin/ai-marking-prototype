@@ -325,6 +325,18 @@
                 <input type="text" class="form-input" id="teacherSubject" placeholder="e.g. Mathematics, English, Science">
             </div>
 
+            {% if dept_mode and teacher %}
+            <div class="form-group">
+                <label>Class</label>
+                <select class="form-input" id="teacherClassId" style="padding:12px;">
+                    <option value="">Select a class...</option>
+                    {% for cls in teacher.classes %}
+                    <option value="{{ cls.id }}">{{ cls.name }}{% if cls.level %} ({{ cls.level }}){% endif %}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% endif %}
+
             <!-- Assignment Type -->
             <div style="font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">Assignment Type</div>
             <div class="sel-group">
@@ -1011,6 +1023,8 @@ async function createAssignment() {
     fd.append('model', model);
     fd.append('title', title);
     fd.append('subject', subject);
+    var classSelect = document.getElementById('teacherClassId');
+    if (classSelect) fd.append('class_id', classSelect.value);
     fd.append('assign_type', assignType);
     fd.append('scoring_mode', scoringMode);
     fd.append('total_marks', totalMarks);
