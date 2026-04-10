@@ -197,7 +197,7 @@ def build_content_block(file_bytes):
     }
 
 
-def make_ai_api_call(client, model_name, provider, system_prompt, messages_content, max_tokens=16384):
+def make_ai_api_call(client, model_name, provider, system_prompt, messages_content, max_tokens=32000):
     """Unified API call across providers."""
     if provider == 'anthropic':
         message = client.messages.create(
@@ -579,7 +579,7 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
             provider=prov,
             system_prompt=system_prompt,
             messages_content=content,
-            max_tokens=16384
+            max_tokens=32000
         )
 
         result = parse_ai_response(response_text)
