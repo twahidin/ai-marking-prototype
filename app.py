@@ -360,6 +360,59 @@ def download_pdf(job_id):
 
 
 # ---------------------------------------------------------------------------
+# HOD Department Dashboard
+# ---------------------------------------------------------------------------
+
+@app.route('/department')
+def department_page():
+    err = _require_hod()
+    if err:
+        return redirect(url_for('hub'))
+
+    teacher = _current_teacher()
+    classes = Class.query.order_by(Class.name).all()
+    teachers = Teacher.query.filter_by(role='teacher').order_by(Teacher.name).all()
+
+    class_data = []
+    for cls in classes:
+        assignments = Assignment.query.filter_by(class_id=cls.id).all()
+        total_submissions = 0
+        total_students = 0
+        done_submissions = 0
+        for asn in assignments:
+            students_count = Student.query.filter_by(assignment_id=asn.id).count()
+            total_students += students_count
+            subs = Submission.query.filter_by(assignment_id=asn.id).all()
+            total_submissions += len(subs)
+            done_submissions += sum(1 for s in subs if s.status == 'done')
+
+        class_data.append({
+            'id': cls.id,
+            'name': cls.name,
+            'level': cls.level,
+            'teachers': [t.name for t in cls.teachers],
+            'assignment_count': len(assignments),
+            'total_students': total_students,
+            'total_submissions': total_submissions,
+            'done_submissions': done_submissions,
+            'completion_pct': round(done_submissions / total_students * 100) if total_students > 0 else 0,
+        })
+
+    total_assignments = Assignment.query.filter(Assignment.class_id.isnot(None)).count()
+    total_subs = Submission.query.count()
+
+    return render_template('department.html',
+                           teacher=teacher,
+                           classes=class_data,
+                           total_teachers=len(teachers),
+                           total_classes=len(classes),
+                           total_assignments=total_assignments,
+                           total_submissions=total_subs,
+                           dept_mode=DEPT_MODE,
+                           demo_mode=DEMO_MODE)
+
+
+# ---------------------------------------------------------------------------
 # Bulk marking
 # ---------------------------------------------------------------------------
 
