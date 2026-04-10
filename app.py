@@ -14,7 +14,7 @@ import io
 
 from ai_marking import mark_script, get_available_providers, PROVIDERS
 from pdf_generator import generate_report_pdf, generate_overview_pdf
-from db import db, init_db, Assignment, Student, Submission
+from db import db, init_db, Assignment, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -32,6 +32,7 @@ app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
 
 ACCESS_CODE = os.getenv('ACCESS_CODE', '').strip()
 DEMO_MODE = os.getenv('DEMO_MODE', 'FALSE').upper() == 'TRUE'
+DEPT_MODE = os.getenv('DEPT_MODE', 'FALSE').upper() == 'TRUE'
 
 # Initialize database
 init_db(app)
@@ -97,10 +98,37 @@ def _effective_keys(force_session=False):
 
 
 def _is_authenticated():
-    """Check if user is authenticated. Auto-auth if no ACCESS_CODE is set."""
+    """Check if user is authenticated."""
+    if DEPT_MODE:
+        return session.get('teacher_id') is not None
     if not ACCESS_CODE:
         return True
     return session.get('authenticated', False)
+
+
+def _current_teacher():
+    """Get the currently logged-in teacher (dept mode only). Returns None if not logged in."""
+    if not DEPT_MODE:
+        return None
+    teacher_id = session.get('teacher_id')
+    if not teacher_id:
+        return None
+    return Teacher.query.get(teacher_id)
+
+
+def _is_hod():
+    """Check if current user is HOD."""
+    teacher = _current_teacher()
+    return teacher and teacher.role == 'hod'
+
+
+def _require_hod():
+    """Return error response if not HOD, or None if OK."""
+    if not DEPT_MODE or not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    if not _is_hod():
+        return jsonify({'success': False, 'error': 'HOD access required'}), 403
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +205,17 @@ def verify_code():
         return jsonify({'success': False, 'error': 'Too many attempts. Please wait.'}), 429
     data = request.get_json()
     code = (data.get('code') or '').strip()
+
+    if DEPT_MODE:
+        teacher = Teacher.query.filter_by(code=code).first()
+        if not teacher:
+            return jsonify({'success': False, 'error': 'Invalid code'}), 401
+        session['teacher_id'] = teacher.id
+        session['teacher_role'] = teacher.role
+        session['teacher_name'] = teacher.name
+        redirect_url = '/department' if teacher.role == 'hod' else '/dashboard'
+        return jsonify({'success': True, 'redirect': redirect_url})
+
     if code == ACCESS_CODE:
         session['authenticated'] = True
         return jsonify({'success': True})
