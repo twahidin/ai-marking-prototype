@@ -28,20 +28,32 @@ def _get_fernet():
     return Fernet(base64.urlsafe_b64encode(derived))
 
 
+def _migrate_add_columns(app):
+    """Add missing columns to existing tables (create_all only creates new tables)."""
+    from sqlalchemy import text, inspect
+    with app.app_context():
+        inspector = inspect(db.engine)
+        if 'submissions' in inspector.get_table_names():
+            columns = [c['name'] for c in inspector.get_columns('submissions')]
+            if 'script_pages_json' not in columns:
+                db.session.execute(text('ALTER TABLE submissions ADD COLUMN script_pages_json TEXT'))
+                db.session.commit()
+                logger.info('Added script_pages_json column to submissions table')
+
+
 def init_db(app):
     """Configure and initialize database."""
     db_url = os.getenv('DATABASE_URL', '')
-    # Railway Postgres uses postgres:// but SQLAlchemy needs postgresql://
     if db_url.startswith('postgres://'):
         db_url = db_url.replace('postgres://', 'postgresql://', 1)
     if not db_url:
-        # Fallback to SQLite for local dev
         db_url = 'sqlite:///marking.db'
     app.config['SQLALCHEMY_DATABASE_URI'] = db_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     db.init_app(app)
     with app.app_context():
         db.create_all()
+        _migrate_add_columns(app)
 
 
 class Assignment(db.Model):
