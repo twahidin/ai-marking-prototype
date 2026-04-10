@@ -1,9 +1,31 @@
 import os
 import json
+import base64
+import hashlib
+import logging
 from datetime import datetime, timezone
 from flask_sqlalchemy import SQLAlchemy
 
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+    FERNET_AVAILABLE = True
+except ImportError:
+    FERNET_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
+
 db = SQLAlchemy()
+
+
+def _get_fernet():
+    """Derive a Fernet key from FLASK_SECRET_KEY for encrypting API keys at rest."""
+    if not FERNET_AVAILABLE:
+        return None
+    key = os.getenv('FLASK_SECRET_KEY', '')
+    if not key:
+        return None
+    derived = hashlib.sha256(key.encode()).digest()
+    return Fernet(base64.urlsafe_b64encode(derived))
 
 
 def init_db(app):
@@ -43,7 +65,7 @@ class Assignment(db.Model):
     rubrics = db.Column(db.LargeBinary)
     reference = db.Column(db.LargeBinary)
 
-    # API keys (JSON string, encrypted at rest by Postgres)
+    # API keys (JSON string, encrypted with Fernet when FLASK_SECRET_KEY is set)
     api_keys_json = db.Column(db.Text, default='{}')
 
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
@@ -51,13 +73,26 @@ class Assignment(db.Model):
     students = db.relationship('Student', backref='assignment', lazy=True, cascade='all, delete-orphan')
 
     def get_api_keys(self):
+        raw = self.api_keys_json or '{}'
+        f = _get_fernet()
+        if f:
+            try:
+                decrypted = f.decrypt(raw.encode()).decode()
+                return json.loads(decrypted)
+            except (InvalidToken, Exception):
+                pass  # Fall through to plaintext (pre-encryption data)
         try:
-            return json.loads(self.api_keys_json or '{}')
+            return json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             return {}
 
     def set_api_keys(self, keys_dict):
-        self.api_keys_json = json.dumps(keys_dict)
+        plaintext = json.dumps(keys_dict)
+        f = _get_fernet()
+        if f:
+            self.api_keys_json = f.encrypt(plaintext.encode()).decode()
+        else:
+            self.api_keys_json = plaintext
 
 
 class Student(db.Model):

@@ -1,275 +1,17 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Marking Demo</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f5f5f7;
-            color: #333;
-            min-height: 100vh;
-        }
-        .container { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
+{% extends "base.html" %}
 
-        /* Access Gate */
-        .gate { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-        .gate-card {
-            background: white; border-radius: 16px; padding: 48px 40px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: center;
-            width: 100%; max-width: 420px;
-        }
-        .gate-card h1 { font-size: 24px; font-weight: 700; color: #333; margin-bottom: 8px; }
-        .gate-card p { color: #888; font-size: 14px; margin-bottom: 28px; }
-        .gate-input {
-            width: 100%; padding: 14px 16px; border: 2px solid #e0e0e0; border-radius: 10px;
-            font-size: 16px; text-align: center; letter-spacing: 3px; font-weight: 600;
-            transition: border-color 0.2s; outline: none;
-        }
-        .gate-input:focus { border-color: #667eea; }
-        .gate-input.error { border-color: #dc3545; }
-        .gate-error { color: #dc3545; font-size: 13px; margin-top: 10px; display: none; }
-        .gate-btn {
-            width: 100%; padding: 14px; background: #667eea; color: white; border: none;
-            border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer;
-            margin-top: 20px; transition: background 0.2s;
-        }
-        .gate-btn:hover { background: #5a6fd6; }
+{% block title %}AI Marking Demo{% endblock %}
 
-        /* Marking Page */
-        .header { text-align: center; margin-bottom: 32px; }
-        .header h1 { font-size: 28px; font-weight: 700; color: #333; }
-        .header p { color: #888; font-size: 14px; margin-top: 4px; }
-        .card {
-            background: white; border-radius: 16px; padding: 32px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.08); margin-bottom: 24px;
-        }
-        .card h2 { font-size: 16px; font-weight: 700; color: #333; margin-bottom: 20px; }
+{% block head %}
+<style>
+    .upload-grid { grid-template-columns: 1fr 1fr 1fr; }
+    .results { display: none; }
+</style>
+{% endblock %}
 
-        /* Selectors */
-        .sel-group { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
-        .sel-option { flex: 1; min-width: 120px; }
-        .sel-option input { display: none; }
-        .sel-option label {
-            display: block; padding: 14px 16px; border: 2px solid #e0e0e0; border-radius: 10px;
-            text-align: center; font-size: 14px; font-weight: 600; cursor: pointer;
-            transition: all 0.2s; color: #555;
-        }
-        .sel-option input:checked + label { border-color: #667eea; background: #f0f2ff; color: #667eea; }
-        .sel-option label:hover { border-color: #b0b8f0; }
-        .model-select {
-            width: 100%; padding: 10px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
-            font-size: 14px; outline: none; background: white; margin-bottom: 24px; color: #333;
-        }
-
-        /* Toggle */
-        .toggle-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-        .toggle-row .toggle-label { font-size: 14px; font-weight: 600; color: #555; }
-        .toggle { position: relative; width: 48px; height: 26px; flex-shrink: 0; }
-        .toggle input { display: none; }
-        .toggle .slider {
-            position: absolute; inset: 0; background: #ccc; border-radius: 26px;
-            cursor: pointer; transition: 0.2s;
-        }
-        .toggle .slider::before {
-            content: ''; position: absolute; width: 20px; height: 20px; left: 3px; bottom: 3px;
-            background: white; border-radius: 50%; transition: 0.2s;
-        }
-        .toggle input:checked + .slider { background: #667eea; }
-        .toggle input:checked + .slider::before { transform: translateX(22px); }
-        .marks-input {
-            width: 100px; padding: 10px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
-            font-size: 16px; font-weight: 600; text-align: center; outline: none;
-        }
-
-        /* File uploads */
-        .upload-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 20px; }
-        @media (max-width: 600px) { .upload-grid { grid-template-columns: 1fr; } }
-        .upload-zone {
-            border: 2px dashed #d0d0d0; border-radius: 10px; padding: 20px 12px;
-            text-align: center; cursor: pointer; transition: all 0.2s;
-        }
-        .upload-zone:hover { border-color: #667eea; background: #fafafe; }
-        .upload-zone.has-file { border-color: #28a745; background: #f0fdf4; }
-        .upload-zone input { display: none; }
-        .upload-zone .icon { font-size: 28px; margin-bottom: 6px; }
-        .upload-zone .label { font-size: 13px; font-weight: 600; color: #555; }
-        .upload-zone .filename { font-size: 11px; color: #28a745; margin-top: 6px; word-break: break-all; }
-        .upload-zone .hint { font-size: 11px; color: #aaa; margin-top: 4px; }
-        .collapsible-header {
-            display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
-            padding: 10px 0; color: #667eea; font-size: 14px; font-weight: 600;
-        }
-        .collapsible-header .arrow { transition: transform 0.2s; font-size: 12px; }
-        .collapsible-header.open .arrow { transform: rotate(90deg); }
-        .collapsible-body { display: none; padding: 12px 0; }
-        .collapsible-body.open { display: block; }
-
-        /* Form */
-        .form-group { margin-bottom: 16px; }
-        .form-group label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 6px; }
-        .form-input, .form-textarea {
-            width: 100%; padding: 12px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
-            font-size: 14px; outline: none; font-family: inherit;
-        }
-        .form-textarea { resize: vertical; min-height: 80px; }
-        .mark-btn {
-            width: 100%; padding: 16px; background: #667eea; color: white; border: none;
-            border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer;
-        }
-        .mark-btn:hover { background: #5a6fd6; }
-        .mark-btn:disabled { background: #ccc; cursor: not-allowed; }
-        .error-msg {
-            background: #fdecea; color: #dc3545; padding: 16px; border-radius: 10px;
-            font-size: 14px; margin-bottom: 16px; display: none;
-        }
-
-        /* ===== MODAL OVERLAY ===== */
-        .modal-overlay {
-            display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
-            z-index: 1000; align-items: center; justify-content: center;
-            backdrop-filter: blur(4px);
-        }
-        .modal-overlay.active { display: flex; }
-        .modal-box {
-            background: white; border-radius: 20px; padding: 40px; text-align: center;
-            width: 90%; max-width: 420px; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-        }
-        .modal-box h3 { font-size: 20px; font-weight: 700; color: #333; margin-bottom: 8px; }
-        .modal-box p { color: #888; font-size: 14px; margin-bottom: 24px; }
-        .modal-box .warning { color: #e68a00; font-size: 13px; font-weight: 600; margin-top: 16px; }
-        .progress-bar-track {
-            width: 100%; height: 8px; background: #e8e8e8; border-radius: 8px; overflow: hidden;
-        }
-        .progress-bar-fill {
-            height: 100%; background: linear-gradient(90deg, #667eea, #764ba2);
-            border-radius: 8px; width: 0%; transition: width 0.5s ease;
-        }
-        .progress-bar-fill.indeterminate {
-            width: 30%; animation: indeterminate 1.5s ease-in-out infinite;
-        }
-        @keyframes indeterminate {
-            0% { transform: translateX(-100%); }
-            100% { transform: translateX(400%); }
-        }
-        .modal-status { font-size: 13px; color: #667eea; margin-top: 12px; font-weight: 600; }
-
-        /* ===== RESULTS ===== */
-        .results { display: none; }
-        .summary-bar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
-        .summary-item {
-            flex: 1; min-width: 100px; padding: 14px; border-radius: 10px;
-            text-align: center; font-weight: 700; font-size: 14px;
-        }
-        .summary-correct { background: #e8f5e9; color: #28a745; }
-        .summary-partial { background: #fff8e1; color: #e68a00; }
-        .summary-incorrect { background: #fdecea; color: #dc3545; }
-        .summary-marks { background: #f0f2ff; color: #667eea; }
-
-        /* Question pagination */
-        .q-nav {
-            display: flex; align-items: center; justify-content: space-between;
-            margin-bottom: 16px; gap: 8px;
-        }
-        .q-nav-btn {
-            padding: 10px 20px; background: #667eea; color: white; border: none;
-            border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;
-        }
-        .q-nav-btn:hover { background: #5a6fd6; }
-        .q-nav-btn:disabled { background: #ddd; color: #999; cursor: not-allowed; }
-        .q-nav-info { font-size: 14px; font-weight: 700; color: #555; }
-        .q-dots { display: flex; gap: 6px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap; }
-        .q-dot {
-            width: 28px; height: 28px; border-radius: 50%; border: 2px solid #ddd;
-            font-size: 11px; font-weight: 700; display: flex; align-items: center;
-            justify-content: center; cursor: pointer; transition: all 0.2s; color: #888;
-        }
-        .q-dot.active { border-color: #667eea; color: #667eea; background: #f0f2ff; }
-        .q-dot.correct { border-color: #28a745; color: #28a745; }
-        .q-dot.partially_correct { border-color: #f0ad4e; color: #e68a00; }
-        .q-dot.incorrect { border-color: #dc3545; color: #dc3545; }
-
-        /* Single question view */
-        .q-card {
-            border: 1px solid #e8e8e8; border-radius: 12px; overflow: hidden;
-            margin-bottom: 16px;
-        }
-        .q-card-header {
-            display: flex; justify-content: space-between; align-items: center;
-            padding: 16px 20px; background: #fafafa;
-        }
-        .q-card-header .q-num { font-weight: 700; font-size: 16px; }
-        .status-badge {
-            padding: 5px 14px; border-radius: 20px; font-size: 12px;
-            font-weight: 700; color: white;
-        }
-        .status-correct { background: #28a745; }
-        .status-partially_correct { background: #f0ad4e; }
-        .status-incorrect { background: #dc3545; }
-        .q-card-body { padding: 20px; }
-        .q-field { margin-bottom: 16px; }
-        .q-field-label {
-            font-size: 11px; font-weight: 700; color: #999; text-transform: uppercase;
-            letter-spacing: 0.5px; margin-bottom: 4px;
-        }
-        .q-field-value { font-size: 14px; color: #333; line-height: 1.6; }
-        .q-field-value.feedback {
-            background: #f8f9fa; padding: 12px; border-radius: 8px; border-left: 3px solid #667eea;
-        }
-        .q-field-value.improvement {
-            background: #fff8e1; padding: 12px; border-radius: 8px; border-left: 3px solid #f0ad4e;
-        }
-
-        /* Overall section */
-        .overall-box {
-            background: #f8f9fa; border-radius: 12px; padding: 20px; margin-top: 20px;
-        }
-        .overall-box h3 { font-size: 15px; font-weight: 700; color: #333; margin-bottom: 8px; }
-        .overall-box p, .overall-box li { font-size: 14px; color: #555; line-height: 1.6; }
-        .overall-box ul { padding-left: 20px; margin-top: 8px; }
-        .overall-box li { margin-bottom: 4px; }
-
-        /* Action buttons */
-        .action-row { display: flex; gap: 12px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }
-        .action-btn {
-            padding: 14px 28px; border: none; border-radius: 10px;
-            font-size: 15px; font-weight: 700; cursor: pointer;
-        }
-        .action-btn.download { background: #28a745; color: white; }
-        .action-btn.download:hover { background: #218838; }
-        .action-btn.reset { background: #6c757d; color: white; }
-        .action-btn.reset:hover { background: #5a6268; }
-    </style>
-</head>
-<body>
-
+{% block body %}
 {% if not authenticated %}
-<div class="gate">
-    <div class="gate-card">
-        <h1>AI Marking Demo</h1>
-        <p>Enter the access code to continue</p>
-        <input type="text" class="gate-input" id="codeInput" placeholder="ACCESS CODE" autocomplete="off" autofocus>
-        <div class="gate-error" id="gateError">Invalid access code. Please try again.</div>
-        <button class="gate-btn" id="gateBtn" onclick="verifyCode()">Enter</button>
-    </div>
-</div>
-<script>
-document.getElementById('codeInput').addEventListener('keydown', e => { if (e.key === 'Enter') verifyCode(); });
-async function verifyCode() {
-    const code = document.getElementById('codeInput').value.trim();
-    if (!code) return;
-    const btn = document.getElementById('gateBtn');
-    btn.disabled = true; btn.textContent = 'Verifying...';
-    try {
-        const res = await fetch('/verify-code', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({code}) });
-        if (res.ok) { window.location.reload(); }
-        else { document.getElementById('gateError').style.display = 'block'; document.getElementById('codeInput').classList.add('error'); btn.disabled = false; btn.textContent = 'Enter'; }
-    } catch (err) { document.getElementById('gateError').textContent = 'Connection error.'; document.getElementById('gateError').style.display = 'block'; btn.disabled = false; btn.textContent = 'Enter'; }
-}
-</script>
-
+{% set gate_title = 'AI Marking Demo' %}{% include '_gate.html' %}
 {% else %}
 
 <!-- Modal Overlay -->
@@ -363,21 +105,21 @@ async function verifyCode() {
         <h2 style="margin-top: 24px;">Upload Files</h2>
         <div class="upload-grid">
             <div class="upload-zone" onclick="this.querySelector('input').click()">
-                <input type="file" id="question_paper" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this)">
+                <input type="file" id="question_paper" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this, 5)">
                 <div class="icon">&#128196;</div>
                 <div class="label">Question Paper</div>
                 <div class="filename" id="question_paper_name"></div>
                 <div class="hint">PDF or up to 5 images</div>
             </div>
             <div class="upload-zone" id="answerKeyZone" onclick="this.querySelector('input').click()">
-                <input type="file" id="answer_key" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this)">
+                <input type="file" id="answer_key" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this, 5)">
                 <div class="icon" id="answerKeyIcon">&#9989;</div>
                 <div class="label" id="answerKeyLabel">Answer Key</div>
                 <div class="filename" id="answer_key_name"></div>
                 <div class="hint" id="answerKeyHint">PDF or up to 5 images</div>
             </div>
             <div class="upload-zone" onclick="this.querySelector('input').click()">
-                <input type="file" id="script" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this)">
+                <input type="file" id="script" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this, 5)">
                 <div class="icon">&#9997;&#65039;</div>
                 <div class="label">Student Script</div>
                 <div class="filename" id="script_name"></div>
@@ -386,13 +128,13 @@ async function verifyCode() {
         </div>
 
         <div id="rubricUploadSection">
-            <div class="collapsible-header" id="rubricToggle" onclick="toggleRubrics()">
+            <div class="collapsible-header" id="rubricToggle" onclick="toggleSection('rubricToggle', 'rubricBody')">
                 <span class="arrow">&#9654;</span>
                 <span id="rubricLabel">Rubrics (Optional)</span>
             </div>
             <div class="collapsible-body" id="rubricBody">
                 <div class="upload-zone" style="max-width: 260px;" onclick="this.querySelector('input').click()">
-                    <input type="file" id="rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this)">
+                    <input type="file" id="rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this, 5)">
                     <div class="icon">&#128203;</div>
                     <div class="label">Rubrics</div>
                     <div class="filename" id="rubrics_name"></div>
@@ -444,7 +186,11 @@ async function verifyCode() {
         </div>
     </div>
 </div>
+{% endif %}
+{% endblock %}
 
+{% block scripts %}
+{% if authenticated %}
 <script>
 let currentJobId = null;
 let resultQuestions = [];
@@ -522,7 +268,7 @@ function updateAssignType() {
     document.getElementById('shortAnswerOptions').style.display = t === 'rubrics' ? 'none' : 'block';
     document.getElementById('rubricOptions').style.display = t === 'rubrics' ? 'block' : 'none';
     const rl = document.getElementById('rubricLabel');
-    // Swap answer key ↔ reference materials
+    // Swap answer key <-> reference materials
     const akLabel = document.getElementById('answerKeyLabel');
     const akIcon = document.getElementById('answerKeyIcon');
     const akHint = document.getElementById('answerKeyHint');
@@ -551,20 +297,6 @@ function updateAssignType() {
 
 function updateMarksVis() {
     document.getElementById('totalMarksGroup').style.display = document.getElementById('allocateMarks').checked ? 'block' : 'none';
-}
-
-function fileSelected(input) {
-    const zone = input.closest('.upload-zone');
-    const nameEl = zone.querySelector('.filename');
-    const count = input.files.length;
-    if (count > 5) { alert('Maximum 5 files.'); input.value = ''; zone.classList.remove('has-file'); nameEl.textContent = ''; return; }
-    if (count > 0) { zone.classList.add('has-file'); nameEl.textContent = count === 1 ? input.files[0].name : count + ' files'; }
-    else { zone.classList.remove('has-file'); nameEl.textContent = ''; }
-}
-
-function toggleRubrics() {
-    document.getElementById('rubricToggle').classList.toggle('open');
-    document.getElementById('rubricBody').classList.toggle('open');
 }
 
 function showError(msg) { const el = document.getElementById('errorMsg'); el.textContent = msg; el.style.display = 'block'; }
@@ -800,11 +532,6 @@ function goQ(idx) {
     renderQuestion();
 }
 
-function esc(text) {
-    if (!text) return '';
-    const d = document.createElement('div'); d.textContent = text; return d.innerHTML;
-}
-
 function downloadPdf() { if (currentJobId) window.open('/download/' + currentJobId, '_blank'); }
 
 function resetForm() {
@@ -822,5 +549,4 @@ function resetForm() {
 }
 </script>
 {% endif %}
-</body>
-</html>
+{% endblock %}

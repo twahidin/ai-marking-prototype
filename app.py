@@ -19,13 +19,53 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
+_flask_secret = os.getenv('FLASK_SECRET_KEY', '')
+if not _flask_secret:
+    _flask_secret = os.urandom(32).hex()
+    logger.warning('FLASK_SECRET_KEY not set — using random key (sessions will not survive restarts)')
+app.secret_key = _flask_secret
+
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
 
 ACCESS_CODE = os.getenv('ACCESS_CODE', '').strip()
 DEMO_MODE = os.getenv('DEMO_MODE', 'FALSE').upper() == 'TRUE'
 
 # Initialize database
 init_db(app)
+
+
+# ---------------------------------------------------------------------------
+# Security: headers, rate limiting, error handlers
+# ---------------------------------------------------------------------------
+
+@app.after_request
+def add_security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    return response
+
+
+@app.errorhandler(413)
+def too_large(e):
+    return jsonify({'success': False, 'error': 'Upload too large. Maximum 100MB total.'}), 413
+
+
+_rate_limits = {}
+
+
+def _check_rate_limit(key):
+    """Simple in-memory rate limiter. Returns False if limit exceeded."""
+    now = time.time()
+    _rate_limits.setdefault(key, [])
+    _rate_limits[key] = [t for t in _rate_limits[key] if now - t < 60]
+    if len(_rate_limits[key]) >= 10:
+        return False
+    _rate_limits[key].append(now)
+    return True
 
 # In-memory job store (thread-safe via GIL for dict ops)
 jobs = {}
@@ -35,9 +75,9 @@ JOB_TTL_SECONDS = 3600  # 1 hour
 def cleanup_old_jobs():
     """Remove jobs older than TTL."""
     now = time.time()
-    expired = [jid for jid, j in jobs.items() if now - j['created_at'] > JOB_TTL_SECONDS]
+    expired = [jid for jid, j in list(jobs.items()) if now - j['created_at'] > JOB_TTL_SECONDS]
     for jid in expired:
-        del jobs[jid]
+        jobs.pop(jid, None)
 
 
 def _get_session_keys():
@@ -132,6 +172,8 @@ def class_page():
 
 @app.route('/verify-code', methods=['POST'])
 def verify_code():
+    if not _check_rate_limit(f'verify:{request.remote_addr}'):
+        return jsonify({'success': False, 'error': 'Too many attempts. Please wait.'}), 429
     data = request.get_json()
     code = (data.get('code') or '').strip()
     if code == ACCESS_CODE:
@@ -775,6 +817,8 @@ def student_page(assignment_id):
 
 @app.route('/submit/<assignment_id>/verify', methods=['POST'])
 def student_verify(assignment_id):
+    if not _check_rate_limit(f'student_verify:{request.remote_addr}'):
+        return jsonify({'success': False, 'error': 'Too many attempts. Please wait.'}), 429
     asn = Assignment.query.get_or_404(assignment_id)
     data = request.get_json()
     code = (data.get('code') or '').strip().upper()
@@ -842,6 +886,8 @@ def student_upload(assignment_id):
 
 @app.route('/submit/<assignment_id>/status/<int:submission_id>')
 def student_submission_status(assignment_id, submission_id):
+    if not session.get(f'student_auth_{assignment_id}') and not session.get('authenticated'):
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
     sub = Submission.query.get_or_404(submission_id)
     if sub.assignment_id != assignment_id:
         return jsonify({'success': False, 'error': 'Not found'}), 404

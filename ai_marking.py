@@ -4,7 +4,7 @@ import base64
 import json
 import re
 import io
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -584,7 +584,7 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
 
         result = parse_ai_response(response_text)
         result['assign_type'] = assign_type
-        result['generated_at'] = datetime.utcnow().isoformat()
+        result['generated_at'] = datetime.now(timezone.utc).isoformat()
         result['provider'] = provider
         result['model'] = model_name
         prov_config = PROVIDERS.get(provider, {})

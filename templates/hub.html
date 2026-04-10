@@ -1,100 +1,42 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Marking Demo</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f5f5f7; color: #333; min-height: 100vh;
-        }
+{% extends "base.html" %}
 
-        /* Access Gate */
-        .gate { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-        .gate-card {
-            background: white; border-radius: 16px; padding: 48px 40px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: center;
-            width: 100%; max-width: 420px;
-        }
-        .gate-card h1 { font-size: 24px; font-weight: 700; color: #333; margin-bottom: 8px; }
-        .gate-card p { color: #888; font-size: 14px; margin-bottom: 28px; }
-        .gate-input {
-            width: 100%; padding: 14px 16px; border: 2px solid #e0e0e0; border-radius: 10px;
-            font-size: 16px; text-align: center; letter-spacing: 3px; font-weight: 600;
-            transition: border-color 0.2s; outline: none;
-        }
-        .gate-input:focus { border-color: #667eea; }
-        .gate-input.error { border-color: #dc3545; }
-        .gate-error { color: #dc3545; font-size: 13px; margin-top: 10px; display: none; }
-        .gate-btn {
-            width: 100%; padding: 14px; background: #667eea; color: white; border: none;
-            border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer;
-            margin-top: 20px; transition: background 0.2s;
-        }
-        .gate-btn:hover { background: #5a6fd6; }
+{% block head %}
+<style>
+    .hub { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 40px 20px; }
+    .hub-container { max-width: 700px; width: 100%; text-align: center; }
+    .hub-container h1 { font-size: 32px; font-weight: 700; color: #333; margin-bottom: 8px; }
+    .hub-container .subtitle { color: #888; font-size: 15px; margin-bottom: 40px; }
 
-        /* Hub */
-        .hub { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 40px 20px; }
-        .hub-container { max-width: 700px; width: 100%; text-align: center; }
-        .hub-container h1 { font-size: 32px; font-weight: 700; color: #333; margin-bottom: 8px; }
-        .hub-container .subtitle { color: #888; font-size: 15px; margin-bottom: 40px; }
+    .hub-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 550px) { .hub-cards { grid-template-columns: 1fr; } }
 
-        .hub-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        @media (max-width: 550px) { .hub-cards { grid-template-columns: 1fr; } }
+    .hub-card {
+        background: white; border-radius: 16px; padding: 36px 28px;
+        box-shadow: 0 2px 20px rgba(0,0,0,0.08);
+        text-decoration: none; color: inherit;
+        transition: all 0.25s; cursor: pointer;
+        border: 2px solid transparent;
+        display: flex; flex-direction: column; align-items: center;
+    }
+    .hub-card:hover { border-color: #667eea; transform: translateY(-4px); box-shadow: 0 8px 30px rgba(102,126,234,0.15); }
+    .hub-card .icon { font-size: 48px; margin-bottom: 16px; }
+    .hub-card h2 { font-size: 20px; font-weight: 700; color: #333; margin-bottom: 8px; }
+    .hub-card p { font-size: 13px; color: #888; line-height: 1.6; }
+    .hub-card .tag {
+        display: inline-block; margin-top: 16px; padding: 6px 14px;
+        background: #f0f2ff; color: #667eea; border-radius: 20px;
+        font-size: 12px; font-weight: 600;
+    }
+    .hub-footer { margin-top: 40px; font-size: 13px; color: #aaa; }
+</style>
+{% endblock %}
 
-        .hub-card {
-            background: white; border-radius: 16px; padding: 36px 28px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.08);
-            text-decoration: none; color: inherit;
-            transition: all 0.25s; cursor: pointer;
-            border: 2px solid transparent;
-            display: flex; flex-direction: column; align-items: center;
-        }
-        .hub-card:hover { border-color: #667eea; transform: translateY(-4px); box-shadow: 0 8px 30px rgba(102,126,234,0.15); }
-        .hub-card .icon { font-size: 48px; margin-bottom: 16px; }
-        .hub-card h2 { font-size: 20px; font-weight: 700; color: #333; margin-bottom: 8px; }
-        .hub-card p { font-size: 13px; color: #888; line-height: 1.6; }
-        .hub-card .tag {
-            display: inline-block; margin-top: 16px; padding: 6px 14px;
-            background: #f0f2ff; color: #667eea; border-radius: 20px;
-            font-size: 12px; font-weight: 600;
-        }
-
-        .hub-footer { margin-top: 40px; font-size: 13px; color: #aaa; }
-        .hub-footer a { color: #667eea; text-decoration: none; font-weight: 600; }
-    </style>
-</head>
-<body>
-
+{% block body %}
 {% if not authenticated %}
-<div class="gate">
-    <div class="gate-card">
-        <h1>AI Marking Demo</h1>
-        <p>Enter the access code to continue</p>
-        <input type="text" class="gate-input" id="codeInput" placeholder="ACCESS CODE" autocomplete="off" autofocus>
-        <div class="gate-error" id="gateError">Invalid access code. Please try again.</div>
-        <button class="gate-btn" id="gateBtn" onclick="verifyCode()">Enter</button>
-    </div>
-</div>
-<script>
-document.getElementById('codeInput').addEventListener('keydown', e => { if (e.key === 'Enter') verifyCode(); });
-async function verifyCode() {
-    const code = document.getElementById('codeInput').value.trim();
-    if (!code) return;
-    const btn = document.getElementById('gateBtn');
-    btn.disabled = true; btn.textContent = 'Verifying...';
-    try {
-        const res = await fetch('/verify-code', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({code}) });
-        if (res.ok) { window.location.reload(); }
-        else { document.getElementById('gateError').style.display = 'block'; document.getElementById('codeInput').classList.add('error'); btn.disabled = false; btn.textContent = 'Enter'; }
-    } catch (err) { document.getElementById('gateError').textContent = 'Connection error.'; document.getElementById('gateError').style.display = 'block'; btn.disabled = false; btn.textContent = 'Enter'; }
-}
-</script>
+{% set gate_title = 'AI Marking Demo' %}
+{% include '_gate.html' %}
 
 {% else %}
-
 <div class="hub">
     <div class="hub-container">
         <h1>AI Marking Demo</h1>
@@ -120,7 +62,5 @@ async function verifyCode() {
         </div>
     </div>
 </div>
-
 {% endif %}
-</body>
-</html>
+{% endblock %}

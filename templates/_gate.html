@@ -1,0 +1,10 @@
+{# Shared access-code gate. Set `gate_title` before including. #}
+<div class="gate">
+    <div class="gate-card">
+        <h1>{{ gate_title|default('AI Marking Demo') }}</h1>
+        <p>Enter the access code to continue</p>
+        <input type="text" class="gate-input" id="codeInput" placeholder="ACCESS CODE" autocomplete="off" autofocus>
+        <div class="gate-error" id="gateError">Invalid access code. Please try again.</div>
+        <button class="gate-btn" id="gateBtn" onclick="verifyAccessCode()">Enter</button>
+    </div>
+</div>

@@ -1,290 +1,86 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mark a Class - AI Marking</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f5f5f7;
-            color: #333;
-            min-height: 100vh;
-        }
-        .container { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
+{% extends "base.html" %}
 
-        /* Access Gate */
-        .gate { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-        .gate-card {
-            background: white; border-radius: 16px; padding: 48px 40px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: center;
-            width: 100%; max-width: 420px;
-        }
-        .gate-card h1 { font-size: 24px; font-weight: 700; color: #333; margin-bottom: 8px; }
-        .gate-card p { color: #888; font-size: 14px; margin-bottom: 28px; }
-        .gate-input {
-            width: 100%; padding: 14px 16px; border: 2px solid #e0e0e0; border-radius: 10px;
-            font-size: 16px; text-align: center; letter-spacing: 3px; font-weight: 600;
-            transition: border-color 0.2s; outline: none;
-        }
-        .gate-input:focus { border-color: #667eea; }
-        .gate-input.error { border-color: #dc3545; }
-        .gate-error { color: #dc3545; font-size: 13px; margin-top: 10px; display: none; }
-        .gate-btn {
-            width: 100%; padding: 14px; background: #667eea; color: white; border: none;
-            border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer;
-            margin-top: 20px; transition: background 0.2s;
-        }
-        .gate-btn:hover { background: #5a6fd6; }
+{% block title %}Mark a Class - AI Marking{% endblock %}
 
-        /* Header */
-        .header { text-align: center; margin-bottom: 32px; }
-        .header h1 { font-size: 28px; font-weight: 700; color: #333; }
-        .header p { color: #888; font-size: 14px; margin-top: 4px; }
+{% block head %}
+<style>
+    /* Tabs */
+    .tabs-bar {
+        display: flex; background: white; border-radius: 12px;
+        box-shadow: 0 2px 20px rgba(0,0,0,0.08); margin-bottom: 24px;
+        overflow: hidden; border: 2px solid #e0e0e0;
+    }
+    .tab-btn {
+        flex: 1; padding: 16px 20px; border: none; background: white;
+        font-size: 15px; font-weight: 700; cursor: pointer; color: #666;
+        transition: all 0.2s; text-align: center;
+        border-right: 1px solid #e0e0e0;
+    }
+    .tab-btn:last-child { border-right: none; }
+    .tab-btn:hover { background: #f0f2ff; color: #667eea; }
+    .tab-btn.active { background: #667eea; color: white; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
 
-        /* Cards */
-        .card {
-            background: white; border-radius: 16px; padding: 32px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.08); margin-bottom: 24px;
-        }
-        .card h2 { font-size: 16px; font-weight: 700; color: #333; margin-bottom: 20px; }
+    /* Key status badges */
+    .key-badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .key-badge {
+        display: inline-flex; align-items: center; gap: 4px;
+        padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+    }
+    .key-badge.saved { background: #e8f5e9; color: #28a745; }
+    .key-badge.empty { background: #f5f5f5; color: #aaa; }
 
-        /* Tabs */
-        .tabs-bar {
-            display: flex; background: white; border-radius: 12px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.08); margin-bottom: 24px;
-            overflow: hidden; border: 2px solid #e0e0e0;
-        }
-        .tab-btn {
-            flex: 1; padding: 16px 20px; border: none; background: white;
-            font-size: 15px; font-weight: 700; cursor: pointer; color: #666;
-            transition: all 0.2s; text-align: center;
-            border-right: 1px solid #e0e0e0;
-        }
-        .tab-btn:last-child { border-right: none; }
-        .tab-btn:hover { background: #f0f2ff; color: #667eea; }
-        .tab-btn.active { background: #667eea; color: white; }
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
+    /* Assignment list */
+    .assignment-item {
+        border: 1px solid #e8e8e8; border-radius: 12px; padding: 20px;
+        margin-bottom: 12px; transition: box-shadow 0.2s;
+    }
+    .assignment-item:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+    .assignment-item-header {
+        display: flex; justify-content: space-between; align-items: flex-start;
+        margin-bottom: 10px; gap: 12px;
+    }
+    .assignment-subject { font-size: 16px; font-weight: 700; color: #333; }
+    .assignment-meta { font-size: 12px; color: #888; margin-top: 4px; }
+    .assignment-meta span { margin-right: 16px; }
+    .assignment-code {
+        display: inline-block; background: #f0f2ff; color: #667eea;
+        padding: 4px 12px; border-radius: 8px; font-size: 13px; font-weight: 700;
+        letter-spacing: 1px;
+    }
+    .assignment-link {
+        font-size: 12px; color: #667eea; word-break: break-all; display: block; margin-top: 6px;
+    }
+    .assignment-stats {
+        display: flex; gap: 16px; align-items: center; margin-top: 10px; flex-wrap: wrap;
+    }
+    .stat-chip {
+        font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px;
+    }
+    .stat-chip.submissions { background: #f0f2ff; color: #667eea; }
+    .stat-chip.results-on { background: #e8f5e9; color: #28a745; }
+    .stat-chip.results-off { background: #fdecea; color: #dc3545; }
+    .assignment-actions { display: flex; gap: 8px; margin-top: 12px; }
+    .btn-sm {
+        padding: 8px 16px; border: none; border-radius: 8px;
+        font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none;
+        display: inline-block; text-align: center;
+    }
+    .btn-sm.view { background: #667eea; color: white; }
+    .btn-sm.view:hover { background: #5a6fd6; }
+    .btn-sm.delete { background: #fdecea; color: #dc3545; }
+    .btn-sm.delete:hover { background: #f5c6cb; }
 
-        /* Selectors (radio buttons styled as pills) */
-        .sel-group { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
-        .sel-option { flex: 1; min-width: 120px; }
-        .sel-option input { display: none; }
-        .sel-option label {
-            display: block; padding: 14px 16px; border: 2px solid #e0e0e0; border-radius: 10px;
-            text-align: center; font-size: 14px; font-weight: 600; cursor: pointer;
-            transition: all 0.2s; color: #555;
-        }
-        .sel-option input:checked + label { border-color: #667eea; background: #f0f2ff; color: #667eea; }
-        .sel-option label:hover { border-color: #b0b8f0; }
-        .sel-option input:disabled + label { opacity: 0.4; cursor: not-allowed; }
+    /* Progress & Results cards (visibility) */
+    .progress-card { display: none; }
+    .results-card { display: none; }
+</style>
+{% endblock %}
 
-        /* Model dropdown */
-        .model-select {
-            width: 100%; padding: 10px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
-            font-size: 14px; outline: none; background: white; margin-bottom: 24px; color: #333;
-        }
-
-        /* Form */
-        .form-group { margin-bottom: 16px; }
-        .form-group label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 6px; }
-        .form-input, .form-textarea {
-            width: 100%; padding: 12px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
-            font-size: 14px; outline: none; font-family: inherit;
-        }
-        .form-textarea { resize: vertical; min-height: 80px; }
-        .marks-input {
-            width: 100px; padding: 10px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
-            font-size: 16px; font-weight: 600; text-align: center; outline: none;
-        }
-
-        /* Toggle */
-        .toggle-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-        .toggle-row .toggle-label { font-size: 14px; font-weight: 600; color: #555; }
-        .toggle { position: relative; width: 48px; height: 26px; flex-shrink: 0; }
-        .toggle input { display: none; }
-        .toggle .slider {
-            position: absolute; inset: 0; background: #ccc; border-radius: 26px;
-            cursor: pointer; transition: 0.2s;
-        }
-        .toggle .slider::before {
-            content: ''; position: absolute; width: 20px; height: 20px; left: 3px; bottom: 3px;
-            background: white; border-radius: 50%; transition: 0.2s;
-        }
-        .toggle input:checked + .slider { background: #667eea; }
-        .toggle input:checked + .slider::before { transform: translateX(22px); }
-
-        /* Checkbox row */
-        .check-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
-        .check-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: #667eea; cursor: pointer; }
-        .check-row label { font-size: 14px; font-weight: 600; color: #555; cursor: pointer; }
-
-        /* File uploads */
-        .upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
-        @media (max-width: 600px) { .upload-grid { grid-template-columns: 1fr; } }
-        .upload-zone {
-            border: 2px dashed #d0d0d0; border-radius: 10px; padding: 20px 12px;
-            text-align: center; cursor: pointer; transition: all 0.2s;
-        }
-        .upload-zone:hover { border-color: #667eea; background: #fafafe; }
-        .upload-zone.has-file { border-color: #28a745; background: #f0fdf4; }
-        .upload-zone input { display: none; }
-        .upload-zone .icon { font-size: 28px; margin-bottom: 6px; }
-        .upload-zone .label { font-size: 13px; font-weight: 600; color: #555; }
-        .upload-zone .filename { font-size: 11px; color: #28a745; margin-top: 6px; word-break: break-all; }
-        .upload-zone .hint { font-size: 11px; color: #aaa; margin-top: 4px; }
-
-        /* Buttons */
-        .mark-btn {
-            width: 100%; padding: 16px; background: #667eea; color: white; border: none;
-            border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer;
-        }
-        .mark-btn:hover { background: #5a6fd6; }
-        .mark-btn:disabled { background: #ccc; cursor: not-allowed; }
-        .error-msg {
-            background: #fdecea; color: #dc3545; padding: 16px; border-radius: 10px;
-            font-size: 14px; margin-bottom: 16px; display: none;
-        }
-        .success-msg {
-            background: #e8f5e9; color: #28a745; padding: 20px; border-radius: 10px;
-            font-size: 14px; margin-bottom: 16px; display: none;
-        }
-        .success-msg strong { font-size: 15px; }
-        .success-msg .code {
-            display: inline-block; background: #d4edda; padding: 6px 14px; border-radius: 8px;
-            font-size: 18px; font-weight: 700; letter-spacing: 2px; margin: 8px 0;
-        }
-        .success-msg a { color: #28a745; font-weight: 600; word-break: break-all; }
-
-        /* Progress */
-        .progress-card { display: none; }
-        .progress-bar-track {
-            width: 100%; height: 10px; background: #e8e8e8; border-radius: 10px; overflow: hidden;
-        }
-        .progress-bar-fill {
-            height: 100%; background: linear-gradient(90deg, #667eea, #764ba2);
-            border-radius: 10px; width: 0%; transition: width 0.5s ease;
-        }
-        .progress-status { font-size: 14px; color: #667eea; margin-top: 12px; font-weight: 600; text-align: center; }
-
-        /* Results table */
-        .results-card { display: none; }
-        .results-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .results-table th {
-            background: #667eea; color: white; padding: 10px 12px; text-align: left;
-            font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
-        }
-        .results-table td { padding: 10px 12px; border-bottom: 1px solid #eee; }
-        .results-table tr:nth-child(even) { background: #fafafa; }
-        .results-table .status-ok { color: #28a745; font-weight: 600; }
-        .results-table .status-err { color: #dc3545; font-weight: 600; }
-
-        .action-row { display: flex; gap: 12px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }
-        .action-btn {
-            padding: 14px 28px; border: none; border-radius: 10px;
-            font-size: 15px; font-weight: 700; cursor: pointer;
-        }
-        .action-btn.download { background: #28a745; color: white; }
-        .action-btn.download:hover { background: #218838; }
-        .action-btn.reset { background: #6c757d; color: white; }
-        .action-btn.reset:hover { background: #5a6268; }
-
-        /* Collapsible */
-        .collapsible-header {
-            display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
-            padding: 10px 0; color: #667eea; font-size: 14px; font-weight: 600;
-        }
-        .collapsible-header .arrow { transition: transform 0.2s; font-size: 12px; }
-        .collapsible-header.open .arrow { transform: rotate(90deg); }
-        .collapsible-body { display: none; padding: 12px 0; }
-        .collapsible-body.open { display: block; }
-
-        /* Key status badges */
-        .key-badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-        .key-badge {
-            display: inline-flex; align-items: center; gap: 4px;
-            padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
-        }
-        .key-badge.saved { background: #e8f5e9; color: #28a745; }
-        .key-badge.empty { background: #f5f5f5; color: #aaa; }
-
-        /* Assignment list */
-        .assignment-item {
-            border: 1px solid #e8e8e8; border-radius: 12px; padding: 20px;
-            margin-bottom: 12px; transition: box-shadow 0.2s;
-        }
-        .assignment-item:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
-        .assignment-item-header {
-            display: flex; justify-content: space-between; align-items: flex-start;
-            margin-bottom: 10px; gap: 12px;
-        }
-        .assignment-subject { font-size: 16px; font-weight: 700; color: #333; }
-        .assignment-meta { font-size: 12px; color: #888; margin-top: 4px; }
-        .assignment-meta span { margin-right: 16px; }
-        .assignment-code {
-            display: inline-block; background: #f0f2ff; color: #667eea;
-            padding: 4px 12px; border-radius: 8px; font-size: 13px; font-weight: 700;
-            letter-spacing: 1px;
-        }
-        .assignment-link {
-            font-size: 12px; color: #667eea; word-break: break-all; display: block; margin-top: 6px;
-        }
-        .assignment-stats {
-            display: flex; gap: 16px; align-items: center; margin-top: 10px; flex-wrap: wrap;
-        }
-        .stat-chip {
-            font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px;
-        }
-        .stat-chip.submissions { background: #f0f2ff; color: #667eea; }
-        .stat-chip.results-on { background: #e8f5e9; color: #28a745; }
-        .stat-chip.results-off { background: #fdecea; color: #dc3545; }
-        .assignment-actions { display: flex; gap: 8px; margin-top: 12px; }
-        .btn-sm {
-            padding: 8px 16px; border: none; border-radius: 8px;
-            font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none;
-            display: inline-block; text-align: center;
-        }
-        .btn-sm.view { background: #667eea; color: white; }
-        .btn-sm.view:hover { background: #5a6fd6; }
-        .btn-sm.delete { background: #fdecea; color: #dc3545; }
-        .btn-sm.delete:hover { background: #f5c6cb; }
-
-        .empty-state {
-            text-align: center; padding: 40px 20px; color: #aaa;
-        }
-        .empty-state .icon { font-size: 40px; margin-bottom: 12px; }
-        .empty-state p { font-size: 14px; }
-    </style>
-</head>
-<body>
-
+{% block body %}
 {% if not authenticated %}
-<div class="gate">
-    <div class="gate-card">
-        <h1>Mark a Class</h1>
-        <p>Enter the access code to continue</p>
-        <input type="text" class="gate-input" id="codeInput" placeholder="ACCESS CODE" autocomplete="off" autofocus>
-        <div class="gate-error" id="gateError">Invalid access code. Please try again.</div>
-        <button class="gate-btn" id="gateBtn" onclick="verifyCode()">Enter</button>
-    </div>
-</div>
-<script>
-document.getElementById('codeInput').addEventListener('keydown', e => { if (e.key === 'Enter') verifyCode(); });
-async function verifyCode() {
-    const code = document.getElementById('codeInput').value.trim();
-    if (!code) return;
-    const btn = document.getElementById('gateBtn');
-    btn.disabled = true; btn.textContent = 'Verifying...';
-    try {
-        const res = await fetch('/verify-code', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({code}) });
-        if (res.ok) { window.location.reload(); }
-        else { document.getElementById('gateError').style.display = 'block'; document.getElementById('codeInput').classList.add('error'); btn.disabled = false; btn.textContent = 'Enter'; }
-    } catch (err) { document.getElementById('gateError').textContent = 'Connection error.'; document.getElementById('gateError').style.display = 'block'; btn.disabled = false; btn.textContent = 'Enter'; }
-}
-</script>
-
+{% set gate_title = 'Mark a Class' %}{% include '_gate.html' %}
 {% else %}
 
 <div class="container">
@@ -390,14 +186,14 @@ async function verifyCode() {
 
             <div class="upload-grid">
                 <div class="upload-zone" onclick="this.querySelector('input').click()">
-                    <input type="file" id="bulk_question_paper" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this)">
+                    <input type="file" id="bulk_question_paper" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 5)">
                     <div class="icon">&#128196;</div>
                     <div class="label">Question Paper</div>
                     <div class="filename"></div>
                     <div class="hint">PDF or up to 5 images</div>
                 </div>
                 <div class="upload-zone" id="bulkAnswerKeyZone" onclick="this.querySelector('input').click()">
-                    <input type="file" id="bulk_answer_key" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this)">
+                    <input type="file" id="bulk_answer_key" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 5)">
                     <div class="icon" id="bulkAnswerKeyIcon">&#9989;</div>
                     <div class="label" id="bulkAnswerKeyLabel">Answer Key</div>
                     <div class="filename"></div>
@@ -428,7 +224,7 @@ async function verifyCode() {
                 </div>
                 <div class="collapsible-body" id="bulkRubricBody">
                     <div class="upload-zone" style="max-width: 260px;" onclick="this.querySelector('input').click()">
-                        <input type="file" id="bulk_rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this)">
+                        <input type="file" id="bulk_rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 5)">
                         <div class="icon">&#128203;</div>
                         <div class="label">Rubrics</div>
                         <div class="filename"></div>
@@ -534,7 +330,7 @@ async function verifyCode() {
                 <div class="form-group">
                     <label>Rubrics File</label>
                     <div class="upload-zone" style="max-width:260px;" onclick="this.querySelector('input').click()">
-                        <input type="file" id="teacher_rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this)">
+                        <input type="file" id="teacher_rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 5)">
                         <div class="icon">&#128203;</div>
                         <div class="label">Rubrics</div>
                         <div class="filename"></div>
@@ -565,14 +361,14 @@ async function verifyCode() {
             <!-- Question paper + answer key -->
             <div class="upload-grid">
                 <div class="upload-zone" onclick="this.querySelector('input').click()">
-                    <input type="file" id="teacher_question_paper" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this)">
+                    <input type="file" id="teacher_question_paper" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 5)">
                     <div class="icon">&#128196;</div>
                     <div class="label">Question Paper</div>
                     <div class="filename"></div>
                     <div class="hint">PDF or up to 5 images</div>
                 </div>
                 <div class="upload-zone" id="teacherAnswerKeyZone" onclick="this.querySelector('input').click()">
-                    <input type="file" id="teacher_answer_key" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this)">
+                    <input type="file" id="teacher_answer_key" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 5)">
                     <div class="icon" id="teacherAnswerKeyIcon">&#9989;</div>
                     <div class="label" id="teacherAnswerKeyLabel">Answer Key</div>
                     <div class="filename"></div>
@@ -641,7 +437,11 @@ async function verifyCode() {
         </div>
     </div>
 </div>
+{% endif %}
+{% endblock %}
 
+{% block scripts %}
+{% if authenticated %}
 <script>
 /* =====================================================================
    Shared state
@@ -724,25 +524,6 @@ function renderKeyBadges() {
 }
 
 window.addEventListener('beforeunload', () => { navigator.sendBeacon('/clear-keys', ''); });
-
-/* =====================================================================
-   Shared: file selection
-   ===================================================================== */
-function fileSelected(input) {
-    const zone = input.closest('.upload-zone');
-    const nameEl = zone.querySelector('.filename');
-    const count = input.files.length;
-    if (count > 5 && input.id !== 'bulk_scripts' && input.id !== 'bulk_class_list' && input.id !== 'teacher_class_list') {
-        alert('Maximum 5 files.'); input.value = ''; zone.classList.remove('has-file'); nameEl.textContent = ''; return;
-    }
-    if (count > 0) { zone.classList.add('has-file'); nameEl.textContent = count === 1 ? input.files[0].name : count + ' files'; }
-    else { zone.classList.remove('has-file'); nameEl.textContent = ''; }
-}
-
-function toggleSection(toggleId, bodyId) {
-    document.getElementById(toggleId).classList.toggle('open');
-    document.getElementById(bodyId).classList.toggle('open');
-}
 
 /* =====================================================================
    Tab 1 (Bulk): Provider / model
@@ -928,19 +709,8 @@ async function pollBulkStatus() {
 async function renderBulkResults() {
     const res = await fetch('/status/' + bulkJobId);
     const data = await res.json();
-    const results = data.result?.results || [];
 
-    let items = results;
-    if (!items.length && data.result) {
-        items = data.result;
-    }
-
-    const statusRes = await fetch('/status/' + bulkJobId);
-    const statusData = await statusRes.json();
-
-    if (statusData.result && Array.isArray(statusData.result)) {
-        items = statusData.result;
-    }
+    let items = Array.isArray(data.result) ? data.result : [];
 
     const tbody = document.getElementById('bulkResultsBody');
     tbody.innerHTML = '';
@@ -964,10 +734,10 @@ async function renderBulkResults() {
             }
             const tr = document.createElement('tr');
             tr.innerHTML =
-                '<td>' + item.index + '</td>' +
-                '<td>' + item.name + '</td>' +
+                '<td>' + esc(item.index) + '</td>' +
+                '<td>' + esc(item.name) + '</td>' +
                 '<td class="' + (hasError ? 'status-err' : 'status-ok') + '">' + (hasError ? 'Error' : 'Done') + '</td>' +
-                '<td>' + (hasError ? r.error.substring(0, 40) : score) + '</td>';
+                '<td>' + esc(hasError ? r.error.substring(0, 40) : score) + '</td>';
             tbody.appendChild(tr);
         });
     }
@@ -1166,8 +936,8 @@ async function createAssignment() {
         const successEl = document.getElementById('teacherSuccessMsg');
         const studentUrl = window.location.origin + '/submit/' + data.assignment_id;
         successEl.innerHTML = '<strong>Assignment created!</strong><br><br>' +
-            'Classroom Code: <span class="code">' + data.classroom_code + '</span><br><br>' +
-            'Student Link: <a href="' + studentUrl + '" target="_blank">' + studentUrl + '</a><br><br>' +
+            'Classroom Code: <span class="code">' + esc(data.classroom_code) + '</span><br><br>' +
+            'Student Link: <a href="' + esc(studentUrl) + '" target="_blank">' + esc(studentUrl) + '</a><br><br>' +
             '<span style="font-size:12px;color:#666;">Share the code and link with your students. They will enter the classroom code and upload their scripts.</span>';
         successEl.style.display = 'block';
         successEl.scrollIntoView({ behavior: 'smooth' });
@@ -1217,5 +987,4 @@ renderTeacherProviderGroup();
 updateKeyPlaceholder();
 </script>
 {% endif %}
-</body>
-</html>
+{% endblock %}

@@ -1,244 +1,84 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Submit Assignment</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f5f5f7;
-            color: #333;
-            min-height: 100vh;
-        }
-        .container { max-width: 520px; margin: 0 auto; padding: 24px 16px; }
+{% extends "base.html" %}
 
-        /* Gate */
-        .gate { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 16px; }
-        .gate-card {
-            background: white; border-radius: 16px; padding: 40px 28px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: center;
-            width: 100%; max-width: 420px;
-        }
-        .gate-card h1 { font-size: 22px; font-weight: 700; color: #2D2D2D; margin-bottom: 6px; }
-        .gate-card .subtitle { color: #666; font-size: 14px; margin-bottom: 28px; }
-        .gate-input {
-            width: 100%; padding: 16px; border: 2px solid #e0e0e0; border-radius: 10px;
-            font-size: 18px; text-align: center; letter-spacing: 4px; font-weight: 700;
-            text-transform: uppercase; transition: border-color 0.2s; outline: none;
-        }
-        .gate-input:focus { border-color: #667eea; }
-        .gate-input.error { border-color: #dc3545; }
-        .gate-error { color: #dc3545; font-size: 13px; margin-top: 10px; display: none; }
-        .gate-btn {
-            width: 100%; padding: 16px; background: #667eea; color: white; border: none;
-            border-radius: 10px; font-size: 17px; font-weight: 700; cursor: pointer;
-            margin-top: 20px; transition: background 0.2s;
-            -webkit-tap-highlight-color: transparent;
-        }
-        .gate-btn:hover { background: #5a6fd6; }
-        .gate-btn:active { background: #4e60c4; }
-        .gate-btn:disabled { background: #ccc; cursor: not-allowed; }
+{% block viewport %}width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no{% endblock %}
+{% block title %}Submit Assignment{% endblock %}
 
-        /* Card */
-        .card {
-            background: white; border-radius: 16px; padding: 28px 24px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.08); margin-bottom: 20px;
-        }
-        .card h2 { font-size: 20px; font-weight: 700; color: #2D2D2D; margin-bottom: 20px; }
+{% block head %}
+<style>
+    .container { max-width: 520px; padding: 24px 16px; }
+    .gate { padding: 16px; }
+    .gate-card { padding: 40px 28px; }
+    .gate-card h1 { font-size: 22px; color: #2D2D2D; }
+    .gate-input { padding: 16px; font-size: 18px; letter-spacing: 4px; font-weight: 700; text-transform: uppercase; }
+    .gate-btn { padding: 16px; font-size: 17px; font-weight: 700; -webkit-tap-highlight-color: transparent; }
+    .card { padding: 28px 24px; }
+    .card h2 { font-size: 20px; color: #2D2D2D; }
 
-        /* Form elements */
-        .form-group { margin-bottom: 20px; }
-        .form-group label {
-            display: block; font-size: 14px; font-weight: 600; color: #666; margin-bottom: 8px;
-        }
-        .form-select {
-            width: 100%; padding: 16px; border: 2px solid #e0e0e0; border-radius: 10px;
-            font-size: 16px; outline: none; background: white; color: #333;
-            -webkit-appearance: none; appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23666' stroke-width='2' fill='none'/%3E%3C/svg%3E");
-            background-repeat: no-repeat; background-position: right 16px center;
-        }
-        .form-select:focus { border-color: #667eea; }
+    .form-select {
+        width: 100%; padding: 16px; border: 2px solid #e0e0e0; border-radius: 10px;
+        font-size: 16px; outline: none; background: white; color: #333;
+        -webkit-appearance: none; appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23666' stroke-width='2' fill='none'/%3E%3C/svg%3E");
+        background-repeat: no-repeat; background-position: right 16px center;
+    }
+    .form-select:focus { border-color: #667eea; }
 
-        /* Upload zone */
-        .upload-zone {
-            border: 2px dashed #d0d0d0; border-radius: 10px; padding: 32px 16px;
-            text-align: center; cursor: pointer; transition: all 0.2s;
-            -webkit-tap-highlight-color: transparent;
-        }
-        .upload-zone:hover { border-color: #667eea; background: #fafafe; }
-        .upload-zone:active { background: #f0f2ff; }
-        .upload-zone.has-file { border-color: #28a745; background: #f0fdf4; border-style: solid; }
-        .upload-zone input { display: none; }
-        .upload-zone .icon { font-size: 36px; margin-bottom: 8px; }
-        .upload-zone .label { font-size: 16px; font-weight: 600; color: #555; }
-        .upload-zone .hint { font-size: 13px; color: #999; margin-top: 6px; }
-        .upload-zone .filename {
-            font-size: 13px; color: #28a745; margin-top: 8px; font-weight: 600;
-            word-break: break-all;
-        }
+    .upload-zone { padding: 32px 16px; -webkit-tap-highlight-color: transparent; }
+    .upload-zone .icon { font-size: 36px; margin-bottom: 8px; }
+    .upload-zone .label { font-size: 16px; }
+    .upload-zone .hint { font-size: 13px; }
+    .upload-zone .filename { font-size: 13px; margin-top: 8px; font-weight: 600; }
 
-        /* Submit button */
-        .submit-btn {
-            width: 100%; padding: 18px; background: #667eea; color: white; border: none;
-            border-radius: 10px; font-size: 17px; font-weight: 700; cursor: pointer;
-            transition: background 0.2s; -webkit-tap-highlight-color: transparent;
-        }
-        .submit-btn:hover { background: #5a6fd6; }
-        .submit-btn:active { background: #4e60c4; }
-        .submit-btn:disabled { background: #ccc; cursor: not-allowed; }
+    .submit-btn {
+        width: 100%; padding: 18px; background: #667eea; color: white; border: none;
+        border-radius: 10px; font-size: 17px; font-weight: 700; cursor: pointer;
+        transition: background 0.2s; -webkit-tap-highlight-color: transparent;
+    }
+    .submit-btn:hover { background: #5a6fd6; }
+    .submit-btn:active { background: #4e60c4; }
+    .submit-btn:disabled { background: #ccc; cursor: not-allowed; }
 
-        .error-msg {
-            background: #fdecea; color: #dc3545; padding: 14px 16px; border-radius: 10px;
-            font-size: 14px; margin-bottom: 16px; display: none;
-        }
+    .processing-card {
+        background: white; border-radius: 16px; padding: 48px 28px;
+        box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: center;
+    }
+    .processing-card h3 { font-size: 18px; font-weight: 700; color: #2D2D2D; margin-bottom: 8px; }
+    .processing-card p { color: #666; font-size: 14px; }
+    .processing-card .status-text { color: #667eea; font-weight: 600; margin-top: 16px; font-size: 14px; }
+    .processing-card .warning-text { color: #e68a00; font-size: 12px; margin-top: 16px; font-weight: 600; }
+    .processing-card .progress-bar-track { height: 6px; margin-top: 20px; }
 
-        /* Processing state */
-        .processing-card {
-            background: white; border-radius: 16px; padding: 48px 28px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: center;
-        }
-        .spinner {
-            width: 48px; height: 48px; border: 4px solid #e8e8e8;
-            border-top-color: #667eea; border-radius: 50%;
-            animation: spin 0.8s linear infinite; margin: 0 auto 20px;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .processing-card h3 { font-size: 18px; font-weight: 700; color: #2D2D2D; margin-bottom: 8px; }
-        .processing-card p { color: #666; font-size: 14px; }
-        .processing-card .status-text { color: #667eea; font-weight: 600; margin-top: 16px; font-size: 14px; }
-        .processing-card .warning-text { color: #e68a00; font-size: 12px; margin-top: 16px; font-weight: 600; }
-        .progress-bar-track {
-            width: 100%; height: 6px; background: #e8e8e8; border-radius: 6px;
-            overflow: hidden; margin-top: 20px;
-        }
-        .progress-bar-fill {
-            height: 100%; background: linear-gradient(90deg, #667eea, #764ba2);
-            border-radius: 6px; width: 30%; animation: indeterminate 1.5s ease-in-out infinite;
-        }
-        @keyframes indeterminate {
-            0% { transform: translateX(-100%); }
-            100% { transform: translateX(400%); }
-        }
+    .q-dot { width: 32px; height: 32px; font-size: 12px; }
+    .q-nav-btn { padding: 12px 20px; -webkit-tap-highlight-color: transparent; }
+    .q-card-header { padding: 14px 16px; }
+    .q-card-body { padding: 16px; }
+    .q-field { margin-bottom: 14px; }
 
-        /* Results */
-        .summary-bar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
-        .summary-item {
-            flex: 1; min-width: 80px; padding: 14px 8px; border-radius: 10px;
-            text-align: center; font-weight: 700; font-size: 14px;
-        }
-        .summary-correct { background: #e8f5e9; color: #28a745; }
-        .summary-partial { background: #fff8e1; color: #e68a00; }
-        .summary-incorrect { background: #fdecea; color: #dc3545; }
-        .summary-marks { background: #f0f2ff; color: #667eea; }
+    .success-card, .error-card {
+        background: white; border-radius: 16px; padding: 40px 24px;
+        box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: center;
+    }
+    .success-icon, .error-icon {
+        width: 64px; height: 64px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        margin: 0 auto 16px; font-size: 32px;
+    }
+    .success-icon { background: #e8f5e9; }
+    .error-icon { background: #fdecea; }
+    .success-card h3 { font-size: 18px; font-weight: 700; color: #28a745; margin-bottom: 10px; }
+    .error-card h3 { font-size: 18px; font-weight: 700; color: #dc3545; margin-bottom: 10px; }
+    .success-card p, .error-card p { color: #666; font-size: 14px; line-height: 1.6; }
+    .error-card p { margin-bottom: 20px; }
+    .retry-btn {
+        display: inline-block; padding: 14px 32px; background: #667eea; color: white;
+        border: none; border-radius: 10px; font-size: 16px; font-weight: 700;
+        cursor: pointer; -webkit-tap-highlight-color: transparent;
+    }
+    .retry-btn:hover { background: #5a6fd6; }
+</style>
+{% endblock %}
 
-        /* Question dots */
-        .q-dots { display: flex; gap: 6px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap; }
-        .q-dot {
-            width: 32px; height: 32px; border-radius: 50%; border: 2px solid #ddd;
-            font-size: 12px; font-weight: 700; display: flex; align-items: center;
-            justify-content: center; cursor: pointer; transition: all 0.2s; color: #888;
-            -webkit-tap-highlight-color: transparent;
-        }
-        .q-dot.active { border-color: #667eea; color: #667eea; background: #f0f2ff; }
-        .q-dot.correct { border-color: #28a745; color: #28a745; }
-        .q-dot.partially_correct { border-color: #f0ad4e; color: #e68a00; }
-        .q-dot.incorrect { border-color: #dc3545; color: #dc3545; }
-
-        /* Question nav */
-        .q-nav {
-            display: flex; align-items: center; justify-content: space-between;
-            margin-bottom: 16px; gap: 8px;
-        }
-        .q-nav-btn {
-            padding: 12px 20px; background: #667eea; color: white; border: none;
-            border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;
-            -webkit-tap-highlight-color: transparent;
-        }
-        .q-nav-btn:hover { background: #5a6fd6; }
-        .q-nav-btn:disabled { background: #ddd; color: #999; cursor: not-allowed; }
-        .q-nav-info { font-size: 14px; font-weight: 700; color: #555; }
-
-        /* Question card */
-        .q-card {
-            border: 1px solid #e8e8e8; border-radius: 12px; overflow: hidden;
-            margin-bottom: 16px;
-        }
-        .q-card-header {
-            display: flex; justify-content: space-between; align-items: center;
-            padding: 14px 16px; background: #fafafa;
-        }
-        .q-card-header .q-num { font-weight: 700; font-size: 15px; }
-        .status-badge {
-            padding: 5px 14px; border-radius: 20px; font-size: 12px;
-            font-weight: 700; color: white; white-space: nowrap;
-        }
-        .status-correct { background: #28a745; }
-        .status-partially_correct { background: #f0ad4e; }
-        .status-incorrect { background: #dc3545; }
-        .q-card-body { padding: 16px; }
-        .q-field { margin-bottom: 14px; }
-        .q-field-label {
-            font-size: 11px; font-weight: 700; color: #999; text-transform: uppercase;
-            letter-spacing: 0.5px; margin-bottom: 4px;
-        }
-        .q-field-value { font-size: 14px; color: #333; line-height: 1.6; }
-        .q-field-value.feedback {
-            background: #f8f9fa; padding: 12px; border-radius: 8px; border-left: 3px solid #667eea;
-        }
-        .q-field-value.improvement {
-            background: #fff8e1; padding: 12px; border-radius: 8px; border-left: 3px solid #f0ad4e;
-        }
-
-        /* Overall section */
-        .overall-box {
-            background: #f8f9fa; border-radius: 12px; padding: 16px; margin-top: 16px;
-        }
-        .overall-box h3 { font-size: 15px; font-weight: 700; color: #333; margin-bottom: 8px; }
-        .overall-box p, .overall-box li { font-size: 14px; color: #555; line-height: 1.6; }
-        .overall-box ul { padding-left: 20px; margin-top: 8px; }
-        .overall-box li { margin-bottom: 4px; }
-
-        /* Success card */
-        .success-card {
-            background: white; border-radius: 16px; padding: 40px 24px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: center;
-        }
-        .success-icon {
-            width: 64px; height: 64px; background: #e8f5e9; border-radius: 50%;
-            display: flex; align-items: center; justify-content: center;
-            margin: 0 auto 16px; font-size: 32px;
-        }
-        .success-card h3 { font-size: 18px; font-weight: 700; color: #28a745; margin-bottom: 10px; }
-        .success-card p { color: #666; font-size: 14px; line-height: 1.6; }
-
-        /* Error card */
-        .error-card {
-            background: white; border-radius: 16px; padding: 40px 24px;
-            box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: center;
-        }
-        .error-icon {
-            width: 64px; height: 64px; background: #fdecea; border-radius: 50%;
-            display: flex; align-items: center; justify-content: center;
-            margin: 0 auto 16px; font-size: 32px;
-        }
-        .error-card h3 { font-size: 18px; font-weight: 700; color: #dc3545; margin-bottom: 10px; }
-        .error-card p { color: #666; font-size: 14px; line-height: 1.6; margin-bottom: 20px; }
-        .retry-btn {
-            display: inline-block; padding: 14px 32px; background: #667eea; color: white;
-            border: none; border-radius: 10px; font-size: 16px; font-weight: 700;
-            cursor: pointer; -webkit-tap-highlight-color: transparent;
-        }
-        .retry-btn:hover { background: #5a6fd6; }
-
-        /* Hidden helper */
-        .hidden { display: none !important; }
-    </style>
-</head>
-<body>
-
+{% block body %}
 <!-- State 1: Classroom Code Gate -->
 <div id="gateSection" class="gate">
     <div class="gate-card">
@@ -246,7 +86,7 @@
         <p class="subtitle">{{ subject }}</p>
         <input type="text" class="gate-input" id="codeInput" placeholder="CLASS CODE" autocomplete="off" autofocus>
         <div class="gate-error" id="gateError"></div>
-        <button class="gate-btn" id="gateBtn" onclick="verifyCode()">Enter</button>
+        <button class="gate-btn" id="gateBtn" onclick="verifyClassCode()">Enter</button>
     </div>
 </div>
 
@@ -255,14 +95,12 @@
     <div class="container">
         <div class="card">
             <h2>Submit Your Work</h2>
-
             <div class="form-group">
                 <label for="studentSelect">Your Name</label>
                 <select class="form-select" id="studentSelect">
                     <option value="">Select your name...</option>
                 </select>
             </div>
-
             <div class="form-group">
                 <label>Your Script</label>
                 <div class="upload-zone" id="uploadZone" onclick="document.getElementById('scriptInput').click()">
@@ -273,7 +111,6 @@
                     <div class="filename" id="fileName"></div>
                 </div>
             </div>
-
             <div class="error-msg" id="formError"></div>
             {% if demo_mode %}
             <div style="background:#fff8e1;border:1px solid #f0ad4e;border-radius:10px;padding:16px;margin-bottom:16px;text-align:center;">
@@ -294,11 +131,9 @@
         <div class="processing-card">
             <div class="spinner"></div>
             <h3>AI is marking your work...</h3>
-            <p id="processingMsg">Please wait while we analyse your submission</p>
+            <p>Please wait while we analyse your submission</p>
             <div class="status-text" id="processingStatus">Uploading...</div>
-            <div class="progress-bar-track">
-                <div class="progress-bar-fill"></div>
-            </div>
+            <div class="progress-bar-track"><div class="progress-bar-fill" style="width:30%;animation:indeterminate 1.5s ease-in-out infinite;"></div></div>
             <div class="warning-text">Please do not close this page</div>
         </div>
     </div>
@@ -344,219 +179,136 @@
         </div>
     </div>
 </div>
+{% endblock %}
 
+{% block scripts %}
 <script>
-const ASSIGNMENT_ID = {{ assignment_id | tojson }};
-let students = [];
-let submissionId = null;
-let showResults = false;
-let resultQuestions = [];
-let resultErrors = [];
-let resultAssignType = 'short_answer';
-let currentQ = 0;
-let pollTimer = null;
-let statusElapsed = 0;
+var ASSIGNMENT_ID = {{ assignment_id | tojson }};
+var students = [];
+var submissionId = null;
+var showResults = false;
+var resultQuestions = [];
+var resultErrors = [];
+var resultAssignType = 'short_answer';
+var currentQ = 0;
+var pollTimer = null;
+var statusElapsed = 0;
 
-const STATUS_LABELS = {
-    correct: 'Correct',
-    partially_correct: 'Partially Correct',
-    incorrect: 'Incorrect'
-};
-
-// --- Helpers ---
-
-function esc(text) {
-    if (!text) return '';
-    const d = document.createElement('div');
-    d.textContent = text;
-    return d.innerHTML;
-}
+var STATUS_LABELS = { correct: 'Correct', partially_correct: 'Partially Correct', incorrect: 'Incorrect' };
 
 function showSection(id) {
     ['gateSection', 'formSection', 'processingSection', 'resultsSection', 'confirmSection', 'errorSection']
-        .forEach(s => document.getElementById(s).classList.add('hidden'));
+        .forEach(function(s) { document.getElementById(s).classList.add('hidden'); });
     document.getElementById(id).classList.remove('hidden');
     window.scrollTo(0, 0);
 }
 
-// --- State 1: Verify classroom code ---
+/* --- State 1: Verify classroom code --- */
 
-document.getElementById('codeInput').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') verifyCode();
-});
-
-async function verifyCode() {
-    const input = document.getElementById('codeInput');
-    const code = input.value.trim().toUpperCase();
+async function verifyClassCode() {
+    var input = document.getElementById('codeInput');
+    var code = input.value.trim().toUpperCase();
     if (!code) return;
-
-    const btn = document.getElementById('gateBtn');
-    btn.disabled = true;
-    btn.textContent = 'Verifying...';
-
+    var btn = document.getElementById('gateBtn');
+    btn.disabled = true; btn.textContent = 'Verifying...';
     try {
-        const res = await fetch('/submit/' + ASSIGNMENT_ID + '/verify', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+        var res = await fetch('/submit/' + ASSIGNMENT_ID + '/verify', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ code: code })
         });
-        const data = await res.json();
-
+        var data = await res.json();
         if (data.success) {
             students = data.students || [];
             populateStudents();
             showSection('formSection');
         } else {
-            const errEl = document.getElementById('gateError');
+            var errEl = document.getElementById('gateError');
             errEl.textContent = data.error || 'Invalid classroom code';
             errEl.style.display = 'block';
             input.classList.add('error');
-            btn.disabled = false;
-            btn.textContent = 'Enter';
+            btn.disabled = false; btn.textContent = 'Enter';
         }
     } catch (err) {
-        const errEl = document.getElementById('gateError');
+        var errEl = document.getElementById('gateError');
         errEl.textContent = 'Connection error. Please try again.';
         errEl.style.display = 'block';
-        btn.disabled = false;
-        btn.textContent = 'Enter';
+        btn.disabled = false; btn.textContent = 'Enter';
     }
 }
 
 function populateStudents() {
-    const sel = document.getElementById('studentSelect');
+    var sel = document.getElementById('studentSelect');
     sel.innerHTML = '<option value="">Select your name...</option>';
     students.forEach(function(s) {
-        const opt = document.createElement('option');
+        var opt = document.createElement('option');
         opt.value = s.id;
         opt.textContent = s.index + ' - ' + s.name;
         sel.appendChild(opt);
     });
 }
 
-// --- State 2: File upload & submit ---
+/* --- State 2: Upload & submit --- */
 
-function fileSelected(input) {
-    const zone = document.getElementById('uploadZone');
-    const nameEl = document.getElementById('fileName');
-    if (input.files.length > 0) {
-        zone.classList.add('has-file');
-        nameEl.textContent = input.files[0].name;
-    } else {
-        zone.classList.remove('has-file');
-        nameEl.textContent = '';
-    }
-}
-
-function showFormError(msg) {
-    const el = document.getElementById('formError');
-    el.textContent = msg;
-    el.style.display = 'block';
-}
-
-function hideFormError() {
-    document.getElementById('formError').style.display = 'none';
-}
+function showFormError(msg) { var el = document.getElementById('formError'); el.textContent = msg; el.style.display = 'block'; }
+function hideFormError() { document.getElementById('formError').style.display = 'none'; }
 
 async function submitWork() {
     hideFormError();
-
-    const studentId = document.getElementById('studentSelect').value;
+    var studentId = document.getElementById('studentSelect').value;
     if (!studentId) return showFormError('Please select your name.');
-
-    const scriptInput = document.getElementById('scriptInput');
+    var scriptInput = document.getElementById('scriptInput');
     if (!scriptInput.files.length) return showFormError('Please upload your script.');
 
-    const btn = document.getElementById('submitBtn');
-    btn.disabled = true;
-    btn.textContent = 'Uploading...';
-
-    const fd = new FormData();
+    var btn = document.getElementById('submitBtn');
+    btn.disabled = true; btn.textContent = 'Uploading...';
+    var fd = new FormData();
     fd.append('student_id', studentId);
     fd.append('script', scriptInput.files[0]);
 
     try {
-        const res = await fetch('/submit/' + ASSIGNMENT_ID + '/upload', {
-            method: 'POST',
-            body: fd
-        });
-        const data = await res.json();
-
-        if (!data.success) {
-            showFormError(data.error || 'Upload failed.');
-            btn.disabled = false;
-            btn.textContent = 'Submit';
-            return;
-        }
-
+        var res = await fetch('/submit/' + ASSIGNMENT_ID + '/upload', { method: 'POST', body: fd });
+        var data = await res.json();
+        if (!data.success) { showFormError(data.error || 'Upload failed.'); btn.disabled = false; btn.textContent = 'Submit'; return; }
         submissionId = data.submission_id;
         showResults = data.show_results;
         showSection('processingSection');
         statusElapsed = 0;
         startPolling();
-    } catch (err) {
-        showFormError('Connection error. Please try again.');
-        btn.disabled = false;
-        btn.textContent = 'Submit';
-    }
+    } catch (err) { showFormError('Connection error. Please try again.'); btn.disabled = false; btn.textContent = 'Submit'; }
 }
 
-// --- State 3: Polling ---
+/* --- State 3: Polling --- */
 
 function startPolling() {
     if (pollTimer) clearInterval(pollTimer);
-
-    const msgs = [
-        'Uploading...',
-        'AI is reading your work...',
-        'Evaluating answers...',
-        'Generating feedback...',
-        'Almost done...'
-    ];
-
+    var msgs = ['Uploading...', 'AI is reading your work...', 'Evaluating answers...', 'Generating feedback...', 'Almost done...'];
     pollTimer = setInterval(function() {
         statusElapsed++;
         var idx = Math.min(Math.floor(statusElapsed / 4), msgs.length - 1);
         document.getElementById('processingStatus').textContent = msgs[idx];
     }, 1000);
-
     pollStatus();
 }
 
 async function pollStatus() {
     if (!submissionId) return;
-
     try {
-        const res = await fetch('/submit/' + ASSIGNMENT_ID + '/status/' + submissionId);
-        const data = await res.json();
-
-        if (data.status === 'pending' || data.status === 'processing') {
-            setTimeout(pollStatus, 2000);
-            return;
-        }
-
+        var res = await fetch('/submit/' + ASSIGNMENT_ID + '/status/' + submissionId);
+        var data = await res.json();
+        if (data.status === 'pending' || data.status === 'processing') { setTimeout(pollStatus, 2000); return; }
         if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-
         if (data.status === 'error') {
             var errMsg = (data.result && data.result.error) ? data.result.error : 'Marking failed. Please try again.';
             document.getElementById('errorMessage').textContent = errMsg;
             showSection('errorSection');
             return;
         }
-
-        // done
-        if (showResults && data.result && !data.result.error) {
-            renderResults(data.result);
-            showSection('resultsSection');
-        } else {
-            showSection('confirmSection');
-        }
-    } catch (err) {
-        setTimeout(pollStatus, 3000);
-    }
+        if (showResults && data.result && !data.result.error) { renderResults(data.result); showSection('resultsSection'); }
+        else { showSection('confirmSection'); }
+    } catch (err) { setTimeout(pollStatus, 3000); }
 }
 
-// --- State 4a: Render results ---
+/* --- State 4a: Results --- */
 
 function renderResults(result) {
     resultQuestions = result.questions || [];
@@ -564,7 +316,6 @@ function renderResults(result) {
     resultAssignType = result.assign_type || 'short_answer';
     var hasMarks = resultQuestions.some(function(q) { return q.marks_awarded != null; });
 
-    // Summary bar
     if (hasMarks) {
         var ta = 0, tp = 0;
         resultQuestions.forEach(function(q) { ta += (q.marks_awarded || 0); tp += (q.marks_total || 0); });
@@ -581,18 +332,15 @@ function renderResults(result) {
             '<div class="summary-item summary-incorrect">' + c.incorrect + ' Incorrect</div>';
     }
 
-    // Question dots
     var dots = '';
     resultQuestions.forEach(function(q, i) {
         var s = q.status || 'incorrect';
         var dotLabel = (resultAssignType === 'rubrics' && q.criterion_name)
-            ? q.criterion_name.substring(0, 2).toUpperCase()
-            : (q.question_num || i + 1);
+            ? q.criterion_name.substring(0, 2).toUpperCase() : (q.question_num || i + 1);
         dots += '<div class="q-dot ' + s + (i === 0 ? ' active' : '') + '" onclick="goQ(' + i + ')" title="' + esc(q.criterion_name || '') + '">' + dotLabel + '</div>';
     });
     document.getElementById('qDots').innerHTML = dots;
 
-    // Line-by-line errors (rubrics mode)
     var errHtml = '';
     if (resultErrors.length) {
         errHtml += '<div class="overall-box" style="margin-top:12px;"><h3>Line-by-Line Errors (' + resultErrors.length + ')</h3><div style="margin-top:8px;">';
@@ -602,17 +350,13 @@ function renderResults(result) {
             errHtml += '<div style="padding:10px 12px;background:' + (i % 2 === 0 ? '#fff' : '#fafafa') + ';border-left:3px solid ' + typeColor + ';margin-bottom:4px;border-radius:4px;">';
             errHtml += '<span style="font-size:11px;font-weight:700;color:' + typeColor + ';text-transform:uppercase;">' + esc(e.type || 'error') + '</span>';
             if (e.location) errHtml += '<span style="font-size:11px;color:#999;margin-left:8px;">' + esc(e.location) + '</span>';
-            errHtml += '<div style="margin-top:4px;font-size:13px;"><span style="text-decoration:line-through;color:#dc3545;">' + esc(e.original || '') + '</span> &rarr; <span style="color:#28a745;">' + esc(e.correction || '') + '</span></div>';
-            errHtml += '</div>';
+            errHtml += '<div style="margin-top:4px;font-size:13px;"><span style="text-decoration:line-through;color:#dc3545;">' + esc(e.original || '') + '</span> &rarr; <span style="color:#28a745;">' + esc(e.correction || '') + '</span></div></div>';
         });
         errHtml += '</div></div>';
     }
 
-    // Overall feedback
     var oh = '';
-    if (result.overall_feedback) {
-        oh += '<div class="overall-box"><h3>Overall Feedback</h3><p>' + esc(result.overall_feedback) + '</p></div>';
-    }
+    if (result.overall_feedback) oh += '<div class="overall-box"><h3>Overall Feedback</h3><p>' + esc(result.overall_feedback) + '</p></div>';
     if (errHtml) oh += errHtml;
     var actions = result.recommended_actions || [];
     if (actions.length) {
@@ -642,64 +386,28 @@ function renderQuestion() {
     var refLabel = isRubrics ? 'Band Descriptor' : 'Correct Answer';
     var bandInfo = (isRubrics && q.band) ? '<span style="font-size:12px;color:#667eea;font-weight:600;margin-left:8px;">' + esc(q.band) + '</span>' : '';
 
-    var html = '<div class="q-card">' +
-        '<div class="q-card-header">' +
-            '<span class="q-num">' + esc(headerLabel) + bandInfo + '</span>' +
-            badge +
-        '</div>' +
-        '<div class="q-card-body">' +
-            '<div class="q-field">' +
-                '<div class="q-field-label">' + ansLabel + '</div>' +
-                '<div class="q-field-value">' + esc(q.student_answer || 'N/A') + '</div>' +
-            '</div>' +
-            '<div class="q-field">' +
-                '<div class="q-field-label">' + refLabel + '</div>' +
-                '<div class="q-field-value">' + esc(q.correct_answer || 'N/A') + '</div>' +
-            '</div>';
-
-    if (q.feedback) {
-        html += '<div class="q-field">' +
-            '<div class="q-field-label">Feedback</div>' +
-            '<div class="q-field-value feedback">' + esc(q.feedback) + '</div>' +
-        '</div>';
-    }
-    if (q.improvement) {
-        html += '<div class="q-field">' +
-            '<div class="q-field-label">Suggested Improvement</div>' +
-            '<div class="q-field-value improvement">' + esc(q.improvement) + '</div>' +
-        '</div>';
-    }
-
+    var html = '<div class="q-card"><div class="q-card-header"><span class="q-num">' + esc(headerLabel) + bandInfo + '</span>' + badge + '</div><div class="q-card-body">' +
+        '<div class="q-field"><div class="q-field-label">' + ansLabel + '</div><div class="q-field-value">' + esc(q.student_answer || 'N/A') + '</div></div>' +
+        '<div class="q-field"><div class="q-field-label">' + refLabel + '</div><div class="q-field-value">' + esc(q.correct_answer || 'N/A') + '</div></div>';
+    if (q.feedback) html += '<div class="q-field"><div class="q-field-label">Feedback</div><div class="q-field-value feedback">' + esc(q.feedback) + '</div></div>';
+    if (q.improvement) html += '<div class="q-field"><div class="q-field-label">Suggested Improvement</div><div class="q-field-value improvement">' + esc(q.improvement) + '</div></div>';
     html += '</div></div>';
     document.getElementById('qCardContainer').innerHTML = html;
 
-    // Update nav
     document.getElementById('qNavInfo').textContent = 'Q' + (currentQ + 1) + ' of ' + resultQuestions.length;
     document.getElementById('prevBtn').disabled = currentQ === 0;
     document.getElementById('nextBtn').disabled = currentQ === resultQuestions.length - 1;
-
-    // Update dots
-    document.querySelectorAll('.q-dot').forEach(function(d, i) {
-        d.classList.toggle('active', i === currentQ);
-    });
+    document.querySelectorAll('.q-dot').forEach(function(d, i) { d.classList.toggle('active', i === currentQ); });
 }
 
 function navQ(dir) { goQ(currentQ + dir); }
-function goQ(idx) {
-    if (idx < 0 || idx >= resultQuestions.length) return;
-    currentQ = idx;
-    renderQuestion();
-}
-
-// --- State 4c: Error retry ---
+function goQ(idx) { if (idx < 0 || idx >= resultQuestions.length) return; currentQ = idx; renderQuestion(); }
 
 function goBackToForm() {
     var btn = document.getElementById('submitBtn');
-    btn.disabled = false;
-    btn.textContent = 'Submit';
+    if (btn) { btn.disabled = false; btn.textContent = 'Submit'; }
     submissionId = null;
     showSection('formSection');
 }
 </script>
-</body>
-</html>
+{% endblock %}
