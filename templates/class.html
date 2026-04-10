@@ -176,7 +176,7 @@
             <div class="form-group">
                 <label for="bulk_class_list">Class List (CSV: Index, Name)</label>
                 <div class="upload-zone" style="max-width:100%;" onclick="this.querySelector('input').click()">
-                    <input type="file" id="bulk_class_list" accept=".csv" onchange="fileSelected(this)">
+                    <input type="file" id="bulk_class_list" accept=".csv" onchange="fileSelected(this); parseBulkCSV();">
                     <div class="icon">&#128203;</div>
                     <div class="label">Class List</div>
                     <div class="filename"></div>
@@ -245,6 +245,31 @@
 
             <div class="error-msg" id="bulkErrorMsg"></div>
             <button class="mark-btn" id="bulkMarkBtn" onclick="startBulkMarking()">Mark All Scripts</button>
+        </div>
+
+        <!-- Page Allocation Modal -->
+        <div class="modal-overlay" id="pageAllocModal">
+            <div class="modal-box" style="max-width:600px;text-align:left;max-height:85vh;display:flex;flex-direction:column;">
+                <h3 style="text-align:center;">Review Page Allocation</h3>
+                <p style="font-size:13px;color:#888;margin-bottom:16px;text-align:center;">
+                    Adjust page counts for students with different numbers of pages.
+                </p>
+                <div style="display:flex;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+                    <span style="font-size:13px;color:#555;">Default: <strong id="defaultPagesDisplay">2</strong> pages/student</span>
+                    <span style="font-size:13px;font-weight:700;" id="totalPagesDisplay">Total: 0 pages</span>
+                </div>
+                <div style="overflow-y:auto;flex:1;margin-bottom:16px;border:1px solid #eee;border-radius:8px;">
+                    <table class="results-table" style="font-size:13px;margin:0;">
+                        <thead><tr><th>Index</th><th>Name</th><th style="width:80px;text-align:center;">Pages</th></tr></thead>
+                        <tbody id="pageAllocBody"></tbody>
+                    </table>
+                </div>
+                <div class="error-msg" id="pageAllocError"></div>
+                <div style="display:flex;gap:10px;">
+                    <button onclick="closePageAllocModal()" style="flex:1;padding:12px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;border:none;background:#f0f0f0;color:#666;">Cancel</button>
+                    <button id="pageAllocConfirmBtn" onclick="confirmBulkMarking()" style="flex:1;padding:12px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;border:none;background:#667eea;color:white;">Confirm &amp; Mark</button>
+                </div>
+            </div>
         </div>
 
         <!-- Progress -->
@@ -592,12 +617,73 @@ function updateBulkMarksVis() {
 }
 
 /* =====================================================================
+   Tab 1 (Bulk): CSV parsing & page allocation
+   ===================================================================== */
+var bulkStudents = [];
+
+function parseBulkCSV() {
+    var input = document.getElementById('bulk_class_list');
+    if (!input.files.length) { bulkStudents = []; return; }
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        var text = e.target.result.replace(/^\uFEFF/, '');
+        var lines = text.split(/\r?\n/);
+        bulkStudents = [];
+        for (var i = 0; i < lines.length; i++) {
+            var row = lines[i].split(',').map(function(s) { return s.trim(); });
+            if (!row[0]) continue;
+            var first = row[0].toLowerCase();
+            if (['index','no','no.','s/n','sn','#','number'].indexOf(first) >= 0) continue;
+            if (row.length >= 2 && row[1]) {
+                bulkStudents.push({ index: row[0], name: row[1] });
+            } else if (row[0]) {
+                bulkStudents.push({ index: String(bulkStudents.length + 1), name: row[0] });
+            }
+        }
+    };
+    reader.readAsText(input.files[0]);
+}
+
+function showPageAllocDialog() {
+    var defaultPages = parseInt(document.getElementById('bulk_pages_per_student').value) || 2;
+    document.getElementById('defaultPagesDisplay').textContent = defaultPages;
+    var tbody = document.getElementById('pageAllocBody');
+    tbody.innerHTML = '';
+    bulkStudents.forEach(function(s, i) {
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td>' + esc(s.index) + '</td><td>' + esc(s.name) + '</td>' +
+            '<td style="text-align:center;"><input type="number" class="page-count-input" data-idx="' + i + '" value="' + defaultPages +
+            '" min="1" max="50" style="width:60px;padding:6px 4px;text-align:center;border:1px solid #ddd;border-radius:6px;font-size:13px;" onchange="updateTotalPages()" oninput="updateTotalPages()"></td>';
+        tbody.appendChild(tr);
+    });
+    updateTotalPages();
+    document.getElementById('pageAllocError').style.display = 'none';
+    document.getElementById('pageAllocModal').classList.add('active');
+}
+
+function updateTotalPages() {
+    var inputs = document.querySelectorAll('.page-count-input');
+    var total = 0;
+    inputs.forEach(function(inp) { total += parseInt(inp.value) || 0; });
+    document.getElementById('totalPagesDisplay').textContent = 'Total: ' + total + ' pages';
+}
+
+function closePageAllocModal() {
+    document.getElementById('pageAllocModal').classList.remove('active');
+}
+
+// Close on backdrop click
+document.getElementById('pageAllocModal').addEventListener('click', function(e) {
+    if (e.target === this) closePageAllocModal();
+});
+
+/* =====================================================================
    Tab 1 (Bulk): Marking flow
    ===================================================================== */
 function showBulkError(msg) { const el = document.getElementById('bulkErrorMsg'); el.textContent = msg; el.style.display = 'block'; }
 function hideBulkError() { document.getElementById('bulkErrorMsg').style.display = 'none'; }
 
-async function startBulkMarking() {
+function startBulkMarking() {
     hideBulkError();
 
     if (!Object.keys(BULK_PROVIDER_MODELS).length) return showBulkError('Please save an API key first.');
@@ -622,13 +708,37 @@ async function startBulkMarking() {
         if (!ak || !ak.length) return showBulkError('Please upload an answer key.');
     }
 
+    if (bulkStudents.length === 0) return showBulkError('Class list not loaded. Please re-upload the CSV.');
+
+    // Show page allocation dialog
+    showPageAllocDialog();
+}
+
+async function confirmBulkMarking() {
+    // Collect per-student page counts
+    var inputs = document.querySelectorAll('.page-count-input');
+    var pageCounts = [];
+    inputs.forEach(function(inp) {
+        var v = parseInt(inp.value) || 1;
+        if (v < 1) v = 1;
+        pageCounts.push(v);
+    });
+
+    closePageAllocModal();
+    hideBulkError();
+
+    const assignType = document.querySelector('input[name="bulk_assign_type"]:checked')?.value || 'short_answer';
+    const rubricFiles = document.getElementById('bulk_rubrics').files;
     let scoringMode = 'status', totalMarks = '';
     if (assignType === 'rubrics') {
         scoringMode = 'marks'; totalMarks = document.getElementById('bulkTotalMarksRubric').value;
     } else if (document.getElementById('bulkAllocateMarks').checked) {
         scoringMode = 'marks'; totalMarks = document.getElementById('bulkTotalMarks').value;
-        if (!totalMarks || parseInt(totalMarks) <= 0) return showBulkError('Please enter total marks.');
     }
+
+    const cl = document.getElementById('bulk_class_list').files;
+    const qp = document.getElementById('bulk_question_paper').files;
+    const bs = document.getElementById('bulk_scripts').files;
 
     const fd = new FormData();
     fd.append('provider', document.querySelector('input[name="bulk_provider"]:checked')?.value || '');
@@ -637,7 +747,8 @@ async function startBulkMarking() {
     fd.append('assign_type', assignType);
     fd.append('scoring_mode', scoringMode);
     fd.append('total_marks', totalMarks);
-    fd.append('pages_per_student', pps);
+    fd.append('pages_per_student', document.getElementById('bulk_pages_per_student').value);
+    fd.append('page_counts', JSON.stringify(pageCounts));
     fd.append('review_instructions', document.getElementById('bulk_review_instructions').value);
     fd.append('marking_instructions', document.getElementById('bulk_marking_instructions').value);
     for (const f of cl) fd.append('class_list', f);

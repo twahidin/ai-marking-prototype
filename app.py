@@ -1,5 +1,6 @@
 import os
 import csv
+import json
 import uuid
 import string
 import random
@@ -323,6 +324,24 @@ def _split_pdf(pdf_bytes, pages_per_student):
     return chunks
 
 
+def _split_pdf_variable(pdf_bytes, page_counts):
+    """Split a PDF using variable page counts per student. Returns list of PDF bytes."""
+    from pypdf import PdfReader, PdfWriter
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    total = len(reader.pages)
+    chunks = []
+    offset = 0
+    for count in page_counts:
+        writer = PdfWriter()
+        for p in range(offset, min(offset + count, total)):
+            writer.add_page(reader.pages[p])
+        buf = io.BytesIO()
+        writer.write(buf)
+        chunks.append(buf.getvalue())
+        offset += count
+    return chunks, total
+
+
 def _parse_class_list(file_bytes, filename):
     """Parse class list CSV. Returns list of {index, name} dicts."""
     text = file_bytes.decode('utf-8-sig')
@@ -429,18 +448,31 @@ def bulk_mark():
 
     # Split bulk PDF
     bulk_pdf = request.files.get('bulk_scripts').read()
+    page_counts_json = request.form.get('page_counts', '')
+
     try:
-        student_scripts = _split_pdf(bulk_pdf, pages_per_student)
+        if page_counts_json:
+            page_counts = json.loads(page_counts_json)
+            if len(page_counts) != len(students):
+                return jsonify({'success': False,
+                    'error': f'Page count entries ({len(page_counts)}) does not match students ({len(students)})'}), 400
+            student_scripts, pdf_total = _split_pdf_variable(bulk_pdf, page_counts)
+            allocated = sum(page_counts)
+            if allocated != pdf_total:
+                return jsonify({'success': False,
+                    'error': f'Total allocated pages ({allocated}) does not match PDF pages ({pdf_total}). Please adjust.'}), 400
+        else:
+            student_scripts = _split_pdf(bulk_pdf, pages_per_student)
+            if len(student_scripts) != len(students):
+                return jsonify({
+                    'success': False,
+                    'error': f'Mismatch: class list has {len(students)} students but PDF splits into '
+                             f'{len(student_scripts)} scripts. Check your pages per student setting.'
+                }), 400
+    except json.JSONDecodeError:
+        return jsonify({'success': False, 'error': 'Invalid page counts data'}), 400
     except Exception as e:
         return jsonify({'success': False, 'error': f'Error splitting PDF: {e}'}), 400
-
-    if len(student_scripts) != len(students):
-        return jsonify({
-            'success': False,
-            'error': f'Mismatch: class list has {len(students)} students but PDF splits into '
-                     f'{len(student_scripts)} scripts ({len(student_scripts) * pages_per_student} pages ÷ '
-                     f'{pages_per_student} pages/student). Check your pages per student setting.'
-        }), 400
 
     provider = request.form.get('provider', 'anthropic')
     model = request.form.get('model', '')
