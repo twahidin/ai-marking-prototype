@@ -145,6 +145,17 @@
                 <label for="bulkSubject">Subject</label>
                 <input type="text" class="form-input" id="bulkSubject" placeholder="e.g. Mathematics, English, Science">
             </div>
+            {% if dept_mode and teacher %}
+            <div class="form-group">
+                <label>Class</label>
+                <select class="form-input" id="bulkClassId" style="padding:12px;">
+                    <option value="">Select a class...</option>
+                    {% for cls in teacher.classes %}
+                    <option value="{{ cls.id }}">{% if cls.level %}{{ cls.level }} - {% endif %}{{ cls.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% endif %}
 
             <h2 style="margin-top: 24px;">Assignment Type</h2>
             <div class="sel-group">
@@ -765,6 +776,10 @@ async function confirmBulkMarking() {
     fd.append('provider', document.querySelector('input[name="bulk_provider"]:checked')?.value || '');
     fd.append('model', document.getElementById('bulkModelSelect').value);
     fd.append('subject', document.getElementById('bulkSubject').value);
+    var bulkTitle = document.getElementById('bulkTitle');
+    if (bulkTitle) fd.append('title', bulkTitle.value);
+    var bulkClassId = document.getElementById('bulkClassId');
+    if (bulkClassId) fd.append('class_id', bulkClassId.value);
     fd.append('assign_type', assignType);
     fd.append('scoring_mode', scoringMode);
     fd.append('total_marks', totalMarks);

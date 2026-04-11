@@ -989,7 +989,8 @@ def _parse_class_list(file_bytes, filename):
 def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_key_pages,
                          rubrics_pages, reference_pages, student_scripts, students,
                          subject, review_instructions, marking_instructions,
-                         assign_type, scoring_mode, total_marks, session_keys):
+                         assign_type, scoring_mode, total_marks, session_keys,
+                         assignment_id=None, student_id_map=None):
     """Background thread for bulk marking — marks each student sequentially."""
     results = []
     total = len(students)
@@ -1028,6 +1029,25 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
             'result': result,
         })
 
+        # Save to DB if in dept mode
+        if assignment_id and student_id_map:
+            try:
+                with app.app_context():
+                    student_db_id = student_id_map.get(student['index'])
+                    if student_db_id:
+                        sub = Submission(
+                            student_id=student_db_id,
+                            assignment_id=assignment_id,
+                            script_bytes=script_bytes,
+                            status='error' if result.get('error') else 'done',
+                        )
+                        sub.set_result(result)
+                        sub.marked_at = datetime.now(timezone.utc)
+                        db.session.add(sub)
+                        db.session.commit()
+            except Exception as e:
+                logger.error(f"Failed to save submission for {student['name']}: {e}")
+
     jobs[job_id]['results'] = results
     jobs[job_id]['status'] = 'done'
     jobs[job_id]['progress'] = {'current': total, 'total': total, 'current_name': 'Complete'}
@@ -1040,7 +1060,7 @@ def bulk_page():
 
 @app.route('/bulk/mark', methods=['POST'])
 def bulk_mark():
-    if not session.get('authenticated'):
+    if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     # Use session keys if provided, otherwise fall back to server env keys
@@ -1113,6 +1133,60 @@ def bulk_mark():
     rubrics_pages = [f.read() for f in request.files.getlist('rubrics') if f.filename]
     reference_pages = [f.read() for f in request.files.getlist('reference') if f.filename]
 
+    # In dept mode, create persistent Assignment + Student records
+    assignment_id = None
+    if DEPT_MODE:
+        teacher = _current_teacher()
+        class_id = request.form.get('class_id')
+        title = request.form.get('title', '')
+
+        # Determine API keys
+        api_keys = {}
+        if session_keys:
+            api_keys = session_keys
+        else:
+            api_keys = _get_dept_keys()
+
+        asn = Assignment(
+            id=str(uuid.uuid4()),
+            classroom_code=_generate_classroom_code(),
+            title=title,
+            subject=subject,
+            assign_type=assign_type,
+            scoring_mode=scoring_mode,
+            total_marks=total_marks,
+            provider=provider,
+            model=model,
+            show_results=True,
+            review_instructions=review_instructions,
+            marking_instructions=marking_instructions,
+            question_paper=question_paper_pages[0] if question_paper_pages else None,
+            answer_key=answer_key_pages[0] if answer_key_pages else None,
+            rubrics=rubrics_pages[0] if rubrics_pages else None,
+            reference=reference_pages[0] if reference_pages else None,
+            class_id=class_id if class_id else None,
+            teacher_id=teacher.id if teacher else None,
+        )
+        asn.set_api_keys(api_keys)
+        db.session.add(asn)
+
+        student_id_map = {}
+        for s in students:
+            st = Student(
+                assignment_id=asn.id,
+                index_number=s['index'],
+                name=s['name'],
+            )
+            db.session.add(st)
+            db.session.flush()
+            student_id_map[s['index']] = st.id
+
+        db.session.commit()
+        assignment_id = asn.id
+        jobs_student_map = student_id_map
+    else:
+        jobs_student_map = None
+
     cleanup_old_jobs()
 
     job_id = str(uuid.uuid4())
@@ -1124,6 +1198,7 @@ def bulk_mark():
         'created_at': time.time(),
         'progress': {'current': 0, 'total': len(students), 'current_name': 'Starting...'},
         'bulk': True,
+        'assignment_id': assignment_id,
     }
 
     thread = threading.Thread(
@@ -1131,7 +1206,8 @@ def bulk_mark():
         args=(job_id, provider, model, question_paper_pages, answer_key_pages,
               rubrics_pages, reference_pages, student_scripts, students,
               subject, review_instructions, marking_instructions,
-              assign_type, scoring_mode, total_marks, session_keys),
+              assign_type, scoring_mode, total_marks, session_keys,
+              assignment_id, jobs_student_map),
         daemon=True
     )
     thread.start()
@@ -1141,7 +1217,7 @@ def bulk_mark():
 
 @app.route('/bulk/download/<job_id>')
 def bulk_download(job_id):
-    if not session.get('authenticated'):
+    if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     job = jobs.get(job_id)
@@ -1168,7 +1244,7 @@ def bulk_download(job_id):
 
 @app.route('/bulk/overview/<job_id>')
 def bulk_overview(job_id):
-    if not session.get('authenticated'):
+    if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     job = jobs.get(job_id)
