@@ -648,6 +648,128 @@ def dept_delete_class(class_id):
     return jsonify({'success': True})
 
 
+@app.route('/class/<class_id>/students', methods=['GET', 'POST'])
+def manage_class_students(class_id):
+    """Upload or view class list for a class."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    cls = Class.query.get_or_404(class_id)
+
+    # Ownership check
+    teacher = _current_teacher()
+    if teacher and teacher.role not in ('hod', 'owner'):
+        tc = TeacherClass.query.filter_by(teacher_id=teacher.id, class_id=class_id).first()
+        if not tc:
+            return jsonify({'success': False, 'error': 'Not assigned to this class'}), 403
+
+    if request.method == 'GET':
+        students = _sort_by_index(Student.query.filter_by(class_id=class_id).all())
+        return jsonify({
+            'success': True,
+            'students': [{'id': s.id, 'index': s.index_number, 'name': s.name} for s in students]
+        })
+
+    # POST — upload class list
+    cl_file = request.files.get('class_list')
+    if not cl_file or not cl_file.filename:
+        return jsonify({'success': False, 'error': 'Please upload a class list CSV'}), 400
+
+    file_bytes = cl_file.read()
+    if len(file_bytes) > 1024 * 1024:
+        return jsonify({'success': False, 'error': 'Class list too large (max 1MB)'}), 400
+
+    students_data = _parse_class_list(file_bytes, cl_file.filename)
+    if not students_data:
+        return jsonify({'success': False, 'error': 'Could not parse class list'}), 400
+    if len(students_data) > 500:
+        return jsonify({'success': False, 'error': 'Maximum 500 students per class'}), 400
+
+    # Remove existing students without submissions
+    existing = Student.query.filter_by(class_id=class_id).all()
+    for s in existing:
+        has_sub = Submission.query.filter_by(student_id=s.id).first()
+        if not has_sub:
+            db.session.delete(s)
+
+    # Add new students (skip if already exists by index)
+    for s in students_data:
+        existing_student = Student.query.filter_by(class_id=class_id, index_number=s['index']).first()
+        if not existing_student:
+            db.session.add(Student(class_id=class_id, index_number=s['index'], name=s['name']))
+
+    db.session.commit()
+
+    count = Student.query.filter_by(class_id=class_id).count()
+    return jsonify({'success': True, 'count': count})
+
+
+@app.route('/my/class/create', methods=['POST'])
+def create_my_class():
+    """Create a class in normal (non-dept) mode."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    if DEPT_MODE:
+        return jsonify({'success': False, 'error': 'Use department class management instead'}), 400
+
+    data = request.get_json()
+    name = (data.get('name') or '').strip()
+    level = (data.get('level') or '').strip()
+    if not name:
+        return jsonify({'success': False, 'error': 'Class name is required'}), 400
+
+    teacher = _current_teacher()
+    cls = Class(id=str(uuid.uuid4()), name=name, level=level)
+    db.session.add(cls)
+
+    if teacher:
+        db.session.add(TeacherClass(teacher_id=teacher.id, class_id=cls.id))
+
+    db.session.commit()
+    return jsonify({'success': True, 'class_id': cls.id, 'name': cls.name, 'level': cls.level})
+
+
+@app.route('/my/class/<class_id>/delete', methods=['POST'])
+def delete_my_class(class_id):
+    """Delete a class in normal mode."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    cls = Class.query.get_or_404(class_id)
+    teacher = _current_teacher()
+    if teacher:
+        tc = TeacherClass.query.filter_by(teacher_id=teacher.id, class_id=class_id).first()
+        if not tc:
+            return jsonify({'success': False, 'error': 'Not your class'}), 403
+
+    # Delete associated data
+    TeacherClass.query.filter_by(class_id=class_id).delete()
+    # Students cascade-delete via relationship
+    db.session.delete(cls)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/api/classes')
+def api_classes():
+    """List classes for the current teacher."""
+    if not _is_authenticated():
+        return jsonify([])
+    teacher = _current_teacher()
+    if teacher:
+        if teacher.role == 'hod':
+            classes = Class.query.order_by(Class.name).all()
+        else:
+            classes = teacher.classes
+    else:
+        classes = Class.query.all()
+    result = []
+    for c in classes:
+        student_count = Student.query.filter_by(class_id=c.id).count()
+        result.append({'id': c.id, 'name': c.name, 'level': c.level, 'student_count': student_count})
+    return jsonify(result)
+
+
 @app.route('/department/class/<class_id>/assign', methods=['POST'])
 def dept_assign_teacher(class_id):
     err = _require_hod()

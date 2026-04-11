@@ -39,6 +39,12 @@ def _migrate_add_columns(app):
                 db.session.execute(text('ALTER TABLE submissions ADD COLUMN script_pages_json TEXT'))
                 db.session.commit()
                 logger.info('Added script_pages_json column to submissions table')
+        if 'students' in inspector.get_table_names():
+            columns = [c['name'] for c in inspector.get_columns('students')]
+            if 'class_id' not in columns:
+                db.session.execute(text("ALTER TABLE students ADD COLUMN class_id VARCHAR(36)"))
+                db.session.commit()
+                logger.info('Added class_id column to students table')
         if 'assignments' in inspector.get_table_names():
             columns = [c['name'] for c in inspector.get_columns('assignments')]
             if 'title' not in columns:
@@ -88,6 +94,7 @@ class Class(db.Model):
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     teachers = db.relationship('Teacher', secondary='teacher_classes', back_populates='classes')
     assignments = db.relationship('Assignment', backref='dept_class', lazy=True)
+    students = db.relationship('Student', backref='student_class', lazy=True, cascade='all, delete-orphan')
 
 
 class TeacherClass(db.Model):
@@ -163,7 +170,8 @@ class Student(db.Model):
     __tablename__ = 'students'
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)
+    class_id = db.Column(db.String(36), db.ForeignKey('classes.id'), nullable=True, index=True)
+    assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=True, index=True)
     index_number = db.Column(db.String(50), nullable=False)
     name = db.Column(db.String(200), nullable=False)
 
