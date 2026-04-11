@@ -180,7 +180,7 @@ function renderClassChart(comparison) {
         var w = (val / 100) * 100;
         var color = val >= 70 ? '#28a745' : (val >= 50 ? '#ffc107' : '#dc3545');
         html += '<div class="bar-row">' +
-            '<span class="bar-label">' + name + '</span>' +
+            '<span class="bar-label">' + esc(name) + '</span>' +
             '<div class="bar-track"><div class="bar-fill" style="width:' + w + '%;background:' + color + '"></div></div>' +
             '<span class="bar-value">' + val + '%</span>' +
             '</div>';
@@ -216,7 +216,7 @@ function renderQuestionChart(difficulty) {
         var val = difficulty[qnum];
         var color = val >= 70 ? '#28a745' : (val >= 50 ? '#ffc107' : '#dc3545');
         html += '<div class="bar-row">' +
-            '<span class="bar-label">Q' + qnum + '</span>' +
+            '<span class="bar-label">Q' + esc(qnum) + '</span>' +
             '<div class="bar-track"><div class="bar-fill" style="width:' + val + '%;background:' + color + '"></div></div>' +
             '<span class="bar-value">' + val + '%</span>' +
             '</div>';

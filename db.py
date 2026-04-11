@@ -45,6 +45,10 @@ def _migrate_add_columns(app):
                 db.session.execute(text("ALTER TABLE students ADD COLUMN class_id VARCHAR(36)"))
                 db.session.commit()
                 logger.info('Added class_id column to students table')
+            if 'assignment_id' not in columns:
+                db.session.execute(text("ALTER TABLE students ADD COLUMN assignment_id VARCHAR(36)"))
+                db.session.commit()
+                logger.info('Added assignment_id column to students table')
         if 'teachers' in inspector.get_table_names():
             columns = [c['name'] for c in inspector.get_columns('teachers')]
             if 'is_active' not in columns:

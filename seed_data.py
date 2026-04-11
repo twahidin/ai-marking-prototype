@@ -27,9 +27,9 @@ def seed_demo_department(db, Teacher, Class, TeacherClass, Assignment, Student, 
 
     # Create classes
     classes = [
-        Class(id=str(uuid.uuid4()), name='3A', level='Mathematics'),
-        Class(id=str(uuid.uuid4()), name='3B', level='Mathematics'),
-        Class(id=str(uuid.uuid4()), name='4A', level='Mathematics'),
+        Class(id=str(uuid.uuid4()), name='3A', level='Secondary 3'),
+        Class(id=str(uuid.uuid4()), name='3B', level='Secondary 3'),
+        Class(id=str(uuid.uuid4()), name='4A', level='Secondary 4'),
     ]
     for c in classes:
         db.session.add(c)

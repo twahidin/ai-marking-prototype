@@ -95,7 +95,7 @@ def _is_setup_complete():
     except Exception:
         pass
     # Also consider setup complete if env vars are configured
-    if os.getenv('DEPT_MODE') or os.getenv('DEMO_MODE') or os.getenv('TEACHER_CODE'):
+    if os.getenv('DEPT_MODE') or os.getenv('DEMO_MODE') or os.getenv('TEACHER_CODE') or os.getenv('ACCESS_CODE'):
         return True
     return False
 
@@ -219,8 +219,14 @@ def _is_authenticated():
     """Check if user is authenticated."""
     if is_dept_mode():
         return session.get('teacher_id') is not None
-    if get_teacher_code():
+    # Teacher-based auth (TEACHER_CODE set explicitly, not just inherited from ACCESS_CODE)
+    tc = get_teacher_code()
+    if tc and tc != _ENV_ACCESS_CODE:
         return session.get('teacher_id') is not None
+    # Also accept teacher_id session (wizard-created teachers)
+    if session.get('teacher_id'):
+        return True
+    # Legacy ACCESS_CODE path
     if not _ENV_ACCESS_CODE:
         return True
     return session.get('authenticated', False)
@@ -920,6 +926,9 @@ def dept_purge_teacher(teacher_id):
         for asn in assignments:
             Submission.query.filter_by(assignment_id=asn.id).delete()
             db.session.delete(asn)
+    else:
+        # Keep data but null out teacher_id to avoid orphaned FK
+        Assignment.query.filter_by(teacher_id=t.id).update({'teacher_id': None})
 
     TeacherClass.query.filter_by(teacher_id=t.id).delete()
     db.session.delete(t)
@@ -1409,10 +1418,13 @@ def teacher_dashboard():
 
     # Bulk load all assignments for teacher's classes
     teacher_class_ids = [cls.id for cls in teacher.classes]
-    all_assignments = Assignment.query.filter(
-        Assignment.class_id.in_(teacher_class_ids),
-        Assignment.teacher_id == teacher.id
-    ).order_by(Assignment.created_at.desc()).all() if teacher_class_ids else []
+    if teacher_class_ids:
+        q = Assignment.query.filter(Assignment.class_id.in_(teacher_class_ids))
+        if teacher.role != 'hod':
+            q = q.filter(Assignment.teacher_id == teacher.id)
+        all_assignments = q.order_by(Assignment.created_at.desc()).all()
+    else:
+        all_assignments = []
     assignments_by_class = {}
     for a in all_assignments:
         assignments_by_class.setdefault(a.class_id, []).append(a)
@@ -1576,6 +1588,7 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                             assignment_id=assignment_id,
                             script_bytes=script_bytes,
                             status='error' if result.get('error') else 'done',
+                            submitted_at=datetime.now(timezone.utc),
                         )
                         sub.set_result(result)
                         sub.marked_at = datetime.now(timezone.utc)
@@ -2060,7 +2073,7 @@ def teacher_submit_for_student(assignment_id, student_id):
     err = _check_assignment_ownership(asn)
     if err:
         return err
-    student = Student.query.get(student_id)
+    student = Student.query.get(int(student_id))
     if not student:
         return jsonify({'success': False, 'error': 'Invalid student'}), 400
     # Validate student belongs to this assignment's class or assignment
@@ -2154,7 +2167,7 @@ def student_upload(assignment_id):
     if not student_id:
         return jsonify({'success': False, 'error': 'Please select your name'}), 400
 
-    student = Student.query.get(student_id)
+    student = Student.query.get(int(student_id))
     if not student:
         return jsonify({'success': False, 'error': 'Invalid student'}), 400
     # Validate student belongs to this assignment's class or assignment
