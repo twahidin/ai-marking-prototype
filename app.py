@@ -103,14 +103,6 @@ def _get_session_keys():
     return session.get('api_keys') or {}
 
 
-def _effective_keys(force_session=False):
-    """Return session keys for single marking. In demo mode, use server env keys."""
-    if force_session:
-        return _get_session_keys()
-    # In demo mode, single marking uses server env keys (return None)
-    # In self-hosted, also use server env keys but supplement with session keys
-    sk = _get_session_keys()
-    return sk if sk else None
 
 
 def _is_authenticated():
@@ -1176,21 +1168,6 @@ def teacher_dashboard():
 # ---------------------------------------------------------------------------
 # Bulk marking
 # ---------------------------------------------------------------------------
-
-def _split_pdf(pdf_bytes, pages_per_student):
-    """Split a PDF into chunks of N pages. Returns list of PDF bytes."""
-    from pypdf import PdfReader, PdfWriter
-    reader = PdfReader(io.BytesIO(pdf_bytes))
-    total = len(reader.pages)
-    chunks = []
-    for start in range(0, total, pages_per_student):
-        writer = PdfWriter()
-        for p in range(start, min(start + pages_per_student, total)):
-            writer.add_page(reader.pages[p])
-        buf = io.BytesIO()
-        writer.write(buf)
-        chunks.append(buf.getvalue())
-    return chunks
 
 
 def _split_pdf_variable(pdf_bytes, page_counts):
