@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block title %}Department Setup - AI Marking{% endblock %}
+
+{% block head %}
+<style>
+    .setup { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 40px 20px; }
+    .setup-card {
+        background: white; border-radius: 16px; padding: 48px 40px;
+        box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: center;
+        width: 100%; max-width: 460px;
+    }
+    .setup-card h1 { font-size: 24px; font-weight: 700; color: #333; margin-bottom: 8px; }
+    .setup-card p { color: #888; font-size: 14px; margin-bottom: 28px; }
+    .setup-input {
+        width: 100%; padding: 14px 16px; border: 2px solid #e0e0e0; border-radius: 10px;
+        font-size: 16px; transition: border-color 0.2s; outline: none; margin-bottom: 16px;
+    }
+    .setup-input:focus { border-color: #667eea; }
+    .setup-input.code {
+        text-align: center; letter-spacing: 3px; font-weight: 600;
+    }
+    .setup-label { font-size: 13px; font-weight: 600; color: #555; text-align: left; display: block; margin-bottom: 6px; }
+    .setup-btn {
+        width: 100%; padding: 14px; border: none; border-radius: 10px;
+        background: #667eea; color: white; font-size: 16px; font-weight: 700;
+        cursor: pointer; transition: background 0.2s; margin-top: 8px;
+    }
+    .setup-btn:hover { background: #5a6fd6; }
+    .setup-error {
+        color: #dc3545; font-size: 13px; margin-top: 12px; display: none;
+    }
+    .setup-hint { font-size: 12px; color: #aaa; margin-top: 4px; text-align: left; }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="setup">
+    <div class="setup-card">
+        <h1>Department Setup</h1>
+        <p>Create the Head of Department account to get started</p>
+
+        <label class="setup-label">Your Name</label>
+        <input type="text" class="setup-input" id="hodName" placeholder="e.g. Mr. Tan Wei Ming" autofocus>
+
+        <label class="setup-label">Access Code</label>
+        <input type="text" class="setup-input code" id="hodCode" placeholder="e.g. MATH2026">
+        <div class="setup-hint">This code is used to log in. Share it only with HOD users. Minimum 4 characters.</div>
+
+        <button class="setup-btn" onclick="createHOD()">Create HOD Account</button>
+        <div class="setup-error" id="setupError"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function createHOD() {
+    var name = document.getElementById('hodName').value.trim();
+    var code = document.getElementById('hodCode').value.trim();
+    var errEl = document.getElementById('setupError');
+    errEl.style.display = 'none';
+
+    if (!name || !code) {
+        errEl.textContent = 'Please fill in both fields.';
+        errEl.style.display = 'block';
+        return;
+    }
+
+    fetch('/department/setup', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name, code: code})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success) {
+            window.location.href = data.redirect || '/department';
+        } else {
+            errEl.textContent = data.error || 'Something went wrong.';
+            errEl.style.display = 'block';
+        }
+    })
+    .catch(function() {
+        errEl.textContent = 'Network error. Please try again.';
+        errEl.style.display = 'block';
+    });
+}
+
+document.getElementById('hodCode').addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') createHOD();
+});
+</script>
+{% endblock %}

@@ -784,6 +784,43 @@ def department_export_csv():
                      download_name='department_results.csv')
 
 
+@app.route('/department/setup', methods=['GET', 'POST'])
+def department_setup():
+    if not DEPT_MODE:
+        return redirect(url_for('hub'))
+
+    # If HOD already exists, redirect
+    existing_hod = Teacher.query.filter_by(role='hod').first()
+    if existing_hod:
+        return redirect(url_for('hub'))
+
+    if request.method == 'POST':
+        data = request.get_json()
+        name = (data.get('name') or '').strip()
+        code = (data.get('code') or '').strip()
+        if not name or not code:
+            return jsonify({'success': False, 'error': 'Name and code are required'}), 400
+        if len(code) < 4:
+            return jsonify({'success': False, 'error': 'Code must be at least 4 characters'}), 400
+
+        hod = Teacher(
+            id=str(uuid.uuid4()),
+            name=name,
+            code=code,
+            role='hod',
+        )
+        db.session.add(hod)
+        db.session.commit()
+
+        session['teacher_id'] = hod.id
+        session['teacher_role'] = hod.role
+        session['teacher_name'] = hod.name
+
+        return jsonify({'success': True, 'redirect': '/department'})
+
+    return render_template('department_setup.html')
+
+
 # ---------------------------------------------------------------------------
 # Teacher Dashboard
 # ---------------------------------------------------------------------------
