@@ -28,6 +28,7 @@ app.secret_key = _flask_secret
 
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = os.getenv('FLASK_ENV') != 'development'
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
 
 ACCESS_CODE = os.getenv('ACCESS_CODE', '').strip()  # keep for legacy
@@ -462,16 +463,34 @@ def department_page():
     classes = Class.query.order_by(Class.name).all()
     teachers = Teacher.query.filter_by(role='teacher').order_by(Teacher.name).all()
 
+    # Bulk load all assignments for these classes
+    class_ids = [c.id for c in classes]
+    all_assignments = Assignment.query.filter(Assignment.class_id.in_(class_ids)).all() if class_ids else []
+    assignments_by_class = {}
+    for a in all_assignments:
+        assignments_by_class.setdefault(a.class_id, []).append(a)
+
+    # Bulk load student counts by class
+    student_counts_by_class = {}
+    for cls in classes:
+        student_counts_by_class[cls.id] = Student.query.filter_by(class_id=cls.id).count()
+
+    # Bulk load all submissions for these assignments
+    asn_ids = [a.id for a in all_assignments]
+    all_subs = Submission.query.filter(Submission.assignment_id.in_(asn_ids)).all() if asn_ids else []
+    subs_by_assignment = {}
+    for s in all_subs:
+        subs_by_assignment.setdefault(s.assignment_id, []).append(s)
+
     class_data = []
     for cls in classes:
-        assignments = Assignment.query.filter_by(class_id=cls.id).all()
+        assignments = assignments_by_class.get(cls.id, [])
+        students_in_class = student_counts_by_class.get(cls.id, 0)
+        total_students = students_in_class * len(assignments)
         total_submissions = 0
-        total_students = 0
         done_submissions = 0
         for asn in assignments:
-            students_count = Student.query.filter_by(class_id=asn.class_id).count() if asn.class_id else Student.query.filter_by(assignment_id=asn.id).count()
-            total_students += students_count
-            subs = Submission.query.filter_by(assignment_id=asn.id).all()
+            subs = subs_by_assignment.get(asn.id, [])
             total_submissions += len(subs)
             done_submissions += sum(1 for s in subs if s.status == 'done')
 
@@ -900,11 +919,17 @@ def department_insights_data():
 
     submissions = query.all()
 
+    # Pre-load assignments and classes to avoid N+1
+    asn_ids = list(set(s.assignment_id for s in submissions))
+    all_asns = {a.id: a for a in Assignment.query.filter(Assignment.id.in_(asn_ids)).all()} if asn_ids else {}
+    cls_ids = list(set(a.class_id for a in all_asns.values() if a.class_id))
+    all_classes = {c.id: c for c in Class.query.filter(Class.id.in_(cls_ids)).all()} if cls_ids else {}
+
     class_scores = {}
     question_stats = {}
 
     for sub in submissions:
-        asn = Assignment.query.get(sub.assignment_id)
+        asn = all_asns.get(sub.assignment_id)
         if not asn or not asn.class_id:
             continue
         if class_id and asn.class_id != class_id:
@@ -915,7 +940,7 @@ def department_insights_data():
         if not questions:
             continue
 
-        cls = Class.query.get(asn.class_id)
+        cls = all_classes.get(asn.class_id)
         cls_name = cls.name if cls else 'Unknown'
         has_marks = any(q.get('marks_awarded') is not None for q in questions)
 
@@ -982,22 +1007,30 @@ def department_export_csv():
 
     submissions = query.all()
 
+    # Pre-load all needed data to avoid N+1
+    asn_ids = list(set(s.assignment_id for s in submissions))
+    all_asns = {a.id: a for a in Assignment.query.filter(Assignment.id.in_(asn_ids)).all()} if asn_ids else {}
+    student_ids = list(set(s.student_id for s in submissions))
+    all_students = {s.id: s for s in Student.query.filter(Student.id.in_(student_ids)).all()} if student_ids else {}
+    cls_ids = list(set(a.class_id for a in all_asns.values() if a.class_id))
+    all_classes = {c.id: c for c in Class.query.filter(Class.id.in_(cls_ids)).all()} if cls_ids else {}
+
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(['Class', 'Student Index', 'Student Name', 'Assignment', 'Score', 'Percentage'])
 
     for sub in submissions:
-        asn = Assignment.query.get(sub.assignment_id)
+        asn = all_asns.get(sub.assignment_id)
         if not asn:
             continue
         if class_id and asn.class_id != class_id:
             continue
 
-        student = Student.query.get(sub.student_id)
+        student = all_students.get(sub.student_id)
         if not student:
             continue
 
-        cls = Class.query.get(asn.class_id) if asn.class_id else None
+        cls = all_classes.get(asn.class_id) if asn.class_id else None
         result = sub.get_result()
         questions = result.get('questions', [])
         has_marks = any(q.get('marks_awarded') is not None for q in questions)
@@ -1112,14 +1145,35 @@ def teacher_dashboard():
     if not teacher:
         return redirect(url_for('hub'))
 
+    # Bulk load all assignments for teacher's classes
+    teacher_class_ids = [cls.id for cls in teacher.classes]
+    all_assignments = Assignment.query.filter(
+        Assignment.class_id.in_(teacher_class_ids),
+        Assignment.teacher_id == teacher.id
+    ).order_by(Assignment.created_at.desc()).all() if teacher_class_ids else []
+    assignments_by_class = {}
+    for a in all_assignments:
+        assignments_by_class.setdefault(a.class_id, []).append(a)
+
+    # Bulk load student counts by class
+    student_counts_by_class = {}
+    for cls in teacher.classes:
+        student_counts_by_class[cls.id] = Student.query.filter_by(class_id=cls.id).count()
+
+    # Bulk load all submissions for these assignments
+    all_asn_ids = [a.id for a in all_assignments]
+    all_subs = Submission.query.filter(Submission.assignment_id.in_(all_asn_ids)).all() if all_asn_ids else []
+    subs_by_assignment = {}
+    for s in all_subs:
+        subs_by_assignment.setdefault(s.assignment_id, []).append(s)
+
     class_data = []
     for cls in teacher.classes:
-        assignments = Assignment.query.filter_by(class_id=cls.id, teacher_id=teacher.id)\
-            .order_by(Assignment.created_at.desc()).all()
+        assignments = assignments_by_class.get(cls.id, [])
         asn_data = []
         for asn in assignments:
-            students_count = Student.query.filter_by(class_id=asn.class_id).count() if asn.class_id else Student.query.filter_by(assignment_id=asn.id).count()
-            subs = Submission.query.filter_by(assignment_id=asn.id).all()
+            students_count = student_counts_by_class.get(cls.id, 0)
+            subs = subs_by_assignment.get(asn.id, [])
             done = [s for s in subs if s.status == 'done']
 
             avg_score = None
