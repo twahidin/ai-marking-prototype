@@ -109,7 +109,7 @@
                     <div class="item-header">
                         <div>
                             <span class="item-name">{{ cls.name }}</span>
-                            {% if cls.level %}<span class="item-meta"> — {{ cls.level }}</span>{% endif %}
+                            {% if cls.level %}<span class="item-meta"> ({{ cls.level }})</span>{% endif %}
                         </div>
                         <button class="delete-btn" onclick="deleteClass('{{ cls.id }}')" title="Delete class">&times;</button>
                     </div>
@@ -125,9 +125,7 @@
                         <select id="assign-select-{{ cls.id }}">
                             <option value="">Assign teacher...</option>
                             {% for t in teachers %}
-                            {% if t.role == 'teacher' %}
-                            <option value="{{ t.id }}">{{ t.name }}</option>
-                            {% endif %}
+                            <option value="{{ t.id }}">{{ t.name }}{% if t.role == 'hod' %} (HOD){% endif %}</option>
                             {% endfor %}
                         </select>
                         <button class="assign-btn" onclick="assignTeacher('{{ cls.id }}')">Assign</button>

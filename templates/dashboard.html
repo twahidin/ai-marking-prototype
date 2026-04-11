@@ -4,9 +4,7 @@
 
 {% block head %}
 <style>
-    .class-section { margin-bottom: 32px; }
-    .class-title { font-size: 20px; font-weight: 700; color: #1a1a2e; margin-bottom: 4px; }
-    .class-level { font-size: 13px; color: #888; margin-bottom: 16px; }
+    .class-section { margin-bottom: 20px; }
 
     .asn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
 
@@ -43,10 +41,6 @@
     .avg-mid { background: #fff3cd; color: #856404; }
     .avg-low { background: #fde8e8; color: #dc3545; }
 
-    .no-classes {
-        text-align: center; padding: 80px 20px; color: #888;
-    }
-    .no-classes p { margin-bottom: 8px; font-size: 15px; }
 </style>
 {% endblock %}
 
@@ -59,9 +53,8 @@
 
     {% if classes %}
     {% for cls in classes %}
-    <div class="class-section animate__animated animate__fadeInUp" style="animation-delay:{{ loop.index0 * 0.1 }}s;animation-duration:0.5s;">
-        <div class="class-title">{{ cls.name }}</div>
-        {% if cls.level %}<div class="class-level">{{ cls.level }}</div>{% endif %}
+    <div class="dept-card class-section animate__animated animate__fadeInUp" style="animation-delay:{{ loop.index0 * 0.1 }}s;animation-duration:0.5s;">
+        <h2>{{ cls.name }}{% if cls.level %} <span style="font-weight:400;color:#999;font-size:14px;">({{ cls.level }})</span>{% endif %}</h2>
 
         {% if cls.assignments %}
         <div class="asn-grid">
@@ -88,7 +81,7 @@
             {% endfor %}
         </div>
         {% else %}
-        <div class="dept-empty">
+        <div class="dept-empty" style="padding:32px 20px;">
             <p>No assignments yet for this class.</p>
             <p><a href="/class">Create one</a></p>
         </div>
@@ -96,9 +89,9 @@
     </div>
     {% endfor %}
     {% else %}
-    <div class="no-classes">
-        <p>No classes assigned to you yet.</p>
-        <p>Contact your Head of Department to be assigned to classes.</p>
+    <div class="dept-card" style="text-align:center;padding:60px 20px;">
+        <p style="color:#999;font-size:15px;margin-bottom:8px;">No classes assigned to you yet.</p>
+        <p style="color:#999;font-size:14px;">Contact your Head of Department to be assigned to classes.</p>
     </div>
     {% endif %}
 </div>
