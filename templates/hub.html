@@ -73,6 +73,9 @@
         </div>
 
         <div class="hub-footer">
+            {% if teacher.role == 'hod' %}
+            <a href="/settings" style="color:#888; text-decoration:none; margin-right:16px;" title="Settings">&#9881; Settings</a>
+            {% endif %}
             <a href="/logout" style="color:#667eea; text-decoration:none;">Logout</a>
         </div>
 
@@ -120,6 +123,9 @@
 
         <div class="hub-footer">
             {% if teacher %}
+            {% if teacher.role == 'owner' %}
+            <a href="/settings" style="color:#888; text-decoration:none; margin-right:16px;" title="Settings">&#9881; Settings</a>
+            {% endif %}
             <a href="/logout" style="color:#667eea; text-decoration:none;">Logout</a>
             {% else %}
             Powered by Anthropic Claude, OpenAI GPT &amp; Alibaba Qwen

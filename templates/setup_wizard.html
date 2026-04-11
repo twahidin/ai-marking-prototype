@@ -1,0 +1,313 @@
+{% extends "base.html" %}
+
+{% block title %}Setup - AI Feedback Systems{% endblock %}
+
+{% block head %}
+<style>
+    .wizard { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 40px 20px; }
+    .wizard-container { max-width: 700px; width: 100%; text-align: center; }
+    .wizard-container h1 { font-size: 28px; font-weight: 700; color: #333; margin-bottom: 8px; }
+    .wizard-container .subtitle { color: #888; font-size: 15px; margin-bottom: 36px; }
+
+    .wizard-step { display: none; }
+    .wizard-step.active { display: block; }
+
+    /* Mode cards */
+    .mode-cards { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+    @media (max-width: 650px) { .mode-cards { grid-template-columns: 1fr; } }
+
+    .mode-card {
+        background: white; border-radius: 16px; padding: 32px 24px;
+        box-shadow: 0 2px 20px rgba(0,0,0,0.08);
+        cursor: pointer; border: 2px solid transparent;
+        transition: all 0.25s; text-align: center;
+    }
+    .mode-card:hover { border-color: #667eea; transform: translateY(-4px); box-shadow: 0 8px 30px rgba(102,126,234,0.15); }
+    .mode-card.selected { border-color: #667eea; background: #f8f9ff; }
+    .mode-card .icon { font-size: 42px; margin-bottom: 12px; }
+    .mode-card h3 { font-size: 18px; font-weight: 700; color: #333; margin-bottom: 8px; }
+    .mode-card p { font-size: 13px; color: #888; line-height: 1.5; }
+
+    /* Demo sub-option */
+    .demo-suboption {
+        margin-top: 20px; padding: 16px 20px;
+        background: white; border-radius: 12px;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+        display: none; text-align: left;
+    }
+    .demo-suboption.visible { display: flex; align-items: center; gap: 12px; }
+    .demo-suboption label { font-size: 14px; color: #555; cursor: pointer; }
+    .demo-suboption input[type="checkbox"] {
+        width: 20px; height: 20px; accent-color: #667eea; flex-shrink: 0;
+    }
+
+    .wizard-next {
+        margin-top: 32px; padding: 14px 40px; border: none; border-radius: 10px;
+        background: #667eea; color: white; font-size: 16px; font-weight: 700;
+        cursor: pointer; transition: background 0.2s; display: none;
+    }
+    .wizard-next:hover { background: #5a6fd6; }
+    .wizard-next:disabled { background: #ccc; cursor: not-allowed; }
+
+    /* Config step */
+    .config-card {
+        background: white; border-radius: 16px; padding: 40px 36px;
+        box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: left;
+        border-top: 4px solid #667eea;
+    }
+    .config-card h2 { font-size: 22px; font-weight: 700; color: #333; margin-bottom: 4px; text-align: center; }
+    .config-card .config-subtitle { color: #888; font-size: 14px; margin-bottom: 28px; text-align: center; }
+
+    .config-section { margin-bottom: 24px; }
+    .config-section h3 { font-size: 14px; font-weight: 700; color: #667eea; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; padding-bottom: 6px; border-bottom: 1px solid #eee; }
+
+    .config-field { margin-bottom: 14px; }
+    .config-label { font-size: 13px; font-weight: 600; color: #555; display: block; margin-bottom: 4px; }
+    .config-input {
+        width: 100%; padding: 12px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
+        font-size: 15px; transition: border-color 0.2s; outline: none; box-sizing: border-box;
+    }
+    .config-input:focus { border-color: #667eea; }
+    .config-hint { font-size: 11px; color: #aaa; margin-top: 3px; }
+
+    .config-btn {
+        width: 100%; padding: 14px; border: none; border-radius: 10px;
+        background: #667eea; color: white; font-size: 16px; font-weight: 700;
+        cursor: pointer; transition: background 0.2s; margin-top: 8px;
+    }
+    .config-btn:hover { background: #5a6fd6; }
+    .config-btn:disabled { background: #ccc; cursor: not-allowed; }
+
+    .config-error {
+        color: #dc3545; font-size: 13px; margin-top: 12px; text-align: center; display: none;
+    }
+
+    .mode-badge {
+        display: inline-block; padding: 4px 12px; border-radius: 20px;
+        font-size: 12px; font-weight: 600; background: #f0f2ff; color: #667eea;
+        margin-bottom: 16px;
+    }
+
+    .api-note {
+        font-size: 12px; color: #888; background: #f8f9fa; padding: 10px 14px;
+        border-radius: 8px; margin-top: 4px; line-height: 1.5;
+    }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="wizard">
+    <div class="wizard-container">
+
+        <!-- Step 1: Mode Selection -->
+        <div class="wizard-step active" id="step-mode">
+            <h1>Welcome to AI Feedback Systems</h1>
+            <p class="subtitle">Let's get you set up. How will you be using this app?</p>
+
+            <div class="mode-cards">
+                <div class="mode-card" onclick="selectMode('normal')" id="card-normal">
+                    <div class="icon">&#128203;</div>
+                    <h3>I'm a Teacher</h3>
+                    <p>Personal use -- manage your own classes and mark student work</p>
+                </div>
+                <div class="mode-card" onclick="selectMode('department')" id="card-department">
+                    <div class="icon">&#127979;</div>
+                    <h3>I'm a Department Head</h3>
+                    <p>Manage teachers, classes, and view department-wide insights</p>
+                </div>
+                <div class="mode-card" onclick="selectMode('demo')" id="card-demo">
+                    <div class="icon">&#10024;</div>
+                    <h3>Demo / Showcase</h3>
+                    <p>Try AI marking or showcase the system to others</p>
+                </div>
+            </div>
+
+            <div class="demo-suboption" id="demo-sub">
+                <input type="checkbox" id="demo-dept-toggle">
+                <label for="demo-dept-toggle">Include department showcase with sample data?</label>
+            </div>
+
+            <button class="wizard-next" id="btn-next-mode" onclick="goToConfig()">Continue</button>
+        </div>
+
+        <!-- Step 2: Configuration -->
+        <div class="wizard-step" id="step-config">
+            <div class="config-card animate__animated animate__fadeInUp" style="animation-duration:0.5s;">
+                <h2>Configure Your App</h2>
+                <div class="config-subtitle" id="config-mode-label"></div>
+
+                <div class="config-section">
+                    <h3>General</h3>
+                    <div class="config-field">
+                        <label class="config-label">App Title</label>
+                        <input type="text" class="config-input" id="cfg-title" placeholder="AI Feedback Systems">
+                        <div class="config-hint">Shown in the header and PDF reports</div>
+                    </div>
+                </div>
+
+                <div class="config-section" id="section-account" style="display:none;">
+                    <h3>Your Account</h3>
+                    <div class="config-field">
+                        <label class="config-label">Your Name</label>
+                        <input type="text" class="config-input" id="cfg-name" placeholder="e.g. Mr. Tan Wei Ming">
+                    </div>
+                    <div class="config-field">
+                        <label class="config-label">Access Code</label>
+                        <input type="text" class="config-input" id="cfg-code" placeholder="e.g. MATH2026" style="letter-spacing:2px; font-weight:600;">
+                        <div class="config-hint">You'll use this code to log in. Keep it secure. Minimum 4 characters.</div>
+                    </div>
+                </div>
+
+                <div class="config-section">
+                    <h3>API Keys</h3>
+                    <div class="api-note">
+                        At least one API key is required. Keys are encrypted and stored securely.
+                        If keys are already configured via environment variables, you can skip this.
+                    </div>
+                    <div class="config-field" style="margin-top:14px;">
+                        <label class="config-label">Anthropic API Key</label>
+                        <input type="password" class="config-input" id="cfg-key-anthropic" placeholder="sk-ant-...">
+                        <div class="config-hint">Get yours at console.anthropic.com</div>
+                    </div>
+                    <div class="config-field">
+                        <label class="config-label">OpenAI API Key</label>
+                        <input type="password" class="config-input" id="cfg-key-openai" placeholder="sk-...">
+                        <div class="config-hint">Get yours at platform.openai.com</div>
+                    </div>
+                    <div class="config-field">
+                        <label class="config-label">Qwen API Key</label>
+                        <input type="password" class="config-input" id="cfg-key-qwen" placeholder="sk-...">
+                        <div class="config-hint">Get yours at dashscope.aliyuncs.com</div>
+                    </div>
+                </div>
+
+                <button class="config-btn" id="btn-finish" onclick="finishSetup()">Complete Setup</button>
+                <div class="config-error" id="config-error"></div>
+                <div style="text-align:center; margin-top:16px;">
+                    <a href="#" onclick="goBack(); return false;" style="color:#667eea; font-size:13px; text-decoration:none;">Back to mode selection</a>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var selectedMode = null;
+
+function selectMode(mode) {
+    selectedMode = mode;
+    document.querySelectorAll('.mode-card').forEach(function(c) { c.classList.remove('selected'); });
+    document.getElementById('card-' + mode).classList.add('selected');
+    document.getElementById('btn-next-mode').style.display = 'inline-block';
+
+    var demoSub = document.getElementById('demo-sub');
+    if (mode === 'demo') {
+        demoSub.classList.add('visible');
+    } else {
+        demoSub.classList.remove('visible');
+        document.getElementById('demo-dept-toggle').checked = false;
+    }
+}
+
+function goToConfig() {
+    if (!selectedMode) return;
+
+    // If demo + dept toggle is checked, use demo_department
+    var finalMode = selectedMode;
+    if (selectedMode === 'demo' && document.getElementById('demo-dept-toggle').checked) {
+        finalMode = 'demo_department';
+    }
+
+    // Save mode to server
+    fetch('/setup/wizard', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({step: 'mode', mode: finalMode})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success) {
+            selectedMode = finalMode;
+            showConfigStep();
+        }
+    });
+}
+
+function showConfigStep() {
+    document.getElementById('step-mode').classList.remove('active');
+    document.getElementById('step-config').classList.add('active');
+
+    var labels = {
+        'normal': 'Teacher Mode',
+        'department': 'Department Mode',
+        'demo': 'Demo Mode',
+        'demo_department': 'Demo + Department Mode'
+    };
+    document.getElementById('config-mode-label').innerHTML =
+        '<span class="mode-badge">' + (labels[selectedMode] || selectedMode) + '</span>';
+
+    // Show/hide account section
+    var needsAccount = (selectedMode === 'normal' || selectedMode === 'department');
+    document.getElementById('section-account').style.display = needsAccount ? 'block' : 'none';
+
+    // Update placeholder for title
+    var titlePlaceholders = {
+        'normal': 'AI Feedback Systems',
+        'department': 'Mathematics Department',
+        'demo': 'AI Marking Demo',
+        'demo_department': 'AI Marking Demo'
+    };
+    document.getElementById('cfg-title').placeholder = titlePlaceholders[selectedMode] || 'AI Feedback Systems';
+}
+
+function goBack() {
+    document.getElementById('step-config').classList.remove('active');
+    document.getElementById('step-mode').classList.add('active');
+}
+
+function finishSetup() {
+    var errEl = document.getElementById('config-error');
+    errEl.style.display = 'none';
+
+    var btn = document.getElementById('btn-finish');
+    btn.disabled = true;
+    btn.textContent = 'Setting up...';
+
+    var payload = {
+        step: 'config',
+        title: document.getElementById('cfg-title').value,
+        name: document.getElementById('cfg-name').value,
+        code: document.getElementById('cfg-code').value,
+        api_key_anthropic: document.getElementById('cfg-key-anthropic').value,
+        api_key_openai: document.getElementById('cfg-key-openai').value,
+        api_key_qwen: document.getElementById('cfg-key-qwen').value
+    };
+
+    fetch('/setup/wizard', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success) {
+            window.location.href = data.redirect || '/';
+        } else {
+            errEl.textContent = data.error || 'Something went wrong.';
+            errEl.style.display = 'block';
+            btn.disabled = false;
+            btn.textContent = 'Complete Setup';
+        }
+    })
+    .catch(function() {
+        errEl.textContent = 'Network error. Please try again.';
+        errEl.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Complete Setup';
+    });
+}
+</script>
+{% endblock %}

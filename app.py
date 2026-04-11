@@ -31,11 +31,11 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SECURE'] = os.getenv('FLASK_ENV') != 'development'
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
 
-ACCESS_CODE = os.getenv('ACCESS_CODE', '').strip()  # keep for legacy
-TEACHER_CODE = os.getenv('TEACHER_CODE', '').strip() or ACCESS_CODE
-DEMO_MODE = os.getenv('DEMO_MODE', 'FALSE').upper() == 'TRUE'
-DEPT_MODE = os.getenv('DEPT_MODE', 'FALSE').upper() == 'TRUE'
-APP_TITLE = os.getenv('APP_TITLE', 'AI Feedback Systems')
+_ENV_ACCESS_CODE = os.getenv('ACCESS_CODE', '').strip()  # keep for legacy
+_ENV_TEACHER_CODE = os.getenv('TEACHER_CODE', '').strip() or _ENV_ACCESS_CODE
+_ENV_DEMO_MODE = os.getenv('DEMO_MODE', 'FALSE').upper() == 'TRUE'
+_ENV_DEPT_MODE = os.getenv('DEPT_MODE', 'FALSE').upper() == 'TRUE'
+_ENV_APP_TITLE = os.getenv('APP_TITLE', 'AI Feedback Systems')
 
 # Demo mode: restricted to 3 budget models only
 DEMO_MODELS = {
@@ -59,8 +59,92 @@ DEMO_MODELS = {
 # Initialize database
 init_db(app)
 
-# Seed fake data when both DEMO_MODE and DEPT_MODE are enabled
-if DEMO_MODE and DEPT_MODE:
+
+# ---------------------------------------------------------------------------
+# Config helpers: DB-backed configuration with env var fallback
+# ---------------------------------------------------------------------------
+
+def _get_config(key, default=''):
+    """Get config from DB (DepartmentConfig), falling back to env var."""
+    try:
+        cfg = DepartmentConfig.query.filter_by(key=key).first()
+        if cfg and cfg.value:
+            return cfg.value
+    except Exception:
+        pass
+    return default
+
+
+def _set_config(key, value):
+    """Set a config value in DepartmentConfig."""
+    cfg = DepartmentConfig.query.filter_by(key=key).first()
+    if cfg:
+        cfg.value = value
+    else:
+        cfg = DepartmentConfig(key=key, value=value)
+        db.session.add(cfg)
+    db.session.commit()
+
+
+def _is_setup_complete():
+    """Check if the setup wizard has been completed."""
+    try:
+        cfg = DepartmentConfig.query.filter_by(key='setup_complete').first()
+        if cfg and cfg.value == 'true':
+            return True
+    except Exception:
+        pass
+    # Also consider setup complete if env vars are configured
+    if os.getenv('DEPT_MODE') or os.getenv('DEMO_MODE') or os.getenv('TEACHER_CODE'):
+        return True
+    return False
+
+
+def get_app_mode():
+    """Get app mode from DB, falling back to env vars."""
+    cfg = DepartmentConfig.query.filter_by(key='app_mode').first()
+    if cfg and cfg.value:
+        return cfg.value
+    # Fall back to env vars
+    if _ENV_DEMO_MODE and _ENV_DEPT_MODE:
+        return 'demo_department'
+    if _ENV_DEMO_MODE:
+        return 'demo'
+    if _ENV_DEPT_MODE:
+        return 'department'
+    return 'normal'
+
+
+def get_app_title():
+    """Get app title from DB, falling back to env var."""
+    cfg = DepartmentConfig.query.filter_by(key='app_title').first()
+    if cfg and cfg.value:
+        return cfg.value
+    return _ENV_APP_TITLE
+
+
+def get_teacher_code():
+    """Get teacher code from DB, falling back to env var."""
+    cfg = DepartmentConfig.query.filter_by(key='teacher_code').first()
+    if cfg and cfg.value:
+        return cfg.value
+    return _ENV_TEACHER_CODE
+
+
+def is_demo_mode():
+    """Check if app is in demo mode."""
+    mode = get_app_mode()
+    return mode in ('demo', 'demo_department')
+
+
+def is_dept_mode():
+    """Check if app is in department mode."""
+    mode = get_app_mode()
+    return mode in ('department', 'demo_department')
+
+
+# Seed fake data when both DEMO_MODE and DEPT_MODE are enabled via env vars
+if _ENV_DEMO_MODE and _ENV_DEPT_MODE:
     with app.app_context():
         from seed_data import seed_demo_department
         seed_demo_department(db, Teacher, Class, TeacherClass, Assignment, Student, Submission)
@@ -75,9 +159,9 @@ def inject_dept_context():
     """Make dept_mode, demo_mode, app_title and current teacher available in all templates."""
     teacher = _current_teacher()  # works for both modes now
     return {
-        'dept_mode': DEPT_MODE,
-        'demo_mode': DEMO_MODE,
-        'app_title': APP_TITLE,
+        'dept_mode': is_dept_mode(),
+        'demo_mode': is_demo_mode(),
+        'app_title': get_app_title(),
         'current_teacher': teacher,
     }
 
@@ -133,11 +217,11 @@ def _get_session_keys():
 
 def _is_authenticated():
     """Check if user is authenticated."""
-    if DEPT_MODE:
+    if is_dept_mode():
         return session.get('teacher_id') is not None
-    if TEACHER_CODE:
+    if get_teacher_code():
         return session.get('teacher_id') is not None
-    if not ACCESS_CODE:
+    if not _ENV_ACCESS_CODE:
         return True
     return session.get('authenticated', False)
 
@@ -172,7 +256,7 @@ def _check_assignment_ownership(asn):
 
 def _require_hod():
     """Return error response if not HOD, or None if OK."""
-    if not DEPT_MODE or not _is_authenticated():
+    if not is_dept_mode() or not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
     if not _is_hod():
         return jsonify({'success': False, 'error': 'HOD access required'}), 403
@@ -181,7 +265,7 @@ def _require_hod():
 
 def _get_dept_keys():
     """Get department-level API keys from DepartmentConfig."""
-    if not DEPT_MODE:
+    if not is_dept_mode():
         return {}
     from db import _get_fernet
     keys = {}
@@ -204,10 +288,26 @@ def _resolve_api_keys(assignment):
     keys = assignment.get_api_keys()
     if keys:
         return keys
-    if DEPT_MODE:
+    if is_dept_mode():
         dept_keys = _get_dept_keys()
         if dept_keys:
             return dept_keys
+    # Also check wizard-stored keys
+    from db import _get_fernet
+    wizard_keys = {}
+    for prov in ('anthropic', 'openai', 'qwen'):
+        cfg = DepartmentConfig.query.filter_by(key=f'api_key_{prov}').first()
+        if cfg and cfg.value:
+            f = _get_fernet()
+            if f:
+                try:
+                    wizard_keys[prov] = f.decrypt(cfg.value.encode()).decode()
+                    continue
+                except Exception:
+                    pass
+            wizard_keys[prov] = cfg.value
+    if wizard_keys:
+        return wizard_keys
     return None
 
 
@@ -247,7 +347,13 @@ def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pa
 
 @app.route('/')
 def hub():
-    if DEMO_MODE and DEPT_MODE:
+    if not _is_setup_complete():
+        return redirect(url_for('setup_wizard'))
+
+    _demo = is_demo_mode()
+    _dept = is_dept_mode()
+
+    if _demo and _dept:
         # Auto-login as demo HOD if not already logged in
         if not session.get('teacher_id'):
             hod = Teacher.query.filter_by(role='hod').first()
@@ -261,21 +367,21 @@ def hub():
                                dept_mode=True,
                                demo_mode=True,
                                teacher=teacher)
-    if DEMO_MODE and not DEPT_MODE:
+    if _demo and not _dept:
         return render_template('hub.html',
                                authenticated=True,
                                dept_mode=False,
                                demo_mode=True,
                                teacher=None)
-    if DEPT_MODE:
+    if _dept:
         if not Teacher.query.filter_by(role='hod').first():
             return redirect(url_for('department_setup'))
     authenticated = _is_authenticated()
     teacher = _current_teacher()  # works for both dept and normal mode now
     return render_template('hub.html',
                            authenticated=authenticated,
-                           dept_mode=DEPT_MODE,
-                           demo_mode=DEMO_MODE,
+                           dept_mode=_dept,
+                           demo_mode=_demo,
                            teacher=teacher)
 
 
@@ -287,7 +393,9 @@ def logout():
 
 @app.route('/mark')
 def single_mark_page():
-    if DEMO_MODE and not DEPT_MODE:
+    _demo = is_demo_mode()
+    _dept = is_dept_mode()
+    if _demo and not _dept:
         # Demo mode: standalone marking with restricted models
         from ai_marking import PROVIDER_KEY_MAP
         providers = {}
@@ -295,6 +403,14 @@ def single_mark_page():
             env_key = PROVIDER_KEY_MAP.get(prov, '')
             if os.getenv(env_key, ''):
                 providers[prov] = config
+        # Also check wizard-stored keys
+        from db import _get_fernet
+        f = _get_fernet()
+        for prov, config in DEMO_MODELS.items():
+            if prov not in providers:
+                cfg = DepartmentConfig.query.filter_by(key=f'api_key_{prov}').first()
+                if cfg and cfg.value:
+                    providers[prov] = config
         return render_template('index.html',
                                authenticated=True,
                                demo_mode=True,
@@ -304,13 +420,15 @@ def single_mark_page():
     authenticated = _is_authenticated()
     return render_template('index.html',
                            authenticated=authenticated,
-                           demo_mode=DEMO_MODE,
-                           dept_mode=DEPT_MODE)
+                           demo_mode=_demo,
+                           dept_mode=_dept)
 
 
 @app.route('/class')
 def class_page():
-    if DEMO_MODE and not DEPT_MODE:
+    _demo = is_demo_mode()
+    _dept = is_dept_mode()
+    if _demo and not _dept:
         # Demo mode: explore features, no real DB writes
         return render_template('class.html',
                                authenticated=True,
@@ -326,7 +444,7 @@ def class_page():
     assignments = []
     teacher = None
     if authenticated:
-        if DEPT_MODE:
+        if _dept:
             teacher = _current_teacher()
             if teacher and teacher.role == 'hod':
                 assignments = Assignment.query.order_by(Assignment.created_at.desc()).all()
@@ -338,8 +456,8 @@ def class_page():
     return render_template('class.html',
                            authenticated=authenticated,
                            providers=providers,
-                           demo_mode=DEMO_MODE,
-                           dept_mode=DEPT_MODE,
+                           demo_mode=_demo,
+                           dept_mode=_dept,
                            teacher=teacher,
                            all_providers=PROVIDERS,
                            assignments=assignments)
@@ -352,7 +470,7 @@ def verify_code():
     data = request.get_json()
     code = (data.get('code') or '').strip()
 
-    if DEPT_MODE:
+    if is_dept_mode():
         teacher = Teacher.query.filter_by(code=code).first()
         if not teacher:
             return jsonify({'success': False, 'error': 'Invalid code'}), 401
@@ -364,9 +482,10 @@ def verify_code():
         redirect_url = '/department' if teacher.role == 'hod' else '/dashboard'
         return jsonify({'success': True, 'redirect': redirect_url})
 
-    # Normal mode with TEACHER_CODE
-    if TEACHER_CODE:
-        if code == TEACHER_CODE:
+    # Normal mode with teacher code
+    _tc = get_teacher_code()
+    if _tc:
+        if code == _tc:
             # Master key — find the owner teacher
             teacher = Teacher.query.filter_by(role='owner').first()
             if not teacher:
@@ -384,7 +503,7 @@ def verify_code():
         return jsonify({'success': False, 'error': 'Invalid code'}), 401
 
     # Legacy ACCESS_CODE fallback
-    if ACCESS_CODE and code == ACCESS_CODE:
+    if _ENV_ACCESS_CODE and code == _ENV_ACCESS_CODE:
         session['authenticated'] = True
         return jsonify({'success': True})
     return jsonify({'success': False, 'error': 'Invalid access code'}), 401
@@ -402,7 +521,7 @@ def save_keys():
         if val:
             keys[prov] = val
     session['api_keys'] = keys
-    sk = keys if (not DEMO_MODE) else None
+    sk = keys if (not is_demo_mode()) else None
     providers = get_available_providers(session_keys=sk)
     return jsonify({'success': True, 'providers': {k: v for k, v in providers.items()}})
 
@@ -449,6 +568,20 @@ def _demo_mark():
     rubrics_pages = [f.read() for f in request.files.getlist('rubrics') if f.filename]
     reference_pages = [f.read() for f in request.files.getlist('reference') if f.filename]
 
+    # Resolve API keys: check wizard-stored keys for demo mode
+    demo_session_keys = None
+    from db import _get_fernet
+    f = _get_fernet()
+    cfg = DepartmentConfig.query.filter_by(key=f'api_key_{provider}').first()
+    if cfg and cfg.value:
+        if f:
+            try:
+                demo_session_keys = {provider: f.decrypt(cfg.value.encode()).decode()}
+            except Exception:
+                demo_session_keys = {provider: cfg.value}
+        else:
+            demo_session_keys = {provider: cfg.value}
+
     cleanup_old_jobs()
     job_id = str(uuid.uuid4())
     jobs[job_id] = {
@@ -463,7 +596,7 @@ def _demo_mark():
         args=(job_id, provider, model, question_paper_pages, answer_key_pages,
               script_pages, subject, rubrics_pages, reference_pages,
               review_instructions, marking_instructions,
-              assign_type, scoring_mode, total_marks, None),
+              assign_type, scoring_mode, total_marks, demo_session_keys),
         daemon=True
     )
     thread.start()
@@ -473,7 +606,7 @@ def _demo_mark():
 
 @app.route('/mark', methods=['POST'])
 def mark():
-    if DEMO_MODE and not DEPT_MODE:
+    if is_demo_mode() and not is_dept_mode():
         return _demo_mark()
 
     if not _is_authenticated():
@@ -540,7 +673,7 @@ def mark():
 
 @app.route('/status/<job_id>')
 def job_status(job_id):
-    if not DEMO_MODE and not _is_authenticated():
+    if not is_demo_mode() and not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     job = jobs.get(job_id)
@@ -561,14 +694,14 @@ def job_status(job_id):
 
 @app.route('/download/<job_id>')
 def download_pdf(job_id):
-    if not DEMO_MODE and not _is_authenticated():
+    if not is_demo_mode() and not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     job = jobs.get(job_id)
     if not job or job['status'] != 'done':
         return jsonify({'success': False, 'error': 'No results available'}), 404
 
-    pdf_bytes = generate_report_pdf(job['result'], subject=job.get('subject', ''), app_title=APP_TITLE)
+    pdf_bytes = generate_report_pdf(job['result'], subject=job.get('subject', ''), app_title=get_app_title())
 
     return send_file(
         io.BytesIO(pdf_bytes),
@@ -645,8 +778,8 @@ def department_page():
                            total_classes=len(classes),
                            total_assignments=total_assignments,
                            total_submissions=total_subs,
-                           dept_mode=DEPT_MODE,
-                           demo_mode=DEMO_MODE)
+                           dept_mode=is_dept_mode(),
+                           demo_mode=is_demo_mode())
 
 
 # ---------------------------------------------------------------------------
@@ -667,8 +800,8 @@ def department_manage():
                            teacher=teacher,
                            classes=classes,
                            teachers=teachers,
-                           dept_mode=DEPT_MODE,
-                           demo_mode=DEMO_MODE)
+                           dept_mode=is_dept_mode(),
+                           demo_mode=is_demo_mode())
 
 
 def _generate_teacher_code():
@@ -889,7 +1022,7 @@ def create_my_class():
     """Create a class in normal (non-dept) mode."""
     if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-    if DEPT_MODE:
+    if is_dept_mode():
         return jsonify({'success': False, 'error': 'Use department class management instead'}), 400
 
     data = request.get_json()
@@ -1026,8 +1159,8 @@ def department_insights():
                            teacher=teacher,
                            classes=classes,
                            assignments=assignments,
-                           demo_mode=DEMO_MODE,
-                           dept_mode=DEPT_MODE)
+                           demo_mode=is_demo_mode(),
+                           dept_mode=is_dept_mode())
 
 
 @app.route('/department/insights/data')
@@ -1036,7 +1169,7 @@ def department_insights_data():
     err = _require_hod()
     if err:
         return err
-    if DEMO_MODE and not DEPT_MODE:
+    if is_demo_mode() and not is_dept_mode():
         return jsonify({'success': False, 'error': 'Not available in demo mode'}), 403
 
     assignment_id = request.args.get('assignment_id')
@@ -1124,7 +1257,7 @@ def department_export_csv():
     err = _require_hod()
     if err:
         return err
-    if DEMO_MODE and not DEPT_MODE:
+    if is_demo_mode() and not is_dept_mode():
         return jsonify({'success': False, 'error': 'Not available in demo mode'}), 403
 
     assignment_id = request.args.get('assignment_id')
@@ -1190,7 +1323,7 @@ def department_export_csv():
 
 @app.route('/department/setup', methods=['GET', 'POST'])
 def department_setup():
-    if not DEPT_MODE:
+    if not is_dept_mode():
         return redirect(url_for('hub'))
 
     # If HOD already exists, redirect
@@ -1228,7 +1361,7 @@ def department_setup():
 @app.route('/setup', methods=['GET', 'POST'])
 def teacher_setup_page():
     """First-time teacher setup for normal (non-dept) mode."""
-    if DEPT_MODE:
+    if is_dept_mode():
         return redirect(url_for('hub'))
     if not session.get('pending_setup') and not session.get('teacher_id'):
         return redirect(url_for('hub'))
@@ -1247,7 +1380,7 @@ def teacher_setup_page():
         teacher = Teacher(
             id=str(uuid.uuid4()),
             name=name,
-            code=TEACHER_CODE,
+            code=get_teacher_code(),
             role='owner',
         )
         db.session.add(teacher)
@@ -1267,7 +1400,7 @@ def teacher_setup_page():
 
 @app.route('/dashboard')
 def teacher_dashboard():
-    if not DEPT_MODE or not _is_authenticated():
+    if not is_dept_mode() or not _is_authenticated():
         return redirect(url_for('hub'))
 
     teacher = _current_teacher()
@@ -1344,8 +1477,8 @@ def teacher_dashboard():
     return render_template('dashboard.html',
                            teacher=teacher,
                            classes=class_data,
-                           dept_mode=DEPT_MODE,
-                           demo_mode=DEMO_MODE)
+                           dept_mode=is_dept_mode(),
+                           demo_mode=is_demo_mode())
 
 
 # ---------------------------------------------------------------------------
@@ -1595,7 +1728,7 @@ def bulk_download(job_id):
         for item in job['results']:
             if item['result'].get('error'):
                 continue
-            pdf_bytes = generate_report_pdf(item['result'], subject=job.get('subject', ''), app_title=APP_TITLE)
+            pdf_bytes = generate_report_pdf(item['result'], subject=job.get('subject', ''), app_title=get_app_title())
             safe_name = item['name'].replace('/', '_').replace('\\', '_')
             zf.writestr(f"{item['index']}_{safe_name}_report.pdf", pdf_bytes)
     buf.seek(0)
@@ -1621,7 +1754,7 @@ def bulk_overview(job_id):
         {'name': item['name'], 'index': item['index'], 'result': item['result']}
         for item in job['results']
     ]
-    pdf_bytes = generate_overview_pdf(student_results, subject=job.get('subject', ''), app_title=APP_TITLE)
+    pdf_bytes = generate_overview_pdf(student_results, subject=job.get('subject', ''), app_title=get_app_title())
 
     return send_file(
         io.BytesIO(pdf_bytes),
@@ -1746,7 +1879,7 @@ def teacher_create():
 
     if not api_keys:
         # In dept mode, try department keys
-        if DEPT_MODE:
+        if is_dept_mode():
             dept_keys = _get_dept_keys()
             if dept_keys:
                 api_keys = dept_keys
@@ -1879,7 +2012,7 @@ def teacher_download_all(assignment_id):
             student = Student.query.get(sub.student_id)
             if not student:
                 continue
-            pdf_bytes = generate_report_pdf(result, subject=asn.subject, app_title=APP_TITLE)
+            pdf_bytes = generate_report_pdf(result, subject=asn.subject, app_title=get_app_title())
             safe_name = student.name.replace('/', '_').replace('\\', '_')
             zf.writestr(f"{student.index_number}_{safe_name}_report.pdf", pdf_bytes)
     buf.seek(0)
@@ -1910,7 +2043,7 @@ def teacher_overview(assignment_id):
             'result': result,
         })
 
-    pdf_bytes = generate_overview_pdf(student_results, subject=asn.subject, app_title=APP_TITLE)
+    pdf_bytes = generate_overview_pdf(student_results, subject=asn.subject, app_title=get_app_title())
 
     return send_file(
         io.BytesIO(pdf_bytes),
@@ -1986,12 +2119,12 @@ def teacher_delete_assignment(assignment_id):
 @app.route('/submit/<assignment_id>')
 def student_page(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)
-    return render_template('submit.html', assignment_id=assignment_id, subject=asn.subject, demo_mode=DEMO_MODE)
+    return render_template('submit.html', assignment_id=assignment_id, subject=asn.subject, demo_mode=is_demo_mode())
 
 
 @app.route('/submit/<assignment_id>/verify', methods=['POST'])
 def student_verify(assignment_id):
-    if DEMO_MODE:
+    if is_demo_mode():
         return jsonify({'success': False, 'error': 'Submissions are disabled in demo mode'}), 403
     if not _check_rate_limit(f'student_verify:{request.remote_addr}'):
         return jsonify({'success': False, 'error': 'Too many attempts. Please wait.'}), 429
@@ -2010,7 +2143,7 @@ def student_verify(assignment_id):
 
 @app.route('/submit/<assignment_id>/upload', methods=['POST'])
 def student_upload(assignment_id):
-    if DEMO_MODE:
+    if is_demo_mode():
         return jsonify({'success': False, 'error': 'Submissions are disabled in demo mode'}), 403
     if not session.get(f'student_auth_{assignment_id}'):
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
@@ -2108,7 +2241,7 @@ def download_submission_pdf(assignment_id, submission_id):
     asn = Assignment.query.get(assignment_id)
     result = sub.get_result()
     subject = asn.subject if asn else ''
-    pdf_bytes = generate_report_pdf(result, subject=subject, app_title=APP_TITLE)
+    pdf_bytes = generate_report_pdf(result, subject=subject, app_title=get_app_title())
 
     return send_file(
         io.BytesIO(pdf_bytes),
@@ -2157,6 +2290,178 @@ def api_assignment_students(assignment_id):
             'marked_at': sub.marked_at.isoformat() if sub and sub.marked_at else None,
         })
     return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# Setup Wizard & Settings
+# ---------------------------------------------------------------------------
+
+@app.route('/setup/wizard', methods=['GET', 'POST'])
+def setup_wizard():
+    if _is_setup_complete():
+        return redirect(url_for('hub'))
+
+    if request.method == 'POST':
+        data = request.get_json()
+        step = data.get('step')
+
+        if step == 'mode':
+            mode = data.get('mode')
+            if mode not in ('normal', 'department', 'demo', 'demo_department'):
+                return jsonify({'success': False, 'error': 'Invalid mode'}), 400
+            _set_config('app_mode', mode)
+            return jsonify({'success': True})
+
+        elif step == 'config':
+            title = (data.get('title') or '').strip()
+            if title:
+                _set_config('app_title', title)
+
+            name = (data.get('name') or '').strip()
+            code = (data.get('code') or '').strip()
+
+            mode = get_app_mode()
+
+            # Save API keys (encrypted)
+            from db import _get_fernet
+            f = _get_fernet()
+            for prov in ('anthropic', 'openai', 'qwen'):
+                val = (data.get(f'api_key_{prov}') or '').strip()
+                if val:
+                    encrypted = f.encrypt(val.encode()).decode() if f else val
+                    _set_config(f'api_key_{prov}', encrypted)
+
+            # Check at least one API key (from wizard or env)
+            has_key = False
+            for prov in ('anthropic', 'openai', 'qwen'):
+                cfg = DepartmentConfig.query.filter_by(key=f'api_key_{prov}').first()
+                if cfg and cfg.value:
+                    has_key = True
+                    break
+            if not has_key:
+                from ai_marking import PROVIDER_KEY_MAP
+                for prov, env_name in PROVIDER_KEY_MAP.items():
+                    if os.getenv(env_name, ''):
+                        has_key = True
+                        break
+
+            if not has_key:
+                return jsonify({'success': False, 'error': 'At least one API key is required'}), 400
+
+            if mode == 'normal':
+                if not name or not code:
+                    return jsonify({'success': False, 'error': 'Name and access code are required'}), 400
+                _set_config('teacher_code', code)
+                teacher = Teacher(
+                    id=str(uuid.uuid4()),
+                    name=name,
+                    code=code,
+                    role='owner',
+                )
+                db.session.add(teacher)
+                db.session.commit()
+
+            elif mode == 'department':
+                if not name or not code:
+                    return jsonify({'success': False, 'error': 'Name and access code are required'}), 400
+                _set_config('teacher_code', code)
+                hod = Teacher(
+                    id=str(uuid.uuid4()),
+                    name=name,
+                    code=code,
+                    role='hod',
+                )
+                db.session.add(hod)
+                db.session.commit()
+
+            # For demo modes, no teacher/code needed
+
+            # Seed data for demo_department
+            if mode == 'demo_department':
+                from seed_data import seed_demo_department
+                seed_demo_department(db, Teacher, Class, TeacherClass, Assignment, Student, Submission)
+
+            _set_config('setup_complete', 'true')
+            return jsonify({'success': True, 'redirect': '/'})
+
+        return jsonify({'success': False, 'error': 'Invalid step'}), 400
+
+    return render_template('setup_wizard.html')
+
+
+@app.route('/settings')
+def settings_page():
+    if not _is_authenticated():
+        return redirect(url_for('hub'))
+    teacher = _current_teacher()
+    if teacher and teacher.role not in ('owner', 'hod'):
+        return redirect(url_for('hub'))
+
+    # For demo mode without teacher, allow access
+    if not teacher and not is_demo_mode():
+        return redirect(url_for('hub'))
+
+    # Get current config
+    mode = get_app_mode()
+    title = get_app_title()
+    code = get_teacher_code()
+
+    # Check which API keys are set (don't expose values)
+    api_keys_set = {}
+    for prov in ('anthropic', 'openai', 'qwen'):
+        cfg = DepartmentConfig.query.filter_by(key=f'api_key_{prov}').first()
+        has_db = bool(cfg and cfg.value)
+        from ai_marking import PROVIDER_KEY_MAP
+        has_env = bool(os.getenv(PROVIDER_KEY_MAP.get(prov, ''), ''))
+        api_keys_set[prov] = has_db or has_env
+
+    return render_template('settings.html',
+                           mode=mode,
+                           title=title,
+                           code=code,
+                           api_keys_set=api_keys_set,
+                           teacher=teacher)
+
+
+@app.route('/settings/update', methods=['POST'])
+def settings_update():
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    teacher = _current_teacher()
+    if teacher and teacher.role not in ('owner', 'hod'):
+        return jsonify({'success': False, 'error': 'Access denied'}), 403
+
+    data = request.get_json()
+
+    if 'title' in data:
+        _set_config('app_title', data['title'].strip())
+
+    if 'mode' in data:
+        new_mode = data['mode']
+        if new_mode in ('normal', 'department', 'demo', 'demo_department'):
+            _set_config('app_mode', new_mode)
+
+    if 'code' in data:
+        new_code = data['code'].strip()
+        if new_code:
+            _set_config('teacher_code', new_code)
+            # Also update the teacher's code in DB if exists
+            if teacher:
+                teacher.code = new_code
+                db.session.commit()
+
+    # Update API keys
+    from db import _get_fernet
+    f = _get_fernet()
+    for prov in ('anthropic', 'openai', 'qwen'):
+        key_field = f'api_key_{prov}'
+        if key_field in data:
+            val = (data[key_field] or '').strip()
+            if val:
+                encrypted = f.encrypt(val.encode()).decode() if f else val
+                _set_config(f'api_key_{prov}', encrypted)
+
+    return jsonify({'success': True})
 
 
 if __name__ == '__main__':

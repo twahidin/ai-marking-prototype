@@ -32,6 +32,9 @@
         </div>
         <div class="dept-nav-user">
             <span>{{ current_teacher.name }}</span>
+            {% if current_teacher.role == 'hod' %}
+            <a href="/settings" title="Settings">&#9881;</a>
+            {% endif %}
             <a href="/logout">Logout</a>
         </div>
     </div>

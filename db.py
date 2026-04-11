@@ -48,7 +48,7 @@ def _migrate_add_columns(app):
         if 'teachers' in inspector.get_table_names():
             columns = [c['name'] for c in inspector.get_columns('teachers')]
             if 'is_active' not in columns:
-                db.session.execute(text("ALTER TABLE teachers ADD COLUMN is_active BOOLEAN DEFAULT 1"))
+                db.session.execute(text("ALTER TABLE teachers ADD COLUMN is_active BOOLEAN DEFAULT TRUE"))
                 db.session.commit()
                 logger.info('Added is_active column to teachers table')
         if 'assignments' in inspector.get_table_names():

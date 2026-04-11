@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - {{ app_title }}{% endblock %}
+
+{% block head %}
+<style>
+    .settings-page { max-width: 640px; margin: 0 auto; padding: 40px 20px; }
+    .settings-page h1 { font-size: 24px; font-weight: 700; color: #333; margin-bottom: 4px; }
+    .settings-page .subtitle { color: #888; font-size: 14px; margin-bottom: 32px; }
+
+    .settings-card {
+        background: white; border-radius: 16px; padding: 32px 28px;
+        box-shadow: 0 2px 20px rgba(0,0,0,0.08); margin-bottom: 24px;
+    }
+    .settings-card h2 {
+        font-size: 14px; font-weight: 700; color: #667eea; text-transform: uppercase;
+        letter-spacing: 0.5px; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid #eee;
+    }
+
+    .settings-field { margin-bottom: 16px; }
+    .settings-label { font-size: 13px; font-weight: 600; color: #555; display: block; margin-bottom: 4px; }
+    .settings-input {
+        width: 100%; padding: 12px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
+        font-size: 15px; transition: border-color 0.2s; outline: none; box-sizing: border-box;
+    }
+    .settings-input:focus { border-color: #667eea; }
+    .settings-hint { font-size: 11px; color: #aaa; margin-top: 3px; }
+
+    .settings-select {
+        width: 100%; padding: 12px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
+        font-size: 15px; background: white; outline: none; box-sizing: border-box;
+    }
+    .settings-select:focus { border-color: #667eea; }
+
+    .key-status {
+        display: inline-block; padding: 3px 10px; border-radius: 12px;
+        font-size: 11px; font-weight: 600; margin-left: 8px;
+    }
+    .key-status.configured { background: #d4edda; color: #155724; }
+    .key-status.not-set { background: #f8d7da; color: #721c24; }
+
+    .settings-save {
+        width: 100%; padding: 14px; border: none; border-radius: 10px;
+        background: #667eea; color: white; font-size: 16px; font-weight: 700;
+        cursor: pointer; transition: background 0.2s;
+    }
+    .settings-save:hover { background: #5a6fd6; }
+    .settings-save:disabled { background: #ccc; cursor: not-allowed; }
+
+    .settings-success {
+        color: #28a745; font-size: 13px; margin-top: 12px; text-align: center; display: none;
+    }
+    .settings-error {
+        color: #dc3545; font-size: 13px; margin-top: 12px; text-align: center; display: none;
+    }
+
+    .mode-warning {
+        font-size: 12px; color: #856404; background: #fff3cd; padding: 8px 12px;
+        border-radius: 8px; margin-top: 4px;
+    }
+
+    .back-link {
+        display: inline-block; margin-bottom: 20px; color: #667eea;
+        text-decoration: none; font-size: 14px;
+    }
+    .back-link:hover { text-decoration: underline; }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="settings-page">
+    {% if not (dept_mode and current_teacher) %}
+    <a href="/" class="back-link">&larr; Back to Hub</a>
+    {% endif %}
+
+    <h1>Settings</h1>
+    <p class="subtitle">Configure your AI Feedback Systems instance</p>
+
+    <div class="settings-card">
+        <h2>General</h2>
+        <div class="settings-field">
+            <label class="settings-label">App Title</label>
+            <input type="text" class="settings-input" id="set-title" value="{{ title }}">
+            <div class="settings-hint">Shown in the header and PDF reports</div>
+        </div>
+        <div class="settings-field">
+            <label class="settings-label">Mode</label>
+            <select class="settings-select" id="set-mode">
+                <option value="normal" {{ 'selected' if mode == 'normal' }}>Teacher (Personal Use)</option>
+                <option value="department" {{ 'selected' if mode == 'department' }}>Department (Multi-teacher)</option>
+                <option value="demo" {{ 'selected' if mode == 'demo' }}>Demo (Showcase)</option>
+                <option value="demo_department" {{ 'selected' if mode == 'demo_department' }}>Demo + Department</option>
+            </select>
+            <div class="mode-warning">Changing mode may require re-login. Existing data is preserved.</div>
+        </div>
+    </div>
+
+    {% if mode in ('normal', 'department') %}
+    <div class="settings-card">
+        <h2>Access</h2>
+        <div class="settings-field">
+            <label class="settings-label">Access Code</label>
+            <input type="text" class="settings-input" id="set-code" value="{{ code }}" style="letter-spacing:2px; font-weight:600;">
+            <div class="settings-hint">Used to log in. Changing this will update your login code.</div>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="settings-card">
+        <h2>API Keys</h2>
+        <div class="settings-hint" style="margin-bottom:14px;">Leave a field empty to keep the current key. Keys are encrypted at rest.</div>
+        <div class="settings-field">
+            <label class="settings-label">
+                Anthropic API Key
+                <span class="key-status {{ 'configured' if api_keys_set.anthropic else 'not-set' }}">
+                    {{ 'Configured' if api_keys_set.anthropic else 'Not set' }}
+                </span>
+            </label>
+            <input type="password" class="settings-input" id="set-key-anthropic" placeholder="{{ 'Keep current key' if api_keys_set.anthropic else 'sk-ant-...' }}">
+        </div>
+        <div class="settings-field">
+            <label class="settings-label">
+                OpenAI API Key
+                <span class="key-status {{ 'configured' if api_keys_set.openai else 'not-set' }}">
+                    {{ 'Configured' if api_keys_set.openai else 'Not set' }}
+                </span>
+            </label>
+            <input type="password" class="settings-input" id="set-key-openai" placeholder="{{ 'Keep current key' if api_keys_set.openai else 'sk-...' }}">
+        </div>
+        <div class="settings-field">
+            <label class="settings-label">
+                Qwen API Key
+                <span class="key-status {{ 'configured' if api_keys_set.qwen else 'not-set' }}">
+                    {{ 'Configured' if api_keys_set.qwen else 'Not set' }}
+                </span>
+            </label>
+            <input type="password" class="settings-input" id="set-key-qwen" placeholder="{{ 'Keep current key' if api_keys_set.qwen else 'sk-...' }}">
+        </div>
+    </div>
+
+    <button class="settings-save" id="btn-save" onclick="saveSettings()">Save Changes</button>
+    <div class="settings-success" id="save-success">Settings saved successfully.</div>
+    <div class="settings-error" id="save-error"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function saveSettings() {
+    var btn = document.getElementById('btn-save');
+    var successEl = document.getElementById('save-success');
+    var errorEl = document.getElementById('save-error');
+    successEl.style.display = 'none';
+    errorEl.style.display = 'none';
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+
+    var payload = {
+        title: document.getElementById('set-title').value,
+        mode: document.getElementById('set-mode').value
+    };
+
+    var codeEl = document.getElementById('set-code');
+    if (codeEl) {
+        payload.code = codeEl.value;
+    }
+
+    var keyAnthro = document.getElementById('set-key-anthropic').value.trim();
+    var keyOpenai = document.getElementById('set-key-openai').value.trim();
+    var keyQwen = document.getElementById('set-key-qwen').value.trim();
+    if (keyAnthro) payload.api_key_anthropic = keyAnthro;
+    if (keyOpenai) payload.api_key_openai = keyOpenai;
+    if (keyQwen) payload.api_key_qwen = keyQwen;
+
+    fetch('/settings/update', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success) {
+            successEl.style.display = 'block';
+            setTimeout(function() { successEl.style.display = 'none'; }, 3000);
+        } else {
+            errorEl.textContent = data.error || 'Something went wrong.';
+            errorEl.style.display = 'block';
+        }
+        btn.disabled = false;
+        btn.textContent = 'Save Changes';
+    })
+    .catch(function() {
+        errorEl.textContent = 'Network error. Please try again.';
+        errorEl.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Save Changes';
+    });
+}
+</script>
+{% endblock %}
