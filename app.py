@@ -394,6 +394,63 @@ def clear_keys():
     return jsonify({'success': True})
 
 
+def _demo_mark():
+    """Handle demo mode marking — standalone, in-memory, no DB."""
+    assign_type = request.form.get('assign_type', 'short_answer')
+
+    required_fields = ['question_paper', 'script']
+    if assign_type != 'rubrics':
+        required_fields.append('answer_key')
+    for field in required_fields:
+        files = request.files.getlist(field)
+        if not files or not files[0].filename:
+            return jsonify({'success': False, 'error': f'Missing required file: {field}'}), 400
+        if len(files) > 10:
+            return jsonify({'success': False, 'error': f'Maximum 10 files per upload ({field})'}), 400
+
+    provider = request.form.get('provider', 'anthropic')
+    model = request.form.get('model', '')
+
+    # Validate model is in demo allowed list
+    if provider not in DEMO_MODELS:
+        return jsonify({'success': False, 'error': 'Invalid provider for demo mode'}), 400
+    if model not in DEMO_MODELS[provider]['models']:
+        return jsonify({'success': False, 'error': 'Invalid model for demo mode'}), 400
+
+    subject = request.form.get('subject', '')
+    scoring_mode = request.form.get('scoring_mode', 'status')
+    total_marks = request.form.get('total_marks', '')
+    review_instructions = request.form.get('review_instructions', '')
+    marking_instructions = request.form.get('marking_instructions', '')
+
+    question_paper_pages = [f.read() for f in request.files.getlist('question_paper') if f.filename]
+    answer_key_pages = [f.read() for f in request.files.getlist('answer_key') if f.filename]
+    script_pages = [f.read() for f in request.files.getlist('script') if f.filename]
+    rubrics_pages = [f.read() for f in request.files.getlist('rubrics') if f.filename]
+    reference_pages = [f.read() for f in request.files.getlist('reference') if f.filename]
+
+    cleanup_old_jobs()
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {
+        'status': 'processing',
+        'result': None,
+        'subject': subject,
+        'created_at': time.time(),
+    }
+
+    thread = threading.Thread(
+        target=run_marking_job,
+        args=(job_id, provider, model, question_paper_pages, answer_key_pages,
+              script_pages, subject, rubrics_pages, reference_pages,
+              review_instructions, marking_instructions,
+              assign_type, scoring_mode, total_marks, None),
+        daemon=True
+    )
+    thread.start()
+
+    return jsonify({'success': True, 'job_id': job_id})
+
+
 @app.route('/mark', methods=['POST'])
 def mark():
     if DEMO_MODE and not DEPT_MODE:
@@ -459,63 +516,6 @@ def mark():
         'submission_id': sub.id,
         'assignment_id': assignment_id,
     })
-
-
-def _demo_mark():
-    """Handle demo mode marking — standalone, in-memory, no DB."""
-    assign_type = request.form.get('assign_type', 'short_answer')
-
-    required_fields = ['question_paper', 'script']
-    if assign_type != 'rubrics':
-        required_fields.append('answer_key')
-    for field in required_fields:
-        files = request.files.getlist(field)
-        if not files or not files[0].filename:
-            return jsonify({'success': False, 'error': f'Missing required file: {field}'}), 400
-        if len(files) > 10:
-            return jsonify({'success': False, 'error': f'Maximum 10 files per upload ({field})'}), 400
-
-    provider = request.form.get('provider', 'anthropic')
-    model = request.form.get('model', '')
-
-    # Validate model is in demo allowed list
-    if provider not in DEMO_MODELS:
-        return jsonify({'success': False, 'error': 'Invalid provider for demo mode'}), 400
-    if model not in DEMO_MODELS[provider]['models']:
-        return jsonify({'success': False, 'error': 'Invalid model for demo mode'}), 400
-
-    subject = request.form.get('subject', '')
-    scoring_mode = request.form.get('scoring_mode', 'status')
-    total_marks = request.form.get('total_marks', '')
-    review_instructions = request.form.get('review_instructions', '')
-    marking_instructions = request.form.get('marking_instructions', '')
-
-    question_paper_pages = [f.read() for f in request.files.getlist('question_paper') if f.filename]
-    answer_key_pages = [f.read() for f in request.files.getlist('answer_key') if f.filename]
-    script_pages = [f.read() for f in request.files.getlist('script') if f.filename]
-    rubrics_pages = [f.read() for f in request.files.getlist('rubrics') if f.filename]
-    reference_pages = [f.read() for f in request.files.getlist('reference') if f.filename]
-
-    cleanup_old_jobs()
-    job_id = str(uuid.uuid4())
-    jobs[job_id] = {
-        'status': 'processing',
-        'result': None,
-        'subject': subject,
-        'created_at': time.time(),
-    }
-
-    thread = threading.Thread(
-        target=run_marking_job,
-        args=(job_id, provider, model, question_paper_pages, answer_key_pages,
-              script_pages, subject, rubrics_pages, reference_pages,
-              review_instructions, marking_instructions,
-              assign_type, scoring_mode, total_marks, None),
-        daemon=True
-    )
-    thread.start()
-
-    return jsonify({'success': True, 'job_id': job_id})
 
 
 @app.route('/status/<job_id>')
