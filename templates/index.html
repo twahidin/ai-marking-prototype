@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}AI Marking Demo{% endblock %}
+{% block title %}{{ app_title }}{% endblock %}
 
 {% block head %}
 <style>
@@ -11,7 +11,7 @@
 
 {% block body %}
 {% if not authenticated %}
-{% set gate_title = 'AI Marking Demo' %}{% include '_gate.html' %}
+{% set gate_title = app_title %}{% include '_gate.html' %}
 {% else %}
 
 <!-- Modal Overlay -->

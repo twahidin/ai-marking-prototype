@@ -114,13 +114,14 @@ def get_styles():
     return styles
 
 
-def generate_report_pdf(result, subject=''):
+def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
     """
     Generate a PDF feedback report from marking results.
 
     Args:
         result: Dict from mark_script() with questions, overall_feedback, etc.
         subject: Subject name for the header
+        app_title: Application title for the report header
 
     Returns:
         PDF content as bytes
@@ -136,7 +137,8 @@ def generate_report_pdf(result, subject=''):
     story = []
 
     # Title
-    story.append(Paragraph("AI Marking Report", styles['Title_Custom']))
+    report_title = f"{app_title} Report" if app_title else "AI Marking Report"
+    story.append(Paragraph(report_title, styles['Title_Custom']))
     story.append(Spacer(1, 5))
 
     # Info box
@@ -360,7 +362,7 @@ def generate_report_pdf(result, subject=''):
     return buffer.getvalue()
 
 
-def generate_overview_pdf(student_results, subject=''):
+def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Systems'):
     """
     Generate a class overview PDF with item analysis.
 
@@ -368,6 +370,7 @@ def generate_overview_pdf(student_results, subject=''):
         student_results: List of dicts with {name, index, result} where result
                         is the marking result dict (with questions, etc.)
         subject: Subject name for the header
+        app_title: Application title for the report header
 
     Returns:
         PDF content as bytes

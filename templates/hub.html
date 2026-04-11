@@ -33,7 +33,7 @@
 
 {% block body %}
 {% if not authenticated %}
-{% set gate_title = 'Department Login' if dept_mode else 'AI Marking Demo' %}
+{% set gate_title = 'Department Login' if dept_mode else app_title %}
 {% include '_gate.html' %}
 
 {% else %}
@@ -77,7 +77,7 @@
         </div>
 
         {% else %}
-        <h1>AI Marking Demo</h1>
+        <h1>{{ app_title }}</h1>
         <p class="subtitle">Choose how you'd like to mark</p>
 
         <div class="hub-cards">

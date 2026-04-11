@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{{ assignment.title or assignment.subject or 'Assignment' }} - AI Marking{% endblock %}
+{% block title %}{{ assignment.title or assignment.subject or 'Assignment' }} - {{ app_title }}{% endblock %}
 
 {% block head %}
 <style>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="{% block viewport %}width=device-width, initial-scale=1.0{% endblock %}">
-    <title>{% block title %}AI Marking Demo{% endblock %}</title>
+    <title>{% block title %}{{ app_title }}{% endblock %}</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
     {% block head %}{% endblock %}
@@ -12,7 +12,7 @@
 {% if dept_mode and current_teacher %}
 <nav class="dept-nav">
     <div class="dept-nav-inner">
-        <a href="/" class="dept-nav-brand">AI Marking</a>
+        <a href="/" class="dept-nav-brand">{{ app_title }}</a>
         <div class="dept-nav-links">
             {% if current_teacher.role == 'hod' %}
             <a href="/department">Dashboard</a>
