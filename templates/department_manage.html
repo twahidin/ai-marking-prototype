@@ -69,6 +69,26 @@
     .delete-btn:hover { color: #dc3545; }
     .delete-btn:disabled { color: #e8e8e8; cursor: not-allowed; }
 
+    .revoke-btn {
+        padding: 4px 10px; border: none; border-radius: 6px;
+        font-size: 11px; font-weight: 600; cursor: pointer; transition: background 0.2s;
+    }
+    .revoke-btn-revoke { background: #fff3e0; color: #e65100; }
+    .revoke-btn-revoke:hover { background: #ffe0b2; }
+    .revoke-btn-reactivate { background: #e8f5e9; color: #2e7d32; }
+    .revoke-btn-reactivate:hover { background: #c8e6c9; }
+    .purge-btn {
+        padding: 4px 10px; border: none; border-radius: 6px;
+        background: #ffebee; color: #c62828; font-size: 11px; font-weight: 600;
+        cursor: pointer; transition: background 0.2s;
+    }
+    .purge-btn:hover { background: #ffcdd2; }
+    .badge-inactive {
+        display: inline-flex; align-items: center;
+        padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 700;
+        background: #ffebee; color: #c62828; margin-left: 6px;
+    }
+
     .keys-section { margin-top: 24px; }
     .keys-note { font-size: 12px; color: #888; margin-bottom: 16px; }
     .key-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
@@ -148,17 +168,22 @@
             </div>
             <div id="teacherList" class="item-list">
                 {% for t in teachers %}
-                <div class="item-card" id="teacher-{{ t.id }}">
+                <div class="item-card" id="teacher-{{ t.id }}" {% if not t.is_active %}style="opacity:0.6;"{% endif %}>
                     <div class="item-header">
                         <div>
                             <span class="item-name">{{ t.name }}</span>
                             <span class="manage-badge {{ 'manage-badge-hod' if t.role == 'hod' else 'manage-badge-teacher' }}" style="margin-left:8px;">{{ t.role|upper }}</span>
+                            {% if not t.is_active %}<span class="badge-inactive">INACTIVE</span>{% endif %}
                         </div>
                         <button class="delete-btn" onclick="deleteTeacher('{{ t.id }}')" {% if t.role == 'hod' %}disabled title="Cannot delete HOD"{% else %}title="Delete teacher"{% endif %}>&times;</button>
                     </div>
                     <div class="item-meta" style="margin-top:6px;display:flex;align-items:center;gap:8px;">
                         Code: <span class="code-display" id="code-{{ t.id }}" onclick="navigator.clipboard.writeText(this.textContent);showToast('Code copied','success')" title="Click to copy">{{ t.code }}</span>
                         <button class="assign-btn" onclick="resetCode('{{ t.id }}')" style="font-size:11px;padding:4px 8px;">Reset</button>
+                        {% if t.role != 'hod' %}
+                        <button class="revoke-btn {{ 'revoke-btn-reactivate' if not t.is_active else 'revoke-btn-revoke' }}" id="revoke-btn-{{ t.id }}" onclick="revokeTeacher('{{ t.id }}')">{{ 'Reactivate' if not t.is_active else 'Revoke' }}</button>
+                        <button class="purge-btn" onclick="purgeTeacher('{{ t.id }}')">Purge</button>
+                        {% endif %}
                     </div>
                 </div>
                 {% endfor %}
@@ -278,6 +303,51 @@ function deleteTeacher(id) {
     fetch('/department/teacher/' + id + '/delete', { method: 'POST' })
     .then(r => r.json()).then(data => {
         if (data.success) { document.getElementById('teacher-' + id).remove(); showToast('Teacher deleted', 'success'); }
+        else { showToast(data.error || 'Error', 'error'); }
+    });
+}
+
+function revokeTeacher(id) {
+    fetch('/department/teacher/' + id + '/revoke', { method: 'POST' })
+    .then(r => r.json()).then(data => {
+        if (data.success) {
+            var card = document.getElementById('teacher-' + id);
+            var btn = document.getElementById('revoke-btn-' + id);
+            if (data.is_active) {
+                card.style.opacity = '1';
+                btn.textContent = 'Revoke';
+                btn.className = 'revoke-btn revoke-btn-revoke';
+                // Remove inactive badge if present
+                var badge = card.querySelector('.badge-inactive');
+                if (badge) badge.remove();
+                showToast('Teacher reactivated', 'success');
+            } else {
+                card.style.opacity = '0.6';
+                btn.textContent = 'Reactivate';
+                btn.className = 'revoke-btn revoke-btn-reactivate';
+                // Add inactive badge
+                var nameDiv = card.querySelector('.item-header > div');
+                if (!nameDiv.querySelector('.badge-inactive')) {
+                    var badge = document.createElement('span');
+                    badge.className = 'badge-inactive';
+                    badge.textContent = 'INACTIVE';
+                    nameDiv.appendChild(badge);
+                }
+                showToast('Teacher revoked', 'success');
+            }
+        } else { showToast(data.error || 'Error', 'error'); }
+    });
+}
+
+function purgeTeacher(id) {
+    var choice = confirm('PURGE this teacher?\n\nThis will permanently delete the teacher account.\n\nClick OK to also delete all their assignments and data.\nClick Cancel to abort.');
+    if (!choice) return;
+    var keepData = confirm('Keep the teacher\'s assignments and marking data?\n\nClick OK to keep data (only remove teacher account).\nClick Cancel to delete everything.');
+    fetch('/department/teacher/' + id + '/purge', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({keep_data: keepData})
+    }).then(r => r.json()).then(data => {
+        if (data.success) { document.getElementById('teacher-' + id).remove(); showToast('Teacher purged', 'success'); }
         else { showToast(data.error || 'Error', 'error'); }
     });
 }

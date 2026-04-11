@@ -45,6 +45,12 @@ def _migrate_add_columns(app):
                 db.session.execute(text("ALTER TABLE students ADD COLUMN class_id VARCHAR(36)"))
                 db.session.commit()
                 logger.info('Added class_id column to students table')
+        if 'teachers' in inspector.get_table_names():
+            columns = [c['name'] for c in inspector.get_columns('teachers')]
+            if 'is_active' not in columns:
+                db.session.execute(text("ALTER TABLE teachers ADD COLUMN is_active BOOLEAN DEFAULT 1"))
+                db.session.commit()
+                logger.info('Added is_active column to teachers table')
         if 'assignments' in inspector.get_table_names():
             columns = [c['name'] for c in inspector.get_columns('assignments')]
             if 'title' not in columns:
@@ -82,6 +88,7 @@ class Teacher(db.Model):
     name = db.Column(db.String(200), nullable=False)
     code = db.Column(db.String(20), unique=True, nullable=False, index=True)
     role = db.Column(db.String(10), default='teacher')  # 'hod' or 'teacher'
+    is_active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     classes = db.relationship('Class', secondary='teacher_classes', back_populates='teachers')
 

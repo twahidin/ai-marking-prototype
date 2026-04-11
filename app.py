@@ -299,6 +299,8 @@ def verify_code():
         teacher = Teacher.query.filter_by(code=code).first()
         if not teacher:
             return jsonify({'success': False, 'error': 'Invalid code'}), 401
+        if hasattr(teacher, 'is_active') and not teacher.is_active:
+            return jsonify({'success': False, 'error': 'Account has been deactivated. Contact your HOD.'}), 403
         session['teacher_id'] = teacher.id
         session['teacher_role'] = teacher.role
         session['teacher_name'] = teacher.name
@@ -611,6 +613,43 @@ def dept_reset_code(teacher_id):
 
     db.session.commit()
     return jsonify({'success': True, 'code': t.code})
+
+
+@app.route('/department/teacher/<teacher_id>/revoke', methods=['POST'])
+def dept_revoke_teacher(teacher_id):
+    err = _require_hod()
+    if err:
+        return err
+    t = Teacher.query.get_or_404(teacher_id)
+    if t.role == 'hod':
+        return jsonify({'success': False, 'error': 'Cannot revoke HOD'}), 400
+    t.is_active = not t.is_active  # Toggle active status
+    db.session.commit()
+    return jsonify({'success': True, 'is_active': t.is_active})
+
+
+@app.route('/department/teacher/<teacher_id>/purge', methods=['POST'])
+def dept_purge_teacher(teacher_id):
+    err = _require_hod()
+    if err:
+        return err
+    t = Teacher.query.get_or_404(teacher_id)
+    if t.role == 'hod':
+        return jsonify({'success': False, 'error': 'Cannot purge HOD'}), 400
+    data = request.get_json() or {}
+    keep_data = data.get('keep_data', False)
+
+    if not keep_data:
+        # Delete teacher's assignments and their submissions
+        assignments = Assignment.query.filter_by(teacher_id=t.id).all()
+        for asn in assignments:
+            Submission.query.filter_by(assignment_id=asn.id).delete()
+            db.session.delete(asn)
+
+    TeacherClass.query.filter_by(teacher_id=t.id).delete()
+    db.session.delete(t)
+    db.session.commit()
+    return jsonify({'success': True})
 
 
 @app.route('/department/class/create', methods=['POST'])
