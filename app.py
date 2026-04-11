@@ -59,6 +59,12 @@ DEMO_MODELS = {
 # Initialize database
 init_db(app)
 
+# Seed fake data when both DEMO_MODE and DEPT_MODE are enabled
+if DEMO_MODE and DEPT_MODE:
+    with app.app_context():
+        from seed_data import seed_demo_department
+        seed_demo_department(db, Teacher, Class, TeacherClass, Assignment, Student, Submission, DepartmentConfig)
+
 
 # ---------------------------------------------------------------------------
 # Security: headers, rate limiting, error handlers
@@ -241,6 +247,20 @@ def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pa
 
 @app.route('/')
 def hub():
+    if DEMO_MODE and DEPT_MODE:
+        # Auto-login as demo HOD if not already logged in
+        if not session.get('teacher_id'):
+            hod = Teacher.query.filter_by(role='hod').first()
+            if hod:
+                session['teacher_id'] = hod.id
+                session['teacher_role'] = hod.role
+                session['teacher_name'] = hod.name
+        teacher = _current_teacher()
+        return render_template('hub.html',
+                               authenticated=True,
+                               dept_mode=True,
+                               demo_mode=True,
+                               teacher=teacher)
     if DEMO_MODE and not DEPT_MODE:
         return render_template('hub.html',
                                authenticated=True,
@@ -1016,7 +1036,7 @@ def department_insights_data():
     err = _require_hod()
     if err:
         return err
-    if DEMO_MODE:
+    if DEMO_MODE and not DEPT_MODE:
         return jsonify({'success': False, 'error': 'Not available in demo mode'}), 403
 
     assignment_id = request.args.get('assignment_id')
@@ -1104,7 +1124,7 @@ def department_export_csv():
     err = _require_hod()
     if err:
         return err
-    if DEMO_MODE:
+    if DEMO_MODE and not DEPT_MODE:
         return jsonify({'success': False, 'error': 'Not available in demo mode'}), 403
 
     assignment_id = request.args.get('assignment_id')
@@ -1971,6 +1991,8 @@ def student_page(assignment_id):
 
 @app.route('/submit/<assignment_id>/verify', methods=['POST'])
 def student_verify(assignment_id):
+    if DEMO_MODE:
+        return jsonify({'success': False, 'error': 'Submissions are disabled in demo mode'}), 403
     if not _check_rate_limit(f'student_verify:{request.remote_addr}'):
         return jsonify({'success': False, 'error': 'Too many attempts. Please wait.'}), 429
     asn = Assignment.query.get_or_404(assignment_id)
@@ -1988,6 +2010,8 @@ def student_verify(assignment_id):
 
 @app.route('/submit/<assignment_id>/upload', methods=['POST'])
 def student_upload(assignment_id):
+    if DEMO_MODE:
+        return jsonify({'success': False, 'error': 'Submissions are disabled in demo mode'}), 403
     if not session.get(f'student_auth_{assignment_id}'):
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
