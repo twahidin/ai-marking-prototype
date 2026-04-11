@@ -63,7 +63,7 @@ init_db(app)
 if DEMO_MODE and DEPT_MODE:
     with app.app_context():
         from seed_data import seed_demo_department
-        seed_demo_department(db, Teacher, Class, TeacherClass, Assignment, Student, Submission, DepartmentConfig)
+        seed_demo_department(db, Teacher, Class, TeacherClass, Assignment, Student, Submission)
 
 
 # ---------------------------------------------------------------------------

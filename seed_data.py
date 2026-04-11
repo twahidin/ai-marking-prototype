@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 import random
 
 
-def seed_demo_department(db, Teacher, Class, TeacherClass, Assignment, Student, Submission, DepartmentConfig):
+def seed_demo_department(db, Teacher, Class, TeacherClass, Assignment, Student, Submission):
     """Populate DB with fake data for demo+dept mode. Idempotent -- skips if data exists."""
     # Check if already seeded
     if Teacher.query.filter_by(role='hod').first():
