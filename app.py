@@ -151,6 +151,18 @@ def _get_dept_keys():
     return keys
 
 
+def _resolve_api_keys(assignment):
+    """Resolve API keys: assignment-stored → department config → env vars (None)."""
+    keys = assignment.get_api_keys()
+    if keys:
+        return keys
+    if DEPT_MODE:
+        dept_keys = _get_dept_keys()
+        if dept_keys:
+            return dept_keys
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Single marking
 # ---------------------------------------------------------------------------
@@ -1153,7 +1165,7 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
                 assign_type=asn.assign_type,
                 scoring_mode=asn.scoring_mode,
                 total_marks=asn.total_marks,
-                session_keys=asn.get_api_keys() or None,  # env keys used as fallback in get_ai_client
+                session_keys=_resolve_api_keys(asn),
             )
 
             sub.set_result(result)
