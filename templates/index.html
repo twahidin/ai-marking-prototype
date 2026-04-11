@@ -470,6 +470,9 @@ function renderResults(result) {
     renderQuestion();
     document.getElementById('results').style.display = 'block';
     document.getElementById('results').scrollIntoView({behavior: 'smooth'});
+    if (window.MathJax && MathJax.typesetPromise) {
+        MathJax.typesetPromise();
+    }
 }
 
 function renderQuestion() {
@@ -523,6 +526,10 @@ function renderQuestion() {
     document.querySelectorAll('.q-dot').forEach((d, i) => {
         d.classList.toggle('active', i === currentQ);
     });
+
+    if (window.MathJax && MathJax.typesetPromise) {
+        MathJax.typesetPromise();
+    }
 }
 
 function navQ(dir) { goQ(currentQ + dir); }

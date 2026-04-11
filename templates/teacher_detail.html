@@ -334,5 +334,12 @@ document.getElementById('uploadModal').addEventListener('click', function(e) {
 {% if processing_count > 0 %}
 setTimeout(function() { window.location.reload(); }, 10000);
 {% endif %}
+
+// Typeset any server-rendered content that may contain LaTeX
+document.addEventListener('DOMContentLoaded', function() {
+    if (window.MathJax && MathJax.typesetPromise) {
+        MathJax.typesetPromise();
+    }
+});
 </script>
 {% endblock %}

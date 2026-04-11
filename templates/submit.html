@@ -376,6 +376,9 @@ function renderResults(result) {
 
     currentQ = 0;
     renderQuestion();
+    if (window.MathJax && MathJax.typesetPromise) {
+        MathJax.typesetPromise();
+    }
 }
 
 function renderQuestion() {
@@ -406,6 +409,9 @@ function renderQuestion() {
     document.getElementById('prevBtn').disabled = currentQ === 0;
     document.getElementById('nextBtn').disabled = currentQ === resultQuestions.length - 1;
     document.querySelectorAll('.q-dot').forEach(function(d, i) { d.classList.toggle('active', i === currentQ); });
+    if (window.MathJax && MathJax.typesetPromise) {
+        MathJax.typesetPromise();
+    }
 }
 
 function navQ(dir) { goQ(currentQ + dir); }
