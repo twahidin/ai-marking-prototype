@@ -31,7 +31,8 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
 
-ACCESS_CODE = os.getenv('ACCESS_CODE', '').strip()
+ACCESS_CODE = os.getenv('ACCESS_CODE', '').strip()  # keep for legacy
+TEACHER_CODE = os.getenv('TEACHER_CODE', '').strip() or ACCESS_CODE
 DEMO_MODE = os.getenv('DEMO_MODE', 'FALSE').upper() == 'TRUE'
 DEPT_MODE = os.getenv('DEPT_MODE', 'FALSE').upper() == 'TRUE'
 APP_TITLE = os.getenv('APP_TITLE', 'AI Feedback Systems')
@@ -47,10 +48,13 @@ init_db(app)
 @app.context_processor
 def inject_dept_context():
     """Make dept_mode, demo_mode, app_title and current teacher available in all templates."""
-    if DEPT_MODE:
-        teacher = _current_teacher()
-        return {'dept_mode': True, 'demo_mode': DEMO_MODE, 'app_title': APP_TITLE, 'current_teacher': teacher}
-    return {'dept_mode': False, 'demo_mode': DEMO_MODE, 'app_title': APP_TITLE, 'current_teacher': None}
+    teacher = _current_teacher()  # works for both modes now
+    return {
+        'dept_mode': DEPT_MODE,
+        'demo_mode': DEMO_MODE,
+        'app_title': APP_TITLE,
+        'current_teacher': teacher,
+    }
 
 
 @app.after_request
@@ -114,15 +118,15 @@ def _is_authenticated():
     """Check if user is authenticated."""
     if DEPT_MODE:
         return session.get('teacher_id') is not None
+    if TEACHER_CODE:
+        return session.get('teacher_id') is not None
     if not ACCESS_CODE:
         return True
     return session.get('authenticated', False)
 
 
 def _current_teacher():
-    """Get the currently logged-in teacher (dept mode only). Returns None if not logged in."""
-    if not DEPT_MODE:
-        return None
+    """Get the currently logged-in teacher. Returns None if not logged in."""
     teacher_id = session.get('teacher_id')
     if not teacher_id:
         return None
@@ -230,7 +234,7 @@ def hub():
         if not Teacher.query.filter_by(role='hod').first():
             return redirect(url_for('department_setup'))
     authenticated = _is_authenticated()
-    teacher = _current_teacher() if DEPT_MODE else None
+    teacher = _current_teacher()  # works for both dept and normal mode now
     return render_template('hub.html',
                            authenticated=authenticated,
                            dept_mode=DEPT_MODE,
@@ -302,7 +306,27 @@ def verify_code():
         redirect_url = '/department' if teacher.role == 'hod' else '/dashboard'
         return jsonify({'success': True, 'redirect': redirect_url})
 
-    if code == ACCESS_CODE:
+    # Normal mode with TEACHER_CODE
+    if TEACHER_CODE:
+        if code == TEACHER_CODE:
+            # Master key — find the owner teacher
+            teacher = Teacher.query.filter_by(role='owner').first()
+            if not teacher:
+                session['pending_setup'] = True
+                return jsonify({'success': True, 'redirect': '/setup'})
+            session['teacher_id'] = teacher.id
+            session['teacher_name'] = teacher.name
+            return jsonify({'success': True, 'redirect': '/'})
+        # Also check if they have a custom code
+        teacher = Teacher.query.filter_by(code=code, role='owner').first()
+        if teacher:
+            session['teacher_id'] = teacher.id
+            session['teacher_name'] = teacher.name
+            return jsonify({'success': True, 'redirect': '/'})
+        return jsonify({'success': False, 'error': 'Invalid code'}), 401
+
+    # Legacy ACCESS_CODE fallback
+    if ACCESS_CODE and code == ACCESS_CODE:
         session['authenticated'] = True
         return jsonify({'success': True})
     return jsonify({'success': False, 'error': 'Invalid access code'}), 401
@@ -883,6 +907,42 @@ def department_setup():
         return jsonify({'success': True, 'redirect': '/department/classes'})
 
     return render_template('department_setup.html')
+
+
+@app.route('/setup', methods=['GET', 'POST'])
+def teacher_setup_page():
+    """First-time teacher setup for normal (non-dept) mode."""
+    if DEPT_MODE:
+        return redirect(url_for('hub'))
+    if not session.get('pending_setup') and not session.get('teacher_id'):
+        return redirect(url_for('hub'))
+
+    # If owner already exists, redirect
+    if Teacher.query.filter_by(role='owner').first():
+        session.pop('pending_setup', None)
+        return redirect(url_for('hub'))
+
+    if request.method == 'POST':
+        data = request.get_json()
+        name = (data.get('name') or '').strip()
+        if not name:
+            return jsonify({'success': False, 'error': 'Name is required'}), 400
+
+        teacher = Teacher(
+            id=str(uuid.uuid4()),
+            name=name,
+            code=TEACHER_CODE,
+            role='owner',
+        )
+        db.session.add(teacher)
+        db.session.commit()
+
+        session.pop('pending_setup', None)
+        session['teacher_id'] = teacher.id
+        session['teacher_name'] = teacher.name
+        return jsonify({'success': True, 'redirect': '/'})
+
+    return render_template('teacher_setup.html')
 
 
 # ---------------------------------------------------------------------------

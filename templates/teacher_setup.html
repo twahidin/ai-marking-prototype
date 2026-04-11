@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}Setup - {{ app_title }}{% endblock %}
+
+{% block head %}
+<style>
+    .setup { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 40px 20px; }
+    .setup-card {
+        background: white; border-radius: 16px; padding: 48px 40px;
+        box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: center;
+        width: 100%; max-width: 460px;
+        border-top: 4px solid #667eea;
+    }
+    .setup-card h1 { font-size: 24px; font-weight: 700; color: #333; margin-bottom: 8px; }
+    .setup-card p { color: #888; font-size: 14px; margin-bottom: 28px; }
+    .setup-input {
+        width: 100%; padding: 14px 16px; border: 2px solid #e0e0e0; border-radius: 10px;
+        font-size: 16px; transition: border-color 0.2s; outline: none; margin-bottom: 16px;
+    }
+    .setup-input:focus { border-color: #667eea; }
+    .setup-label { font-size: 13px; font-weight: 600; color: #555; text-align: left; display: block; margin-bottom: 6px; }
+    .setup-btn {
+        width: 100%; padding: 14px; border: none; border-radius: 10px;
+        background: #667eea; color: white; font-size: 16px; font-weight: 700;
+        cursor: pointer; transition: background 0.2s; margin-top: 8px;
+    }
+    .setup-btn:hover { background: #5a6fd6; }
+    .setup-error {
+        color: #dc3545; font-size: 13px; margin-top: 12px; display: none;
+    }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="setup">
+    <div class="setup-card animate__animated animate__fadeInUp" style="animation-duration:0.6s;">
+        <h1>Welcome! Set Up Your Account</h1>
+        <p>Enter your name to get started</p>
+
+        <label class="setup-label">Your Name</label>
+        <input type="text" class="setup-input" id="teacherName" placeholder="e.g. Mr. Tan Wei Ming" autofocus>
+
+        <button class="setup-btn" onclick="createTeacher()">Continue</button>
+        <div class="setup-error" id="setupError"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function createTeacher() {
+    var name = document.getElementById('teacherName').value.trim();
+    var errEl = document.getElementById('setupError');
+    errEl.style.display = 'none';
+
+    if (!name) {
+        errEl.textContent = 'Please enter your name.';
+        errEl.style.display = 'block';
+        return;
+    }
+
+    fetch('/setup', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success) {
+            window.location.href = data.redirect || '/';
+        } else {
+            errEl.textContent = data.error || 'Something went wrong.';
+            errEl.style.display = 'block';
+        }
+    })
+    .catch(function() {
+        errEl.textContent = 'Network error. Please try again.';
+        errEl.style.display = 'block';
+    });
+}
+
+document.getElementById('teacherName').addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') createTeacher();
+});
+</script>
+{% endblock %}
