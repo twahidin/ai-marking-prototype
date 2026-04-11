@@ -4,114 +4,89 @@
 
 {% block head %}
 <style>
-    .dept-page { max-width: 1000px; margin: 0 auto; padding: 40px 20px; }
-    .dept-header { margin-bottom: 32px; }
-    .dept-header h1 { font-size: 28px; font-weight: 700; color: #333; margin-bottom: 4px; }
-    .dept-header p { color: #888; font-size: 14px; }
-
-    .dept-nav-links { display: flex; gap: 16px; margin-bottom: 24px; }
-    .dept-nav-links a {
-        padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
-        text-decoration: none; color: #667eea; background: #f0f2ff;
-        transition: all 0.2s;
-    }
-    .dept-nav-links a:hover { background: #667eea; color: white; }
-
-    .summary-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 32px; }
-    @media (max-width: 700px) { .summary-cards { grid-template-columns: repeat(2, 1fr); } }
-    .summary-card {
-        background: white; border-radius: 16px; padding: 24px;
-        box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: center;
-    }
-    .summary-card .num { font-size: 36px; font-weight: 700; color: #667eea; }
-    .summary-card .label { font-size: 13px; color: #888; margin-top: 4px; }
-
-    .class-table-card {
-        background: white; border-radius: 16px; padding: 28px;
-        box-shadow: 0 2px 20px rgba(0,0,0,0.08);
-    }
-    .class-table-card h2 { font-size: 18px; font-weight: 700; color: #333; margin-bottom: 16px; }
-    .class-table { width: 100%; border-collapse: collapse; }
+    .class-table { width: 100%; border-collapse: separate; border-spacing: 0; }
     .class-table th {
-        text-align: left; padding: 10px 12px; font-size: 12px; font-weight: 600;
-        color: #888; text-transform: uppercase; letter-spacing: 0.5px;
-        border-bottom: 2px solid #e8e8e8;
+        text-align: left; padding: 10px 14px; font-size: 11px; font-weight: 600;
+        color: #999; text-transform: uppercase; letter-spacing: 0.8px;
+        border-bottom: 2px solid #f0f0f0;
     }
-    .class-table td { padding: 12px; font-size: 14px; color: #333; border-bottom: 1px solid #f0f0f0; }
-    .class-table tr:hover { background: #fafafe; }
-    .teachers-list { font-size: 12px; color: #666; }
-    .progress-bar { background: #e8e8e8; border-radius: 10px; height: 8px; width: 80px; display: inline-block; margin-right: 8px; vertical-align: middle; }
-    .progress-fill { background: #667eea; border-radius: 10px; height: 100%; }
-    .completion-text { font-size: 13px; color: #666; }
-    .empty-state { text-align: center; padding: 48px 20px; color: #888; }
-    .empty-state a { color: #667eea; text-decoration: none; font-weight: 600; }
-    .demo-banner {
-        background: #fff3cd; color: #856404; padding: 10px 16px; border-radius: 8px;
-        font-size: 13px; margin-bottom: 20px; text-align: center;
+    .class-table td {
+        padding: 14px; font-size: 14px; color: #333;
+        border-bottom: 1px solid #f5f5f7;
     }
+    .class-table tr { transition: background 0.15s; }
+    .class-table tr:hover { background: #fafaff; }
+    .class-table .class-name { font-weight: 700; color: #1a1a2e; }
+    .teachers-pill {
+        font-size: 11px; color: #667eea; background: #f0f2ff;
+        padding: 3px 8px; border-radius: 12px; font-weight: 600;
+        display: inline-block; margin: 1px 2px;
+    }
+    .progress-track {
+        background: #f0f0f0; border-radius: 10px; height: 6px;
+        width: 100px; display: inline-block; margin-right: 8px;
+        vertical-align: middle; overflow: hidden;
+    }
+    .progress-fill-bar {
+        background: linear-gradient(90deg, #667eea, #764ba2);
+        border-radius: 10px; height: 100%; transition: width 0.6s ease;
+    }
+    .completion-text { font-size: 12px; color: #888; font-weight: 600; }
 </style>
 {% endblock %}
 
 {% block body %}
 <div class="dept-page">
-    <div class="dept-nav-links">
-        <a href="/">Home</a>
-        <a href="/department/classes">Manage Classes</a>
-        <a href="/department/insights">Insights</a>
-    </div>
-
     {% if demo_mode %}
-    <div class="demo-banner">Some features are limited in demo mode</div>
+    <div class="demo-banner animate__animated animate__fadeIn">Some features are limited in demo mode</div>
     {% endif %}
 
-    <div class="dept-header">
+    <div class="dept-page-header animate__animated animate__fadeInDown" style="animation-duration:0.5s;">
         <h1>Department Overview</h1>
-        <p>Welcome, {{ teacher.name }}</p>
+        <p>Welcome back, {{ teacher.name }}</p>
     </div>
 
-    <div class="summary-cards">
-        <div class="summary-card">
+    <div class="dept-summary-grid">
+        <div class="dept-stat-card animate__animated animate__fadeInUp" style="animation-delay:0.1s;animation-duration:0.5s;">
             <div class="num">{{ total_classes }}</div>
             <div class="label">Classes</div>
         </div>
-        <div class="summary-card">
+        <div class="dept-stat-card animate__animated animate__fadeInUp" style="animation-delay:0.15s;animation-duration:0.5s;">
             <div class="num">{{ total_teachers }}</div>
             <div class="label">Teachers</div>
         </div>
-        <div class="summary-card">
+        <div class="dept-stat-card animate__animated animate__fadeInUp" style="animation-delay:0.2s;animation-duration:0.5s;">
             <div class="num">{{ total_assignments }}</div>
             <div class="label">Assignments</div>
         </div>
-        <div class="summary-card">
+        <div class="dept-stat-card animate__animated animate__fadeInUp" style="animation-delay:0.25s;animation-duration:0.5s;">
             <div class="num">{{ total_submissions }}</div>
             <div class="label">Submissions</div>
         </div>
     </div>
 
-    <div class="class-table-card">
+    <div class="dept-card animate__animated animate__fadeIn" style="animation-delay:0.3s;animation-duration:0.5s;">
         <h2>Classes</h2>
         {% if classes %}
         <table class="class-table">
             <thead>
-                <tr>
-                    <th>Class</th>
-                    <th>Level</th>
-                    <th>Teacher(s)</th>
-                    <th>Assignments</th>
-                    <th>Submissions</th>
-                    <th>Completion</th>
-                </tr>
+                <tr><th>Class</th><th>Level</th><th>Teacher(s)</th><th>Assignments</th><th>Submissions</th><th>Completion</th></tr>
             </thead>
             <tbody>
                 {% for cls in classes %}
                 <tr>
-                    <td style="font-weight:600;">{{ cls.name }}</td>
-                    <td>{{ cls.level or '—' }}</td>
-                    <td class="teachers-list">{{ cls.teachers|join(', ') or '—' }}</td>
+                    <td class="class-name">{{ cls.name }}</td>
+                    <td style="color:#888;">{{ cls.level or '—' }}</td>
+                    <td>
+                        {% for t in cls.teachers %}
+                        <span class="teachers-pill">{{ t }}</span>
+                        {% endfor %}
+                        {% if not cls.teachers %}—{% endif %}
+                    </td>
                     <td>{{ cls.assignment_count }}</td>
                     <td>{{ cls.done_submissions }}/{{ cls.total_students }}</td>
                     <td>
-                        <span class="progress-bar"><span class="progress-fill" style="width:{{ cls.completion_pct }}%"></span></span>
+                        <span class="progress-track"><span class="progress-fill-bar" style="width:{{ cls.completion_pct }}%"></span></span>
                         <span class="completion-text">{{ cls.completion_pct }}%</span>
                     </td>
                 </tr>
@@ -119,7 +94,7 @@
             </tbody>
         </table>
         {% else %}
-        <div class="empty-state">
+        <div class="dept-empty">
             <p>No classes created yet.</p>
             <p><a href="/department/classes">Create your first class</a></p>
         </div>

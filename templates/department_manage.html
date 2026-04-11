@@ -4,26 +4,8 @@
 
 {% block head %}
 <style>
-    .manage-page { max-width: 1100px; margin: 0 auto; padding: 40px 20px; }
-    .manage-header { margin-bottom: 24px; }
-    .manage-header h1 { font-size: 28px; font-weight: 700; color: #333; margin-bottom: 4px; }
-    .manage-header p { color: #888; font-size: 14px; }
-
-    .manage-nav { display: flex; gap: 16px; margin-bottom: 24px; }
-    .manage-nav a {
-        padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
-        text-decoration: none; color: #667eea; background: #f0f2ff; transition: all 0.2s;
-    }
-    .manage-nav a:hover { background: #667eea; color: white; }
-
     .manage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
     @media (max-width: 768px) { .manage-grid { grid-template-columns: 1fr; } }
-
-    .manage-card {
-        background: white; border-radius: 16px; padding: 28px;
-        box-shadow: 0 2px 20px rgba(0,0,0,0.08);
-    }
-    .manage-card h2 { font-size: 18px; font-weight: 700; color: #333; margin-bottom: 16px; }
 
     .add-form { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
     .add-form input, .add-form select {
@@ -46,15 +28,15 @@
     }
     .item-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
     .item-header { display: flex; justify-content: space-between; align-items: center; }
-    .item-name { font-weight: 600; font-size: 15px; color: #333; }
+    .item-name { font-weight: 600; font-size: 15px; color: #1a1a2e; }
     .item-meta { font-size: 12px; color: #888; margin-top: 4px; }
     .item-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-    .badge {
+    .manage-badge {
         display: inline-flex; align-items: center; gap: 4px;
         padding: 4px 10px; border-radius: 16px; font-size: 11px; font-weight: 600;
     }
-    .badge-hod { background: #f0e6ff; color: #7c3aed; }
-    .badge-teacher { background: #e0f0ff; color: #2563eb; }
+    .manage-badge-hod { background: #f0e6ff; color: #7c3aed; }
+    .manage-badge-teacher { background: #e0f0ff; color: #2563eb; }
     .badge-remove {
         background: none; border: none; color: #999; cursor: pointer;
         font-size: 14px; padding: 0 2px; line-height: 1;
@@ -87,12 +69,8 @@
     .delete-btn:hover { color: #dc3545; }
     .delete-btn:disabled { color: #e8e8e8; cursor: not-allowed; }
 
-    .keys-card {
-        background: white; border-radius: 16px; padding: 28px;
-        box-shadow: 0 2px 20px rgba(0,0,0,0.08);
-    }
-    .keys-card h2 { font-size: 18px; font-weight: 700; color: #333; margin-bottom: 4px; }
-    .keys-card .keys-note { font-size: 12px; color: #888; margin-bottom: 16px; }
+    .keys-section { margin-top: 24px; }
+    .keys-note { font-size: 12px; color: #888; margin-bottom: 16px; }
     .key-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
     .key-row label { width: 80px; font-size: 13px; font-weight: 600; color: #555; }
     .key-row input {
@@ -106,33 +84,19 @@
         cursor: pointer; margin-top: 8px;
     }
     .save-keys-btn:hover { background: #5a6fd6; }
-    .toast {
-        position: fixed; bottom: 24px; right: 24px; padding: 12px 20px;
-        border-radius: 8px; font-size: 14px; font-weight: 600; color: white;
-        opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 100;
-    }
-    .toast.success { background: #28a745; }
-    .toast.error { background: #dc3545; }
-    .toast.show { opacity: 1; }
 </style>
 {% endblock %}
 
 {% block body %}
-<div class="manage-page">
-    <div class="manage-nav">
-        <a href="/">Home</a>
-        <a href="/department">Dashboard</a>
-        <a href="/department/insights">Insights</a>
-    </div>
-
-    <div class="manage-header">
+<div class="dept-page">
+    <div class="dept-page-header animate__animated animate__fadeInDown" style="animation-duration:0.5s;">
         <h1>Manage Department</h1>
         <p>Create classes, add teachers, and configure API keys</p>
     </div>
 
     <div class="manage-grid">
         <!-- Classes Column -->
-        <div class="manage-card">
+        <div class="dept-card animate__animated animate__fadeInUp" style="animation-delay:0.1s;animation-duration:0.5s;">
             <h2>Classes</h2>
             <div class="add-form">
                 <input type="text" id="className" placeholder="Class name (e.g. 3A)">
@@ -151,7 +115,7 @@
                     </div>
                     <div class="item-badges" id="class-teachers-{{ cls.id }}">
                         {% for t in cls.teachers %}
-                        <span class="badge badge-teacher">
+                        <span class="manage-badge manage-badge-teacher">
                             {{ t.name }}
                             <button class="badge-remove" onclick="unassignTeacher('{{ cls.id }}', '{{ t.id }}')">&times;</button>
                         </span>
@@ -174,7 +138,7 @@
         </div>
 
         <!-- Teachers Column -->
-        <div class="manage-card">
+        <div class="dept-card animate__animated animate__fadeInUp" style="animation-delay:0.2s;animation-duration:0.5s;">
             <h2>Teachers</h2>
             <div class="add-form">
                 <input type="text" id="teacherName" placeholder="Teacher name">
@@ -190,7 +154,7 @@
                     <div class="item-header">
                         <div>
                             <span class="item-name">{{ t.name }}</span>
-                            <span class="badge {{ 'badge-hod' if t.role == 'hod' else 'badge-teacher' }}" style="margin-left:8px;">{{ t.role|upper }}</span>
+                            <span class="manage-badge {{ 'manage-badge-hod' if t.role == 'hod' else 'manage-badge-teacher' }}" style="margin-left:8px;">{{ t.role|upper }}</span>
                         </div>
                         <button class="delete-btn" onclick="deleteTeacher('{{ t.id }}')" {% if t.role == 'hod' %}disabled title="Cannot delete HOD"{% else %}title="Delete teacher"{% endif %}>&times;</button>
                     </div>
@@ -204,7 +168,7 @@
     </div>
 
     <!-- API Keys Section -->
-    <div class="keys-card">
+    <div class="dept-card keys-section animate__animated animate__fadeIn" style="animation-delay:0.3s;animation-duration:0.5s;">
         <h2>Department API Keys</h2>
         <p class="keys-note">These keys are used for all marking in the department. At least one is required.</p>
         <div class="key-row">
@@ -223,7 +187,7 @@
     </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="dept-toast" id="toast"></div>
 {% endblock %}
 
 {% block scripts %}
@@ -231,7 +195,7 @@
 function showToast(msg, type) {
     var t = document.getElementById('toast');
     t.textContent = msg;
-    t.className = 'toast ' + type + ' show';
+    t.className = 'dept-toast ' + type + ' show';
     setTimeout(function() { t.classList.remove('show'); }, 2500);
 }
 

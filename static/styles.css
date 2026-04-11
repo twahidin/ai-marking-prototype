@@ -306,15 +306,100 @@ body {
 .badge-red { background: #fdecea; color: #dc3545; }
 
 /* --- Department Nav --- */
-.dept-nav { background: white; border-bottom: 2px solid #e0e0e0; padding: 0 20px; }
-.dept-nav-inner { max-width: 1100px; margin: 0 auto; display: flex; align-items: center; height: 56px; gap: 32px; }
-.dept-nav-brand { font-weight: 700; font-size: 16px; color: #667eea; text-decoration: none; }
-.dept-nav-links { display: flex; gap: 20px; flex: 1; }
-.dept-nav-links a { color: #666; text-decoration: none; font-size: 14px; font-weight: 500; }
-.dept-nav-links a:hover { color: #667eea; }
-.dept-nav-user { font-size: 13px; color: #888; display: flex; gap: 12px; align-items: center; }
-.dept-nav-user a { color: #667eea; text-decoration: none; font-weight: 600; }
-@media (max-width: 600px) {
-    .dept-nav-inner { gap: 16px; flex-wrap: wrap; height: auto; padding: 10px 0; }
-    .dept-nav-links { gap: 12px; }
+.dept-nav {
+    background: white;
+    border-bottom: 1px solid rgba(102,126,234,0.12);
+    padding: 0 24px;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    backdrop-filter: blur(12px);
+    background: rgba(255,255,255,0.95);
 }
+.dept-nav-inner {
+    max-width: 1100px; margin: 0 auto;
+    display: flex; align-items: center; height: 60px; gap: 32px;
+}
+.dept-nav-brand {
+    font-weight: 800; font-size: 17px; color: #667eea; text-decoration: none;
+    letter-spacing: -0.3px;
+}
+.dept-nav-links { display: flex; gap: 4px; flex: 1; }
+.dept-nav-links a {
+    color: #666; text-decoration: none; font-size: 14px; font-weight: 500;
+    padding: 8px 14px; border-radius: 8px; transition: all 0.2s;
+}
+.dept-nav-links a:hover { color: #667eea; background: #f0f2ff; }
+.dept-nav-user {
+    font-size: 13px; color: #666; display: flex; gap: 16px; align-items: center;
+}
+.dept-nav-user span { font-weight: 600; }
+.dept-nav-user a {
+    color: #667eea; text-decoration: none; font-weight: 600;
+    font-size: 13px; opacity: 0.8; transition: opacity 0.2s;
+}
+.dept-nav-user a:hover { opacity: 1; }
+@media (max-width: 600px) {
+    .dept-nav-inner { gap: 12px; flex-wrap: wrap; height: auto; padding: 10px 0; }
+    .dept-nav-links { gap: 2px; }
+    .dept-nav-links a { padding: 6px 10px; font-size: 13px; }
+}
+
+/* --- Shared Department Page --- */
+.dept-page { max-width: 1060px; margin: 0 auto; padding: 32px 24px; }
+.dept-page-header { margin-bottom: 28px; }
+.dept-page-header h1 {
+    font-size: 26px; font-weight: 800; color: #1a1a2e;
+    margin-bottom: 4px; letter-spacing: -0.5px;
+}
+.dept-page-header p { color: #999; font-size: 14px; font-weight: 400; }
+.dept-card {
+    background: white; border-radius: 14px; padding: 24px;
+    box-shadow: 0 1px 12px rgba(0,0,0,0.06);
+    border: 1px solid rgba(0,0,0,0.04);
+    transition: box-shadow 0.3s;
+}
+.dept-card:hover { box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+.dept-card h2 {
+    font-size: 16px; font-weight: 700; color: #1a1a2e;
+    margin-bottom: 16px; letter-spacing: -0.3px;
+}
+.dept-summary-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 14px; margin-bottom: 28px;
+}
+@media (max-width: 700px) { .dept-summary-grid { grid-template-columns: repeat(2, 1fr); } }
+.dept-stat-card {
+    background: white; border-radius: 14px; padding: 20px;
+    box-shadow: 0 1px 12px rgba(0,0,0,0.06);
+    border: 1px solid rgba(0,0,0,0.04);
+    text-align: center; transition: transform 0.2s, box-shadow 0.2s;
+}
+.dept-stat-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.1); }
+.dept-stat-card .num {
+    font-size: 34px; font-weight: 800; color: #667eea;
+    letter-spacing: -1px;
+}
+.dept-stat-card .label {
+    font-size: 12px; color: #999; margin-top: 2px;
+    font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.demo-banner {
+    background: linear-gradient(135deg, #fff8e1, #fff3cd);
+    color: #7c6a00; padding: 12px 20px; border-radius: 10px;
+    font-size: 13px; margin-bottom: 20px; text-align: center;
+    font-weight: 500; border: 1px solid rgba(255,193,7,0.2);
+}
+.dept-empty {
+    text-align: center; padding: 48px 20px; color: #999;
+}
+.dept-empty a { color: #667eea; text-decoration: none; font-weight: 600; }
+.dept-toast {
+    position: fixed; bottom: 24px; right: 24px; padding: 14px 24px;
+    border-radius: 10px; font-size: 14px; font-weight: 600; color: white;
+    opacity: 0; transition: all 0.3s; pointer-events: none; z-index: 100;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+}
+.dept-toast.success { background: linear-gradient(135deg, #28a745, #20c997); }
+.dept-toast.error { background: linear-gradient(135deg, #dc3545, #e85d6f); }
+.dept-toast.show { opacity: 1; transform: translateY(-8px); }

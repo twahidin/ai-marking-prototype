@@ -825,7 +825,7 @@ def department_setup():
         session['teacher_role'] = hod.role
         session['teacher_name'] = hod.name
 
-        return jsonify({'success': True, 'redirect': '/department'})
+        return jsonify({'success': True, 'redirect': '/department/classes'})
 
     return render_template('department_setup.html')
 
