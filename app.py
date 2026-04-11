@@ -473,7 +473,7 @@ def department_page():
         total_students = 0
         done_submissions = 0
         for asn in assignments:
-            students_count = Student.query.filter_by(assignment_id=asn.id).count()
+            students_count = Student.query.filter_by(class_id=asn.class_id).count() if asn.class_id else Student.query.filter_by(assignment_id=asn.id).count()
             total_students += students_count
             subs = Submission.query.filter_by(assignment_id=asn.id).all()
             total_submissions += len(subs)
@@ -1085,7 +1085,7 @@ def teacher_dashboard():
             .order_by(Assignment.created_at.desc()).all()
         asn_data = []
         for asn in assignments:
-            students_count = Student.query.filter_by(assignment_id=asn.id).count()
+            students_count = Student.query.filter_by(class_id=asn.class_id).count() if asn.class_id else Student.query.filter_by(assignment_id=asn.id).count()
             subs = Submission.query.filter_by(assignment_id=asn.id).all()
             done = [s for s in subs if s.status == 'done']
 
@@ -1550,47 +1550,45 @@ def teacher_create():
     if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
-    # API keys: use server env keys if available, otherwise require user input
-    # Keys are NOT stored in DB — the marking job reads from env at runtime
+    teacher_obj = _current_teacher()
+
+    # Class is always required now
+    class_id = request.form.get('class_id')
+    if not class_id:
+        return jsonify({'success': False, 'error': 'Please select a class'}), 400
+
+    cls = Class.query.get(class_id)
+    if not cls:
+        return jsonify({'success': False, 'error': 'Class not found'}), 404
+
+    # Check class has students
+    student_count = Student.query.filter_by(class_id=class_id).count()
+    if student_count == 0:
+        return jsonify({'success': False, 'error': 'This class has no students. Upload a class list first.'}), 400
+
+    # Ownership check
+    if teacher_obj:
+        if teacher_obj.role not in ('hod', 'owner'):
+            tc = TeacherClass.query.filter_by(teacher_id=teacher_obj.id, class_id=class_id).first()
+            if not tc:
+                return jsonify({'success': False, 'error': 'Not assigned to this class'}), 403
+
+    # API keys
     api_keys = {}
     from ai_marking import PROVIDER_KEY_MAP
     for prov, env_name in PROVIDER_KEY_MAP.items():
-        # Check env vars first, then form input
         val = os.getenv(env_name, '') or request.form.get(f'api_key_{prov}', '').strip()
         if val:
             api_keys[prov] = val
 
     if not api_keys:
-        return jsonify({'success': False, 'error': 'No API keys available. Configure server keys or enter your own.'}), 400
-
-    # In dept mode, require class_id and set teacher_id
-    class_id = None
-    teacher_obj = None
-    if DEPT_MODE:
-        class_id = request.form.get('class_id')
-        if not class_id:
-            return jsonify({'success': False, 'error': 'Class is required in department mode'}), 400
-        teacher_obj = _current_teacher()
-        if not teacher_obj:
-            return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-        # Verify teacher is assigned to this class (unless HOD)
-        if teacher_obj.role != 'hod':
-            tc = TeacherClass.query.filter_by(teacher_id=teacher_obj.id, class_id=class_id).first()
-            if not tc:
-                return jsonify({'success': False, 'error': 'Not assigned to this class'}), 403
-        # Use dept keys if no per-assignment keys
-        if not api_keys or all(not v for v in api_keys.values()):
+        # In dept mode, try department keys
+        if DEPT_MODE:
             dept_keys = _get_dept_keys()
             if dept_keys:
                 api_keys = dept_keys
-
-    # Parse class list
-    cl_file = request.files.get('class_list')
-    if not cl_file or not cl_file.filename:
-        return jsonify({'success': False, 'error': 'Please upload a class list CSV'}), 400
-    students_data = _parse_class_list(cl_file.read(), cl_file.filename)
-    if not students_data:
-        return jsonify({'success': False, 'error': 'Could not parse class list'}), 400
+        if not api_keys:
+            return jsonify({'success': False, 'error': 'No API keys available. Configure server keys or enter your own.'}), 400
 
     # Question paper
     qp_files = request.files.getlist('question_paper')
@@ -1612,7 +1610,6 @@ def teacher_create():
     rub_files = request.files.getlist('rubrics')
     if rub_files and rub_files[0].filename:
         rub_bytes = rub_files[0].read()
-
     if assign_type == 'rubrics' and not rub_bytes:
         return jsonify({'success': False, 'error': 'Rubrics file required for essay type'}), 400
 
@@ -1646,7 +1643,7 @@ def teacher_create():
         class_id=class_id,
         teacher_id=teacher_obj.id if teacher_obj else None,
     )
-    # Only store user-provided keys (not env keys) — env keys are read at runtime
+    # Only store user-provided keys
     user_keys = {}
     for prov in ('anthropic', 'openai', 'qwen'):
         val = request.form.get(f'api_key_{prov}', '').strip()
@@ -1654,14 +1651,6 @@ def teacher_create():
             user_keys[prov] = val
     asn.set_api_keys(user_keys)
     db.session.add(asn)
-
-    for s in students_data:
-        db.session.add(Student(
-            assignment_id=asn.id,
-            index_number=s['index'],
-            name=s['name'],
-        ))
-
     db.session.commit()
 
     return jsonify({
@@ -1677,7 +1666,7 @@ def teacher_assignment_detail(assignment_id):
     err = _check_assignment_ownership(asn)
     if err:
         return err
-    students = _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
+    students = _sort_by_index(Student.query.filter_by(class_id=asn.class_id).all()) if asn.class_id else _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
 
     student_data = []
     for s in students:
@@ -1776,7 +1765,13 @@ def teacher_submit_for_student(assignment_id, student_id):
     if err:
         return err
     student = Student.query.get(student_id)
-    if not student or student.assignment_id != assignment_id:
+    if not student:
+        return jsonify({'success': False, 'error': 'Invalid student'}), 400
+    # Validate student belongs to this assignment's class or assignment
+    if asn.class_id:
+        if not student.class_id or student.class_id != asn.class_id:
+            return jsonify({'success': False, 'error': 'Invalid student'}), 400
+    elif student.assignment_id != assignment_id:
         return jsonify({'success': False, 'error': 'Invalid student'}), 400
 
     script_files = request.files.getlist('script')
@@ -1841,7 +1836,7 @@ def student_verify(assignment_id):
     if code != asn.classroom_code:
         return jsonify({'success': False, 'error': 'Invalid classroom code'}), 401
 
-    students = _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
+    students = _sort_by_index(Student.query.filter_by(class_id=asn.class_id).all()) if asn.class_id else _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
     student_list = [{'id': s.id, 'index': s.index_number, 'name': s.name} for s in students]
 
     session[f'student_auth_{assignment_id}'] = True
@@ -1860,7 +1855,13 @@ def student_upload(assignment_id):
         return jsonify({'success': False, 'error': 'Please select your name'}), 400
 
     student = Student.query.get(student_id)
-    if not student or student.assignment_id != assignment_id:
+    if not student:
+        return jsonify({'success': False, 'error': 'Invalid student'}), 400
+    # Validate student belongs to this assignment's class or assignment
+    if asn.class_id:
+        if not student.class_id or student.class_id != asn.class_id:
+            return jsonify({'success': False, 'error': 'Invalid student'}), 400
+    elif student.assignment_id != assignment_id:
         return jsonify({'success': False, 'error': 'Invalid student'}), 400
 
     script_files = request.files.getlist('script')
@@ -1921,6 +1922,47 @@ def student_submission_status(assignment_id, submission_id):
             response['result'] = {'error': result['error']}
 
     return jsonify(response)
+
+
+@app.route('/api/class/<class_id>/assignments')
+def api_class_assignments(class_id):
+    if not _is_authenticated():
+        return jsonify([])
+    assignments = Assignment.query.filter_by(class_id=class_id).order_by(Assignment.created_at.desc()).all()
+    return jsonify([{
+        'id': a.id,
+        'title': a.title or a.subject or 'Untitled',
+        'subject': a.subject,
+        'classroom_code': a.classroom_code,
+        'created_at': a.created_at.isoformat() if a.created_at else None,
+    } for a in assignments])
+
+
+@app.route('/api/assignment/<assignment_id>/students')
+def api_assignment_students(assignment_id):
+    if not _is_authenticated():
+        return jsonify([])
+    asn = Assignment.query.get_or_404(assignment_id)
+
+    # Get students from class level
+    if asn.class_id:
+        students = _sort_by_index(Student.query.filter_by(class_id=asn.class_id).all())
+    else:
+        students = _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
+
+    result = []
+    for s in students:
+        sub = Submission.query.filter_by(student_id=s.id, assignment_id=assignment_id).first()
+        result.append({
+            'id': s.id,
+            'index': s.index_number,
+            'name': s.name,
+            'has_submission': sub is not None,
+            'status': sub.status if sub else None,
+            'submitted_at': sub.submitted_at.isoformat() if sub and sub.submitted_at else None,
+            'marked_at': sub.marked_at.isoformat() if sub and sub.marked_at else None,
+        })
+    return jsonify(result)
 
 
 if __name__ == '__main__':
