@@ -427,7 +427,9 @@ def single_mark_page():
     return render_template('index.html',
                            authenticated=authenticated,
                            demo_mode=_demo,
-                           dept_mode=_dept)
+                           dept_mode=_dept,
+                           providers={},
+                           all_providers={})
 
 
 @app.route('/class')
