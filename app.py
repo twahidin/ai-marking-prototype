@@ -249,16 +249,11 @@ def logout():
 
 @app.route('/mark')
 def single_mark_page():
-    if DEPT_MODE:
-        return redirect(url_for('hub'))
     authenticated = _is_authenticated()
-    sk = _effective_keys()
-    providers = get_available_providers(session_keys=sk)
     return render_template('index.html',
                            authenticated=authenticated,
-                           providers=providers,
                            demo_mode=DEMO_MODE,
-                           all_providers=PROVIDERS)
+                           dept_mode=DEPT_MODE)
 
 
 @app.route('/class')
@@ -362,56 +357,63 @@ def mark():
     if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
-    assign_type = request.form.get('assign_type', 'short_answer')
+    assignment_id = request.form.get('assignment_id')
+    student_id = request.form.get('student_id')
 
-    # Validate required files (answer_key not required for rubrics mode)
-    required_fields = ['question_paper', 'script']
-    if assign_type != 'rubrics':
-        required_fields.append('answer_key')
-    for field in required_fields:
-        files = request.files.getlist(field)
-        if not files or not files[0].filename:
-            return jsonify({'success': False, 'error': f'Missing required file: {field}'}), 400
-        if len(files) > 10:
-            return jsonify({'success': False, 'error': f'Maximum 10 files per upload ({field})'}), 400
+    if not assignment_id or not student_id:
+        return jsonify({'success': False, 'error': 'Please select a class, assignment, and student'}), 400
 
-    provider = request.form.get('provider', 'anthropic')
-    model = request.form.get('model', '')
-    subject = request.form.get('subject', '')
-    scoring_mode = request.form.get('scoring_mode', 'status')
-    total_marks = request.form.get('total_marks', '')
-    review_instructions = request.form.get('review_instructions', '')
-    marking_instructions = request.form.get('marking_instructions', '')
+    asn = Assignment.query.get(assignment_id)
+    if not asn:
+        return jsonify({'success': False, 'error': 'Assignment not found'}), 404
 
-    question_paper_pages = [f.read() for f in request.files.getlist('question_paper') if f.filename]
-    answer_key_pages = [f.read() for f in request.files.getlist('answer_key') if f.filename]
-    script_pages = [f.read() for f in request.files.getlist('script') if f.filename]
-    rubrics_pages = [f.read() for f in request.files.getlist('rubrics') if f.filename]
-    reference_pages = [f.read() for f in request.files.getlist('reference') if f.filename]
+    # Ownership check
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
 
-    session_keys = _effective_keys()
+    student = Student.query.get(int(student_id))
+    if not student:
+        return jsonify({'success': False, 'error': 'Student not found'}), 404
 
-    cleanup_old_jobs()
+    # Validate script upload
+    script_files = request.files.getlist('script')
+    if not script_files or not script_files[0].filename:
+        return jsonify({'success': False, 'error': 'Please upload the student script'}), 400
+    if len(script_files) > 10:
+        return jsonify({'success': False, 'error': 'Maximum 10 files'}), 400
 
-    job_id = str(uuid.uuid4())
-    jobs[job_id] = {
-        'status': 'processing',
-        'result': None,
-        'subject': subject,
-        'created_at': time.time(),
-    }
+    script_pages = [f.read() for f in script_files if f.filename]
 
+    # Delete existing submission if any
+    existing = Submission.query.filter_by(student_id=student.id, assignment_id=assignment_id).first()
+    if existing:
+        db.session.delete(existing)
+        db.session.flush()
+
+    # Create new submission
+    sub = Submission(
+        student_id=student.id,
+        assignment_id=assignment_id,
+        status='pending',
+    )
+    sub.set_script_pages(script_pages)
+    db.session.add(sub)
+    db.session.commit()
+
+    # Start marking in background using the assignment's stored files/settings
     thread = threading.Thread(
-        target=run_marking_job,
-        args=(job_id, provider, model, question_paper_pages, answer_key_pages,
-              script_pages, subject, rubrics_pages, reference_pages,
-              review_instructions, marking_instructions,
-              assign_type, scoring_mode, total_marks, session_keys),
-        daemon=True
+        target=_run_submission_marking,
+        args=(app, sub.id, assignment_id),
+        daemon=True,
     )
     thread.start()
 
-    return jsonify({'success': True, 'job_id': job_id})
+    return jsonify({
+        'success': True,
+        'submission_id': sub.id,
+        'assignment_id': assignment_id,
+    })
 
 
 @app.route('/status/<job_id>')
@@ -1944,7 +1946,9 @@ def student_upload(assignment_id):
 
 @app.route('/submit/<assignment_id>/status/<int:submission_id>')
 def student_submission_status(assignment_id, submission_id):
-    if not session.get(f'student_auth_{assignment_id}') and not _is_authenticated():
+    is_teacher = _is_authenticated()
+    is_student = session.get(f'student_auth_{assignment_id}')
+    if not is_student and not is_teacher:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
     sub = Submission.query.get_or_404(submission_id)
     if sub.assignment_id != assignment_id:
@@ -1955,12 +1959,37 @@ def student_submission_status(assignment_id, submission_id):
 
     if sub.status in ('done', 'error'):
         result = sub.get_result()
-        if asn and asn.show_results:
+        # Teachers always see results; students only if show_results is on
+        if is_teacher or (asn and asn.show_results):
             response['result'] = result
         elif result.get('error'):
             response['result'] = {'error': result['error']}
 
     return jsonify(response)
+
+
+@app.route('/submit/<assignment_id>/download/<int:submission_id>')
+def download_submission_pdf(assignment_id, submission_id):
+    """Download a PDF report for a specific submission."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Not found'}), 404
+    if sub.status != 'done':
+        return jsonify({'success': False, 'error': 'No results available'}), 404
+
+    asn = Assignment.query.get(assignment_id)
+    result = sub.get_result()
+    subject = asn.subject if asn else ''
+    pdf_bytes = generate_report_pdf(result, subject=subject, app_title=APP_TITLE)
+
+    return send_file(
+        io.BytesIO(pdf_bytes),
+        mimetype='application/pdf',
+        as_attachment=True,
+        download_name='AI_Marking_Report.pdf'
+    )
 
 
 @app.route('/api/class/<class_id>/assignments')

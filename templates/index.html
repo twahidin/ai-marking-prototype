@@ -1,11 +1,22 @@
 {% extends "base.html" %}
 
-{% block title %}{{ app_title }}{% endblock %}
+{% block title %}Mark a Script - {{ app_title }}{% endblock %}
 
 {% block head %}
 <style>
-    .upload-grid { grid-template-columns: 1fr 1fr 1fr; }
     .results { display: none; }
+    .form-select {
+        width: 100%; padding: 12px 16px; border: 2px solid #e0e0e0;
+        border-radius: 10px; font-size: 15px; background: white;
+        transition: border-color 0.2s; outline: none;
+    }
+    .form-select:focus { border-color: #667eea; }
+    .form-select:disabled { background: #f5f5f5; color: #aaa; }
+    .warning-box {
+        background: #fff3cd; border: 1px solid #ffc107; border-radius: 10px;
+        padding: 16px; margin-top: 12px; font-size: 13px;
+    }
+    .warning-box strong { color: #856404; }
 </style>
 {% endblock %}
 
@@ -30,127 +41,44 @@
 <div class="container">
     <div class="header">
         <h1>Mark a Script</h1>
-        <p>Upload one student script with question paper and answer key to get AI feedback</p>
+        <p>Select a class, assignment, and student to mark</p>
         <p style="margin-top:8px;"><a href="/" style="color:#667eea;font-weight:600;font-size:13px;">&larr; Back to Home</a></p>
     </div>
 
-    {% if not demo_mode and not providers %}
-    <!-- API Key Input (only shown when no server env keys are configured) -->
-    <div class="card" id="keyCard">
-        <h2>Your API Key</h2>
-        <p style="font-size:13px;color:#888;margin-bottom:16px;">Enter your own API key to use this tool. Keys are stored in your browser session only.</p>
-        <div class="sel-group">
-            {% for key, config in all_providers.items() %}
-            <div class="sel-option">
-                <input type="radio" name="key_provider" id="kp_{{ key }}" value="{{ key }}" {% if loop.first %}checked{% endif %} onchange="updateKeyInput()">
-                <label for="kp_{{ key }}">{{ config.label }}</label>
-            </div>
-            {% endfor %}
-        </div>
-        <div style="display:flex;gap:8px;">
-            <input type="password" class="form-input" id="apiKeyInput" placeholder="Paste your API key here..." style="flex:1;">
-            <button class="mark-btn" style="width:auto;padding:12px 24px;" onclick="saveApiKey()">Save</button>
-        </div>
-        <div id="keyStatus" style="font-size:12px;margin-top:8px;color:#28a745;display:none;"></div>
-    </div>
-    {% endif %}
-
-    <!-- Form -->
     <div class="card" id="formCard">
-        <h2>AI Provider</h2>
-        <div class="sel-group" id="providerGroup">
-            {% for key, config in providers.items() %}
-            <div class="sel-option">
-                <input type="radio" name="provider" id="provider_{{ key }}" value="{{ key }}" {% if loop.first %}checked{% endif %} onchange="updateModelSelect()">
-                <label for="provider_{{ key }}">{{ config.label }}</label>
-            </div>
-            {% endfor %}
-        </div>
-        <select class="model-select" id="modelSelect"></select>
+        <!-- Step 1: Select Class -->
+        <h2>1. Select Class</h2>
+        <select class="form-select" id="classSelect" onchange="loadAssignments()">
+            <option value="">-- Choose a class --</option>
+        </select>
 
-        <div class="form-group">
-            <label for="subject">Subject</label>
-            <input type="text" class="form-input" id="subject" placeholder="e.g. Mathematics, English, Science">
-        </div>
+        <!-- Step 2: Select Assignment -->
+        <h2 style="margin-top:20px;">2. Select Assignment</h2>
+        <select class="form-select" id="assignmentSelect" onchange="loadStudents()" disabled>
+            <option value="">-- Choose an assignment --</option>
+        </select>
 
-        <h2 style="margin-top: 24px;">Assignment Type</h2>
-        <div class="sel-group">
-            <div class="sel-option">
-                <input type="radio" name="assign_type" id="type_short" value="short_answer" checked onchange="updateAssignType()">
-                <label for="type_short">Short Answer</label>
-            </div>
-            <div class="sel-option">
-                <input type="radio" name="assign_type" id="type_rubric" value="rubrics" onchange="updateAssignType()">
-                <label for="type_rubric">Rubrics / Essay</label>
-            </div>
+        <!-- Step 3: Select Student -->
+        <h2 style="margin-top:20px;">3. Select Student</h2>
+        <select class="form-select" id="studentSelect" onchange="checkExistingSubmission()" disabled>
+            <option value="">-- Choose a student --</option>
+        </select>
+
+        <!-- Warning for existing submission -->
+        <div id="existingWarning" style="display:none;" class="warning-box">
+            <strong>This student already has a submission</strong>
+            <p id="existingDetails"></p>
+            <p>Submitting will override the existing result.</p>
         </div>
 
-        <div id="shortAnswerOptions">
-            <div class="toggle-row">
-                <label class="toggle"><input type="checkbox" id="allocateMarks" onchange="updateMarksVis()"><span class="slider"></span></label>
-                <span class="toggle-label">Allocate marks</span>
-            </div>
-            <div class="form-group" id="totalMarksGroup" style="display:none;">
-                <label for="totalMarks">Total Marks</label>
-                <input type="number" class="marks-input" id="totalMarks" min="1" max="999" placeholder="100">
-            </div>
-        </div>
-        <div id="rubricOptions" style="display:none;">
-            <div class="form-group">
-                <label for="totalMarksRubric">Total Marks</label>
-                <input type="number" class="marks-input" id="totalMarksRubric" min="1" max="999" placeholder="100">
-            </div>
-        </div>
-
-        <h2 style="margin-top: 24px;">Upload Files</h2>
-        <div class="upload-grid">
-            <div class="upload-zone" onclick="this.querySelector('input').click()">
-                <input type="file" id="question_paper" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this, 10)">
-                <div class="icon">&#128196;</div>
-                <div class="label">Question Paper</div>
-                <div class="filename" id="question_paper_name"></div>
-                <div class="hint">PDF or up to 10 images</div>
-            </div>
-            <div class="upload-zone" id="answerKeyZone" onclick="this.querySelector('input').click()">
-                <input type="file" id="answer_key" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this, 10)">
-                <div class="icon" id="answerKeyIcon">&#9989;</div>
-                <div class="label" id="answerKeyLabel">Answer Key</div>
-                <div class="filename" id="answer_key_name"></div>
-                <div class="hint" id="answerKeyHint">PDF or up to 10 images</div>
-            </div>
-            <div class="upload-zone" onclick="this.querySelector('input').click()">
-                <input type="file" id="script" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this, 10)">
-                <div class="icon">&#9997;&#65039;</div>
-                <div class="label">Student Script</div>
-                <div class="filename" id="script_name"></div>
-                <div class="hint">PDF or up to 10 images</div>
-            </div>
-        </div>
-
-        <div id="rubricUploadSection">
-            <div class="collapsible-header" id="rubricToggle" onclick="toggleSection('rubricToggle', 'rubricBody')">
-                <span class="arrow">&#9654;</span>
-                <span id="rubricLabel">Rubrics (Optional)</span>
-            </div>
-            <div class="collapsible-body" id="rubricBody">
-                <div class="upload-zone" style="max-width: 260px;" onclick="this.querySelector('input').click()">
-                    <input type="file" id="rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this, 10)">
-                    <div class="icon">&#128203;</div>
-                    <div class="label">Rubrics</div>
-                    <div class="filename" id="rubrics_name"></div>
-                    <div class="hint">PDF or up to 10 images</div>
-                </div>
-            </div>
-        </div>
-
-        <h2 style="margin-top: 24px;">Instructions (Optional)</h2>
-        <div class="form-group">
-            <label for="review_instructions">Review Instructions</label>
-            <textarea class="form-textarea" id="review_instructions" placeholder="How should feedback be written? e.g. tone, detail level, language..."></textarea>
-        </div>
-        <div class="form-group">
-            <label for="marking_instructions">Marking Instructions</label>
-            <textarea class="form-textarea" id="marking_instructions" placeholder="How should answers be evaluated? e.g. strictness, what to accept..."></textarea>
+        <!-- Step 4: Upload Script -->
+        <h2 style="margin-top:20px;">4. Upload Student Script</h2>
+        <div class="upload-zone" onclick="this.querySelector('input').click()">
+            <input type="file" id="script" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this, 10)">
+            <div class="icon">&#9997;&#65039;</div>
+            <div class="label">Student Script</div>
+            <div class="filename" id="script_name"></div>
+            <div class="hint">PDF or up to 10 images</div>
         </div>
 
         <div class="error-msg" id="errorMsg"></div>
@@ -192,124 +120,93 @@
 {% block scripts %}
 {% if authenticated %}
 <script>
-let currentJobId = null;
+let currentAssignmentId = null;
+let currentSubmissionId = null;
 let resultQuestions = [];
 let resultErrors = [];
 let resultAssignType = 'short_answer';
 let currentQ = 0;
 
-let PROVIDER_MODELS = {{ providers | tojson }};
-const ALL_PROVIDERS = {{ all_providers | tojson }};
-const DEMO_MODE = {{ demo_mode | tojson }};
 const STATUS_LABELS = { correct: 'Correct', partially_correct: 'Partially Correct', incorrect: 'Incorrect' };
 
-// --- API key management (when DEMO_MODE is false) ---
-function updateKeyInput() {
-    const prov = document.querySelector('input[name="key_provider"]:checked')?.value || '';
-    const placeholder = {anthropic: 'sk-ant-...', openai: 'sk-...', qwen: 'sk-...'}[prov] || 'API key';
-    const input = document.getElementById('apiKeyInput');
-    if (input) input.placeholder = placeholder;
-}
+// --- Cascading dropdowns ---
 
-async function saveApiKey() {
-    const prov = document.querySelector('input[name="key_provider"]:checked')?.value;
-    const key = document.getElementById('apiKeyInput')?.value.trim();
-    if (!prov || !key) return;
-    const keys = {};
-    keys[prov] = key;
-    try {
-        const res = await fetch('/save-keys', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(keys)});
-        const data = await res.json();
-        if (data.success) {
-            PROVIDER_MODELS = data.providers;
-            // Refresh provider radio buttons
-            const group = document.getElementById('providerGroup');
-            group.innerHTML = '';
-            let first = true;
-            for (const [k, config] of Object.entries(PROVIDER_MODELS)) {
-                const div = document.createElement('div');
-                div.className = 'sel-option';
-                div.innerHTML = `<input type="radio" name="provider" id="provider_${k}" value="${k}" ${first?'checked':''} onchange="updateModelSelect()"><label for="provider_${k}">${config.label}</label>`;
-                group.appendChild(div);
-                first = false;
-            }
-            updateModelSelect();
-            const st = document.getElementById('keyStatus');
-            if (st) { st.textContent = ALL_PROVIDERS[prov].label + ' key saved for this session.'; st.style.display = 'block'; }
-            document.getElementById('apiKeyInput').value = '';
-        }
-    } catch(e) { console.error(e); }
-}
-
-// Clear keys on page close
-if (!DEMO_MODE) {
-    window.addEventListener('beforeunload', () => {
-        navigator.sendBeacon('/clear-keys', '');
+async function loadClasses() {
+    const res = await fetch('/api/classes');
+    const classes = await res.json();
+    const sel = document.getElementById('classSelect');
+    sel.innerHTML = '<option value="">-- Choose a class --</option>';
+    classes.forEach(c => {
+        sel.innerHTML += `<option value="${esc(c.id)}">${c.level ? esc(c.level) + ' - ' : ''}${esc(c.name)} (${c.student_count} students)</option>`;
     });
 }
 
-function updateModelSelect() {
-    const prov = document.querySelector('input[name="provider"]:checked')?.value;
-    const sel = document.getElementById('modelSelect');
-    sel.innerHTML = '';
-    if (prov && PROVIDER_MODELS[prov]) {
-        const m = PROVIDER_MODELS[prov].models, d = PROVIDER_MODELS[prov].default;
-        for (const [id, label] of Object.entries(m)) {
-            const o = document.createElement('option');
-            o.value = id; o.textContent = label; if (id === d) o.selected = true;
-            sel.appendChild(o);
-        }
-    }
-}
-updateModelSelect();
+async function loadAssignments() {
+    const classId = document.getElementById('classSelect').value;
+    const asnSel = document.getElementById('assignmentSelect');
+    const stuSel = document.getElementById('studentSelect');
+    asnSel.innerHTML = '<option value="">-- Choose an assignment --</option>';
+    stuSel.innerHTML = '<option value="">-- Choose a student --</option>';
+    asnSel.disabled = !classId;
+    stuSel.disabled = true;
+    document.getElementById('existingWarning').style.display = 'none';
+    if (!classId) return;
 
-function updateAssignType() {
-    const t = document.querySelector('input[name="assign_type"]:checked')?.value;
-    document.getElementById('shortAnswerOptions').style.display = t === 'rubrics' ? 'none' : 'block';
-    document.getElementById('rubricOptions').style.display = t === 'rubrics' ? 'block' : 'none';
-    const rl = document.getElementById('rubricLabel');
-    // Swap answer key <-> reference materials
-    const akLabel = document.getElementById('answerKeyLabel');
-    const akIcon = document.getElementById('answerKeyIcon');
-    const akHint = document.getElementById('answerKeyHint');
-    const akInput = document.getElementById('answer_key');
-    if (t === 'rubrics') {
-        rl.textContent = 'Rubrics (Required)';
-        document.getElementById('rubricToggle').classList.add('open');
-        document.getElementById('rubricBody').classList.add('open');
-        akLabel.textContent = 'Reference Materials';
-        akIcon.innerHTML = '&#128218;';
-        akHint.textContent = 'Optional: sample works, etc.';
-        akInput.id = 'reference';
-        document.getElementById('answer_key_name').id = 'reference_name';
+    const res = await fetch('/api/class/' + encodeURIComponent(classId) + '/assignments');
+    const assignments = await res.json();
+    assignments.forEach(a => {
+        asnSel.innerHTML += `<option value="${esc(a.id)}">${esc(a.title)}${a.subject ? ' (' + esc(a.subject) + ')' : ''}</option>`;
+    });
+    asnSel.disabled = false;
+}
+
+async function loadStudents() {
+    const asnId = document.getElementById('assignmentSelect').value;
+    const stuSel = document.getElementById('studentSelect');
+    stuSel.innerHTML = '<option value="">-- Choose a student --</option>';
+    stuSel.disabled = !asnId;
+    document.getElementById('existingWarning').style.display = 'none';
+    if (!asnId) return;
+
+    const res = await fetch('/api/assignment/' + encodeURIComponent(asnId) + '/students');
+    const students = await res.json();
+    window._studentData = {};
+    students.forEach(s => {
+        const statusTag = s.has_submission ? ' [' + s.status + ']' : '';
+        stuSel.innerHTML += `<option value="${s.id}">${esc(s.index)} - ${esc(s.name)}${esc(statusTag)}</option>`;
+        window._studentData[s.id] = s;
+    });
+    stuSel.disabled = false;
+}
+
+function checkExistingSubmission() {
+    const stuId = document.getElementById('studentSelect').value;
+    const warn = document.getElementById('existingWarning');
+    const details = document.getElementById('existingDetails');
+    if (!stuId || !window._studentData || !window._studentData[stuId]) {
+        warn.style.display = 'none';
+        return;
+    }
+    const s = window._studentData[stuId];
+    if (s.has_submission) {
+        const date = s.submitted_at ? new Date(s.submitted_at).toLocaleString() : 'Unknown date';
+        const markedDate = s.marked_at ? new Date(s.marked_at).toLocaleString() : null;
+        details.textContent = 'Submitted: ' + date + (markedDate ? ' | Marked: ' + markedDate : '') + ' | Status: ' + s.status;
+        warn.style.display = 'block';
     } else {
-        rl.textContent = 'Rubrics (Optional)';
-        akLabel.textContent = 'Answer Key';
-        akIcon.innerHTML = '&#9989;';
-        akHint.textContent = 'PDF or up to 10 images';
-        // Restore IDs if switched back
-        const refInput = document.getElementById('reference');
-        if (refInput) { refInput.id = 'answer_key'; }
-        const refName = document.getElementById('reference_name');
-        if (refName) { refName.id = 'answer_key_name'; }
+        warn.style.display = 'none';
     }
 }
 
-function updateMarksVis() {
-    document.getElementById('totalMarksGroup').style.display = document.getElementById('allocateMarks').checked ? 'block' : 'none';
-}
+// --- Marking ---
 
 function showError(msg) { const el = document.getElementById('errorMsg'); el.textContent = msg; el.style.display = 'block'; }
 function hideError() { document.getElementById('errorMsg').style.display = 'none'; }
 
-// Modal
 let pollTimer = null;
 let elapsed = 0;
 function showModal() {
-    const prov = document.querySelector('input[name="provider"]:checked')?.value || '';
-    const modelSel = document.getElementById('modelSelect');
-    const modelLabel = modelSel.options[modelSel.selectedIndex]?.textContent || '';
-    document.getElementById('modalProvider').textContent = 'Using ' + modelLabel + ' to mark your script...';
+    document.getElementById('modalProvider').textContent = 'Analysing your script...';
     document.getElementById('progressBar').className = 'progress-bar-fill indeterminate';
     document.getElementById('modalStatus').textContent = 'Sending to AI...';
     document.getElementById('modal').classList.add('active');
@@ -329,50 +226,22 @@ function hideModal() {
 
 async function startMarking() {
     hideError();
-    const qp = document.getElementById('question_paper').files;
-    const sc = document.getElementById('script').files;
-    if (!qp.length) return showError('Please upload a question paper.');
-    if (!sc.length) return showError('Please upload a student script.');
+    const assignmentId = document.getElementById('assignmentSelect').value;
+    const studentId = document.getElementById('studentSelect').value;
+    const scriptInput = document.getElementById('script');
 
-    const provider = document.querySelector('input[name="provider"]:checked')?.value;
-    if (!provider) return showError('Please select an AI provider.');
-
-    const assignType = document.querySelector('input[name="assign_type"]:checked')?.value || 'short_answer';
-    const rubricFiles = document.getElementById('rubrics').files;
-    if (assignType === 'rubrics') {
-        if (!rubricFiles.length) return showError('Rubrics file is required for Rubrics / Essay type.');
-        if (!document.getElementById('totalMarksRubric').value) return showError('Please enter total marks.');
-    } else {
-        const ak = document.getElementById('answer_key')?.files;
-        if (!ak || !ak.length) return showError('Please upload an answer key.');
+    if (!assignmentId || !studentId) {
+        return showError('Please select a class, assignment, and student.');
+    }
+    if (!scriptInput.files || !scriptInput.files.length) {
+        return showError('Please upload the student script.');
     }
 
-    let scoringMode = 'status', totalMarks = '';
-    if (assignType === 'rubrics') {
-        scoringMode = 'marks'; totalMarks = document.getElementById('totalMarksRubric').value;
-    } else if (document.getElementById('allocateMarks').checked) {
-        scoringMode = 'marks'; totalMarks = document.getElementById('totalMarks').value;
-        if (!totalMarks || parseInt(totalMarks) <= 0) return showError('Please enter total marks.');
-    }
-
-    const fd = new FormData();
-    fd.append('provider', provider);
-    fd.append('model', document.getElementById('modelSelect').value);
-    fd.append('subject', document.getElementById('subject').value);
-    fd.append('assign_type', assignType);
-    fd.append('scoring_mode', scoringMode);
-    fd.append('total_marks', totalMarks);
-    fd.append('review_instructions', document.getElementById('review_instructions').value);
-    fd.append('marking_instructions', document.getElementById('marking_instructions').value);
-    for (const f of qp) fd.append('question_paper', f);
-    for (const f of sc) fd.append('script', f);
-    for (const f of rubricFiles) fd.append('rubrics', f);
-    if (assignType === 'rubrics') {
-        const refFiles = document.getElementById('reference')?.files || [];
-        for (const f of refFiles) fd.append('reference', f);
-    } else {
-        const akFiles = document.getElementById('answer_key')?.files || [];
-        for (const f of akFiles) fd.append('answer_key', f);
+    const form = new FormData();
+    form.append('assignment_id', assignmentId);
+    form.append('student_id', studentId);
+    for (const f of scriptInput.files) {
+        form.append('script', f);
     }
 
     document.getElementById('markBtn').disabled = true;
@@ -380,28 +249,53 @@ async function startMarking() {
     showModal();
 
     try {
-        const res = await fetch('/mark', { method: 'POST', body: fd });
+        const res = await fetch('/mark', {method: 'POST', body: form});
         const data = await res.json();
-        if (!data.success) { hideModal(); showError(data.error || 'Failed.'); document.getElementById('markBtn').disabled = false; return; }
-        currentJobId = data.job_id;
-        pollStatus();
-    } catch (err) {
-        hideModal(); showError('Connection error.'); document.getElementById('markBtn').disabled = false;
+        if (!data.success) {
+            hideModal();
+            showError(data.error || 'Failed.');
+            document.getElementById('markBtn').disabled = false;
+            return;
+        }
+        currentAssignmentId = data.assignment_id;
+        currentSubmissionId = data.submission_id;
+        pollSubmissionStatus(data.assignment_id, data.submission_id);
+    } catch(e) {
+        hideModal();
+        showError('Connection error.');
+        document.getElementById('markBtn').disabled = false;
     }
 }
 
-async function pollStatus() {
-    if (!currentJobId) return;
-    try {
-        const res = await fetch('/status/' + currentJobId);
-        const data = await res.json();
-        if (data.status === 'processing') { setTimeout(pollStatus, 2000); return; }
-        hideModal();
-        document.getElementById('markBtn').disabled = false;
-        if (data.status === 'error') { showError(data.result?.error || 'Marking failed.'); return; }
-        renderResults(data.result);
-    } catch (err) { setTimeout(pollStatus, 3000); }
+async function pollSubmissionStatus(assignmentId, submissionId) {
+    const interval = setInterval(async () => {
+        try {
+            const res = await fetch('/submit/' + encodeURIComponent(assignmentId) + '/status/' + submissionId);
+            const data = await res.json();
+            if (data.status === 'done' || data.status === 'error') {
+                clearInterval(interval);
+                hideModal();
+                document.getElementById('markBtn').disabled = false;
+                if (data.status === 'error') {
+                    showError(data.result?.error || 'Marking failed.');
+                    return;
+                }
+                if (data.result) {
+                    renderResults(data.result);
+                } else {
+                    showError('Marking completed but no results returned.');
+                }
+            }
+        } catch(e) {
+            clearInterval(interval);
+            hideModal();
+            document.getElementById('markBtn').disabled = false;
+            showError('Lost connection while marking.');
+        }
+    }, 2000);
 }
+
+// --- Results rendering ---
 
 function renderResults(result) {
     if (result.error) { showError(result.error); return; }
@@ -539,21 +433,31 @@ function goQ(idx) {
     renderQuestion();
 }
 
-function downloadPdf() { if (currentJobId) window.open('/download/' + currentJobId, '_blank'); }
+function downloadPdf() {
+    if (currentAssignmentId && currentSubmissionId) {
+        window.open('/submit/' + encodeURIComponent(currentAssignmentId) + '/download/' + currentSubmissionId, '_blank');
+    }
+}
 
 function resetForm() {
     document.getElementById('results').style.display = 'none';
     document.getElementById('formCard').scrollIntoView({behavior: 'smooth'});
-    // answer_key may currently be 'reference' if in rubrics mode
-    const akId = document.getElementById('reference') ? 'reference' : 'answer_key';
-    [['question_paper','question_paper_name'], [akId, akId+'_name'], ['script','script_name'], ['rubrics','rubrics_name']].forEach(([inputId, nameId]) => {
-        const inp = document.getElementById(inputId); if (!inp) return;
-        inp.value = '';
-        inp.closest('.upload-zone').classList.remove('has-file');
-        const nameEl = document.getElementById(nameId); if (nameEl) nameEl.textContent = '';
-    });
-    currentJobId = null; resultQuestions = []; resultErrors = []; currentQ = 0;
+    const scriptInput = document.getElementById('script');
+    if (scriptInput) {
+        scriptInput.value = '';
+        scriptInput.closest('.upload-zone').classList.remove('has-file');
+        const nameEl = document.getElementById('script_name');
+        if (nameEl) nameEl.textContent = '';
+    }
+    currentAssignmentId = null;
+    currentSubmissionId = null;
+    resultQuestions = [];
+    resultErrors = [];
+    currentQ = 0;
 }
+
+// Initialize
+loadClasses();
 </script>
 {% endif %}
 {% endblock %}
