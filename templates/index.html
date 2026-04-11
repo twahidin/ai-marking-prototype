@@ -17,6 +17,33 @@
         padding: 16px; margin-top: 12px; font-size: 13px;
     }
     .warning-box strong { color: #856404; }
+    .sel-group { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    .sel-option input[type="radio"] { display: none; }
+    .sel-option label {
+        display: inline-block; padding: 10px 18px; border: 2px solid #e0e0e0;
+        border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer;
+        transition: all 0.2s; color: #555;
+    }
+    .sel-option input[type="radio"]:checked + label {
+        border-color: #667eea; background: #f0f2ff; color: #667eea;
+    }
+    .form-input {
+        width: 100%; padding: 12px 16px; border: 2px solid #e0e0e0;
+        border-radius: 10px; font-size: 15px; outline: none; transition: border-color 0.2s;
+    }
+    .form-input:focus { border-color: #667eea; }
+    .toggle-row { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+    .toggle-btn {
+        padding: 10px 18px; border: 2px solid #e0e0e0; border-radius: 10px;
+        background: white; font-size: 13px; font-weight: 600; cursor: pointer;
+        transition: all 0.2s; color: #555;
+    }
+    .toggle-btn.active { border-color: #667eea; background: #f0f2ff; color: #667eea; }
+    .section-label { font-size: 13px; font-weight: 700; color: #333; margin-bottom: 8px; display: block; }
+    .demo-badge {
+        display: inline-block; background: #e8f5e9; color: #28a745; padding: 4px 12px;
+        border-radius: 20px; font-size: 11px; font-weight: 700; margin-left: 8px;
+    }
 </style>
 {% endblock %}
 
@@ -40,11 +67,113 @@
 
 <div class="container">
     <div class="header">
-        <h1>Mark a Script</h1>
+        <h1>Mark a Script{% if demo_mode %}<span class="demo-badge">DEMO</span>{% endif %}</h1>
+        {% if demo_mode %}
+        <p>Upload a question paper, answer key, and student script for instant AI feedback</p>
+        {% else %}
         <p>Select a class, assignment, and student to mark</p>
+        {% endif %}
         <p style="margin-top:8px;"><a href="/" style="color:#667eea;font-weight:600;font-size:13px;">&larr; Back to Home</a></p>
     </div>
 
+    {% if demo_mode %}
+    <!-- ===================== DEMO MODE: Standalone Form ===================== -->
+    <div class="card" id="formCard">
+        <!-- Provider Selection -->
+        <span class="section-label">AI Provider</span>
+        <div class="sel-group" id="providerGroup">
+            {% for key, config in providers.items() %}
+            <div class="sel-option">
+                <input type="radio" name="provider" id="prov_{{ key }}" value="{{ key }}" {% if loop.first %}checked{% endif %} onchange="updateModelDropdown()">
+                <label for="prov_{{ key }}">{{ config.label }}</label>
+            </div>
+            {% endfor %}
+        </div>
+
+        <!-- Model Dropdown (hidden, single model per provider in demo) -->
+        <input type="hidden" id="modelSelect" value="">
+
+        <!-- Subject -->
+        <span class="section-label" style="margin-top:16px;">Subject (optional)</span>
+        <input type="text" class="form-input" id="subject" placeholder="e.g. Mathematics, English, Science">
+
+        <!-- Assignment Type -->
+        <span class="section-label" style="margin-top:16px;">Assignment Type</span>
+        <div class="toggle-row">
+            <button class="toggle-btn active" id="typeShort" onclick="setAssignType('short_answer')">Short Answer</button>
+            <button class="toggle-btn" id="typeRubrics" onclick="setAssignType('rubrics')">Essay / Rubrics</button>
+        </div>
+
+        <!-- Scoring Mode -->
+        <span class="section-label" style="margin-top:16px;">Scoring Mode</span>
+        <div class="toggle-row">
+            <button class="toggle-btn active" id="modeStatus" onclick="setScoringMode('status')">Status (Correct/Partial/Incorrect)</button>
+            <button class="toggle-btn" id="modeMarks" onclick="setScoringMode('marks')">Marks</button>
+        </div>
+        <div id="totalMarksRow" style="display:none;margin-bottom:16px;">
+            <input type="text" class="form-input" id="totalMarks" placeholder="Total marks (e.g. 50)">
+        </div>
+
+        <!-- File Uploads -->
+        <span class="section-label" style="margin-top:16px;">Question Paper *</span>
+        <div class="upload-zone" onclick="this.querySelector('input').click()">
+            <input type="file" id="question_paper" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 10)">
+            <div class="icon">&#128196;</div>
+            <div class="label">Question Paper</div>
+            <div class="filename" id="question_paper_name"></div>
+            <div class="hint">PDF or up to 10 images</div>
+        </div>
+
+        <div id="answerKeySection">
+            <span class="section-label" style="margin-top:16px;">Answer Key *</span>
+            <div class="upload-zone" onclick="this.querySelector('input').click()">
+                <input type="file" id="answer_key" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 10)">
+                <div class="icon">&#9989;</div>
+                <div class="label">Answer Key / Marking Scheme</div>
+                <div class="filename" id="answer_key_name"></div>
+                <div class="hint">PDF or up to 10 images</div>
+            </div>
+        </div>
+
+        <span class="section-label" style="margin-top:16px;">Student Script *</span>
+        <div class="upload-zone" onclick="this.querySelector('input').click()">
+            <input type="file" id="script" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple capture="environment" onchange="fileSelected(this, 10)">
+            <div class="icon">&#9997;&#65039;</div>
+            <div class="label">Student Script</div>
+            <div class="filename" id="script_name"></div>
+            <div class="hint">PDF or up to 10 images</div>
+        </div>
+
+        <div id="rubricsSection" style="display:none;">
+            <span class="section-label" style="margin-top:16px;">Rubrics (required for essay)</span>
+            <div class="upload-zone" onclick="this.querySelector('input').click()">
+                <input type="file" id="rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 10)">
+                <div class="icon">&#128203;</div>
+                <div class="label">Rubrics / Criteria</div>
+                <div class="filename" id="rubrics_name"></div>
+                <div class="hint">PDF or up to 10 images</div>
+            </div>
+        </div>
+
+        <span class="section-label" style="margin-top:16px;">Reference Material (optional)</span>
+        <div class="upload-zone" onclick="this.querySelector('input').click()">
+            <input type="file" id="reference" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 10)">
+            <div class="icon">&#128218;</div>
+            <div class="label">Reference Material</div>
+            <div class="filename" id="reference_name"></div>
+            <div class="hint">PDF or up to 10 images</div>
+        </div>
+
+        <!-- Instructions -->
+        <span class="section-label" style="margin-top:16px;">Additional Instructions (optional)</span>
+        <textarea class="form-input" id="markingInstructions" rows="3" placeholder="Any special marking instructions..."></textarea>
+
+        <div class="error-msg" id="errorMsg"></div>
+        <button class="mark-btn" id="markBtn" onclick="startMarking()">Mark Script</button>
+    </div>
+
+    {% else %}
+    <!-- ===================== NORMAL MODE: Class-based Form ===================== -->
     <div class="card" id="formCard">
         <!-- Step 1: Select Class -->
         <h2>1. Select Class</h2>
@@ -84,8 +213,9 @@
         <div class="error-msg" id="errorMsg"></div>
         <button class="mark-btn" id="markBtn" onclick="startMarking()">Mark Script</button>
     </div>
+    {% endif %}
 
-    <!-- Results -->
+    <!-- Results (shared between both modes) -->
     <div class="results" id="results">
         <div class="card">
             <h2>Results</h2>
@@ -120,16 +250,54 @@
 {% block scripts %}
 {% if authenticated %}
 <script>
+const DEMO_MODE = {{ 'true' if demo_mode else 'false' }};
+let currentJobId = null;
 let currentAssignmentId = null;
 let currentSubmissionId = null;
 let resultQuestions = [];
 let resultErrors = [];
 let resultAssignType = 'short_answer';
 let currentQ = 0;
+let demoAssignType = 'short_answer';
+let demoScoringMode = 'status';
 
 const STATUS_LABELS = { correct: 'Correct', partially_correct: 'Partially Correct', incorrect: 'Incorrect' };
 
-// --- Cascading dropdowns ---
+{% if demo_mode %}
+// --- Demo mode: provider/model/type logic ---
+
+const DEMO_PROVIDERS = {{ providers | tojson }};
+
+function updateModelDropdown() {
+    const sel = document.querySelector('input[name="provider"]:checked');
+    if (!sel) return;
+    const prov = sel.value;
+    const config = DEMO_PROVIDERS[prov];
+    if (config) {
+        document.getElementById('modelSelect').value = config.default;
+    }
+}
+
+function setAssignType(type) {
+    demoAssignType = type;
+    document.getElementById('typeShort').classList.toggle('active', type === 'short_answer');
+    document.getElementById('typeRubrics').classList.toggle('active', type === 'rubrics');
+    document.getElementById('answerKeySection').style.display = type === 'rubrics' ? 'none' : 'block';
+    document.getElementById('rubricsSection').style.display = type === 'rubrics' ? 'block' : 'none';
+}
+
+function setScoringMode(mode) {
+    demoScoringMode = mode;
+    document.getElementById('modeStatus').classList.toggle('active', mode === 'status');
+    document.getElementById('modeMarks').classList.toggle('active', mode === 'marks');
+    document.getElementById('totalMarksRow').style.display = mode === 'marks' ? 'block' : 'none';
+}
+
+// Initialize model
+updateModelDropdown();
+
+{% else %}
+// --- Normal mode: Cascading dropdowns ---
 
 async function loadClasses() {
     const res = await fetch('/api/classes');
@@ -198,7 +366,11 @@ function checkExistingSubmission() {
     }
 }
 
-// --- Marking ---
+// Initialize
+loadClasses();
+{% endif %}
+
+// --- Marking (shared) ---
 
 function showError(msg) { const el = document.getElementById('errorMsg'); el.textContent = msg; el.style.display = 'block'; }
 function hideError() { document.getElementById('errorMsg').style.display = 'none'; }
@@ -226,47 +398,146 @@ function hideModal() {
 
 async function startMarking() {
     hideError();
-    const assignmentId = document.getElementById('assignmentSelect').value;
-    const studentId = document.getElementById('studentSelect').value;
-    const scriptInput = document.getElementById('script');
 
-    if (!assignmentId || !studentId) {
-        return showError('Please select a class, assignment, and student.');
-    }
-    if (!scriptInput.files || !scriptInput.files.length) {
-        return showError('Please upload the student script.');
-    }
+    if (DEMO_MODE) {
+        // Demo mode: standalone form
+        const scriptInput = document.getElementById('script');
+        const qpInput = document.getElementById('question_paper');
 
-    const form = new FormData();
-    form.append('assignment_id', assignmentId);
-    form.append('student_id', studentId);
-    for (const f of scriptInput.files) {
-        form.append('script', f);
-    }
-
-    document.getElementById('markBtn').disabled = true;
-    document.getElementById('results').style.display = 'none';
-    showModal();
-
-    try {
-        const res = await fetch('/mark', {method: 'POST', body: form});
-        const data = await res.json();
-        if (!data.success) {
-            hideModal();
-            showError(data.error || 'Failed.');
-            document.getElementById('markBtn').disabled = false;
-            return;
+        if (!qpInput.files || !qpInput.files.length) {
+            return showError('Please upload a question paper.');
         }
-        currentAssignmentId = data.assignment_id;
-        currentSubmissionId = data.submission_id;
-        pollSubmissionStatus(data.assignment_id, data.submission_id);
-    } catch(e) {
-        hideModal();
-        showError('Connection error.');
-        document.getElementById('markBtn').disabled = false;
+        if (demoAssignType !== 'rubrics') {
+            const akInput = document.getElementById('answer_key');
+            if (!akInput.files || !akInput.files.length) {
+                return showError('Please upload an answer key.');
+            }
+        }
+        if (!scriptInput.files || !scriptInput.files.length) {
+            return showError('Please upload the student script.');
+        }
+
+        const provider = document.querySelector('input[name="provider"]:checked')?.value;
+        if (!provider) return showError('Please select a provider.');
+
+        const form = new FormData();
+        form.append('provider', provider);
+        form.append('model', document.getElementById('modelSelect').value);
+        form.append('subject', document.getElementById('subject').value);
+        form.append('assign_type', demoAssignType);
+        form.append('scoring_mode', demoScoringMode);
+        form.append('total_marks', document.getElementById('totalMarks')?.value || '');
+        form.append('marking_instructions', document.getElementById('markingInstructions')?.value || '');
+
+        for (const f of qpInput.files) form.append('question_paper', f);
+        const akInput = document.getElementById('answer_key');
+        if (akInput && akInput.files) {
+            for (const f of akInput.files) form.append('answer_key', f);
+        }
+        for (const f of scriptInput.files) form.append('script', f);
+        const rubInput = document.getElementById('rubrics');
+        if (rubInput && rubInput.files) {
+            for (const f of rubInput.files) form.append('rubrics', f);
+        }
+        const refInput = document.getElementById('reference');
+        if (refInput && refInput.files) {
+            for (const f of refInput.files) form.append('reference', f);
+        }
+
+        document.getElementById('markBtn').disabled = true;
+        document.getElementById('results').style.display = 'none';
+        showModal();
+
+        try {
+            const res = await fetch('/mark', {method: 'POST', body: form});
+            const data = await res.json();
+            if (!data.success) {
+                hideModal();
+                showError(data.error || 'Failed.');
+                document.getElementById('markBtn').disabled = false;
+                return;
+            }
+            currentJobId = data.job_id;
+            pollJobStatus(data.job_id);
+        } catch(e) {
+            hideModal();
+            showError('Connection error.');
+            document.getElementById('markBtn').disabled = false;
+        }
+    } else {
+        // Normal mode: class-based
+        const assignmentId = document.getElementById('assignmentSelect').value;
+        const studentId = document.getElementById('studentSelect').value;
+        const scriptInput = document.getElementById('script');
+
+        if (!assignmentId || !studentId) {
+            return showError('Please select a class, assignment, and student.');
+        }
+        if (!scriptInput.files || !scriptInput.files.length) {
+            return showError('Please upload the student script.');
+        }
+
+        const form = new FormData();
+        form.append('assignment_id', assignmentId);
+        form.append('student_id', studentId);
+        for (const f of scriptInput.files) {
+            form.append('script', f);
+        }
+
+        document.getElementById('markBtn').disabled = true;
+        document.getElementById('results').style.display = 'none';
+        showModal();
+
+        try {
+            const res = await fetch('/mark', {method: 'POST', body: form});
+            const data = await res.json();
+            if (!data.success) {
+                hideModal();
+                showError(data.error || 'Failed.');
+                document.getElementById('markBtn').disabled = false;
+                return;
+            }
+            currentAssignmentId = data.assignment_id;
+            currentSubmissionId = data.submission_id;
+            pollSubmissionStatus(data.assignment_id, data.submission_id);
+        } catch(e) {
+            hideModal();
+            showError('Connection error.');
+            document.getElementById('markBtn').disabled = false;
+        }
     }
 }
 
+// --- Demo mode polling (old job system) ---
+async function pollJobStatus(jobId) {
+    const interval = setInterval(async () => {
+        try {
+            const res = await fetch('/status/' + jobId);
+            const data = await res.json();
+            if (data.status === 'done' || data.status === 'error') {
+                clearInterval(interval);
+                hideModal();
+                document.getElementById('markBtn').disabled = false;
+                if (data.status === 'error') {
+                    showError(data.result?.error || 'Marking failed.');
+                    return;
+                }
+                if (data.result) {
+                    renderResults(data.result);
+                } else {
+                    showError('Marking completed but no results returned.');
+                }
+            }
+        } catch(e) {
+            clearInterval(interval);
+            hideModal();
+            document.getElementById('markBtn').disabled = false;
+            showError('Lost connection while marking.');
+        }
+    }, 2000);
+}
+
+// --- Normal mode polling (submission system) ---
 async function pollSubmissionStatus(assignmentId, submissionId) {
     const interval = setInterval(async () => {
         try {
@@ -434,7 +705,9 @@ function goQ(idx) {
 }
 
 function downloadPdf() {
-    if (currentAssignmentId && currentSubmissionId) {
+    if (DEMO_MODE && currentJobId) {
+        window.open('/download/' + currentJobId, '_blank');
+    } else if (currentAssignmentId && currentSubmissionId) {
         window.open('/submit/' + encodeURIComponent(currentAssignmentId) + '/download/' + currentSubmissionId, '_blank');
     }
 }
@@ -449,15 +722,13 @@ function resetForm() {
         const nameEl = document.getElementById('script_name');
         if (nameEl) nameEl.textContent = '';
     }
+    currentJobId = null;
     currentAssignmentId = null;
     currentSubmissionId = null;
     resultQuestions = [];
     resultErrors = [];
     currentQ = 0;
 }
-
-// Initialize
-loadClasses();
 </script>
 {% endif %}
 {% endblock %}

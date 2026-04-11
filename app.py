@@ -37,6 +37,25 @@ DEMO_MODE = os.getenv('DEMO_MODE', 'FALSE').upper() == 'TRUE'
 DEPT_MODE = os.getenv('DEPT_MODE', 'FALSE').upper() == 'TRUE'
 APP_TITLE = os.getenv('APP_TITLE', 'AI Feedback Systems')
 
+# Demo mode: restricted to 3 budget models only
+DEMO_MODELS = {
+    'anthropic': {
+        'label': 'Anthropic',
+        'models': {'claude-haiku-4-5-20251001': 'Claude Haiku 4.5'},
+        'default': 'claude-haiku-4-5-20251001',
+    },
+    'openai': {
+        'label': 'OpenAI',
+        'models': {'gpt-5.4-mini': 'GPT-5.4 Mini'},
+        'default': 'gpt-5.4-mini',
+    },
+    'qwen': {
+        'label': 'Qwen',
+        'models': {'qwen3.5-plus-2026-02-15': 'Qwen 3.5 Plus'},
+        'default': 'qwen3.5-plus-2026-02-15',
+    },
+}
+
 # Initialize database
 init_db(app)
 
@@ -222,6 +241,12 @@ def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pa
 
 @app.route('/')
 def hub():
+    if DEMO_MODE and not DEPT_MODE:
+        return render_template('hub.html',
+                               authenticated=True,
+                               dept_mode=False,
+                               demo_mode=True,
+                               teacher=None)
     if DEPT_MODE:
         if not Teacher.query.filter_by(role='hod').first():
             return redirect(url_for('department_setup'))
@@ -242,6 +267,20 @@ def logout():
 
 @app.route('/mark')
 def single_mark_page():
+    if DEMO_MODE and not DEPT_MODE:
+        # Demo mode: standalone marking with restricted models
+        from ai_marking import PROVIDER_KEY_MAP
+        providers = {}
+        for prov, config in DEMO_MODELS.items():
+            env_key = PROVIDER_KEY_MAP.get(prov, '')
+            if os.getenv(env_key, ''):
+                providers[prov] = config
+        return render_template('index.html',
+                               authenticated=True,
+                               demo_mode=True,
+                               dept_mode=False,
+                               providers=providers,
+                               all_providers=DEMO_MODELS)
     authenticated = _is_authenticated()
     return render_template('index.html',
                            authenticated=authenticated,
@@ -251,6 +290,16 @@ def single_mark_page():
 
 @app.route('/class')
 def class_page():
+    if DEMO_MODE and not DEPT_MODE:
+        # Demo mode: explore features, no real DB writes
+        return render_template('class.html',
+                               authenticated=True,
+                               providers={},
+                               demo_mode=True,
+                               dept_mode=False,
+                               teacher=None,
+                               all_providers=DEMO_MODELS,
+                               assignments=[])
     authenticated = _is_authenticated()
     sk = _get_session_keys()
     providers = get_available_providers(session_keys=sk)
@@ -347,6 +396,9 @@ def clear_keys():
 
 @app.route('/mark', methods=['POST'])
 def mark():
+    if DEMO_MODE and not DEPT_MODE:
+        return _demo_mark()
+
     if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
@@ -409,9 +461,66 @@ def mark():
     })
 
 
+def _demo_mark():
+    """Handle demo mode marking — standalone, in-memory, no DB."""
+    assign_type = request.form.get('assign_type', 'short_answer')
+
+    required_fields = ['question_paper', 'script']
+    if assign_type != 'rubrics':
+        required_fields.append('answer_key')
+    for field in required_fields:
+        files = request.files.getlist(field)
+        if not files or not files[0].filename:
+            return jsonify({'success': False, 'error': f'Missing required file: {field}'}), 400
+        if len(files) > 10:
+            return jsonify({'success': False, 'error': f'Maximum 10 files per upload ({field})'}), 400
+
+    provider = request.form.get('provider', 'anthropic')
+    model = request.form.get('model', '')
+
+    # Validate model is in demo allowed list
+    if provider not in DEMO_MODELS:
+        return jsonify({'success': False, 'error': 'Invalid provider for demo mode'}), 400
+    if model not in DEMO_MODELS[provider]['models']:
+        return jsonify({'success': False, 'error': 'Invalid model for demo mode'}), 400
+
+    subject = request.form.get('subject', '')
+    scoring_mode = request.form.get('scoring_mode', 'status')
+    total_marks = request.form.get('total_marks', '')
+    review_instructions = request.form.get('review_instructions', '')
+    marking_instructions = request.form.get('marking_instructions', '')
+
+    question_paper_pages = [f.read() for f in request.files.getlist('question_paper') if f.filename]
+    answer_key_pages = [f.read() for f in request.files.getlist('answer_key') if f.filename]
+    script_pages = [f.read() for f in request.files.getlist('script') if f.filename]
+    rubrics_pages = [f.read() for f in request.files.getlist('rubrics') if f.filename]
+    reference_pages = [f.read() for f in request.files.getlist('reference') if f.filename]
+
+    cleanup_old_jobs()
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {
+        'status': 'processing',
+        'result': None,
+        'subject': subject,
+        'created_at': time.time(),
+    }
+
+    thread = threading.Thread(
+        target=run_marking_job,
+        args=(job_id, provider, model, question_paper_pages, answer_key_pages,
+              script_pages, subject, rubrics_pages, reference_pages,
+              review_instructions, marking_instructions,
+              assign_type, scoring_mode, total_marks, None),
+        daemon=True
+    )
+    thread.start()
+
+    return jsonify({'success': True, 'job_id': job_id})
+
+
 @app.route('/status/<job_id>')
 def job_status(job_id):
-    if not _is_authenticated():
+    if not DEMO_MODE and not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     job = jobs.get(job_id)
@@ -432,7 +541,7 @@ def job_status(job_id):
 
 @app.route('/download/<job_id>')
 def download_pdf(job_id):
-    if not _is_authenticated():
+    if not DEMO_MODE and not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     job = jobs.get(job_id)

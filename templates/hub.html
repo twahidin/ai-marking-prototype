@@ -76,6 +76,29 @@
             <a href="/logout" style="color:#667eea; text-decoration:none;">Logout</a>
         </div>
 
+        {% elif demo_mode and not dept_mode %}
+        <h1>{{ app_title }}</h1>
+        <p class="subtitle">AI-powered marking demo</p>
+
+        <div class="hub-cards">
+            <a class="hub-card animate__animated animate__fadeInUp" style="animation-delay:0.1s;animation-duration:0.5s;" href="/mark">
+                <div class="icon">&#9889;</div>
+                <h2>Try AI Marking</h2>
+                <p>Upload a question paper, answer key, and student script. Get instant AI feedback with 3 budget models.</p>
+                <span class="tag">Live demo</span>
+            </a>
+            <a class="hub-card animate__animated animate__fadeInUp" style="animation-delay:0.2s;animation-duration:0.5s;" href="/class">
+                <div class="icon">&#128270;</div>
+                <h2>Explore Features</h2>
+                <p>Browse the class and assignment management interface. Data is session-only and not persisted.</p>
+                <span class="tag">Preview</span>
+            </a>
+        </div>
+
+        <div class="hub-footer">
+            Powered by Anthropic Claude, OpenAI GPT &amp; Alibaba Qwen
+        </div>
+
         {% else %}
         <h1>{{ teacher.name if teacher else app_title }}</h1>
         <p class="subtitle">{{ 'Teacher' if teacher else 'Choose how you\'d like to mark' }}</p>

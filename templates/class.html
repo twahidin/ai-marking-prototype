@@ -85,12 +85,21 @@
 
 <div class="container">
     <div class="header">
-        <h1>Mark a Class</h1>
-        <p>Upload all scripts at once, or let students submit their own</p>
+        <h1>{% if demo_mode %}Explore Features{% else %}Mark a Class{% endif %}</h1>
+        <p>{% if demo_mode %}Preview the class and assignment management interface{% else %}Upload all scripts at once, or let students submit their own{% endif %}</p>
         <p style="margin-top:8px;">
             <a href="/" style="color:#667eea;font-weight:600;font-size:13px;">&larr; Back to Home</a>
         </p>
     </div>
+
+    {% if demo_mode %}
+    <div class="card" style="background:#fff3cd;border:1px solid #ffc107;margin-bottom:24px;">
+        <p style="font-size:14px;color:#856404;font-weight:600;margin:0;">
+            Demo Mode — This is a preview of the class management features. Data is not saved and marking is disabled here.
+            <a href="/mark" style="color:#667eea;font-weight:700;">Try AI Marking instead</a>.
+        </p>
+    </div>
+    {% endif %}
 
     <!-- API Key Card (only shown when no server env keys are configured) -->
     <div class="card" id="keyCard" {% if providers %}style="display:none;"{% endif %}
