@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+
+{% block title %}Department Insights - AI Marking{% endblock %}
+
+{% block head %}
+<style>
+    .insights-page { max-width: 1000px; margin: 0 auto; padding: 40px 20px; }
+    .insights-header { margin-bottom: 24px; }
+    .insights-header h1 { font-size: 28px; font-weight: 700; color: #333; margin-bottom: 4px; }
+    .insights-header p { color: #888; font-size: 14px; }
+
+    .insights-nav { display: flex; gap: 16px; margin-bottom: 24px; }
+    .insights-nav a {
+        padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
+        text-decoration: none; color: #667eea; background: #f0f2ff; transition: all 0.2s;
+    }
+    .insights-nav a:hover { background: #667eea; color: white; }
+
+    .demo-banner {
+        background: #fff3cd; color: #856404; padding: 16px 20px; border-radius: 12px;
+        font-size: 14px; text-align: center; margin-bottom: 24px;
+    }
+
+    .filter-bar {
+        background: white; border-radius: 14px; padding: 20px;
+        box-shadow: 0 2px 16px rgba(0,0,0,0.07); margin-bottom: 24px;
+        display: flex; gap: 12px; align-items: end; flex-wrap: wrap;
+    }
+    .filter-group { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 180px; }
+    .filter-group label { font-size: 12px; font-weight: 600; color: #888; }
+    .filter-group select {
+        padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px;
+        font-size: 14px; outline: none;
+    }
+    .filter-group select:focus { border-color: #667eea; }
+    .filter-btn {
+        padding: 10px 20px; border: none; border-radius: 8px;
+        background: #667eea; color: white; font-weight: 600; font-size: 14px;
+        cursor: pointer; transition: background 0.2s;
+    }
+    .filter-btn:hover { background: #5a6fd6; }
+
+    .summary-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+    @media (max-width: 600px) { .summary-row { grid-template-columns: 1fr; } }
+    .summary-item {
+        background: white; border-radius: 14px; padding: 20px; text-align: center;
+        box-shadow: 0 2px 16px rgba(0,0,0,0.07);
+    }
+    .summary-item .num { font-size: 32px; font-weight: 700; color: #667eea; }
+    .summary-item .label { font-size: 13px; color: #888; margin-top: 4px; }
+
+    .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
+    @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } }
+
+    .chart-card {
+        background: white; border-radius: 14px; padding: 24px;
+        box-shadow: 0 2px 16px rgba(0,0,0,0.07);
+    }
+    .chart-card h3 { font-size: 16px; font-weight: 700; color: #333; margin-bottom: 16px; }
+
+    .bar-chart { display: flex; flex-direction: column; gap: 10px; }
+    .bar-row { display: flex; align-items: center; gap: 10px; }
+    .bar-label { width: 60px; font-size: 12px; font-weight: 600; color: #555; text-align: right; flex-shrink: 0; }
+    .bar-track { flex: 1; background: #e8e8e8; border-radius: 8px; height: 24px; position: relative; overflow: hidden; }
+    .bar-fill { background: #667eea; border-radius: 8px; height: 100%; transition: width 0.5s; min-width: 2px; }
+    .bar-value { width: 50px; font-size: 12px; color: #666; text-align: left; flex-shrink: 0; }
+
+    .v-bar-chart { display: flex; align-items: flex-end; gap: 8px; height: 180px; padding-top: 10px; }
+    .v-bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+    .v-bar { width: 100%; background: #667eea; border-radius: 6px 6px 0 0; transition: height 0.5s; min-height: 2px; }
+    .v-bar-label { font-size: 11px; color: #888; margin-top: 6px; text-align: center; }
+    .v-bar-value { font-size: 11px; font-weight: 600; color: #333; margin-bottom: 4px; }
+
+    .export-bar {
+        display: flex; gap: 12px; flex-wrap: wrap;
+    }
+    .export-btn {
+        padding: 10px 20px; border: none; border-radius: 8px;
+        font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none;
+        display: inline-block; transition: all 0.2s;
+    }
+    .export-btn.csv { background: #e8f5e9; color: #28a745; }
+    .export-btn.csv:hover { background: #28a745; color: white; }
+
+    .no-data { text-align: center; padding: 40px; color: #888; font-size: 14px; }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="insights-page">
+    <div class="insights-nav">
+        <a href="/">Home</a>
+        <a href="/department">Dashboard</a>
+        <a href="/department/classes">Manage</a>
+    </div>
+
+    <div class="insights-header">
+        <h1>Department Insights</h1>
+        <p>Performance analytics and reports</p>
+    </div>
+
+    {% if demo_mode %}
+    <div class="demo-banner">
+        Insights are not available in demo mode. Deploy with your own API keys to unlock analytics.
+    </div>
+    {% else %}
+
+    <div class="filter-bar">
+        <div class="filter-group">
+            <label>Assignment</label>
+            <select id="filterAssignment">
+                <option value="">All assignments</option>
+                {% for asn in assignments %}
+                <option value="{{ asn.id }}">{{ asn.title or asn.subject or 'Untitled' }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>Class</label>
+            <select id="filterClass">
+                <option value="">All classes</option>
+                {% for cls in classes %}
+                <option value="{{ cls.id }}">{{ cls.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button class="filter-btn" onclick="loadInsights()">Apply</button>
+    </div>
+
+    <div class="summary-row">
+        <div class="summary-item">
+            <div class="num" id="totalStudents">—</div>
+            <div class="label">Students Marked</div>
+        </div>
+        <div class="summary-item">
+            <div class="num" id="overallAvg">—</div>
+            <div class="label">Average Score</div>
+        </div>
+        <div class="summary-item">
+            <div class="num" id="passRate">—</div>
+            <div class="label">Pass Rate</div>
+        </div>
+    </div>
+
+    <div class="charts-grid">
+        <div class="chart-card">
+            <h3>Class Comparison</h3>
+            <div class="bar-chart" id="classChart">
+                <div class="no-data">Select filters and click Apply</div>
+            </div>
+        </div>
+        <div class="chart-card">
+            <h3>Score Distribution</h3>
+            <div class="v-bar-chart" id="distChart">
+            </div>
+        </div>
+    </div>
+
+    <div class="chart-card" style="margin-bottom: 24px;">
+        <h3>Question Difficulty (% Correct)</h3>
+        <div class="bar-chart" id="questionChart">
+            <div class="no-data">Select filters and click Apply</div>
+        </div>
+    </div>
+
+    <div class="export-bar">
+        <a class="export-btn csv" id="csvLink" href="/department/export/csv">Export CSV</a>
+    </div>
+
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if not demo_mode %}
+<script>
+function loadInsights() {
+    var asnId = document.getElementById('filterAssignment').value;
+    var clsId = document.getElementById('filterClass').value;
+    var params = new URLSearchParams();
+    if (asnId) params.set('assignment_id', asnId);
+    if (clsId) params.set('class_id', clsId);
+
+    // Update CSV link
+    var csvParams = new URLSearchParams(params);
+    document.getElementById('csvLink').href = '/department/export/csv?' + csvParams.toString();
+
+    fetch('/department/insights/data?' + params.toString())
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (!data.success) return;
+
+        document.getElementById('totalStudents').textContent = data.total_students;
+        document.getElementById('overallAvg').textContent = data.overall_avg + '%';
+        document.getElementById('passRate').textContent = data.pass_rate + '%';
+
+        renderClassChart(data.class_comparison);
+        renderDistChart(data.score_distribution);
+        renderQuestionChart(data.question_difficulty);
+    });
+}
+
+function renderClassChart(comparison) {
+    var el = document.getElementById('classChart');
+    var keys = Object.keys(comparison);
+    if (!keys.length) { el.innerHTML = '<div class="no-data">No data</div>'; return; }
+    var max = Math.max.apply(null, keys.map(function(k) { return comparison[k]; }));
+    if (max === 0) max = 1;
+    var html = '';
+    keys.forEach(function(name) {
+        var val = comparison[name];
+        var w = (val / 100) * 100;
+        var color = val >= 70 ? '#28a745' : (val >= 50 ? '#ffc107' : '#dc3545');
+        html += '<div class="bar-row">' +
+            '<span class="bar-label">' + name + '</span>' +
+            '<div class="bar-track"><div class="bar-fill" style="width:' + w + '%;background:' + color + '"></div></div>' +
+            '<span class="bar-value">' + val + '%</span>' +
+            '</div>';
+    });
+    el.innerHTML = html;
+}
+
+function renderDistChart(dist) {
+    var el = document.getElementById('distChart');
+    var keys = ['0-20', '21-40', '41-60', '61-80', '81-100'];
+    var max = Math.max.apply(null, keys.map(function(k) { return dist[k] || 0; }));
+    if (max === 0) max = 1;
+    var colors = ['#dc3545', '#fd7e14', '#ffc107', '#28a745', '#667eea'];
+    var html = '';
+    keys.forEach(function(k, i) {
+        var val = dist[k] || 0;
+        var h = (val / max) * 160;
+        html += '<div class="v-bar-col">' +
+            '<span class="v-bar-value">' + val + '</span>' +
+            '<div class="v-bar" style="height:' + h + 'px;background:' + colors[i] + '"></div>' +
+            '<span class="v-bar-label">' + k + '</span>' +
+            '</div>';
+    });
+    el.innerHTML = html;
+}
+
+function renderQuestionChart(difficulty) {
+    var el = document.getElementById('questionChart');
+    var keys = Object.keys(difficulty);
+    if (!keys.length) { el.innerHTML = '<div class="no-data">No data</div>'; return; }
+    var html = '';
+    keys.forEach(function(qnum) {
+        var val = difficulty[qnum];
+        var color = val >= 70 ? '#28a745' : (val >= 50 ? '#ffc107' : '#dc3545');
+        html += '<div class="bar-row">' +
+            '<span class="bar-label">Q' + qnum + '</span>' +
+            '<div class="bar-track"><div class="bar-fill" style="width:' + val + '%;background:' + color + '"></div></div>' +
+            '<span class="bar-value">' + val + '%</span>' +
+            '</div>';
+    });
+    el.innerHTML = html;
+}
+
+// Load on page open
+loadInsights();
+</script>
+{% endif %}
+{% endblock %}

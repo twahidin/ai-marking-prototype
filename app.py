@@ -609,6 +609,169 @@ def dept_save_keys():
     return jsonify({'success': True})
 
 
+@app.route('/department/insights')
+def department_insights():
+    err = _require_hod()
+    if err:
+        return redirect(url_for('hub'))
+
+    teacher = _current_teacher()
+    classes = Class.query.order_by(Class.name).all()
+    assignments = Assignment.query.filter(Assignment.class_id.isnot(None))\
+        .order_by(Assignment.created_at.desc()).all()
+
+    return render_template('department_insights.html',
+                           teacher=teacher,
+                           classes=classes,
+                           assignments=assignments,
+                           demo_mode=DEMO_MODE,
+                           dept_mode=DEPT_MODE)
+
+
+@app.route('/department/insights/data')
+def department_insights_data():
+    """API endpoint returning analytics data for charts."""
+    err = _require_hod()
+    if err:
+        return err
+    if DEMO_MODE:
+        return jsonify({'success': False, 'error': 'Not available in demo mode'}), 403
+
+    assignment_id = request.args.get('assignment_id')
+    class_id = request.args.get('class_id')
+
+    query = Submission.query.filter_by(status='done')
+    if assignment_id:
+        query = query.filter_by(assignment_id=assignment_id)
+
+    submissions = query.all()
+
+    class_scores = {}
+    question_stats = {}
+
+    for sub in submissions:
+        asn = Assignment.query.get(sub.assignment_id)
+        if not asn or not asn.class_id:
+            continue
+        if class_id and asn.class_id != class_id:
+            continue
+
+        result = sub.get_result()
+        questions = result.get('questions', [])
+        if not questions:
+            continue
+
+        cls = Class.query.get(asn.class_id)
+        cls_name = cls.name if cls else 'Unknown'
+        has_marks = any(q.get('marks_awarded') is not None for q in questions)
+
+        if has_marks:
+            total_a = sum(q.get('marks_awarded', 0) for q in questions)
+            total_p = sum(q.get('marks_total', 0) for q in questions)
+            pct = (total_a / total_p * 100) if total_p > 0 else 0
+        else:
+            correct = sum(1 for q in questions if q.get('status') == 'correct')
+            pct = (correct / len(questions) * 100) if questions else 0
+
+        class_scores.setdefault(cls_name, []).append(pct)
+
+        for i, q in enumerate(questions):
+            qnum = str(q.get('question_number', i + 1))
+            question_stats.setdefault(qnum, {'correct': 0, 'total': 0})
+            question_stats[qnum]['total'] += 1
+            if q.get('status') == 'correct' or (has_marks and q.get('marks_awarded', 0) == q.get('marks_total', 1)):
+                question_stats[qnum]['correct'] += 1
+
+    comparison = {name: round(sum(scores) / len(scores), 1)
+                  for name, scores in class_scores.items()}
+
+    all_scores = [s for scores in class_scores.values() for s in scores]
+    distribution = {'0-20': 0, '21-40': 0, '41-60': 0, '61-80': 0, '81-100': 0}
+    for s in all_scores:
+        if s <= 20: distribution['0-20'] += 1
+        elif s <= 40: distribution['21-40'] += 1
+        elif s <= 60: distribution['41-60'] += 1
+        elif s <= 80: distribution['61-80'] += 1
+        else: distribution['81-100'] += 1
+
+    q_difficulty = {qnum: round(stats['correct'] / stats['total'] * 100, 1) if stats['total'] else 0
+                    for qnum, stats in sorted(question_stats.items(), key=lambda x: x[0])}
+
+    pass_count = sum(1 for s in all_scores if s >= 50)
+
+    return jsonify({
+        'success': True,
+        'class_comparison': comparison,
+        'score_distribution': distribution,
+        'question_difficulty': q_difficulty,
+        'total_students': len(all_scores),
+        'overall_avg': round(sum(all_scores) / len(all_scores), 1) if all_scores else 0,
+        'pass_rate': round(pass_count / len(all_scores) * 100, 1) if all_scores else 0,
+    })
+
+
+@app.route('/department/export/csv')
+def department_export_csv():
+    """Export results as CSV."""
+    err = _require_hod()
+    if err:
+        return err
+    if DEMO_MODE:
+        return jsonify({'success': False, 'error': 'Not available in demo mode'}), 403
+
+    assignment_id = request.args.get('assignment_id')
+    class_id = request.args.get('class_id')
+
+    query = Submission.query.filter_by(status='done')
+    if assignment_id:
+        query = query.filter_by(assignment_id=assignment_id)
+
+    submissions = query.all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['Class', 'Student Index', 'Student Name', 'Assignment', 'Score', 'Percentage'])
+
+    for sub in submissions:
+        asn = Assignment.query.get(sub.assignment_id)
+        if not asn:
+            continue
+        if class_id and asn.class_id != class_id:
+            continue
+
+        student = Student.query.get(sub.student_id)
+        if not student:
+            continue
+
+        cls = Class.query.get(asn.class_id) if asn.class_id else None
+        result = sub.get_result()
+        questions = result.get('questions', [])
+        has_marks = any(q.get('marks_awarded') is not None for q in questions)
+
+        if has_marks:
+            ta = sum(q.get('marks_awarded', 0) for q in questions)
+            tp = sum(q.get('marks_total', 0) for q in questions)
+            score = f"{ta}/{tp}"
+            pct = round(ta / tp * 100, 1) if tp else 0
+        else:
+            correct = sum(1 for q in questions if q.get('status') == 'correct')
+            score = f"{correct}/{len(questions)}"
+            pct = round(correct / len(questions) * 100, 1) if questions else 0
+
+        writer.writerow([
+            cls.name if cls else '',
+            student.index_number,
+            student.name,
+            asn.title or asn.subject,
+            score,
+            f"{pct}%",
+        ])
+
+    buf = io.BytesIO(output.getvalue().encode('utf-8-sig'))
+    return send_file(buf, mimetype='text/csv', as_attachment=True,
+                     download_name='department_results.csv')
+
+
 # ---------------------------------------------------------------------------
 # Teacher Dashboard
 # ---------------------------------------------------------------------------
