@@ -874,7 +874,7 @@ def teacher_dashboard():
         return redirect(url_for('hub'))
 
     teacher = _current_teacher()
-    if not teacher or teacher.role == 'hod':
+    if not teacher:
         return redirect(url_for('hub'))
 
     class_data = []
