@@ -54,7 +54,7 @@
     {% if classes %}
     {% for cls in classes %}
     <div class="dept-card class-section animate__animated animate__fadeInUp" style="animation-delay:{{ loop.index0 * 0.1 }}s;animation-duration:0.5s;">
-        <h2>{{ cls.name }}{% if cls.level %} <span style="font-weight:400;color:#999;font-size:14px;">({{ cls.level }})</span>{% endif %}</h2>
+        <h2>{% if cls.level %}{{ cls.level }} - {% endif %}<span style="color:#667eea;">{{ cls.name }}</span></h2>
 
         {% if cls.assignments %}
         <div class="asn-grid">

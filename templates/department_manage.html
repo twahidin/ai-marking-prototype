@@ -108,8 +108,7 @@
                 <div class="item-card" id="class-{{ cls.id }}">
                     <div class="item-header">
                         <div>
-                            <span class="item-name">{{ cls.name }}</span>
-                            {% if cls.level %}<span class="item-meta"> ({{ cls.level }})</span>{% endif %}
+                            {% if cls.level %}<span class="item-name">{{ cls.level }} - </span>{% endif %}<span class="item-name" style="color:#667eea;">{{ cls.name }}</span>
                         </div>
                         <button class="delete-btn" onclick="deleteClass('{{ cls.id }}')" title="Delete class">&times;</button>
                     </div>
@@ -140,6 +139,7 @@
             <h2>Teachers</h2>
             <div class="add-form">
                 <input type="text" id="teacherName" placeholder="Teacher name">
+                <input type="text" id="teacherCode" placeholder="Code (optional)" style="max-width:140px;letter-spacing:1px;font-weight:600;">
                 <select id="teacherRole" style="max-width:120px;">
                     <option value="teacher">Teacher</option>
                     <option value="hod">HOD</option>
@@ -156,8 +156,9 @@
                         </div>
                         <button class="delete-btn" onclick="deleteTeacher('{{ t.id }}')" {% if t.role == 'hod' %}disabled title="Cannot delete HOD"{% else %}title="Delete teacher"{% endif %}>&times;</button>
                     </div>
-                    <div class="item-meta" style="margin-top:6px;">
-                        Code: <span class="code-display" onclick="navigator.clipboard.writeText(this.textContent)" title="Click to copy">{{ t.code }}</span>
+                    <div class="item-meta" style="margin-top:6px;display:flex;align-items:center;gap:8px;">
+                        Code: <span class="code-display" id="code-{{ t.id }}" onclick="navigator.clipboard.writeText(this.textContent);showToast('Code copied','success')" title="Click to copy">{{ t.code }}</span>
+                        <button class="assign-btn" onclick="resetCode('{{ t.id }}')" style="font-size:11px;padding:4px 8px;">Reset</button>
                     </div>
                 </div>
                 {% endfor %}
@@ -244,14 +245,31 @@ function unassignTeacher(classId, teacherId) {
 
 function addTeacher() {
     var name = document.getElementById('teacherName').value.trim();
+    var code = document.getElementById('teacherCode').value.trim();
     var role = document.getElementById('teacherRole').value;
     if (!name) return;
+    var payload = {name: name, role: role};
+    if (code) payload.code = code;
     fetch('/department/teacher/create', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({name: name, role: role})
+        body: JSON.stringify(payload)
     }).then(r => r.json()).then(data => {
         if (data.success) { showToast('Teacher created — code: ' + data.teacher.code, 'success'); location.reload(); }
         else { showToast(data.error || 'Error', 'error'); }
+    });
+}
+
+function resetCode(teacherId) {
+    var newCode = prompt('Enter new code (leave empty to auto-generate):');
+    if (newCode === null) return;
+    fetch('/department/teacher/' + teacherId + '/reset-code', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({code: newCode.trim()})
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            document.getElementById('code-' + teacherId).textContent = data.code;
+            showToast('Code updated: ' + data.code, 'success');
+        } else { showToast(data.error || 'Error', 'error'); }
     });
 }
 

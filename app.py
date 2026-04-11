@@ -509,10 +509,20 @@ def dept_create_teacher():
     if role not in ('teacher', 'hod'):
         return jsonify({'success': False, 'error': 'Invalid role'}), 400
 
+    custom_code = (data.get('code') or '').strip()
+    if custom_code:
+        if len(custom_code) < 4:
+            return jsonify({'success': False, 'error': 'Code must be at least 4 characters'}), 400
+        if Teacher.query.filter_by(code=custom_code).first():
+            return jsonify({'success': False, 'error': 'Code already in use'}), 400
+        code = custom_code
+    else:
+        code = _generate_teacher_code()
+
     t = Teacher(
         id=str(uuid.uuid4()),
         name=name,
-        code=_generate_teacher_code(),
+        code=code,
         role=role,
     )
     db.session.add(t)
@@ -536,6 +546,30 @@ def dept_delete_teacher(teacher_id):
     db.session.delete(t)
     db.session.commit()
     return jsonify({'success': True})
+
+
+@app.route('/department/teacher/<teacher_id>/reset-code', methods=['POST'])
+def dept_reset_code(teacher_id):
+    err = _require_hod()
+    if err:
+        return err
+
+    t = Teacher.query.get_or_404(teacher_id)
+    data = request.get_json()
+    new_code = (data.get('code') or '').strip()
+
+    if new_code:
+        if len(new_code) < 4:
+            return jsonify({'success': False, 'error': 'Code must be at least 4 characters'}), 400
+        existing = Teacher.query.filter_by(code=new_code).first()
+        if existing and existing.id != t.id:
+            return jsonify({'success': False, 'error': 'Code already in use'}), 400
+        t.code = new_code
+    else:
+        t.code = _generate_teacher_code()
+
+    db.session.commit()
+    return jsonify({'success': True, 'code': t.code})
 
 
 @app.route('/department/class/create', methods=['POST'])
