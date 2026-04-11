@@ -1307,129 +1307,91 @@ def bulk_mark():
     if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
-    # Use session keys if provided, otherwise fall back to server env keys
-    session_keys = _get_session_keys() or None
+    assignment_id = request.form.get('assignment_id')
+    if not assignment_id:
+        return jsonify({'success': False, 'error': 'Assignment is required'}), 400
 
-    # Validate files
-    for field in ('class_list', 'question_paper', 'bulk_scripts'):
-        files = request.files.getlist(field)
-        if not files or not files[0].filename:
-            return jsonify({'success': False, 'error': f'Missing required file: {field}'}), 400
+    asn = Assignment.query.get(assignment_id)
+    if not asn:
+        return jsonify({'success': False, 'error': 'Assignment not found'}), 404
 
-    assign_type = request.form.get('assign_type', 'short_answer')
-    if assign_type != 'rubrics':
-        ak_files = request.files.getlist('answer_key')
-        if not ak_files or not ak_files[0].filename:
-            return jsonify({'success': False, 'error': 'Missing required file: answer_key'}), 400
+    # Ownership check
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
 
-    pages_per_student = request.form.get('pages_per_student', '')
-    try:
-        pages_per_student = int(pages_per_student)
-        if pages_per_student < 1:
-            raise ValueError
-    except (ValueError, TypeError):
-        return jsonify({'success': False, 'error': 'Please enter a valid pages per student number'}), 400
+    if not asn.class_id:
+        return jsonify({'success': False, 'error': 'Assignment has no class linked'}), 400
 
-    # Parse class list
-    cl_file = request.files.get('class_list')
-    students = _parse_class_list(cl_file.read(), cl_file.filename)
-    if not students:
-        return jsonify({'success': False, 'error': 'Could not parse class list. Use CSV with columns: Index, Name'}), 400
+    # Get students from class (sorted)
+    all_students = _sort_by_index(Student.query.filter_by(class_id=asn.class_id).all())
+    if not all_students:
+        return jsonify({'success': False, 'error': 'No students in this class'}), 400
 
-    # Split bulk PDF
-    bulk_pdf = request.files.get('bulk_scripts').read()
+    # Parse page counts (one per student, 0 = skip)
     page_counts_json = request.form.get('page_counts', '')
+    if not page_counts_json:
+        return jsonify({'success': False, 'error': 'Page counts are required'}), 400
 
     try:
-        if page_counts_json:
-            page_counts = json.loads(page_counts_json)
-            if len(page_counts) != len(students):
-                return jsonify({'success': False,
-                    'error': f'Page count entries ({len(page_counts)}) does not match students ({len(students)})'}), 400
-            student_scripts, pdf_total = _split_pdf_variable(bulk_pdf, page_counts)
-            allocated = sum(page_counts)
-            if allocated != pdf_total:
-                return jsonify({'success': False,
-                    'error': f'Total allocated pages ({allocated}) does not match PDF pages ({pdf_total}). Please adjust.'}), 400
-        else:
-            student_scripts = _split_pdf(bulk_pdf, pages_per_student)
-            if len(student_scripts) != len(students):
-                return jsonify({
-                    'success': False,
-                    'error': f'Mismatch: class list has {len(students)} students but PDF splits into '
-                             f'{len(student_scripts)} scripts. Check your pages per student setting.'
-                }), 400
+        page_counts = json.loads(page_counts_json)
     except json.JSONDecodeError:
         return jsonify({'success': False, 'error': 'Invalid page counts data'}), 400
+
+    if len(page_counts) != len(all_students):
+        return jsonify({'success': False,
+            'error': f'Page counts ({len(page_counts)}) does not match students ({len(all_students)})'}), 400
+
+    # Validate bulk scripts file
+    bulk_file = request.files.get('bulk_scripts')
+    if not bulk_file or not bulk_file.filename:
+        return jsonify({'success': False, 'error': 'Please upload the bulk scripts PDF'}), 400
+    bulk_pdf = bulk_file.read()
+
+    # Build list of students to mark (skip those with page_count=0)
+    students_to_mark = []
+    page_counts_to_split = []
+    for student, pc in zip(all_students, page_counts):
+        pc = int(pc)
+        if pc > 0:
+            students_to_mark.append({
+                'index': student.index_number,
+                'name': student.name,
+                'db_id': student.id,
+            })
+            page_counts_to_split.append(pc)
+
+    if not students_to_mark:
+        return jsonify({'success': False, 'error': 'All students are set to skip (0 pages)'}), 400
+
+    # Split PDF using only non-zero page counts
+    try:
+        student_scripts, pdf_total = _split_pdf_variable(bulk_pdf, page_counts_to_split)
+        allocated = sum(page_counts_to_split)
+        if allocated != pdf_total:
+            return jsonify({'success': False,
+                'error': f'Allocated pages ({allocated}) does not match PDF pages ({pdf_total}). Please adjust.'}), 400
     except Exception as e:
         return jsonify({'success': False, 'error': f'Error splitting PDF: {e}'}), 400
 
-    provider = request.form.get('provider', 'anthropic')
-    model = request.form.get('model', '')
-    subject = request.form.get('subject', '')
-    scoring_mode = request.form.get('scoring_mode', 'status')
-    total_marks = request.form.get('total_marks', '')
-    review_instructions = request.form.get('review_instructions', '')
-    marking_instructions = request.form.get('marking_instructions', '')
+    # Delete existing submissions for students being re-marked
+    for s in students_to_mark:
+        existing = Submission.query.filter_by(student_id=s['db_id'], assignment_id=assignment_id).first()
+        if existing:
+            db.session.delete(existing)
+    db.session.commit()
 
-    question_paper_pages = [f.read() for f in request.files.getlist('question_paper') if f.filename]
-    answer_key_pages = [f.read() for f in request.files.getlist('answer_key') if f.filename]
-    rubrics_pages = [f.read() for f in request.files.getlist('rubrics') if f.filename]
-    reference_pages = [f.read() for f in request.files.getlist('reference') if f.filename]
+    # Use assignment's stored settings
+    session_keys = _resolve_api_keys(asn)
 
-    # In dept mode, create persistent Assignment + Student records
-    assignment_id = None
-    if DEPT_MODE:
-        teacher = _current_teacher()
-        class_id = request.form.get('class_id')
-        title = request.form.get('title', '')
+    # Build student_id_map for the background thread
+    student_id_map = {s['index']: s['db_id'] for s in students_to_mark}
 
-        # Determine API keys
-        api_keys = {}
-        if session_keys:
-            api_keys = session_keys
-        else:
-            api_keys = _get_dept_keys()
-
-        asn = Assignment(
-            id=str(uuid.uuid4()),
-            classroom_code=_generate_classroom_code(),
-            title=title,
-            subject=subject,
-            assign_type=assign_type,
-            scoring_mode=scoring_mode,
-            total_marks=total_marks,
-            provider=provider,
-            model=model,
-            show_results=True,
-            review_instructions=review_instructions,
-            marking_instructions=marking_instructions,
-            question_paper=question_paper_pages[0] if question_paper_pages else None,
-            answer_key=answer_key_pages[0] if answer_key_pages else None,
-            rubrics=rubrics_pages[0] if rubrics_pages else None,
-            reference=reference_pages[0] if reference_pages else None,
-            class_id=class_id if class_id else None,
-            teacher_id=teacher.id if teacher else None,
-        )
-        asn.set_api_keys(api_keys)
-        db.session.add(asn)
-
-        student_id_map = {}
-        for s in students:
-            st = Student(
-                assignment_id=asn.id,
-                index_number=s['index'],
-                name=s['name'],
-            )
-            db.session.add(st)
-            db.session.flush()
-            student_id_map[s['index']] = st.id
-
-        db.session.commit()
-        assignment_id = asn.id
-        jobs_student_map = student_id_map
-    else:
-        jobs_student_map = None
+    # Get files from assignment record
+    question_paper_pages = [asn.question_paper] if asn.question_paper else []
+    answer_key_pages = [asn.answer_key] if asn.answer_key else []
+    rubrics_pages = [asn.rubrics] if asn.rubrics else []
+    reference_pages = [asn.reference] if asn.reference else []
 
     cleanup_old_jobs()
 
@@ -1438,20 +1400,20 @@ def bulk_mark():
         'status': 'processing',
         'result': None,
         'results': [],
-        'subject': subject,
+        'subject': asn.subject,
         'created_at': time.time(),
-        'progress': {'current': 0, 'total': len(students), 'current_name': 'Starting...'},
+        'progress': {'current': 0, 'total': len(students_to_mark), 'current_name': 'Starting...'},
         'bulk': True,
         'assignment_id': assignment_id,
     }
 
     thread = threading.Thread(
         target=run_bulk_marking_job,
-        args=(job_id, provider, model, question_paper_pages, answer_key_pages,
-              rubrics_pages, reference_pages, student_scripts, students,
-              subject, review_instructions, marking_instructions,
-              assign_type, scoring_mode, total_marks, session_keys,
-              assignment_id, jobs_student_map),
+        args=(job_id, asn.provider, asn.model, question_paper_pages, answer_key_pages,
+              rubrics_pages, reference_pages, student_scripts, students_to_mark,
+              asn.subject, asn.review_instructions, asn.marking_instructions,
+              asn.assign_type, asn.scoring_mode, asn.total_marks, session_keys,
+              assignment_id, student_id_map),
         daemon=True
     )
     thread.start()

@@ -123,98 +123,26 @@
     <div class="tab-content active" id="tabUpload">
 
         <div class="card" id="bulkFormCard">
-            <h2>AI Provider</h2>
-            <div class="sel-group" id="bulkProviderGroup">
-                {% for key, config in providers.items() %}
-                <div class="sel-option">
-                    <input type="radio" name="bulk_provider" id="bulk_provider_{{ key }}" value="{{ key }}" {% if loop.first %}checked{% endif %} onchange="updateBulkModelSelect()">
-                    <label for="bulk_provider_{{ key }}">{{ config.label }}</label>
-                </div>
-                {% endfor %}
-            </div>
-            <div id="bulkNoProviderMsg" style="color:#e68a00;font-size:13px;font-weight:600;margin-bottom:16px;{% if providers %}display:none;{% endif %}">
-                Please save an API key above to enable a provider.
-            </div>
-            <select class="model-select" id="bulkModelSelect"></select>
+            <h2>Select Assignment</h2>
+            <p style="font-size:13px;color:#888;margin-bottom:16px;">
+                Choose an existing assignment to bulk-mark. Students come from the linked class. Question paper and answer key are stored in the assignment.
+            </p>
 
-            <div class="form-group">
-                <label for="bulkTitle">Assignment Title</label>
-                <input type="text" class="form-input" id="bulkTitle" placeholder="e.g. Mid-Year Exam 2026, Quiz 3, Essay Assignment">
-            </div>
-            <div class="form-group">
-                <label for="bulkSubject">Subject</label>
-                <input type="text" class="form-input" id="bulkSubject" placeholder="e.g. Mathematics, English, Science">
-            </div>
-            {% if dept_mode and teacher %}
             <div class="form-group">
                 <label>Class</label>
-                <select class="form-input" id="bulkClassId" style="padding:12px;">
+                <select class="form-input" id="bulkClassSelect" style="padding:12px;" onchange="loadBulkAssignments()">
                     <option value="">Select a class...</option>
-                    {% for cls in teacher.classes %}
-                    <option value="{{ cls.id }}">{% if cls.level %}{{ cls.level }} - {% endif %}{{ cls.name }}</option>
-                    {% endfor %}
                 </select>
             </div>
-            {% endif %}
-
-            <h2 style="margin-top: 24px;">Assignment Type</h2>
-            <div class="sel-group">
-                <div class="sel-option">
-                    <input type="radio" name="bulk_assign_type" id="bulk_type_short" value="short_answer" checked onchange="updateBulkAssignType()">
-                    <label for="bulk_type_short">Short Answer</label>
-                </div>
-                <div class="sel-option">
-                    <input type="radio" name="bulk_assign_type" id="bulk_type_rubric" value="rubrics" onchange="updateBulkAssignType()">
-                    <label for="bulk_type_rubric">Rubrics / Essay</label>
-                </div>
-            </div>
-
-            <div id="bulkShortAnswerOptions">
-                <div class="toggle-row">
-                    <label class="toggle"><input type="checkbox" id="bulkAllocateMarks" onchange="updateBulkMarksVis()"><span class="slider"></span></label>
-                    <span class="toggle-label">Allocate marks</span>
-                </div>
-                <div class="form-group" id="bulkTotalMarksGroup" style="display:none;">
-                    <label for="bulkTotalMarks">Total Marks</label>
-                    <input type="number" class="marks-input" id="bulkTotalMarks" min="1" max="999" placeholder="100">
-                </div>
-            </div>
-            <div id="bulkRubricOptions" style="display:none;">
-                <div class="form-group">
-                    <label for="bulkTotalMarksRubric">Total Marks</label>
-                    <input type="number" class="marks-input" id="bulkTotalMarksRubric" min="1" max="999" placeholder="100">
-                </div>
-            </div>
-
-            <h2 style="margin-top: 24px;">Upload Files</h2>
 
             <div class="form-group">
-                <label for="bulk_class_list">Class List (CSV: Index, Name)</label>
-                <div class="upload-zone" style="max-width:100%;" onclick="this.querySelector('input').click()">
-                    <input type="file" id="bulk_class_list" accept=".csv" onchange="fileSelected(this); parseBulkCSV();">
-                    <div class="icon">&#128203;</div>
-                    <div class="label">Class List</div>
-                    <div class="filename"></div>
-                    <div class="hint">CSV file with columns: Index, Name</div>
-                </div>
+                <label>Assignment</label>
+                <select class="form-input" id="bulkAssignmentSelect" style="padding:12px;" onchange="loadBulkStudents()">
+                    <option value="">Select an assignment...</option>
+                </select>
             </div>
 
-            <div class="upload-grid">
-                <div class="upload-zone" onclick="this.querySelector('input').click()">
-                    <input type="file" id="bulk_question_paper" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 10)">
-                    <div class="icon">&#128196;</div>
-                    <div class="label">Question Paper</div>
-                    <div class="filename"></div>
-                    <div class="hint">PDF or up to 10 images</div>
-                </div>
-                <div class="upload-zone" id="bulkAnswerKeyZone" onclick="this.querySelector('input').click()">
-                    <input type="file" id="bulk_answer_key" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 10)">
-                    <div class="icon" id="bulkAnswerKeyIcon">&#9989;</div>
-                    <div class="label" id="bulkAnswerKeyLabel">Answer Key</div>
-                    <div class="filename"></div>
-                    <div class="hint" id="bulkAnswerKeyHint">PDF or up to 10 images</div>
-                </div>
-            </div>
+            <h2 style="margin-top: 24px;">Upload Scripts</h2>
 
             <div class="form-group">
                 <label>All Student Scripts (single PDF, scanned in class list order)</label>
@@ -228,63 +156,31 @@
             </div>
 
             <div class="form-group">
-                <label for="bulk_pages_per_student">Pages Per Student</label>
-                <input type="number" class="marks-input" id="bulk_pages_per_student" min="1" max="50" placeholder="2" value="">
+                <label for="bulk_pages_per_student">Default Pages Per Student</label>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <input type="number" class="marks-input" id="bulk_pages_per_student" min="0" max="50" placeholder="2" value="2" style="width:80px;">
+                    <button class="btn-sm view" onclick="setAllPages()" style="white-space:nowrap;">Set All</button>
+                </div>
+                <p style="font-size:12px;color:#888;margin-top:4px;">Set individual page counts below. Use 0 to skip a student.</p>
             </div>
 
-            <div id="bulkRubricUploadSection">
-                <div class="collapsible-header" id="bulkRubricToggle" onclick="toggleSection('bulkRubricToggle','bulkRubricBody')">
-                    <span class="arrow">&#9654;</span>
-                    <span id="bulkRubricLabel">Rubrics (Optional)</span>
+            <!-- Student list with page counts -->
+            <div id="bulkStudentListSection" style="display:none;">
+                <h2 style="margin-top: 24px;">Students</h2>
+                <div style="overflow-x:auto;border:1px solid #eee;border-radius:8px;max-height:400px;overflow-y:auto;">
+                    <table class="results-table" style="font-size:13px;margin:0;">
+                        <thead><tr><th>#</th><th>Index</th><th>Name</th><th style="width:80px;text-align:center;">Pages</th><th>Status</th></tr></thead>
+                        <tbody id="bulkStudentBody"></tbody>
+                    </table>
                 </div>
-                <div class="collapsible-body" id="bulkRubricBody">
-                    <div class="upload-zone" style="max-width: 260px;" onclick="this.querySelector('input').click()">
-                        <input type="file" id="bulk_rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 10)">
-                        <div class="icon">&#128203;</div>
-                        <div class="label">Rubrics</div>
-                        <div class="filename"></div>
-                        <div class="hint">PDF or up to 10 images</div>
-                    </div>
+                <div style="display:flex;justify-content:space-between;margin-top:8px;flex-wrap:wrap;gap:8px;">
+                    <span style="font-size:13px;color:#555;" id="bulkStudentCount">0 students</span>
+                    <span style="font-size:13px;font-weight:700;" id="bulkTotalPagesDisplay">Total: 0 pages</span>
                 </div>
-            </div>
-
-            <h2 style="margin-top: 24px;">Instructions (Optional)</h2>
-            <div class="form-group">
-                <label for="bulk_review_instructions">Review Instructions</label>
-                <textarea class="form-textarea" id="bulk_review_instructions" placeholder="How should feedback be written? e.g. tone, detail level, language..."></textarea>
-            </div>
-            <div class="form-group">
-                <label for="bulk_marking_instructions">Marking Instructions</label>
-                <textarea class="form-textarea" id="bulk_marking_instructions" placeholder="How should answers be evaluated? e.g. strictness, what to accept..."></textarea>
             </div>
 
             <div class="error-msg" id="bulkErrorMsg"></div>
             <button class="mark-btn" id="bulkMarkBtn" onclick="startBulkMarking()">Mark All Scripts</button>
-        </div>
-
-        <!-- Page Allocation Modal -->
-        <div class="modal-overlay" id="pageAllocModal">
-            <div class="modal-box" style="max-width:600px;text-align:left;max-height:85vh;display:flex;flex-direction:column;">
-                <h3 style="text-align:center;">Review Page Allocation</h3>
-                <p style="font-size:13px;color:#888;margin-bottom:16px;text-align:center;">
-                    Adjust page counts for students with different numbers of pages.
-                </p>
-                <div style="display:flex;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
-                    <span style="font-size:13px;color:#555;">Default: <strong id="defaultPagesDisplay">2</strong> pages/student</span>
-                    <span style="font-size:13px;font-weight:700;" id="totalPagesDisplay">Total: 0 pages</span>
-                </div>
-                <div style="overflow-y:auto;flex:1;margin-bottom:16px;border:1px solid #eee;border-radius:8px;">
-                    <table class="results-table" style="font-size:13px;margin:0;">
-                        <thead><tr><th>Index</th><th>Name</th><th style="width:80px;text-align:center;">Pages</th></tr></thead>
-                        <tbody id="pageAllocBody"></tbody>
-                    </table>
-                </div>
-                <div class="error-msg" id="pageAllocError"></div>
-                <div style="display:flex;gap:10px;">
-                    <button onclick="closePageAllocModal()" style="flex:1;padding:12px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;border:none;background:#f0f0f0;color:#666;">Cancel</button>
-                    <button id="pageAllocConfirmBtn" onclick="confirmBulkMarking()" style="flex:1;padding:12px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;border:none;background:#667eea;color:white;">Confirm &amp; Mark</button>
-                </div>
-            </div>
         </div>
 
         <!-- Progress -->
@@ -340,17 +236,13 @@
                 <input type="text" class="form-input" id="teacherSubject" placeholder="e.g. Mathematics, English, Science">
             </div>
 
-            {% if dept_mode and teacher %}
             <div class="form-group">
                 <label>Class</label>
-                <select class="form-input" id="teacherClassId" style="padding:12px;">
+                <select class="form-input" id="teacherClassId" style="padding:12px;" onchange="onTeacherClassChange()">
                     <option value="">Select a class...</option>
-                    {% for cls in teacher.classes %}
-                    <option value="{{ cls.id }}">{{ cls.name }}{% if cls.level %} ({{ cls.level }}){% endif %}</option>
-                    {% endfor %}
                 </select>
+                <p style="font-size:12px;color:#888;margin-top:4px;" id="teacherClassInfo"></p>
             </div>
-            {% endif %}
 
             <!-- Assignment Type -->
             <div style="font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">Assignment Type</div>
@@ -401,18 +293,8 @@
                 <label for="teacherShowResults">Allow students to see AI feedback immediately</label>
             </div>
 
-            <!-- Class list -->
+            <!-- Upload Files -->
             <div style="font-size:13px;font-weight:600;color:#555;margin-bottom:6px; margin-top:24px;">Upload Files</div>
-            <div class="form-group">
-                <label>Class List (CSV: Index, Name)</label>
-                <div class="upload-zone" style="max-width:100%;" onclick="this.querySelector('input').click()">
-                    <input type="file" id="teacher_class_list" accept=".csv" onchange="fileSelected(this)">
-                    <div class="icon">&#128203;</div>
-                    <div class="label">Class List</div>
-                    <div class="filename"></div>
-                    <div class="hint">CSV file with columns: Index, Name</div>
-                </div>
-            </div>
 
             <!-- Question paper + answer key -->
             <div class="upload-grid">
@@ -508,6 +390,7 @@ let BULK_PROVIDER_MODELS = {{ providers | tojson }};
 const DEMO_MODE = {{ demo_mode | tojson }};
 const savedKeys = {};
 let bulkJobId = null;
+let bulkStudents = [];  // loaded from API
 
 /* =====================================================================
    Tab switching
@@ -583,131 +466,111 @@ function renderKeyBadges() {
 window.addEventListener('beforeunload', () => { navigator.sendBeacon('/clear-keys', ''); });
 
 /* =====================================================================
-   Tab 1 (Bulk): Provider / model
+   Tab 1 (Bulk): Load classes, assignments, students
    ===================================================================== */
 function rebuildBulkProviderGroup() {
-    const group = document.getElementById('bulkProviderGroup');
-    group.innerHTML = '';
-    let first = true;
-    for (const [k, config] of Object.entries(BULK_PROVIDER_MODELS)) {
-        const div = document.createElement('div');
-        div.className = 'sel-option';
-        div.innerHTML = '<input type="radio" name="bulk_provider" id="bulk_provider_' + k + '" value="' + k + '" ' + (first ? 'checked' : '') + ' onchange="updateBulkModelSelect()"><label for="bulk_provider_' + k + '">' + config.label + '</label>';
-        group.appendChild(div);
-        first = false;
-    }
-    document.getElementById('bulkNoProviderMsg').style.display = Object.keys(BULK_PROVIDER_MODELS).length ? 'none' : 'block';
-    updateBulkModelSelect();
+    // No longer needed for bulk tab (settings come from assignment),
+    // but keep for teacher tab key-save refresh
 }
 
-function updateBulkModelSelect() {
-    const prov = document.querySelector('input[name="bulk_provider"]:checked')?.value;
-    const sel = document.getElementById('bulkModelSelect');
-    sel.innerHTML = '';
-    if (prov && BULK_PROVIDER_MODELS[prov]) {
-        const m = BULK_PROVIDER_MODELS[prov].models, d = BULK_PROVIDER_MODELS[prov].default;
-        for (const [id, label] of Object.entries(m)) {
+async function loadBulkClasses() {
+    try {
+        const res = await fetch('/api/classes');
+        const classes = await res.json();
+        const sel = document.getElementById('bulkClassSelect');
+        sel.innerHTML = '<option value="">Select a class...</option>';
+        classes.forEach(function(c) {
             const o = document.createElement('option');
-            o.value = id; o.textContent = label; if (id === d) o.selected = true;
+            o.value = c.id;
+            o.textContent = (c.level ? c.level + ' - ' : '') + c.name + ' (' + c.student_count + ' students)';
             sel.appendChild(o);
-        }
-    }
+        });
+    } catch(e) { console.error('Failed to load classes', e); }
 }
 
-/* =====================================================================
-   Tab 1 (Bulk): Assignment type / marks
-   ===================================================================== */
-function updateBulkAssignType() {
-    const t = document.querySelector('input[name="bulk_assign_type"]:checked')?.value;
-    document.getElementById('bulkShortAnswerOptions').style.display = t === 'rubrics' ? 'none' : 'block';
-    document.getElementById('bulkRubricOptions').style.display = t === 'rubrics' ? 'block' : 'none';
-    const rl = document.getElementById('bulkRubricLabel');
-    const akLabel = document.getElementById('bulkAnswerKeyLabel');
-    const akIcon = document.getElementById('bulkAnswerKeyIcon');
-    const akHint = document.getElementById('bulkAnswerKeyHint');
-    const akInput = document.getElementById('bulk_answer_key') || document.getElementById('bulk_reference');
-    if (t === 'rubrics') {
-        rl.textContent = 'Rubrics (Required)';
-        document.getElementById('bulkRubricToggle').classList.add('open');
-        document.getElementById('bulkRubricBody').classList.add('open');
-        akLabel.textContent = 'Reference Materials';
-        akIcon.innerHTML = '&#128218;';
-        akHint.textContent = 'Optional: sample works, etc.';
-        if (akInput) akInput.id = 'bulk_reference';
-    } else {
-        rl.textContent = 'Rubrics (Optional)';
-        akLabel.textContent = 'Answer Key';
-        akIcon.innerHTML = '&#9989;';
-        akHint.textContent = 'PDF or up to 10 images';
-        const refInput = document.getElementById('bulk_reference');
-        if (refInput) refInput.id = 'bulk_answer_key';
-    }
+async function loadBulkAssignments() {
+    const classId = document.getElementById('bulkClassSelect').value;
+    const sel = document.getElementById('bulkAssignmentSelect');
+    sel.innerHTML = '<option value="">Select an assignment...</option>';
+    bulkStudents = [];
+    document.getElementById('bulkStudentListSection').style.display = 'none';
+    document.getElementById('bulkStudentBody').innerHTML = '';
+    if (!classId) return;
+
+    try {
+        const res = await fetch('/api/class/' + classId + '/assignments');
+        const assignments = await res.json();
+        assignments.forEach(function(a) {
+            const o = document.createElement('option');
+            o.value = a.id;
+            o.textContent = a.title + (a.subject ? ' (' + a.subject + ')' : '');
+            sel.appendChild(o);
+        });
+    } catch(e) { console.error('Failed to load assignments', e); }
 }
 
-function updateBulkMarksVis() {
-    document.getElementById('bulkTotalMarksGroup').style.display = document.getElementById('bulkAllocateMarks').checked ? 'block' : 'none';
-}
-
-/* =====================================================================
-   Tab 1 (Bulk): CSV parsing & page allocation
-   ===================================================================== */
-var bulkStudents = [];
-
-function parseBulkCSV() {
-    var input = document.getElementById('bulk_class_list');
-    if (!input.files.length) { bulkStudents = []; return; }
-    var reader = new FileReader();
-    reader.onload = function(e) {
-        var text = e.target.result.replace(/^\uFEFF/, '');
-        var lines = text.split(/\r?\n/);
-        bulkStudents = [];
-        for (var i = 0; i < lines.length; i++) {
-            var row = lines[i].split(',').map(function(s) { return s.trim(); });
-            if (!row[0]) continue;
-            var first = row[0].toLowerCase();
-            if (['index','no','no.','s/n','sn','#','number'].indexOf(first) >= 0) continue;
-            if (row.length >= 2 && row[1]) {
-                bulkStudents.push({ index: row[0], name: row[1] });
-            } else if (row[0]) {
-                bulkStudents.push({ index: String(bulkStudents.length + 1), name: row[0] });
-            }
-        }
-    };
-    reader.readAsText(input.files[0]);
-}
-
-function showPageAllocDialog() {
-    var defaultPages = parseInt(document.getElementById('bulk_pages_per_student').value) || 2;
-    document.getElementById('defaultPagesDisplay').textContent = defaultPages;
-    var tbody = document.getElementById('pageAllocBody');
+async function loadBulkStudents() {
+    const assignmentId = document.getElementById('bulkAssignmentSelect').value;
+    const tbody = document.getElementById('bulkStudentBody');
     tbody.innerHTML = '';
-    bulkStudents.forEach(function(s, i) {
-        var tr = document.createElement('tr');
-        tr.innerHTML = '<td>' + esc(s.index) + '</td><td>' + esc(s.name) + '</td>' +
-            '<td style="text-align:center;"><input type="number" class="page-count-input" data-idx="' + i + '" value="' + defaultPages +
-            '" min="1" max="50" style="width:60px;padding:6px 4px;text-align:center;border:1px solid #ddd;border-radius:6px;font-size:13px;" onchange="updateTotalPages()" oninput="updateTotalPages()"></td>';
-        tbody.appendChild(tr);
+    bulkStudents = [];
+    if (!assignmentId) {
+        document.getElementById('bulkStudentListSection').style.display = 'none';
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/assignment/' + assignmentId + '/students');
+        const students = await res.json();
+        bulkStudents = students;
+
+        const defaultPages = parseInt(document.getElementById('bulk_pages_per_student').value) || 2;
+
+        students.forEach(function(s, i) {
+            const tr = document.createElement('tr');
+            let statusBadge = '<span style="color:#aaa;font-size:12px;">No submission</span>';
+            if (s.has_submission) {
+                if (s.status === 'done') {
+                    statusBadge = '<span style="background:#e8f5e9;color:#28a745;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;">Done</span>';
+                } else if (s.status === 'processing') {
+                    statusBadge = '<span style="background:#fff3e0;color:#f57c00;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;">Processing</span>';
+                } else if (s.status === 'error') {
+                    statusBadge = '<span style="background:#fdecea;color:#dc3545;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;">Error</span>';
+                } else {
+                    statusBadge = '<span style="background:#f0f2ff;color:#667eea;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;">' + esc(s.status || 'Submitted') + '</span>';
+                }
+            }
+            tr.innerHTML = '<td>' + (i + 1) + '</td><td>' + esc(s.index) + '</td><td>' + esc(s.name) + '</td>' +
+                '<td style="text-align:center;"><input type="number" class="bulk-page-input" data-idx="' + i + '" value="' + defaultPages +
+                '" min="0" max="50" style="width:60px;padding:6px 4px;text-align:center;border:1px solid #ddd;border-radius:6px;font-size:13px;" onchange="updateBulkTotalPages()" oninput="updateBulkTotalPages()"></td>' +
+                '<td>' + statusBadge + '</td>';
+            tbody.appendChild(tr);
+        });
+
+        document.getElementById('bulkStudentCount').textContent = students.length + ' students';
+        document.getElementById('bulkStudentListSection').style.display = 'block';
+        updateBulkTotalPages();
+    } catch(e) { console.error('Failed to load students', e); }
+}
+
+function setAllPages() {
+    const defaultPages = parseInt(document.getElementById('bulk_pages_per_student').value) || 2;
+    document.querySelectorAll('.bulk-page-input').forEach(function(inp) {
+        inp.value = defaultPages;
     });
-    updateTotalPages();
-    document.getElementById('pageAllocError').style.display = 'none';
-    document.getElementById('pageAllocModal').classList.add('active');
+    updateBulkTotalPages();
 }
 
-function updateTotalPages() {
-    var inputs = document.querySelectorAll('.page-count-input');
-    var total = 0;
-    inputs.forEach(function(inp) { total += parseInt(inp.value) || 0; });
-    document.getElementById('totalPagesDisplay').textContent = 'Total: ' + total + ' pages';
+function updateBulkTotalPages() {
+    var inputs = document.querySelectorAll('.bulk-page-input');
+    var total = 0, marking = 0;
+    inputs.forEach(function(inp) {
+        var v = parseInt(inp.value) || 0;
+        total += v;
+        if (v > 0) marking++;
+    });
+    document.getElementById('bulkTotalPagesDisplay').textContent = 'Total: ' + total + ' pages (' + marking + ' to mark, ' + (inputs.length - marking) + ' skipped)';
 }
-
-function closePageAllocModal() {
-    document.getElementById('pageAllocModal').classList.remove('active');
-}
-
-// Close on backdrop click
-document.getElementById('pageAllocModal').addEventListener('click', function(e) {
-    if (e.target === this) closePageAllocModal();
-});
 
 /* =====================================================================
    Tab 1 (Bulk): Marking flow
@@ -718,86 +581,40 @@ function hideBulkError() { document.getElementById('bulkErrorMsg').style.display
 function startBulkMarking() {
     hideBulkError();
 
-    if (!Object.keys(BULK_PROVIDER_MODELS).length) return showBulkError('Please save an API key first.');
+    const assignmentId = document.getElementById('bulkAssignmentSelect').value;
+    if (!assignmentId) return showBulkError('Please select an assignment.');
 
-    const cl = document.getElementById('bulk_class_list').files;
-    const qp = document.getElementById('bulk_question_paper').files;
     const bs = document.getElementById('bulk_scripts').files;
-    if (!cl.length) return showBulkError('Please upload a class list CSV.');
-    if (!qp.length) return showBulkError('Please upload a question paper.');
     if (!bs.length) return showBulkError('Please upload the bulk scripts PDF.');
 
-    const pps = document.getElementById('bulk_pages_per_student').value;
-    if (!pps || parseInt(pps) < 1) return showBulkError('Please enter pages per student.');
+    if (bulkStudents.length === 0) return showBulkError('No students loaded. Please select a class and assignment.');
 
-    const assignType = document.querySelector('input[name="bulk_assign_type"]:checked')?.value || 'short_answer';
-    const rubricFiles = document.getElementById('bulk_rubrics').files;
-    if (assignType === 'rubrics') {
-        if (!rubricFiles.length) return showBulkError('Rubrics file is required for Rubrics / Essay type.');
-        if (!document.getElementById('bulkTotalMarksRubric').value) return showBulkError('Please enter total marks.');
-    } else {
-        const ak = document.getElementById('bulk_answer_key')?.files;
-        if (!ak || !ak.length) return showBulkError('Please upload an answer key.');
-    }
-
-    if (bulkStudents.length === 0) return showBulkError('Class list not loaded. Please re-upload the CSV.');
-
-    // Show page allocation dialog
-    showPageAllocDialog();
-}
-
-async function confirmBulkMarking() {
-    // Collect per-student page counts
-    var inputs = document.querySelectorAll('.page-count-input');
+    // Collect page counts
+    var inputs = document.querySelectorAll('.bulk-page-input');
     var pageCounts = [];
+    var hasNonZero = false;
     inputs.forEach(function(inp) {
-        var v = parseInt(inp.value) || 1;
-        if (v < 1) v = 1;
+        var v = parseInt(inp.value) || 0;
+        if (v < 0) v = 0;
         pageCounts.push(v);
+        if (v > 0) hasNonZero = true;
     });
 
-    closePageAllocModal();
+    if (!hasNonZero) return showBulkError('All students are set to skip (0 pages). Set at least one student to mark.');
+
+    // Confirm and submit
+    submitBulkMarking(assignmentId, pageCounts);
+}
+
+async function submitBulkMarking(assignmentId, pageCounts) {
     hideBulkError();
 
-    const assignType = document.querySelector('input[name="bulk_assign_type"]:checked')?.value || 'short_answer';
-    const rubricFiles = document.getElementById('bulk_rubrics').files;
-    let scoringMode = 'status', totalMarks = '';
-    if (assignType === 'rubrics') {
-        scoringMode = 'marks'; totalMarks = document.getElementById('bulkTotalMarksRubric').value;
-    } else if (document.getElementById('bulkAllocateMarks').checked) {
-        scoringMode = 'marks'; totalMarks = document.getElementById('bulkTotalMarks').value;
-    }
-
-    const cl = document.getElementById('bulk_class_list').files;
-    const qp = document.getElementById('bulk_question_paper').files;
     const bs = document.getElementById('bulk_scripts').files;
 
     const fd = new FormData();
-    fd.append('provider', document.querySelector('input[name="bulk_provider"]:checked')?.value || '');
-    fd.append('model', document.getElementById('bulkModelSelect').value);
-    fd.append('subject', document.getElementById('bulkSubject').value);
-    var bulkTitle = document.getElementById('bulkTitle');
-    if (bulkTitle) fd.append('title', bulkTitle.value);
-    var bulkClassId = document.getElementById('bulkClassId');
-    if (bulkClassId) fd.append('class_id', bulkClassId.value);
-    fd.append('assign_type', assignType);
-    fd.append('scoring_mode', scoringMode);
-    fd.append('total_marks', totalMarks);
-    fd.append('pages_per_student', document.getElementById('bulk_pages_per_student').value);
+    fd.append('assignment_id', assignmentId);
     fd.append('page_counts', JSON.stringify(pageCounts));
-    fd.append('review_instructions', document.getElementById('bulk_review_instructions').value);
-    fd.append('marking_instructions', document.getElementById('bulk_marking_instructions').value);
-    for (const f of cl) fd.append('class_list', f);
-    for (const f of qp) fd.append('question_paper', f);
     for (const f of bs) fd.append('bulk_scripts', f);
-    for (const f of rubricFiles) fd.append('rubrics', f);
-    if (assignType === 'rubrics') {
-        const refFiles = document.getElementById('bulk_reference')?.files || [];
-        for (const f of refFiles) fd.append('reference', f);
-    } else {
-        const akFiles = document.getElementById('bulk_answer_key')?.files || [];
-        for (const f of akFiles) fd.append('answer_key', f);
-    }
 
     document.getElementById('bulkMarkBtn').disabled = true;
     document.getElementById('bulkResultsCard').style.display = 'none';
@@ -904,13 +721,15 @@ function downloadOverview() {
 function resetBulk() {
     document.getElementById('bulkResultsCard').style.display = 'none';
     document.getElementById('bulkFormCard').scrollIntoView({behavior: 'smooth'});
-    ['bulk_class_list', 'bulk_question_paper', 'bulk_answer_key', 'bulk_scripts', 'bulk_rubrics'].forEach(function(id) {
-        const inp = document.getElementById(id); if (!inp) return;
+    const inp = document.getElementById('bulk_scripts');
+    if (inp) {
         inp.value = '';
         const zone = inp.closest('.upload-zone');
         if (zone) { zone.classList.remove('has-file'); const fn = zone.querySelector('.filename'); if (fn) fn.textContent = ''; }
-    });
+    }
     bulkJobId = null;
+    // Reload students to refresh status
+    loadBulkStudents();
 }
 
 /* =====================================================================
@@ -1006,10 +825,12 @@ async function createAssignment() {
 
     const assignType = document.querySelector('input[name="teacher_assign_type"]:checked')?.value || 'short_answer';
 
+    // Validate class selection
+    const classId = document.getElementById('teacherClassId').value;
+    if (!classId) return showTeacherError('Please select a class.');
+
     // Validate files
-    const cl = document.getElementById('teacher_class_list').files;
     const qp = document.getElementById('teacher_question_paper').files;
-    if (!cl.length) return showTeacherError('Please upload a class list CSV.');
     if (!qp.length) return showTeacherError('Please upload a question paper.');
 
     if (assignType !== 'rubrics') {
@@ -1042,8 +863,7 @@ async function createAssignment() {
     fd.append('model', model);
     fd.append('title', title);
     fd.append('subject', subject);
-    var classSelect = document.getElementById('teacherClassId');
-    if (classSelect) fd.append('class_id', classSelect.value);
+    fd.append('class_id', classId);
     fd.append('assign_type', assignType);
     fd.append('scoring_mode', scoringMode);
     fd.append('total_marks', totalMarks);
@@ -1057,7 +877,6 @@ async function createAssignment() {
     if (savedKeys.qwen) fd.append('api_key_qwen', savedKeys.qwen);
 
     // Files
-    for (const f of cl) fd.append('class_list', f);
     for (const f of qp) fd.append('question_paper', f);
 
     if (assignType === 'rubrics') {
@@ -1130,12 +949,42 @@ async function deleteAssignment(id, subject) {
 }
 
 /* =====================================================================
+   Tab 2 (Teacher): Class selection
+   ===================================================================== */
+async function loadTeacherClasses() {
+    try {
+        const res = await fetch('/api/classes');
+        const classes = await res.json();
+        const sel = document.getElementById('teacherClassId');
+        sel.innerHTML = '<option value="">Select a class...</option>';
+        classes.forEach(function(c) {
+            const o = document.createElement('option');
+            o.value = c.id;
+            o.textContent = (c.level ? c.level + ' - ' : '') + c.name + ' (' + c.student_count + ' students)';
+            sel.appendChild(o);
+        });
+    } catch(e) { console.error('Failed to load classes', e); }
+}
+
+function onTeacherClassChange() {
+    const sel = document.getElementById('teacherClassId');
+    const info = document.getElementById('teacherClassInfo');
+    const opt = sel.options[sel.selectedIndex];
+    if (sel.value && opt) {
+        info.textContent = 'Students from this class will be used for the assignment.';
+    } else {
+        info.textContent = '';
+    }
+}
+
+/* =====================================================================
    Init
    ===================================================================== */
-updateBulkModelSelect();
 renderKeyBadges();
 renderTeacherProviderGroup();
 updateKeyPlaceholder();
+loadBulkClasses();
+loadTeacherClasses();
 </script>
 {% endif %}
 {% endblock %}
