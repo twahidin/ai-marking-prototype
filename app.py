@@ -4,6 +4,7 @@ import json
 import uuid
 import string
 import random
+import secrets
 import logging
 import threading
 import time
@@ -67,17 +68,19 @@ def too_large(e):
 
 
 _rate_limits = {}
+_rate_lock = threading.Lock()
 
 
 def _check_rate_limit(key):
     """Simple in-memory rate limiter. Returns False if limit exceeded."""
-    now = time.time()
-    _rate_limits.setdefault(key, [])
-    _rate_limits[key] = [t for t in _rate_limits[key] if now - t < 60]
-    if len(_rate_limits[key]) >= 10:
-        return False
-    _rate_limits[key].append(now)
-    return True
+    with _rate_lock:
+        now = time.time()
+        _rate_limits.setdefault(key, [])
+        _rate_limits[key] = [t for t in _rate_limits[key] if now - t < 60]
+        if len(_rate_limits[key]) >= 10:
+            return False
+        _rate_limits[key].append(now)
+        return True
 
 # In-memory job store (thread-safe via GIL for dict ops)
 jobs = {}
@@ -130,6 +133,20 @@ def _is_hod():
     """Check if current user is HOD."""
     teacher = _current_teacher()
     return teacher and teacher.role == 'hod'
+
+
+def _check_assignment_ownership(asn):
+    """Return error response if current user doesn't own this assignment, or None if OK."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    teacher = _current_teacher()
+    if not teacher:
+        return None  # Non-dept mode, auth already checked
+    if teacher.role == 'hod':
+        return None  # HOD can access all
+    if asn.teacher_id != teacher.id:
+        return jsonify({'success': False, 'error': 'Access denied'}), 403
+    return None
 
 
 def _require_hod():
@@ -294,7 +311,7 @@ def verify_code():
 @app.route('/save-keys', methods=['POST'])
 def save_keys():
     """Save user-provided API keys to session."""
-    if not session.get('authenticated'):
+    if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
     data = request.get_json()
     keys = {}
@@ -317,7 +334,7 @@ def clear_keys():
 
 @app.route('/mark', methods=['POST'])
 def mark():
-    if not session.get('authenticated'):
+    if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     assign_type = request.form.get('assign_type', 'short_answer')
@@ -374,7 +391,7 @@ def mark():
 
 @app.route('/status/<job_id>')
 def job_status(job_id):
-    if not session.get('authenticated'):
+    if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     job = jobs.get(job_id)
@@ -395,7 +412,7 @@ def job_status(job_id):
 
 @app.route('/download/<job_id>')
 def download_pdf(job_id):
-    if not session.get('authenticated'):
+    if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     job = jobs.get(job_id)
@@ -491,7 +508,7 @@ def _generate_teacher_code():
     """Generate a unique 8-char teacher code."""
     chars = string.ascii_uppercase + string.digits
     while True:
-        code = ''.join(random.choices(chars, k=8))
+        code = ''.join(secrets.choice(chars) for _ in range(8))
         if not Teacher.query.filter_by(code=code).first():
             return code
 
@@ -637,6 +654,9 @@ def dept_unassign_teacher(class_id):
 
     data = request.get_json()
     teacher_id = data.get('teacher_id')
+    if not teacher_id:
+        return jsonify({'success': False, 'error': 'Teacher ID required'}), 400
+    Teacher.query.get_or_404(teacher_id)
     TeacherClass.query.filter_by(teacher_id=teacher_id, class_id=class_id).delete()
     db.session.commit()
     return jsonify({'success': True})
@@ -1047,6 +1067,7 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                         db.session.add(sub)
                         db.session.commit()
             except Exception as e:
+                db.session.rollback()
                 logger.error(f"Failed to save submission for {student['name']}: {e}")
 
     jobs[job_id]['results'] = results
@@ -1285,7 +1306,7 @@ def _generate_classroom_code():
     """Generate a short unique classroom code like ENG3E."""
     chars = string.ascii_uppercase + string.digits
     while True:
-        code = ''.join(random.choices(chars, k=6))
+        code = ''.join(secrets.choice(chars) for _ in range(6))
         if not Assignment.query.filter_by(classroom_code=code).first():
             return code
 
@@ -1329,6 +1350,7 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
             sub.status = 'error' if result.get('error') else 'done'
             sub.marked_at = datetime.now(timezone.utc)
         except Exception as e:
+            db.session.rollback()
             logger.error(f"Submission {submission_id} marking failed: {e}")
             sub.set_result({'error': str(e)})
             sub.status = 'error'
@@ -1344,7 +1366,7 @@ def teacher_page():
 
 @app.route('/teacher/create', methods=['POST'])
 def teacher_create():
-    if not session.get('authenticated'):
+    if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     # API keys: use server env keys if available, otherwise require user input
@@ -1470,10 +1492,10 @@ def teacher_create():
 
 @app.route('/teacher/assignment/<assignment_id>')
 def teacher_assignment_detail(assignment_id):
-    if not session.get('authenticated'):
-        return redirect(url_for('teacher_page'))
-
     asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
     students = _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
 
     student_data = []
@@ -1509,10 +1531,10 @@ def teacher_assignment_detail(assignment_id):
 
 @app.route('/teacher/assignment/<assignment_id>/download')
 def teacher_download_all(assignment_id):
-    if not session.get('authenticated'):
-        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-
     asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
     submissions = Submission.query.filter_by(assignment_id=assignment_id, status='done').all()
 
     buf = io.BytesIO()
@@ -1535,10 +1557,10 @@ def teacher_download_all(assignment_id):
 
 @app.route('/teacher/assignment/<assignment_id>/overview')
 def teacher_overview(assignment_id):
-    if not session.get('authenticated'):
-        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-
     asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
     submissions = Submission.query.filter_by(assignment_id=assignment_id, status='done').all()
 
     student_results = []
@@ -1568,10 +1590,10 @@ def teacher_overview(assignment_id):
 @app.route('/teacher/assignment/<assignment_id>/submit/<int:student_id>', methods=['POST'])
 def teacher_submit_for_student(assignment_id, student_id):
     """Teacher uploads a script on behalf of a student."""
-    if not session.get('authenticated'):
-        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-
     asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
     student = Student.query.get(student_id)
     if not student or student.assignment_id != assignment_id:
         return jsonify({'success': False, 'error': 'Invalid student'}), 400
@@ -1611,10 +1633,10 @@ def teacher_submit_for_student(assignment_id, student_id):
 
 @app.route('/teacher/assignment/<assignment_id>/delete', methods=['POST'])
 def teacher_delete_assignment(assignment_id):
-    if not session.get('authenticated'):
-        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-
     asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
     db.session.delete(asn)
     db.session.commit()
     return jsonify({'success': True})
@@ -1701,7 +1723,7 @@ def student_upload(assignment_id):
 
 @app.route('/submit/<assignment_id>/status/<int:submission_id>')
 def student_submission_status(assignment_id, submission_id):
-    if not session.get(f'student_auth_{assignment_id}') and not session.get('authenticated'):
+    if not session.get(f'student_auth_{assignment_id}') and not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
     sub = Submission.query.get_or_404(submission_id)
     if sub.assignment_id != assignment_id:
@@ -1722,4 +1744,4 @@ def student_submission_status(assignment_id, submission_id):
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=os.getenv('FLASK_DEBUG', 'false').lower() == 'true')

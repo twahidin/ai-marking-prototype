@@ -345,7 +345,7 @@ function renderResults(result) {
         var s = q.status || 'incorrect';
         var dotLabel = (resultAssignType === 'rubrics' && q.criterion_name)
             ? q.criterion_name.substring(0, 2).toUpperCase() : (q.question_num || i + 1);
-        dots += '<div class="q-dot ' + s + (i === 0 ? ' active' : '') + '" onclick="goQ(' + i + ')" title="' + esc(q.criterion_name || '') + '">' + dotLabel + '</div>';
+        dots += '<div class="q-dot ' + esc(s) + (i === 0 ? ' active' : '') + '" onclick="goQ(' + i + ')" title="' + esc(q.criterion_name || '') + '">' + esc(String(dotLabel)) + '</div>';
     });
     document.getElementById('qDots').innerHTML = dots;
 
@@ -388,8 +388,8 @@ function renderQuestion() {
     var label = STATUS_LABELS[s] || s;
     var hasMarks = q.marks_awarded != null;
     var badge = hasMarks
-        ? '<span class="status-badge status-' + s + '">' + q.marks_awarded + '/' + (q.marks_total || '?') + '</span>'
-        : '<span class="status-badge status-' + s + '">' + label + '</span>';
+        ? '<span class="status-badge status-' + esc(s) + '">' + esc(String(q.marks_awarded)) + '/' + esc(String(q.marks_total || '?')) + '</span>'
+        : '<span class="status-badge status-' + esc(s) + '">' + esc(label) + '</span>';
 
     var isRubrics = resultAssignType === 'rubrics';
     var headerLabel = isRubrics ? (q.criterion_name || 'Criterion ' + (q.question_num || currentQ + 1)) : 'Question ' + (q.question_num || currentQ + 1);

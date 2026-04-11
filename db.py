@@ -120,8 +120,8 @@ class Assignment(db.Model):
     marking_instructions = db.Column(db.Text, default='')
 
     # Department mode foreign keys
-    class_id = db.Column(db.String(36), db.ForeignKey('classes.id'), nullable=True)
-    teacher_id = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=True)
+    class_id = db.Column(db.String(36), db.ForeignKey('classes.id'), nullable=True, index=True)
+    teacher_id = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=True, index=True)
 
     # File storage as binary
     question_paper = db.Column(db.LargeBinary)
@@ -163,7 +163,7 @@ class Student(db.Model):
     __tablename__ = 'students'
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False)
+    assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)
     index_number = db.Column(db.String(50), nullable=False)
     name = db.Column(db.String(200), nullable=False)
 
@@ -174,8 +174,8 @@ class Submission(db.Model):
     __tablename__ = 'submissions'
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    student_id = db.Column(db.Integer, db.ForeignKey('students.id'), nullable=False)
-    assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False)
+    student_id = db.Column(db.Integer, db.ForeignKey('students.id'), nullable=False, index=True)
+    assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)
     script_bytes = db.Column(db.LargeBinary)
     script_pages_json = db.Column(db.Text)  # JSON list of base64-encoded file bytes
     status = db.Column(db.String(20), default='pending')  # pending, processing, done, error
