@@ -388,7 +388,7 @@ def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Sy
     story = []
 
     # Title
-    story.append(Paragraph("Class Overview &amp; Item Analysis", styles['Title_Custom']))
+    story.append(Paragraph(f"{app_title} — Class Overview &amp; Item Analysis", styles['Title_Custom']))
     story.append(Spacer(1, 5))
 
     cell = styles['TableCell']
