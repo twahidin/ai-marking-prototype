@@ -42,6 +42,15 @@ init_db(app)
 # Security: headers, rate limiting, error handlers
 # ---------------------------------------------------------------------------
 
+@app.context_processor
+def inject_dept_context():
+    """Make dept_mode and current teacher available in all templates."""
+    if DEPT_MODE:
+        teacher = _current_teacher()
+        return {'dept_mode': True, 'current_teacher': teacher}
+    return {'dept_mode': False, 'current_teacher': None}
+
+
 @app.after_request
 def add_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'

@@ -304,3 +304,17 @@ body {
 .badge-blue { background: #e8eeff; color: #667eea; }
 .badge-green { background: #e6f9ed; color: #28a745; }
 .badge-red { background: #fdecea; color: #dc3545; }
+
+/* --- Department Nav --- */
+.dept-nav { background: white; border-bottom: 2px solid #e0e0e0; padding: 0 20px; }
+.dept-nav-inner { max-width: 1100px; margin: 0 auto; display: flex; align-items: center; height: 56px; gap: 32px; }
+.dept-nav-brand { font-weight: 700; font-size: 16px; color: #667eea; text-decoration: none; }
+.dept-nav-links { display: flex; gap: 20px; flex: 1; }
+.dept-nav-links a { color: #666; text-decoration: none; font-size: 14px; font-weight: 500; }
+.dept-nav-links a:hover { color: #667eea; }
+.dept-nav-user { font-size: 13px; color: #888; display: flex; gap: 12px; align-items: center; }
+.dept-nav-user a { color: #667eea; text-decoration: none; font-weight: 600; }
+@media (max-width: 600px) {
+    .dept-nav-inner { gap: 16px; flex-wrap: wrap; height: auto; padding: 10px 0; }
+    .dept-nav-links { gap: 12px; }
+}
