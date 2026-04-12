@@ -1418,7 +1418,7 @@ def teacher_setup_page():
 
 @app.route('/dashboard')
 def teacher_dashboard():
-    if not is_dept_mode() or not _is_authenticated():
+    if not _is_authenticated():
         return redirect(url_for('hub'))
 
     teacher = _current_teacher()
@@ -1492,6 +1492,7 @@ def teacher_dashboard():
             'id': cls.id,
             'name': cls.name,
             'level': cls.level,
+            'student_count': student_counts_by_class.get(cls.id, 0),
             'assignments': asn_data,
         })
 

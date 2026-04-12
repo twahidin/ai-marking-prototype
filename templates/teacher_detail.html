@@ -83,12 +83,27 @@
         animation: pulse 1.5s ease-in-out infinite;
     }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+    .bulk-section { margin-bottom: 0; }
+    .bulk-page-input {
+        width: 60px; padding: 6px 4px; text-align: center;
+        border: 1px solid #ddd; border-radius: 6px; font-size: 13px;
+    }
+    .progress-bar-track {
+        background: #f0f0f0; border-radius: 10px; height: 10px;
+        width: 100%; overflow: hidden; margin-bottom: 12px;
+    }
+    .progress-bar-fill {
+        background: linear-gradient(90deg, #667eea, #764ba2);
+        border-radius: 10px; height: 100%; transition: width 0.3s; width: 0%;
+    }
+    .progress-status { font-size: 13px; color: #555; }
 </style>
 {% endblock %}
 
 {% block body %}
 <div class="container" style="max-width:900px;">
-    <a href="/class#submissions" class="back-link">&larr; Back to Dashboard</a>
+    <a href="/class" class="back-link">&larr; Back to Assignments</a>
 
     <div class="header">
         <h1>
@@ -154,6 +169,45 @@
         <div class="stat-box"><div class="stat-number green" id="avgScore">-</div><div class="stat-label">Avg Score</div></div>
     </div>
 
+    <!-- Bulk Mark Section -->
+    <div class="card bulk-section">
+        <h2>Bulk Mark</h2>
+        <p style="font-size:13px;color:#888;margin-bottom:16px;">
+            Upload a single PDF with all student scripts in class list order. Set pages per student, then mark all at once.
+        </p>
+
+        <div class="form-group">
+            <label>All Student Scripts (single PDF, scanned in class list order)</label>
+            <div class="upload-zone" style="max-width:100%;" onclick="this.querySelector('input').click()">
+                <input type="file" id="bulk_scripts" accept=".pdf" onchange="fileSelected(this)">
+                <div class="icon">&#128218;</div>
+                <div class="label">Bulk Scripts PDF</div>
+                <div class="filename"></div>
+                <div class="hint">One PDF with all student scripts in order</div>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="bulk_pages_per_student">Default Pages Per Student</label>
+            <div style="display:flex;gap:8px;align-items:center;">
+                <input type="number" class="bulk-page-input" id="bulk_pages_per_student" min="0" max="50" placeholder="2" value="2" style="width:80px;">
+                <button class="upload-btn" onclick="setAllPages()" style="white-space:nowrap;">Set All</button>
+            </div>
+            <p style="font-size:12px;color:#888;margin-top:4px;">Set individual page counts in the table below. Use 0 to skip a student.</p>
+        </div>
+
+        <div class="error-msg" id="bulkErrorMsg"></div>
+        <button class="action-btn primary" id="bulkMarkBtn" onclick="startBulkMarking()" style="margin-top:12px;">Mark All Scripts</button>
+
+        <!-- Progress (hidden until marking starts) -->
+        <div id="bulkProgressCard" style="display:none;margin-top:16px;">
+            <div class="progress-bar-track">
+                <div class="progress-bar-fill" id="bulkProgressBar"></div>
+            </div>
+            <div class="progress-status" id="bulkProgressStatus">Starting...</div>
+        </div>
+    </div>
+
     <!-- Submissions Table -->
     <div class="card">
         <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:20px;">
@@ -181,13 +235,16 @@
             <div class="table-wrap">
                 <table class="results-table">
                     <thead>
-                        <tr><th>Index</th><th>Name</th><th>Status</th><th>Score</th><th>Submitted</th><th>Actions</th></tr>
+                        <tr><th>Index</th><th>Name</th><th style="width:70px;text-align:center;">Pages</th><th>Status</th><th>Score</th><th>Submitted</th><th>Actions</th></tr>
                     </thead>
                     <tbody>
                         {% for s in students %}
                         <tr>
                             <td>{{ s.index }}</td>
                             <td style="font-weight:600;">{{ s.name }}</td>
+                            <td style="text-align:center;">
+                                <input type="number" class="bulk-page-input" data-idx="{{ loop.index0 }}" value="2" min="0" max="50" onchange="updateBulkTotalPages()" oninput="updateBulkTotalPages()">
+                            </td>
                             <td>
                                 {% if s.status == 'not_submitted' %}<span class="badge badge-gray">Not Submitted</span>
                                 {% elif s.status in ['pending', 'processing'] %}<span class="badge badge-blue">Marking...</span>
@@ -209,6 +266,10 @@
                 </table>
             </div>
         {% endif %}
+        <div style="display:flex;justify-content:space-between;margin-top:8px;flex-wrap:wrap;gap:8px;">
+            <span style="font-size:13px;color:#555;" id="bulkStudentCount">{{ students|length }} students</span>
+            <span style="font-size:13px;font-weight:700;" id="bulkTotalPagesDisplay">Total: 0 pages</span>
+        </div>
     </div>
 </div>
 
@@ -334,6 +395,120 @@ document.getElementById('uploadModal').addEventListener('click', function(e) {
 {% if processing_count > 0 %}
 setTimeout(function() { window.location.reload(); }, 10000);
 {% endif %}
+
+/* Bulk marking */
+var bulkJobId = null;
+var ASSIGNMENT_ID = '{{ assignment.id }}';
+
+function setAllPages() {
+    var defaultPages = parseInt(document.getElementById('bulk_pages_per_student').value) || 2;
+    document.querySelectorAll('.bulk-page-input[data-idx]').forEach(function(inp) {
+        inp.value = defaultPages;
+    });
+    updateBulkTotalPages();
+}
+
+function updateBulkTotalPages() {
+    var inputs = document.querySelectorAll('.bulk-page-input[data-idx]');
+    var total = 0, marking = 0;
+    inputs.forEach(function(inp) {
+        var v = parseInt(inp.value) || 0;
+        total += v;
+        if (v > 0) marking++;
+    });
+    document.getElementById('bulkTotalPagesDisplay').textContent =
+        'Total: ' + total + ' pages (' + marking + ' to mark, ' + (inputs.length - marking) + ' skipped)';
+}
+
+function showBulkError(msg) { var el = document.getElementById('bulkErrorMsg'); el.textContent = msg; el.style.display = 'block'; }
+function hideBulkError() { document.getElementById('bulkErrorMsg').style.display = 'none'; }
+
+function startBulkMarking() {
+    hideBulkError();
+    var bs = document.getElementById('bulk_scripts').files;
+    if (!bs.length) return showBulkError('Please upload the bulk scripts PDF.');
+
+    var inputs = document.querySelectorAll('.bulk-page-input[data-idx]');
+    if (inputs.length === 0) return showBulkError('No students found.');
+
+    var pageCounts = [];
+    var hasNonZero = false;
+    inputs.forEach(function(inp) {
+        var v = parseInt(inp.value) || 0;
+        if (v < 0) v = 0;
+        pageCounts.push(v);
+        if (v > 0) hasNonZero = true;
+    });
+
+    if (!hasNonZero) return showBulkError('All students are set to skip (0 pages). Set at least one student to mark.');
+
+    submitBulkMarking(pageCounts);
+}
+
+async function submitBulkMarking(pageCounts) {
+    hideBulkError();
+    var bs = document.getElementById('bulk_scripts').files;
+    var fd = new FormData();
+    fd.append('assignment_id', ASSIGNMENT_ID);
+    fd.append('page_counts', JSON.stringify(pageCounts));
+    for (var i = 0; i < bs.length; i++) fd.append('bulk_scripts', bs[i]);
+
+    document.getElementById('bulkMarkBtn').disabled = true;
+    document.getElementById('bulkProgressCard').style.display = 'block';
+    document.getElementById('bulkProgressBar').style.width = '0%';
+    document.getElementById('bulkProgressStatus').textContent = 'Uploading...';
+
+    try {
+        var res = await fetch('/bulk/mark', { method: 'POST', body: fd });
+        var data = await res.json();
+        if (!data.success) {
+            document.getElementById('bulkProgressCard').style.display = 'none';
+            showBulkError(data.error || 'Failed.');
+            document.getElementById('bulkMarkBtn').disabled = false;
+            return;
+        }
+        bulkJobId = data.job_id;
+        pollBulkStatus();
+    } catch (err) {
+        document.getElementById('bulkProgressCard').style.display = 'none';
+        showBulkError('Connection error.');
+        document.getElementById('bulkMarkBtn').disabled = false;
+    }
+}
+
+async function pollBulkStatus() {
+    if (!bulkJobId) return;
+    try {
+        var res = await fetch('/status/' + bulkJobId);
+        var data = await res.json();
+
+        if (data.progress) {
+            var pct = Math.round((data.progress.current / data.progress.total) * 100);
+            document.getElementById('bulkProgressBar').style.width = pct + '%';
+            document.getElementById('bulkProgressStatus').textContent =
+                'Marking student ' + data.progress.current + ' of ' + data.progress.total + ' \u2014 ' + data.progress.current_name;
+        }
+
+        if (data.status === 'processing') {
+            setTimeout(pollBulkStatus, 2000);
+            return;
+        }
+
+        document.getElementById('bulkProgressCard').style.display = 'none';
+        document.getElementById('bulkMarkBtn').disabled = false;
+
+        if (data.status === 'error') {
+            showBulkError(data.result?.error || 'Marking failed.');
+            return;
+        }
+
+        // Reload page to show updated statuses
+        window.location.reload();
+    } catch (err) { setTimeout(pollBulkStatus, 3000); }
+}
+
+// Init page count display
+updateBulkTotalPages();
 
 // Typeset any server-rendered content that may contain LaTeX
 document.addEventListener('DOMContentLoaded', function() {

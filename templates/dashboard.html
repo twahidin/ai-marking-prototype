@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}My Dashboard - {{ app_title }}{% endblock %}
+{% block title %}My Classes - {{ app_title }}{% endblock %}
 
 {% block head %}
 <style>
@@ -41,20 +41,59 @@
     .avg-mid { background: #fff3cd; color: #856404; }
     .avg-low { background: #fde8e8; color: #dc3545; }
 
+    .class-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+    .class-header h2 { margin-bottom: 0; }
+    .class-actions { display: flex; gap: 8px; }
+    .btn-sm {
+        padding: 6px 14px; border: none; border-radius: 8px;
+        font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .btn-sm.primary { background: #667eea; color: white; }
+    .btn-sm.primary:hover { background: #5a6fd6; }
+    .btn-sm.secondary { background: #f0f2ff; color: #667eea; }
+    .btn-sm.secondary:hover { background: #e0e4ff; }
+
+    .student-section { margin-top: 16px; display: none; }
+    .student-section.visible { display: block; }
+    .student-table { width: 100%; font-size: 13px; border-collapse: collapse; }
+    .student-table th { text-align: left; padding: 8px; font-size: 12px; color: #888; border-bottom: 1px solid #eee; }
+    .student-table td { padding: 8px; border-bottom: 1px solid #f5f5f5; }
+
+    .student-count { font-size: 13px; color: #888; margin-left: 8px; }
+
 </style>
 {% endblock %}
 
 {% block body %}
 <div class="dept-page">
     <div class="dept-page-header animate__animated animate__fadeInDown" style="animation-duration:0.5s;">
-        <h1>My Dashboard</h1>
+        <h1>My Classes</h1>
         <p>Welcome, {{ teacher.name }}</p>
     </div>
 
     {% if classes %}
     {% for cls in classes %}
     <div class="dept-card class-section animate__animated animate__fadeInUp" style="animation-delay:{{ loop.index0 * 0.1 }}s;animation-duration:0.5s;">
-        <h2>{% if cls.level %}{{ cls.level }} - {% endif %}<span style="color:#667eea;">{{ cls.name }}</span></h2>
+        <div class="class-header">
+            <h2>
+                {% if cls.level %}{{ cls.level }} - {% endif %}<span style="color:#667eea;">{{ cls.name }}</span>
+                <span class="student-count" id="count_{{ cls.id }}">{{ cls.student_count }} students</span>
+            </h2>
+            <div class="class-actions">
+                <button class="btn-sm secondary" onclick="toggleStudents('{{ cls.id }}')">View Students</button>
+                <label class="btn-sm primary" style="cursor:pointer;">
+                    Upload Class List
+                    <input type="file" accept=".csv,.xlsx,.xls" style="display:none;" onchange="uploadClassList('{{ cls.id }}', this)">
+                </label>
+            </div>
+        </div>
+
+        <div class="student-section" id="students_{{ cls.id }}">
+            <table class="student-table">
+                <thead><tr><th>#</th><th>Index</th><th>Name</th></tr></thead>
+                <tbody id="studentBody_{{ cls.id }}"></tbody>
+            </table>
+        </div>
 
         {% if cls.assignments %}
         <div class="asn-grid">
@@ -95,4 +134,53 @@
     </div>
     {% endif %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function toggleStudents(classId) {
+    var section = document.getElementById('students_' + classId);
+    if (section.classList.contains('visible')) {
+        section.classList.remove('visible');
+        return;
+    }
+    try {
+        var res = await fetch('/class/' + classId + '/students');
+        var data = await res.json();
+        if (!data.success) return;
+        var tbody = document.getElementById('studentBody_' + classId);
+        tbody.innerHTML = '';
+        data.students.forEach(function(s, i) {
+            var tr = document.createElement('tr');
+            tr.innerHTML = '<td>' + (i + 1) + '</td><td>' + esc(s.index) + '</td><td>' + esc(s.name) + '</td>';
+            tbody.appendChild(tr);
+        });
+        section.classList.add('visible');
+    } catch (e) { console.error(e); }
+}
+
+async function uploadClassList(classId, input) {
+    if (!input.files.length) return;
+    var fd = new FormData();
+    fd.append('class_list', input.files[0]);
+
+    try {
+        var res = await fetch('/class/' + classId + '/students', { method: 'POST', body: fd });
+        var data = await res.json();
+        if (data.success) {
+            document.getElementById('count_' + classId).textContent = data.count + ' students';
+            var section = document.getElementById('students_' + classId);
+            if (section.classList.contains('visible')) {
+                section.classList.remove('visible');
+                toggleStudents(classId);
+            }
+            input.value = '';
+        } else {
+            alert(data.error || 'Failed to upload class list.');
+        }
+    } catch (e) {
+        alert('Connection error.');
+    }
+}
+</script>
 {% endblock %}
