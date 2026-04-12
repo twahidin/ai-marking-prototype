@@ -192,8 +192,10 @@
             <div style="display:flex;gap:8px;align-items:center;">
                 <input type="number" class="bulk-page-input" id="bulk_pages_per_student" min="0" max="50" placeholder="2" value="2" style="width:80px;">
                 <button class="upload-btn" onclick="setAllPages()" style="white-space:nowrap;">Set All</button>
+                <button class="upload-btn" onclick="openPagesModal()" style="white-space:nowrap;">Set Individual Pages</button>
             </div>
-            <p style="font-size:12px;color:#888;margin-top:4px;">Set individual page counts in the table below. Use 0 to skip a student.</p>
+            <p style="font-size:12px;color:#888;margin-top:4px;">Use 0 to skip a student.</p>
+            <p style="font-size:13px;font-weight:700;margin-top:8px;" id="bulkTotalPagesDisplay">Total: 0 pages</p>
         </div>
 
         <div class="error-msg" id="bulkErrorMsg"></div>
@@ -235,16 +237,13 @@
             <div class="table-wrap">
                 <table class="results-table">
                     <thead>
-                        <tr><th>Index</th><th>Name</th><th style="width:70px;text-align:center;">Pages</th><th>Status</th><th>Score</th><th>Submitted</th><th>Actions</th></tr>
+                        <tr><th>Index</th><th>Name</th><th>Status</th><th>Score</th><th>Submitted</th><th>Actions</th></tr>
                     </thead>
                     <tbody>
                         {% for s in students %}
                         <tr>
                             <td>{{ s.index }}</td>
                             <td style="font-weight:600;">{{ s.name }}</td>
-                            <td style="text-align:center;">
-                                <input type="number" class="bulk-page-input" data-idx="{{ loop.index0 }}" value="2" min="0" max="50" onchange="updateBulkTotalPages()" oninput="updateBulkTotalPages()">
-                            </td>
                             <td>
                                 {% if s.status == 'not_submitted' %}<span class="badge badge-gray">Not Submitted</span>
                                 {% elif s.status in ['pending', 'processing'] %}<span class="badge badge-blue">Marking...</span>
@@ -265,11 +264,8 @@
                     </tbody>
                 </table>
             </div>
+            <p style="font-size:13px;color:#555;margin-top:8px;">{{ students|length }} students</p>
         {% endif %}
-        <div style="display:flex;justify-content:space-between;margin-top:8px;flex-wrap:wrap;gap:8px;">
-            <span style="font-size:13px;color:#555;" id="bulkStudentCount">{{ students|length }} students</span>
-            <span style="font-size:13px;font-weight:700;" id="bulkTotalPagesDisplay">Total: 0 pages</span>
-        </div>
     </div>
 </div>
 
@@ -288,6 +284,33 @@
         <div class="modal-actions">
             <button class="modal-cancel" onclick="closeUploadModal()">Cancel</button>
             <button class="modal-submit" id="uploadSubmitBtn" onclick="submitForStudent()">Upload &amp; Mark</button>
+        </div>
+    </div>
+</div>
+<!-- Pages Modal -->
+<div class="upload-modal" id="pagesModal">
+    <div class="upload-modal-box" style="max-width:520px;">
+        <h3>Set Individual Page Counts</h3>
+        <p style="font-size:13px;color:#888;margin-bottom:16px;">Set how many pages each student's script has. Use 0 to skip.</p>
+        <div style="max-height:400px;overflow-y:auto;border:1px solid #eee;border-radius:8px;">
+            <table class="results-table" style="font-size:13px;margin:0;">
+                <thead><tr><th>#</th><th>Name</th><th style="width:80px;text-align:center;">Pages</th></tr></thead>
+                <tbody id="pagesModalBody">
+                    {% for s in students %}
+                    <tr>
+                        <td>{{ s.index }}</td>
+                        <td>{{ s.name }}</td>
+                        <td style="text-align:center;">
+                            <input type="number" class="bulk-page-input" data-idx="{{ loop.index0 }}" value="2" min="0" max="50" onchange="updateBulkTotalPages()" oninput="updateBulkTotalPages()">
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <p style="font-size:13px;font-weight:700;margin-top:12px;" id="modalTotalPages"></p>
+        <div class="modal-actions">
+            <button class="modal-cancel" onclick="closePagesModal()">Close</button>
         </div>
     </div>
 </div>
@@ -408,6 +431,21 @@ function setAllPages() {
     updateBulkTotalPages();
 }
 
+function openPagesModal() {
+    updateBulkTotalPages();
+    document.getElementById('pagesModal').classList.add('active');
+}
+
+function closePagesModal() {
+    document.getElementById('pagesModal').classList.remove('active');
+    updateBulkTotalPages();
+}
+
+// Close pages modal on backdrop click
+document.getElementById('pagesModal').addEventListener('click', function(e) {
+    if (e.target === this) closePagesModal();
+});
+
 function updateBulkTotalPages() {
     var inputs = document.querySelectorAll('.bulk-page-input[data-idx]');
     var total = 0, marking = 0;
@@ -416,8 +454,10 @@ function updateBulkTotalPages() {
         total += v;
         if (v > 0) marking++;
     });
-    document.getElementById('bulkTotalPagesDisplay').textContent =
-        'Total: ' + total + ' pages (' + marking + ' to mark, ' + (inputs.length - marking) + ' skipped)';
+    var text = 'Total: ' + total + ' pages (' + marking + ' to mark, ' + (inputs.length - marking) + ' skipped)';
+    document.getElementById('bulkTotalPagesDisplay').textContent = text;
+    var modalTotal = document.getElementById('modalTotalPages');
+    if (modalTotal) modalTotal.textContent = text;
 }
 
 function showBulkError(msg) { var el = document.getElementById('bulkErrorMsg'); el.textContent = msg; el.style.display = 'block'; }
