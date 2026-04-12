@@ -269,6 +269,18 @@ def _require_hod():
     return None
 
 
+def _require_insights_access():
+    """Return error response if not HOD or owner, or None if OK."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    teacher = _current_teacher()
+    if not teacher:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    if teacher.role in ('hod', 'owner'):
+        return None
+    return jsonify({'success': False, 'error': 'Access denied'}), 403
+
+
 def _get_dept_keys():
     """Get department-level API keys from DepartmentConfig."""
     if not is_dept_mode():
@@ -1164,7 +1176,7 @@ def dept_save_keys():
 
 @app.route('/department/insights')
 def department_insights():
-    err = _require_hod()
+    err = _require_insights_access()
     if err:
         return redirect(url_for('hub'))
 
@@ -1192,7 +1204,7 @@ def department_insights():
 @app.route('/department/insights/data')
 def department_insights_data():
     """API endpoint returning analytics data for charts."""
-    err = _require_hod()
+    err = _require_insights_access()
     if err:
         return err
     if is_demo_mode() and not is_dept_mode():
@@ -1280,7 +1292,7 @@ def department_insights_data():
 @app.route('/department/insights/item-analysis')
 def department_item_analysis():
     """Compare per-question performance across multiple assignments."""
-    err = _require_hod()
+    err = _require_insights_access()
     if err:
         return err
 
@@ -1345,7 +1357,7 @@ def department_item_analysis():
 @app.route('/department/insights/analysis')
 def department_get_analysis():
     """Retrieve saved AI analysis for given filters."""
-    err = _require_hod()
+    err = _require_insights_access()
     if err:
         return err
 
@@ -1366,7 +1378,7 @@ def department_get_analysis():
 @app.route('/department/insights/analyze', methods=['POST'])
 def department_analyze():
     """Generate AI analysis of insights data."""
-    err = _require_hod()
+    err = _require_insights_access()
     if err:
         return err
 
@@ -1380,8 +1392,22 @@ def department_analyze():
     if not provider:
         return jsonify({'success': False, 'error': 'No provider selected'}), 400
 
-    # Resolve API keys: dept keys → env vars
+    # Resolve API keys: dept keys → wizard keys → env vars
     dept_keys = _get_dept_keys()
+    if not dept_keys:
+        # Check wizard-stored keys (normal mode)
+        from db import _get_fernet
+        for prov in ('anthropic', 'openai', 'qwen'):
+            cfg = DepartmentConfig.query.filter_by(key=f'api_key_{prov}').first()
+            if cfg and cfg.value:
+                f = _get_fernet()
+                if f:
+                    try:
+                        dept_keys[prov] = f.decrypt(cfg.value.encode()).decode()
+                        continue
+                    except Exception:
+                        pass
+                dept_keys[prov] = cfg.value
     from ai_marking import get_ai_client
     session_keys = dept_keys if dept_keys else None
     client, model_name, prov_type = get_ai_client(provider, model, session_keys)
@@ -1546,7 +1572,7 @@ Respond in JSON format:
 @app.route('/department/export/csv')
 def department_export_csv():
     """Export results as CSV."""
-    err = _require_hod()
+    err = _require_insights_access()
     if err:
         return err
     if is_demo_mode() and not is_dept_mode():
