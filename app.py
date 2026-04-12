@@ -360,6 +360,13 @@ def hub():
     _dept = is_dept_mode()
 
     if _demo and _dept:
+        # After logout, show the gate instead of auto-logging back in
+        if request.args.get('logged_out'):
+            return render_template('hub.html',
+                                   authenticated=False,
+                                   dept_mode=True,
+                                   demo_mode=True,
+                                   teacher=None)
         # Auto-login as demo HOD if not already logged in
         if not session.get('teacher_id'):
             hod = Teacher.query.filter_by(role='hod').first()
@@ -394,7 +401,7 @@ def hub():
 @app.route('/logout')
 def logout():
     session.clear()
-    return redirect(url_for('hub'))
+    return redirect(url_for('hub', logged_out=1))
 
 
 @app.route('/mark')
