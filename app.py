@@ -1725,8 +1725,13 @@ def teacher_dashboard():
     if not teacher:
         return redirect(url_for('hub'))
 
-    # Bulk load all assignments for teacher's classes
-    teacher_class_ids = [cls.id for cls in teacher.classes]
+    # HOD sees all classes; teachers see only their assigned classes
+    if teacher.role == 'hod':
+        teacher_classes = Class.query.all()
+    else:
+        teacher_classes = teacher.classes
+
+    teacher_class_ids = [cls.id for cls in teacher_classes]
     if teacher_class_ids:
         q = Assignment.query.filter(Assignment.class_id.in_(teacher_class_ids))
         if teacher.role != 'hod':
@@ -1740,7 +1745,7 @@ def teacher_dashboard():
 
     # Bulk load student counts by class
     student_counts_by_class = {}
-    for cls in teacher.classes:
+    for cls in teacher_classes:
         student_counts_by_class[cls.id] = Student.query.filter_by(class_id=cls.id).count()
 
     # Bulk load all submissions for these assignments
@@ -1751,7 +1756,7 @@ def teacher_dashboard():
         subs_by_assignment.setdefault(s.assignment_id, []).append(s)
 
     class_data = []
-    for cls in teacher.classes:
+    for cls in teacher_classes:
         assignments = assignments_by_class.get(cls.id, [])
         asn_data = []
         for asn in assignments:
