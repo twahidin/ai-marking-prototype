@@ -67,7 +67,7 @@
         <p>Performance analytics and reports</p>
     </div>
 
-    {% if demo_mode %}
+    {% if demo_mode and not dept_mode %}
     <div class="demo-banner animate__animated animate__fadeIn">
         Insights are not available in demo mode. Deploy with your own API keys to unlock analytics.
     </div>
@@ -140,7 +140,7 @@
 {% endblock %}
 
 {% block scripts %}
-{% if not demo_mode %}
+{% if not demo_mode or dept_mode %}
 <script>
 function loadInsights() {
     var asnId = document.getElementById('filterAssignment').value;
