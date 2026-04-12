@@ -57,6 +57,40 @@
     .export-btn.csv:hover { background: #28a745; color: white; }
 
     .no-data { text-align: center; padding: 40px; color: #888; font-size: 14px; }
+
+    .ai-card { margin-bottom: 24px; }
+    .ai-controls { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-bottom: 16px; }
+    .ai-controls .filter-group { min-width: 140px; }
+    .ai-result { display: none; }
+    .ai-result.visible { display: block; }
+    .ai-summary {
+        background: #f8f9ff; border-left: 4px solid #667eea; padding: 16px 20px;
+        border-radius: 0 12px 12px 0; margin-bottom: 16px; font-size: 14px;
+        line-height: 1.7; color: #333;
+    }
+    .ai-actions { list-style: none; padding: 0; }
+    .ai-actions li {
+        padding: 12px 16px; border: 1px solid #e8e8e8; border-radius: 10px;
+        margin-bottom: 8px; font-size: 13px; line-height: 1.6; color: #333;
+        display: flex; align-items: flex-start; gap: 10px;
+    }
+    .ai-actions li::before { content: '\27A1'; flex-shrink: 0; margin-top: 2px; }
+    .ai-meta { font-size: 11px; color: #aaa; margin-top: 8px; }
+    .ai-loading { display: none; padding: 20px; text-align: center; color: #888; font-size: 14px; }
+    .ai-loading.visible { display: block; }
+
+    .item-card { margin-bottom: 24px; }
+    .asn-checklist { max-height: 300px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; padding: 12px; }
+    .asn-check-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; }
+    .asn-check-item input { margin: 0; }
+    .item-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 16px; }
+    .item-table th { padding: 10px 12px; background: #f8f8f8; font-size: 12px; color: #888; text-align: center; border-bottom: 2px solid #eee; }
+    .item-table th:first-child { text-align: left; }
+    .item-table td { padding: 8px 12px; text-align: center; border-bottom: 1px solid #f0f0f0; }
+    .item-table td:first-child { text-align: left; font-weight: 600; }
+    .pct-good { background: #e8f5e9; color: #28a745; font-weight: 600; border-radius: 6px; }
+    .pct-mid { background: #fff3cd; color: #856404; font-weight: 600; border-radius: 6px; }
+    .pct-low { background: #fde8e8; color: #dc3545; font-weight: 600; border-radius: 6px; }
 </style>
 {% endblock %}
 
@@ -135,6 +169,47 @@
         <a class="export-btn csv" id="csvLink" href="/department/export/csv">Export CSV</a>
     </div>
 
+    <!-- AI Analysis -->
+    <div class="chart-card ai-card animate__animated animate__fadeIn" style="animation-delay:0.4s;animation-duration:0.5s;">
+        <h3>AI Analysis</h3>
+        <div class="ai-controls">
+            <div class="filter-group">
+                <label>Provider</label>
+                <select id="aiProvider" onchange="updateAiModels()"></select>
+            </div>
+            <div class="filter-group">
+                <label>Model</label>
+                <select id="aiModel"></select>
+            </div>
+            <button class="filter-btn" id="analyzeBtn" onclick="generateAnalysis()">Generate Analysis</button>
+        </div>
+        <div class="ai-loading" id="aiLoading">Analyzing data... this may take a few seconds.</div>
+        <div class="ai-result" id="aiResult">
+            <div class="ai-summary" id="aiSummary"></div>
+            <ul class="ai-actions" id="aiActions"></ul>
+            <div class="ai-meta" id="aiMeta"></div>
+        </div>
+    </div>
+
+    <!-- Item Analysis -->
+    <div class="chart-card item-card animate__animated animate__fadeIn" style="animation-delay:0.45s;animation-duration:0.5s;">
+        <h3>Item Analysis &mdash; Compare Assignments</h3>
+        <p style="font-size:13px;color:#888;margin-bottom:12px;">Select 2 or more assignments to compare per-question performance across classes.</p>
+        <div class="asn-checklist" id="asnChecklist">
+            {% for asn in assignments %}
+            <label class="asn-check-item">
+                <input type="checkbox" value="{{ asn.id }}" onchange="updateCompareBtn()">
+                <span style="color:#667eea;font-weight:600;">{{ asn.dept_class.name if asn.dept_class else 'Unknown' }}</span>
+                &mdash; {{ asn.title or asn.subject or 'Untitled' }}
+            </label>
+            {% endfor %}
+        </div>
+        <div style="margin-top:12px;">
+            <button class="filter-btn" id="compareBtn" onclick="runItemAnalysis()" disabled>Compare</button>
+        </div>
+        <div id="itemResult"></div>
+    </div>
+
     {% endif %}
 </div>
 {% endblock %}
@@ -165,6 +240,7 @@ function loadInsights() {
         renderClassChart(data.class_comparison);
         renderDistChart(data.score_distribution);
         renderQuestionChart(data.question_difficulty);
+        loadSavedAnalysis();
     });
 }
 
@@ -224,8 +300,206 @@ function renderQuestionChart(difficulty) {
     el.innerHTML = html;
 }
 
-// Load on page open
+/* AI Analysis */
+var AI_PROVIDERS = {{ ai_providers | tojson }};
+
+function updateAiProviderSelect() {
+    var sel = document.getElementById('aiProvider');
+    sel.innerHTML = '';
+    var providerOrder = ['anthropic', 'openai', 'qwen'];
+    var budgetModels = {
+        'anthropic': 'claude-haiku-4-5-20251001',
+        'openai': 'gpt-5.4-mini',
+        'qwen': 'qwen3.5-plus-2026-02-15'
+    };
+    providerOrder.forEach(function(key) {
+        if (!AI_PROVIDERS[key]) return;
+        var o = document.createElement('option');
+        o.value = key;
+        o.textContent = AI_PROVIDERS[key].label;
+        sel.appendChild(o);
+    });
+    updateAiModels();
+}
+
+function updateAiModels() {
+    var prov = document.getElementById('aiProvider').value;
+    var sel = document.getElementById('aiModel');
+    sel.innerHTML = '';
+    if (!prov || !AI_PROVIDERS[prov]) return;
+    var models = AI_PROVIDERS[prov].models;
+    var budgetModels = {
+        'anthropic': 'claude-haiku-4-5-20251001',
+        'openai': 'gpt-5.4-mini',
+        'qwen': 'qwen3.5-plus-2026-02-15'
+    };
+    var defaultModel = budgetModels[prov] || AI_PROVIDERS[prov].default;
+    for (var id in models) {
+        var o = document.createElement('option');
+        o.value = id;
+        o.textContent = models[id];
+        if (id === defaultModel) o.selected = true;
+        sel.appendChild(o);
+    }
+}
+
+function generateAnalysis() {
+    var provider = document.getElementById('aiProvider').value;
+    var model = document.getElementById('aiModel').value;
+    var asnId = document.getElementById('filterAssignment').value;
+    var clsId = document.getElementById('filterClass').value;
+
+    if (!provider) return alert('Select a provider.');
+
+    var itemData = null;
+    var itemEl = document.getElementById('itemResult');
+    if (itemEl && itemEl.dataset.summary) {
+        itemData = itemEl.dataset.summary;
+    }
+
+    document.getElementById('aiLoading').classList.add('visible');
+    document.getElementById('aiResult').classList.remove('visible');
+    document.getElementById('analyzeBtn').disabled = true;
+
+    fetch('/department/insights/analyze', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            provider: provider,
+            model: model,
+            assignment_id: asnId,
+            class_id: clsId,
+            item_analysis: itemData,
+        })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        document.getElementById('aiLoading').classList.remove('visible');
+        document.getElementById('analyzeBtn').disabled = false;
+        if (!data.success) {
+            alert(data.error || 'Analysis failed.');
+            return;
+        }
+        renderAnalysis(data);
+    })
+    .catch(function() {
+        document.getElementById('aiLoading').classList.remove('visible');
+        document.getElementById('analyzeBtn').disabled = false;
+        alert('Connection error.');
+    });
+}
+
+function renderAnalysis(data) {
+    document.getElementById('aiSummary').textContent = data.summary || '';
+    var ul = document.getElementById('aiActions');
+    ul.innerHTML = '';
+    (data.action_items || []).forEach(function(item) {
+        var li = document.createElement('li');
+        li.textContent = item;
+        ul.appendChild(li);
+    });
+    var meta = '';
+    if (data.provider) meta += data.provider;
+    if (data.model) meta += ' / ' + data.model;
+    if (data.generated_at) meta += ' — ' + new Date(data.generated_at).toLocaleString();
+    document.getElementById('aiMeta').textContent = meta;
+    document.getElementById('aiResult').classList.add('visible');
+    document.getElementById('analyzeBtn').textContent = 'Regenerate';
+}
+
+function loadSavedAnalysis() {
+    var asnId = document.getElementById('filterAssignment').value || '';
+    var clsId = document.getElementById('filterClass').value || '';
+    var params = new URLSearchParams();
+    if (asnId) params.set('assignment_id', asnId);
+    if (clsId) params.set('class_id', clsId);
+
+    fetch('/department/insights/analysis?' + params.toString())
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success && data.exists) {
+            renderAnalysis(data);
+        } else {
+            document.getElementById('aiResult').classList.remove('visible');
+            document.getElementById('analyzeBtn').textContent = 'Generate Analysis';
+        }
+    });
+}
+
+/* Item Analysis */
+function updateCompareBtn() {
+    var checked = document.querySelectorAll('#asnChecklist input:checked');
+    document.getElementById('compareBtn').disabled = checked.length < 2;
+}
+
+function runItemAnalysis() {
+    var checked = document.querySelectorAll('#asnChecklist input:checked');
+    var ids = [];
+    checked.forEach(function(cb) { ids.push(cb.value); });
+    if (ids.length < 2) return;
+
+    document.getElementById('compareBtn').disabled = true;
+    document.getElementById('compareBtn').textContent = 'Loading...';
+
+    fetch('/department/insights/item-analysis?assignment_ids=' + ids.join(','))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        document.getElementById('compareBtn').disabled = false;
+        document.getElementById('compareBtn').textContent = 'Compare';
+        if (!data.success) {
+            alert(data.error || 'Failed.');
+            return;
+        }
+        renderItemAnalysis(data);
+    })
+    .catch(function() {
+        document.getElementById('compareBtn').disabled = false;
+        document.getElementById('compareBtn').textContent = 'Compare';
+        alert('Connection error.');
+    });
+}
+
+function renderItemAnalysis(data) {
+    var el = document.getElementById('itemResult');
+    if (!data.assignments.length || !data.question_numbers.length) {
+        el.innerHTML = '<div class="no-data" style="margin-top:16px;">No submission data for selected assignments.</div>';
+        return;
+    }
+
+    var html = '<table class="item-table"><thead><tr><th>Question</th>';
+    data.assignments.forEach(function(a) {
+        html += '<th>' + esc(a.class_name) + '<br><span style="font-weight:400;font-size:11px;">' + esc(a.title) + '</span></th>';
+    });
+    html += '</tr></thead><tbody>';
+
+    var summaryLines = [];
+    data.question_numbers.forEach(function(qnum) {
+        html += '<tr><td>Q' + esc(qnum) + '</td>';
+        var line = 'Q' + qnum + ': ';
+        data.assignments.forEach(function(a) {
+            var pct = a.questions[qnum];
+            if (pct == null) {
+                html += '<td>\u2014</td>';
+                line += a.class_name + ' N/A, ';
+            } else {
+                var cls = pct >= 70 ? 'pct-good' : (pct >= 50 ? 'pct-mid' : 'pct-low');
+                html += '<td class="' + cls + '">' + pct + '%</td>';
+                line += a.class_name + ' ' + pct + '%, ';
+            }
+        });
+        summaryLines.push(line);
+        html += '</tr>';
+    });
+
+    html += '</tbody></table>';
+    el.innerHTML = html;
+    el.dataset.summary = summaryLines.join('\n');
+}
+
+// Init
+updateAiProviderSelect();
 loadInsights();
+loadSavedAnalysis();
 </script>
 {% endif %}
 {% endblock %}

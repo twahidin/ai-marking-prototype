@@ -1173,10 +1173,18 @@ def department_insights():
     assignments = Assignment.query.filter(Assignment.class_id.isnot(None))\
         .order_by(Assignment.created_at.desc()).all()
 
+    # Get available AI providers for analysis
+    from ai_marking import get_available_providers, PROVIDERS
+    dept_keys = _get_dept_keys()
+    ai_providers = get_available_providers(dept_keys) if dept_keys else get_available_providers()
+    if not ai_providers:
+        ai_providers = PROVIDERS
+
     return render_template('department_insights.html',
                            teacher=teacher,
                            classes=classes,
                            assignments=assignments,
+                           ai_providers=ai_providers,
                            demo_mode=is_demo_mode(),
                            dept_mode=is_dept_mode())
 
@@ -1267,6 +1275,272 @@ def department_insights_data():
         'overall_avg': round(sum(all_scores) / len(all_scores), 1) if all_scores else 0,
         'pass_rate': round(pass_count / len(all_scores) * 100, 1) if all_scores else 0,
     })
+
+
+@app.route('/department/insights/item-analysis')
+def department_item_analysis():
+    """Compare per-question performance across multiple assignments."""
+    err = _require_hod()
+    if err:
+        return err
+
+    ids = request.args.get('assignment_ids', '')
+    assignment_ids = [x.strip() for x in ids.split(',') if x.strip()]
+    if len(assignment_ids) < 2:
+        return jsonify({'success': False, 'error': 'Select at least 2 assignments'}), 400
+
+    assignments = Assignment.query.filter(Assignment.id.in_(assignment_ids)).all()
+    if len(assignments) < 2:
+        return jsonify({'success': False, 'error': 'Assignments not found'}), 404
+
+    cls_ids = list(set(a.class_id for a in assignments if a.class_id))
+    classes = {c.id: c for c in Class.query.filter(Class.id.in_(cls_ids)).all()} if cls_ids else {}
+
+    result = []
+    all_qnums = set()
+
+    for asn in assignments:
+        subs = Submission.query.filter_by(assignment_id=asn.id, status='done').all()
+        q_stats = {}
+        for sub in subs:
+            questions = sub.get_result().get('questions', [])
+            for i, q in enumerate(questions):
+                qnum = str(q.get('question_number', i + 1))
+                q_stats.setdefault(qnum, {'correct': 0, 'total': 0})
+                q_stats[qnum]['total'] += 1
+                has_marks = q.get('marks_awarded') is not None
+                if has_marks:
+                    if q.get('marks_awarded', 0) == q.get('marks_total', 1):
+                        q_stats[qnum]['correct'] += 1
+                elif q.get('status') == 'correct':
+                    q_stats[qnum]['correct'] += 1
+                all_qnums.add(qnum)
+
+        cls = classes.get(asn.class_id)
+        questions_pct = {}
+        for qnum, stats in q_stats.items():
+            questions_pct[qnum] = round(stats['correct'] / stats['total'] * 100, 1) if stats['total'] else 0
+
+        result.append({
+            'id': asn.id,
+            'title': asn.title or asn.subject or 'Untitled',
+            'class_name': cls.name if cls else 'Unknown',
+            'questions': questions_pct,
+        })
+
+    def sort_key(q):
+        try:
+            return (0, int(q))
+        except ValueError:
+            return (1, q)
+    sorted_qnums = sorted(all_qnums, key=sort_key)
+
+    return jsonify({
+        'success': True,
+        'assignments': result,
+        'question_numbers': sorted_qnums,
+    })
+
+
+@app.route('/department/insights/analysis')
+def department_get_analysis():
+    """Retrieve saved AI analysis for given filters."""
+    err = _require_hod()
+    if err:
+        return err
+
+    asn_id = request.args.get('assignment_id', 'all')
+    cls_id = request.args.get('class_id', 'all')
+    key = f'insight_analysis:{asn_id}:{cls_id}'
+
+    cfg = DepartmentConfig.query.filter_by(key=key).first()
+    if cfg and cfg.value:
+        try:
+            data = json.loads(cfg.value)
+            return jsonify({'success': True, 'exists': True, **data})
+        except Exception:
+            pass
+    return jsonify({'success': True, 'exists': False})
+
+
+@app.route('/department/insights/analyze', methods=['POST'])
+def department_analyze():
+    """Generate AI analysis of insights data."""
+    err = _require_hod()
+    if err:
+        return err
+
+    data = request.get_json()
+    provider = data.get('provider')
+    model = data.get('model')
+    asn_filter = data.get('assignment_id', '')
+    cls_filter = data.get('class_id', '')
+    item_analysis_data = data.get('item_analysis')
+
+    if not provider:
+        return jsonify({'success': False, 'error': 'No provider selected'}), 400
+
+    # Resolve API keys: dept keys → env vars
+    dept_keys = _get_dept_keys()
+    from ai_marking import get_ai_client
+    session_keys = dept_keys if dept_keys else None
+    client, model_name, prov_type = get_ai_client(provider, model, session_keys)
+    if not client:
+        return jsonify({'success': False, 'error': f'No API key for {provider}'}), 400
+
+    # Gather insights data
+    query = Submission.query.filter_by(status='done')
+    if asn_filter:
+        query = query.filter_by(assignment_id=asn_filter)
+
+    submissions = query.all()
+    asn_ids = list(set(s.assignment_id for s in submissions))
+    all_asns = {a.id: a for a in Assignment.query.filter(Assignment.id.in_(asn_ids)).all()} if asn_ids else {}
+    cls_ids_set = list(set(a.class_id for a in all_asns.values() if a.class_id))
+    all_classes = {c.id: c for c in Class.query.filter(Class.id.in_(cls_ids_set)).all()} if cls_ids_set else {}
+
+    class_scores = {}
+    question_stats = {}
+    student_scores = []
+
+    for sub in submissions:
+        asn = all_asns.get(sub.assignment_id)
+        if not asn or not asn.class_id:
+            continue
+        if cls_filter and asn.class_id != cls_filter:
+            continue
+
+        result = sub.get_result()
+        questions = result.get('questions', [])
+        if not questions:
+            continue
+
+        cls = all_classes.get(asn.class_id)
+        cls_name = cls.name if cls else 'Unknown'
+        has_marks = any(q.get('marks_awarded') is not None for q in questions)
+
+        if has_marks:
+            total_a = sum(q.get('marks_awarded', 0) for q in questions)
+            total_p = sum(q.get('marks_total', 0) for q in questions)
+            pct = (total_a / total_p * 100) if total_p > 0 else 0
+        else:
+            correct = sum(1 for q in questions if q.get('status') == 'correct')
+            pct = (correct / len(questions) * 100) if questions else 0
+
+        class_scores.setdefault(cls_name, []).append(pct)
+        student_scores.append({'class': cls_name, 'score': round(pct, 1)})
+
+        for i, q in enumerate(questions):
+            qnum = str(q.get('question_number', i + 1))
+            question_stats.setdefault(qnum, {'correct': 0, 'total': 0})
+            question_stats[qnum]['total'] += 1
+            if q.get('status') == 'correct' or (has_marks and q.get('marks_awarded', 0) == q.get('marks_total', 1)):
+                question_stats[qnum]['correct'] += 1
+
+    if not student_scores:
+        return jsonify({'success': False, 'error': 'No data to analyze'}), 400
+
+    # Build prompt data
+    class_avgs = {name: round(sum(scores) / len(scores), 1) for name, scores in class_scores.items()}
+    q_difficulty = {qnum: round(stats['correct'] / stats['total'] * 100, 1) if stats['total'] else 0
+                    for qnum, stats in sorted(question_stats.items(), key=lambda x: x[0])}
+
+    all_scores_flat = [s['score'] for s in student_scores]
+    overall_avg = round(sum(all_scores_flat) / len(all_scores_flat), 1)
+    pass_rate = round(sum(1 for s in all_scores_flat if s >= 50) / len(all_scores_flat) * 100, 1)
+
+    sorted_students = sorted(student_scores, key=lambda x: x['score'])
+    bottom_5 = sorted_students[:5]
+    hardest = sorted(q_difficulty.items(), key=lambda x: x[1])[:5]
+
+    prompt_data = f"""Department Performance Data:
+- Total students marked: {len(all_scores_flat)}
+- Overall average: {overall_avg}%
+- Pass rate (>=50%): {pass_rate}%
+
+Class averages:
+{chr(10).join(f'  - {name}: {avg}%' for name, avg in class_avgs.items())}
+
+Question difficulty (% fully correct):
+{chr(10).join(f'  - Q{qnum}: {pct}%' for qnum, pct in q_difficulty.items())}
+
+Hardest questions:
+{chr(10).join(f'  - Q{qnum}: {pct}% correct' for qnum, pct in hardest)}
+
+Lowest-scoring students:
+{chr(10).join(f'  - {s["class"]}: {s["score"]}%' for s in bottom_5)}"""
+
+    if item_analysis_data:
+        prompt_data += f"\n\nCross-assignment comparison (same questions, different classes):\n{item_analysis_data}"
+
+    system_prompt = """You are an education analytics assistant. Analyze the department performance data and provide:
+
+1. **Summary**: A 2-3 sentence overview of overall performance, highlighting key patterns and notable differences between classes.
+
+2. **Action Items**: 3-5 specific, actionable recommendations. Each should identify WHO needs attention (which class, which students), WHAT the issue is (which topics/questions), and HOW to address it.
+
+Respond in JSON format:
+{
+  "summary": "...",
+  "action_items": ["...", "...", "..."]
+}"""
+
+    try:
+        if prov_type == 'anthropic':
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=1024,
+                system=system_prompt,
+                messages=[{'role': 'user', 'content': prompt_data}],
+            )
+            text = response.content[0].text
+        else:
+            response = client.chat.completions.create(
+                model=model_name,
+                max_tokens=1024,
+                messages=[
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': prompt_data},
+                ],
+            )
+            text = response.choices[0].message.content
+
+        # Parse JSON from response
+        import re as _re
+        json_match = _re.search(r'\{[\s\S]*\}', text)
+        if json_match:
+            parsed = json.loads(json_match.group())
+        else:
+            parsed = {'summary': text, 'action_items': []}
+
+        summary = parsed.get('summary', '')
+        action_items = parsed.get('action_items', [])
+
+    except Exception as e:
+        logger.error(f'AI analysis failed: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+    # Save to DepartmentConfig
+    asn_key = asn_filter or 'all'
+    cls_key = cls_filter or 'all'
+    config_key = f'insight_analysis:{asn_key}:{cls_key}'
+    saved = {
+        'summary': summary,
+        'action_items': action_items,
+        'provider': provider,
+        'model': model_name,
+        'generated_at': datetime.now(timezone.utc).isoformat(),
+    }
+
+    cfg = DepartmentConfig.query.filter_by(key=config_key).first()
+    if cfg:
+        cfg.value = json.dumps(saved)
+    else:
+        cfg = DepartmentConfig(key=config_key, value=json.dumps(saved))
+        db.session.add(cfg)
+    db.session.commit()
+
+    return jsonify({'success': True, **saved})
 
 
 @app.route('/department/export/csv')
