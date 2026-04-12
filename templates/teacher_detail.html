@@ -128,12 +128,8 @@
             </div>
             <div class="info-item">
                 <div class="info-label">Student Submission Link</div>
-                <div class="info-value">
-                    <span class="copyable" onclick="copyText(getFullUrl('/submit/{{ assignment.id }}'), this)">
-                        <span id="submitUrl"></span>
-                        <button class="copy-btn" type="button">Copy</button>
-                    </span>
-                </div>
+                <div class="info-value" style="word-break:break-all;"><span id="submitUrl"></span></div>
+                <button class="copy-btn" type="button" style="margin-top:6px;" onclick="copyText(getFullUrl('/submit/{{ assignment.id }}'), this)">Copy Link</button>
             </div>
             <div class="info-item">
                 <div class="info-label">Type</div>
@@ -323,10 +319,11 @@ document.getElementById('submitUrl').textContent = getFullUrl('/submit/{{ assign
 
 function copyText(text, el) {
     navigator.clipboard.writeText(text).then(function() {
-        var btn = el.querySelector('.copy-btn');
+        var btn = el.classList.contains('copy-btn') ? el : el.querySelector('.copy-btn');
+        var origText = btn.textContent;
         btn.textContent = 'Copied!';
         btn.classList.add('copied');
-        setTimeout(function() { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+        setTimeout(function() { btn.textContent = origText; btn.classList.remove('copied'); }, 2000);
     });
 }
 
