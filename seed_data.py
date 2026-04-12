@@ -8,31 +8,52 @@ import random
 
 def seed_demo_department(db, Teacher, Class, TeacherClass, Assignment, Student, Submission):
     """Populate DB with fake data for demo+dept mode. Idempotent -- skips if data exists."""
+    import logging
+    logger = logging.getLogger(__name__)
     # Check if already seeded
-    if Teacher.query.filter_by(role='hod').first():
-        return
+    existing_hod = Teacher.query.filter_by(role='hod').first()
+    if existing_hod:
+        logger.info(f'Seed: HOD already exists ({existing_hod.name}), checking data completeness')
+        # Verify seed data is complete (not just HOD from a failed prior run)
+        if Submission.query.count() > 0:
+            logger.info(f'Seed: {Submission.query.count()} submissions exist, skipping seed')
+            return
+        logger.info('Seed: HOD exists but no submissions — re-seeding data (keeping HOD)')
+    else:
+        logger.info('Seed: No HOD found, creating seed data')
 
-    # Create HOD
-    hod = Teacher(id=str(uuid.uuid4()), name='Dr. Sarah Lim', code='DEMOHOD1', role='hod')
-    db.session.add(hod)
+    # Create HOD (skip if already exists)
+    if not existing_hod:
+        hod = Teacher(id=str(uuid.uuid4()), name='Dr. Sarah Lim', code='DEMOHOD1', role='hod')
+        db.session.add(hod)
 
-    # Create teachers
-    teachers = [
-        Teacher(id=str(uuid.uuid4()), name='Ms. Chen Wei Ling', code='DEMO0001', role='teacher'),
-        Teacher(id=str(uuid.uuid4()), name='Mr. Rahman bin Ismail', code='DEMO0002', role='teacher'),
-        Teacher(id=str(uuid.uuid4()), name='Ms. Tan Mei Xin', code='DEMO0003', role='teacher'),
+    # Create teachers (skip if they exist by code)
+    teacher_defs = [
+        ('Ms. Chen Wei Ling', 'DEMO0001'),
+        ('Mr. Rahman bin Ismail', 'DEMO0002'),
+        ('Ms. Tan Mei Xin', 'DEMO0003'),
     ]
-    for t in teachers:
-        db.session.add(t)
+    teachers = []
+    for name, code in teacher_defs:
+        t = Teacher.query.filter_by(code=code).first()
+        if not t:
+            t = Teacher(id=str(uuid.uuid4()), name=name, code=code, role='teacher')
+            db.session.add(t)
+        teachers.append(t)
 
-    # Create classes
-    classes = [
-        Class(id=str(uuid.uuid4()), name='3A', level='Secondary 3'),
-        Class(id=str(uuid.uuid4()), name='3B', level='Secondary 3'),
-        Class(id=str(uuid.uuid4()), name='4A', level='Secondary 4'),
+    # Create classes (skip if they exist by name+level)
+    class_defs = [
+        ('3A', 'Secondary 3'),
+        ('3B', 'Secondary 3'),
+        ('4A', 'Secondary 4'),
     ]
-    for c in classes:
-        db.session.add(c)
+    classes = []
+    for name, level in class_defs:
+        c = Class.query.filter_by(name=name, level=level).first()
+        if not c:
+            c = Class(id=str(uuid.uuid4()), name=name, level=level)
+            db.session.add(c)
+        classes.append(c)
 
     # Assign teachers to classes
     assignments_map = [
@@ -43,7 +64,8 @@ def seed_demo_department(db, Teacher, Class, TeacherClass, Assignment, Student, 
         (teachers[2].id, classes[2].id),  # Tan -> 4A
     ]
     for tid, cid in assignments_map:
-        db.session.add(TeacherClass(teacher_id=tid, class_id=cid))
+        if not TeacherClass.query.filter_by(teacher_id=tid, class_id=cid).first():
+            db.session.add(TeacherClass(teacher_id=tid, class_id=cid))
 
     # Student names pool
     first_names = [
