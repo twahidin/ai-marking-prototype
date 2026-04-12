@@ -49,6 +49,13 @@ def _migrate_add_columns(app):
                 db.session.execute(text("ALTER TABLE students ADD COLUMN assignment_id VARCHAR(36)"))
                 db.session.commit()
                 logger.info('Added assignment_id column to students table')
+            else:
+                # Ensure assignment_id is nullable (students belong to classes, not assignments)
+                col_info = next((c for c in inspector.get_columns('students') if c['name'] == 'assignment_id'), None)
+                if col_info and not col_info.get('nullable', True):
+                    db.session.execute(text("ALTER TABLE students ALTER COLUMN assignment_id DROP NOT NULL"))
+                    db.session.commit()
+                    logger.info('Made assignment_id nullable on students table')
         if 'teachers' in inspector.get_table_names():
             columns = [c['name'] for c in inspector.get_columns('teachers')]
             if 'is_active' not in columns:
