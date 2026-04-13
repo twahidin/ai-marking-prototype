@@ -133,9 +133,9 @@
 
     <!-- Level Pills -->
     <div class="level-pills">
-        <a href="/bank{% if q %}?q={{ q }}{% endif %}" class="level-pill {% if not level %}active{% endif %}">All Levels</a>
+        <a href="/bank{% if q %}?q={{ q | urlencode }}{% endif %}" class="level-pill {% if not level %}active{% endif %}">All Levels</a>
         {% for lv in ['Sec 1', 'Sec 2', 'Sec 3', 'Sec 4', 'Sec 5'] %}
-        <a href="/bank?level={{ lv }}{% if q %}&q={{ q }}{% endif %}" class="level-pill {% if level == lv %}active{% endif %}">{{ lv }}</a>
+        <a href="/bank?level={{ lv | urlencode }}{% if q %}&q={{ q | urlencode }}{% endif %}" class="level-pill {% if level == lv %}active{% endif %}">{{ lv }}</a>
         {% endfor %}
     </div>
 
@@ -286,6 +286,9 @@ async function useInClasses() {
         var rEl = document.getElementById('useResults');
         var html = '<span class="success">Assigned to ' + data.count + ' class(es):</span><br>';
         (data.created || []).forEach(function(c) { html += c['class'] + ' (code: ' + c.code + ')<br>'; });
+        if (data.skipped && data.skipped.length) {
+            html += '<br><span style="color:#e68a00;font-weight:600;">Skipped (no students):</span> ' + data.skipped.join(', ');
+        }
         rEl.innerHTML = html;
         rEl.style.display = 'block';
         btn.textContent = 'Done';

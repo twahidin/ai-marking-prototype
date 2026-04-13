@@ -2144,8 +2144,12 @@ def _run_submission_extraction(app_obj, submission_id, assignment_id):
                 sub.status = 'error'
             else:
                 answers = result.get('answers', [])
-                sub.set_extracted_text(answers)
-                sub.status = 'preview'
+                if not answers:
+                    sub.set_result({'error': 'Could not extract any answers from your script. Please re-upload a clearer image.'})
+                    sub.status = 'error'
+                else:
+                    sub.set_extracted_text(answers)
+                    sub.status = 'preview'
         except Exception as e:
             db.session.rollback()
             logger.error(f"Submission {submission_id} extraction failed: {e}")
@@ -2779,6 +2783,11 @@ def bank_publish():
     if not asn:
         return jsonify({'success': False, 'error': 'Assignment not found'}), 404
 
+    # Ownership check
+    err = _check_assignment_ownership(asn)
+    if err:
+        return jsonify({'success': False, 'error': 'Not authorized'}), 403
+
     title = request.form.get('title', '').strip() or asn.title or asn.subject
     level = request.form.get('level', '').strip()
     tags = request.form.get('tags', '').strip()
@@ -2856,12 +2865,14 @@ def bank_use():
     provider = next(iter(api_keys))
 
     created = []
+    skipped = []
     for cid in class_ids:
         cls = Class.query.get(cid)
         if not cls:
             continue
         student_count = Student.query.filter_by(class_id=cid).count()
         if student_count == 0:
+            skipped.append(cls.name)
             continue
 
         asn = Assignment(
@@ -2888,7 +2899,7 @@ def bank_use():
         created.append({'class': cls.name, 'code': asn.classroom_code})
 
     db.session.commit()
-    return jsonify({'success': True, 'created': created, 'count': len(created)})
+    return jsonify({'success': True, 'created': created, 'count': len(created), 'skipped': skipped})
 
 
 @app.route('/bank/upload', methods=['POST'])
@@ -2943,17 +2954,18 @@ def bank_bulk_upload():
             continue
 
         # Find files in this folder
-        def find_file(prefix):
+        def find_file(prefix, folder_name=folder):
             for name in zip_names:
-                # Match folder/prefix.* or folder/prefix (case-insensitive)
+                # Match folder/prefix.* (case-insensitive, any nesting depth)
                 parts = name.split('/')
-                if len(parts) >= 2 and parts[-2] == folder:
+                if len(parts) >= 2:
+                    parent = parts[-2]
                     fname = parts[-1].lower()
-                    if fname.startswith(prefix.lower()) and not fname.startswith('.'):
+                    if parent == folder_name and fname.startswith(prefix.lower()) and not fname.startswith('.'):
                         return zf.read(name)
                 # Also try flat: folder_prefix.*
-                basename = name.split('/')[-1].lower()
-                if basename.startswith(f'{folder.lower()}_{prefix.lower()}') and not basename.startswith('.'):
+                basename = parts[-1].lower()
+                if basename.startswith(f'{folder_name.lower()}_{prefix.lower()}') and not basename.startswith('.'):
                     return zf.read(name)
             return None
 
