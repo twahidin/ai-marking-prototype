@@ -196,6 +196,39 @@ class Assignment(db.Model):
             self.api_keys_json = plaintext
 
 
+class AssignmentBank(db.Model):
+    __tablename__ = 'assignment_bank'
+
+    id = db.Column(db.String(36), primary_key=True)
+    title = db.Column(db.String(300), default='')
+    subject = db.Column(db.String(200), default='')
+    level = db.Column(db.String(20), default='')  # Sec 1, Sec 2, ... Sec 5
+    tags = db.Column(db.Text, default='')  # comma-separated hashtags
+    assign_type = db.Column(db.String(20), default='short_answer')
+    scoring_mode = db.Column(db.String(20), default='status')
+    total_marks = db.Column(db.String(20), default='')
+    review_instructions = db.Column(db.Text, default='')
+    marking_instructions = db.Column(db.Text, default='')
+
+    question_paper = db.Column(db.LargeBinary)
+    answer_key = db.Column(db.LargeBinary)
+    rubrics = db.Column(db.LargeBinary)
+    reference = db.Column(db.LargeBinary)
+
+    created_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=True)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    creator = db.relationship('Teacher', backref='bank_items', lazy=True)
+
+    def get_tags_list(self):
+        if not self.tags:
+            return []
+        return [t.strip().lstrip('#') for t in self.tags.split(',') if t.strip()]
+
+    def set_tags_list(self, tags):
+        self.tags = ','.join('#' + t.strip().lstrip('#') for t in tags if t.strip())
+
+
 class Student(db.Model):
     __tablename__ = 'students'
 

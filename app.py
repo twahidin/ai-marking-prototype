@@ -14,7 +14,7 @@ import io
 
 from ai_marking import mark_script, get_available_providers, PROVIDERS
 from pdf_generator import generate_report_pdf, generate_overview_pdf
-from db import db, init_db, Assignment, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig
+from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -2721,6 +2721,303 @@ def api_submission_extracted(submission_id):
         'student_text': sub.get_student_text(),
         'student_amended': sub.student_amended or False,
     })
+
+
+# ---------------------------------------------------------------------------
+# Assignment Bank
+# ---------------------------------------------------------------------------
+
+@app.route('/bank')
+def bank_page():
+    if not _is_authenticated():
+        return redirect(url_for('hub'))
+    teacher = _current_teacher()
+
+    # Search/filter params
+    q = request.args.get('q', '').strip()
+    level = request.args.get('level', '').strip()
+
+    query = AssignmentBank.query
+    if q:
+        like = f'%{q}%'
+        query = query.filter(
+            db.or_(
+                AssignmentBank.title.ilike(like),
+                AssignmentBank.subject.ilike(like),
+                AssignmentBank.tags.ilike(like),
+            )
+        )
+    if level:
+        query = query.filter(AssignmentBank.level == level)
+
+    items = query.order_by(AssignmentBank.created_at.desc()).all()
+
+    # Get classes for the "Use" modal
+    if teacher and teacher.role in ('hod', 'owner'):
+        classes = Class.query.order_by(Class.name).all()
+    elif teacher:
+        tc_ids = [tc.class_id for tc in TeacherClass.query.filter_by(teacher_id=teacher.id).all()]
+        classes = Class.query.filter(Class.id.in_(tc_ids)).order_by(Class.name).all() if tc_ids else []
+    else:
+        classes = Class.query.order_by(Class.name).all()
+
+    return render_template('bank.html', items=items, classes=classes, q=q, level=level, teacher=teacher)
+
+
+@app.route('/bank/publish', methods=['POST'])
+def bank_publish():
+    """Publish an existing assignment to the bank."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    teacher = _current_teacher()
+
+    assignment_id = request.form.get('assignment_id')
+    if not assignment_id:
+        return jsonify({'success': False, 'error': 'Missing assignment'}), 400
+
+    asn = Assignment.query.get(assignment_id)
+    if not asn:
+        return jsonify({'success': False, 'error': 'Assignment not found'}), 404
+
+    title = request.form.get('title', '').strip() or asn.title or asn.subject
+    level = request.form.get('level', '').strip()
+    tags = request.form.get('tags', '').strip()
+
+    item = AssignmentBank(
+        id=str(uuid.uuid4()),
+        title=title,
+        subject=asn.subject,
+        level=level,
+        tags=tags,
+        assign_type=asn.assign_type,
+        scoring_mode=asn.scoring_mode,
+        total_marks=asn.total_marks,
+        review_instructions=asn.review_instructions,
+        marking_instructions=asn.marking_instructions,
+        question_paper=asn.question_paper,
+        answer_key=asn.answer_key,
+        rubrics=asn.rubrics,
+        reference=asn.reference,
+        created_by=teacher.id if teacher else None,
+    )
+    db.session.add(item)
+    db.session.commit()
+    return jsonify({'success': True, 'id': item.id})
+
+
+@app.route('/bank/use', methods=['POST'])
+def bank_use():
+    """Clone a bank item into one or more classes as live assignments."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    teacher = _current_teacher()
+
+    data = request.get_json()
+    bank_id = data.get('bank_id')
+    class_ids = data.get('class_ids', [])
+
+    if not bank_id or not class_ids:
+        return jsonify({'success': False, 'error': 'Select a bank item and at least one class'}), 400
+
+    item = AssignmentBank.query.get(bank_id)
+    if not item:
+        return jsonify({'success': False, 'error': 'Bank item not found'}), 404
+
+    # Resolve API keys
+    api_keys = {}
+    from ai_marking import PROVIDER_KEY_MAP
+    for prov, env_name in PROVIDER_KEY_MAP.items():
+        val = os.getenv(env_name, '')
+        if val:
+            api_keys[prov] = val
+    if not api_keys and is_dept_mode():
+        dept_keys = _get_dept_keys()
+        if dept_keys:
+            api_keys = dept_keys
+    if not api_keys:
+        # Try wizard keys
+        from db import _get_fernet
+        f = _get_fernet()
+        for prov in ('anthropic', 'openai', 'qwen'):
+            cfg = DepartmentConfig.query.filter_by(key=f'api_key_{prov}').first()
+            if cfg and cfg.value:
+                if f:
+                    try:
+                        api_keys[prov] = f.decrypt(cfg.value.encode()).decode()
+                        continue
+                    except Exception:
+                        pass
+                api_keys[prov] = cfg.value
+
+    if not api_keys:
+        return jsonify({'success': False, 'error': 'No API keys configured'}), 400
+
+    # Pick first available provider
+    provider = next(iter(api_keys))
+
+    created = []
+    for cid in class_ids:
+        cls = Class.query.get(cid)
+        if not cls:
+            continue
+        student_count = Student.query.filter_by(class_id=cid).count()
+        if student_count == 0:
+            continue
+
+        asn = Assignment(
+            id=str(uuid.uuid4()),
+            classroom_code=_generate_classroom_code(),
+            title=item.title,
+            subject=item.subject,
+            assign_type=item.assign_type,
+            scoring_mode=item.scoring_mode,
+            total_marks=item.total_marks,
+            provider=provider,
+            model='',
+            show_results=True,
+            review_instructions=item.review_instructions,
+            marking_instructions=item.marking_instructions,
+            question_paper=item.question_paper,
+            answer_key=item.answer_key,
+            rubrics=item.rubrics,
+            reference=item.reference,
+            class_id=cid,
+            teacher_id=teacher.id if teacher else None,
+        )
+        db.session.add(asn)
+        created.append({'class': cls.name, 'code': asn.classroom_code})
+
+    db.session.commit()
+    return jsonify({'success': True, 'created': created, 'count': len(created)})
+
+
+@app.route('/bank/upload', methods=['POST'])
+def bank_bulk_upload():
+    """Bulk upload assignments via CSV + ZIP bundle."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    teacher = _current_teacher()
+
+    csv_file = request.files.get('csv')
+    zip_file = request.files.get('zip')
+    if not csv_file or not csv_file.filename:
+        return jsonify({'success': False, 'error': 'Please upload a CSV file'}), 400
+    if not zip_file or not zip_file.filename:
+        return jsonify({'success': False, 'error': 'Please upload a ZIP file'}), 400
+
+    # Parse CSV
+    try:
+        csv_text = csv_file.read().decode('utf-8-sig')
+        reader = csv.DictReader(io.StringIO(csv_text))
+        rows = list(reader)
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'CSV parse error: {e}'}), 400
+
+    if not rows:
+        return jsonify({'success': False, 'error': 'CSV is empty'}), 400
+
+    # Required columns
+    required = {'title', 'folder'}
+    headers = set(rows[0].keys()) if rows else set()
+    missing = required - headers
+    if missing:
+        return jsonify({'success': False, 'error': f'CSV missing columns: {", ".join(missing)}. Required: title, folder. Optional: subject, level, tags, type, scoring, marks, review_instructions, marking_instructions'}), 400
+
+    # Parse ZIP
+    try:
+        zip_bytes = zip_file.read()
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'ZIP error: {e}'}), 400
+
+    # Build lookup of zip contents by folder
+    zip_names = zf.namelist()
+
+    created = 0
+    errors = []
+    for i, row in enumerate(rows, 1):
+        title = (row.get('title') or '').strip()
+        folder = (row.get('folder') or '').strip().strip('/')
+        if not title or not folder:
+            errors.append(f'Row {i}: missing title or folder')
+            continue
+
+        # Find files in this folder
+        def find_file(prefix):
+            for name in zip_names:
+                # Match folder/prefix.* or folder/prefix (case-insensitive)
+                parts = name.split('/')
+                if len(parts) >= 2 and parts[-2] == folder:
+                    fname = parts[-1].lower()
+                    if fname.startswith(prefix.lower()) and not fname.startswith('.'):
+                        return zf.read(name)
+                # Also try flat: folder_prefix.*
+                basename = name.split('/')[-1].lower()
+                if basename.startswith(f'{folder.lower()}_{prefix.lower()}') and not basename.startswith('.'):
+                    return zf.read(name)
+            return None
+
+        qp = find_file('question')
+        if not qp:
+            errors.append(f'Row {i} "{title}": no question paper found in folder "{folder}"')
+            continue
+
+        ak = find_file('answer')
+        rub = find_file('rubric')
+        ref = find_file('reference')
+
+        assign_type = (row.get('type') or 'short_answer').strip()
+        if assign_type not in ('short_answer', 'rubrics'):
+            assign_type = 'short_answer'
+
+        if assign_type == 'short_answer' and not ak:
+            errors.append(f'Row {i} "{title}": short_answer type requires answer key in folder "{folder}"')
+            continue
+        if assign_type == 'rubrics' and not rub:
+            errors.append(f'Row {i} "{title}": rubrics type requires rubrics file in folder "{folder}"')
+            continue
+
+        scoring = (row.get('scoring') or 'status').strip()
+        if scoring not in ('status', 'marks'):
+            scoring = 'status'
+
+        item = AssignmentBank(
+            id=str(uuid.uuid4()),
+            title=title,
+            subject=(row.get('subject') or '').strip(),
+            level=(row.get('level') or '').strip(),
+            tags=(row.get('tags') or '').strip(),
+            assign_type=assign_type,
+            scoring_mode=scoring,
+            total_marks=(row.get('marks') or '').strip(),
+            review_instructions=(row.get('review_instructions') or '').strip(),
+            marking_instructions=(row.get('marking_instructions') or '').strip(),
+            question_paper=qp,
+            answer_key=ak,
+            rubrics=rub,
+            reference=ref,
+            created_by=teacher.id if teacher else None,
+        )
+        db.session.add(item)
+        created += 1
+
+    db.session.commit()
+    zf.close()
+    return jsonify({'success': True, 'created': created, 'errors': errors})
+
+
+@app.route('/bank/delete/<bank_id>', methods=['POST'])
+def bank_delete(bank_id):
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    item = AssignmentBank.query.get_or_404(bank_id)
+    teacher = _current_teacher()
+    # Only creator or HOD/owner can delete
+    if teacher and teacher.role not in ('hod', 'owner') and item.created_by != teacher.id:
+        return jsonify({'success': False, 'error': 'Not authorized'}), 403
+    db.session.delete(item)
+    db.session.commit()
+    return jsonify({'success': True})
 
 
 # ---------------------------------------------------------------------------

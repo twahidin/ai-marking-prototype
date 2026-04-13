@@ -174,6 +174,9 @@
                 <div class="info-value">{{ assignment.created_at.strftime('%d %b %Y, %H:%M') if assignment.created_at else 'N/A' }}</div>
             </div>
         </div>
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;">
+            <button class="upload-btn" onclick="openShareModal()" style="padding:8px 20px;font-size:13px;">Share to Assignment Bank</button>
+        </div>
     </div>
 
     <!-- Summary Stats -->
@@ -346,6 +349,37 @@
         <div class="extracted-diff" id="extractedDiffContent"></div>
         <div style="text-align:right;margin-top:20px;">
             <button class="modal-cancel" onclick="closeExtractedModal()" style="padding:10px 24px;border-radius:8px;border:none;cursor:pointer;">Close</button>
+        </div>
+    </div>
+</div>
+<!-- Share to Bank Modal -->
+<div class="upload-modal" id="shareModal">
+    <div class="upload-modal-box" style="max-width:480px;">
+        <h3>Share to Assignment Bank</h3>
+        <p style="font-size:13px;color:#888;margin-bottom:16px;">Publish this assignment to the shared bank so other teachers can use it.</p>
+        <div style="margin-bottom:12px;">
+            <label style="font-size:13px;font-weight:600;color:#555;display:block;margin-bottom:4px;">Title</label>
+            <input type="text" class="form-input" id="shareTitle" value="{{ assignment.title or assignment.subject }}" style="width:100%;padding:10px 14px;border:2px solid #e0e0e0;border-radius:10px;font-size:14px;outline:none;box-sizing:border-box;">
+        </div>
+        <div style="margin-bottom:12px;">
+            <label style="font-size:13px;font-weight:600;color:#555;display:block;margin-bottom:4px;">Level</label>
+            <select id="shareLevel" style="width:100%;padding:10px 14px;border:2px solid #e0e0e0;border-radius:10px;font-size:14px;outline:none;box-sizing:border-box;">
+                <option value="">Select level...</option>
+                <option value="Sec 1">Sec 1</option>
+                <option value="Sec 2">Sec 2</option>
+                <option value="Sec 3">Sec 3</option>
+                <option value="Sec 4">Sec 4</option>
+                <option value="Sec 5">Sec 5</option>
+            </select>
+        </div>
+        <div style="margin-bottom:12px;">
+            <label style="font-size:13px;font-weight:600;color:#555;display:block;margin-bottom:4px;">Tags (comma-separated)</label>
+            <input type="text" class="form-input" id="shareTags" placeholder="#algebra, #midyear, #essay" style="width:100%;padding:10px 14px;border:2px solid #e0e0e0;border-radius:10px;font-size:14px;outline:none;box-sizing:border-box;">
+        </div>
+        <div class="error-msg" id="shareError" style="display:none;"></div>
+        <div class="modal-actions">
+            <button class="modal-cancel" onclick="closeShareModal()">Cancel</button>
+            <button class="modal-submit" id="shareBtn" onclick="doShare()">Publish</button>
         </div>
     </div>
 </div>
@@ -635,6 +669,48 @@ async function viewExtracted(submissionId, studentName) {
 
 function closeExtractedModal() {
     document.getElementById('extractedModal').classList.remove('active');
+}
+
+// --- Share to Bank ---
+function openShareModal() {
+    document.getElementById('shareError').style.display = 'none';
+    document.getElementById('shareBtn').disabled = false;
+    document.getElementById('shareBtn').textContent = 'Publish';
+    document.getElementById('shareModal').classList.add('active');
+}
+function closeShareModal() { document.getElementById('shareModal').classList.remove('active'); }
+
+document.getElementById('shareModal').addEventListener('click', function(e) { if (e.target === this) closeShareModal(); });
+
+async function doShare() {
+    var errEl = document.getElementById('shareError');
+    errEl.style.display = 'none';
+    var btn = document.getElementById('shareBtn');
+    btn.disabled = true; btn.textContent = 'Publishing...';
+
+    var fd = new FormData();
+    fd.append('assignment_id', '{{ assignment.id }}');
+    fd.append('title', document.getElementById('shareTitle').value);
+    fd.append('level', document.getElementById('shareLevel').value);
+    fd.append('tags', document.getElementById('shareTags').value);
+
+    try {
+        var res = await fetch('/bank/publish', { method: 'POST', body: fd });
+        var data = await res.json();
+        if (data.success) {
+            btn.textContent = 'Published!';
+            btn.style.background = '#28a745';
+            setTimeout(function() { closeShareModal(); }, 1000);
+        } else {
+            errEl.textContent = data.error || 'Failed.';
+            errEl.style.display = 'block';
+            btn.disabled = false; btn.textContent = 'Publish';
+        }
+    } catch (err) {
+        errEl.textContent = 'Network error.';
+        errEl.style.display = 'block';
+        btn.disabled = false; btn.textContent = 'Publish';
+    }
 }
 </script>
 {% endblock %}

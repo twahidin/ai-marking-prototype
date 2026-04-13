@@ -1,0 +1,359 @@
+{% extends "base.html" %}
+
+{% block title %}Assignment Bank - {{ app_title }}{% endblock %}
+
+{% block head %}
+<style>
+    .search-bar {
+        display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap;
+    }
+    .search-input {
+        flex: 1; min-width: 200px; padding: 12px 16px; border: 2px solid #e0e0e0;
+        border-radius: 10px; font-size: 15px; outline: none;
+    }
+    .search-input:focus { border-color: #667eea; }
+
+    .level-pills { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+    .level-pill {
+        padding: 6px 16px; border-radius: 20px; font-size: 13px; font-weight: 600;
+        border: 2px solid #e0e0e0; background: white; color: #666; cursor: pointer;
+        text-decoration: none; transition: all 0.2s;
+    }
+    .level-pill:hover { border-color: #667eea; color: #667eea; }
+    .level-pill.active { background: #667eea; color: white; border-color: #667eea; }
+
+    .bank-grid {
+        display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;
+    }
+    .bank-card {
+        background: white; border: 1px solid #e8e8e8; border-radius: 12px; padding: 20px;
+        display: flex; flex-direction: column; transition: box-shadow 0.2s;
+    }
+    .bank-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+    .bank-title { font-size: 16px; font-weight: 700; color: #333; margin-bottom: 4px; }
+    .bank-subject { font-size: 13px; color: #667eea; font-weight: 600; }
+    .bank-meta { font-size: 12px; color: #888; margin-top: 8px; }
+    .bank-meta span { margin-right: 12px; }
+    .bank-tags { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+    .bank-tag {
+        font-size: 11px; font-weight: 600; color: #667eea; background: #f0f2ff;
+        padding: 2px 8px; border-radius: 4px;
+    }
+    .bank-level {
+        display: inline-block; font-size: 11px; font-weight: 700; color: white;
+        background: #764ba2; padding: 2px 10px; border-radius: 4px; margin-right: 6px;
+    }
+    .bank-actions { display: flex; gap: 8px; margin-top: auto; padding-top: 12px; }
+    .btn-sm {
+        padding: 8px 16px; border: none; border-radius: 8px;
+        font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .btn-sm.use { background: #667eea; color: white; }
+    .btn-sm.use:hover { background: #5a6fd6; }
+    .btn-sm.delete { background: #fdecea; color: #dc3545; }
+    .btn-sm.delete:hover { background: #f5c6cb; }
+
+    .empty-state { text-align: center; padding: 60px 20px; color: #888; }
+    .empty-state h3 { color: #333; margin-bottom: 8px; }
+
+    /* Modals */
+    .modal-overlay {
+        display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+        z-index: 1000; align-items: center; justify-content: center;
+        backdrop-filter: blur(4px);
+    }
+    .modal-overlay.active { display: flex; }
+    .modal-box {
+        background: white; border-radius: 16px; padding: 32px; width: 90%;
+        max-width: 520px; max-height: 80vh; overflow-y: auto;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+    .modal-box h3 { font-size: 18px; font-weight: 700; color: #333; margin-bottom: 16px; }
+    .modal-label { font-size: 13px; font-weight: 600; color: #555; margin-bottom: 4px; }
+    .modal-input {
+        width: 100%; padding: 10px 14px; border: 2px solid #e0e0e0; border-radius: 10px;
+        font-size: 14px; outline: none; box-sizing: border-box; margin-bottom: 12px;
+    }
+    .modal-input:focus { border-color: #667eea; }
+    .modal-select { width: 100%; padding: 10px 14px; border: 2px solid #e0e0e0; border-radius: 10px; font-size: 14px; margin-bottom: 12px; outline: none; box-sizing: border-box; }
+    .modal-actions { display: flex; gap: 10px; margin-top: 16px; }
+    .modal-actions button { flex: 1; padding: 12px; border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; border: none; }
+    .modal-cancel { background: #f0f0f0; color: #666; }
+    .modal-cancel:hover { background: #e0e0e0; }
+    .modal-submit { background: #667eea; color: white; }
+    .modal-submit:hover { background: #5a6fd6; }
+    .modal-submit:disabled { background: #ccc; cursor: not-allowed; }
+
+    .class-checklist { max-height: 200px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; padding: 8px; margin-bottom: 12px; }
+    .class-check-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; }
+    .class-check-item:hover { background: #f8f9fa; }
+    .class-check-item input { width: 18px; height: 18px; accent-color: #667eea; }
+    .class-check-item label { font-size: 14px; color: #333; cursor: pointer; }
+
+    .upload-hint { font-size: 12px; color: #888; line-height: 1.6; background: #f8f9fa; padding: 12px; border-radius: 8px; margin-bottom: 12px; }
+    .upload-hint code { background: #e8e8e8; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+
+    .bulk-results { margin-top: 12px; font-size: 13px; }
+    .bulk-results .success { color: #28a745; font-weight: 600; }
+    .bulk-results .error-item { color: #dc3545; font-size: 12px; margin-top: 4px; }
+
+    .action-row { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+    .action-btn {
+        padding: 10px 20px; border: none; border-radius: 10px; font-size: 14px;
+        font-weight: 700; cursor: pointer; text-decoration: none; display: inline-block;
+    }
+    .action-btn.primary { background: #667eea; color: white; }
+    .action-btn.primary:hover { background: #5a6fd6; }
+    .action-btn.secondary { background: #f0f2ff; color: #667eea; border: 1px solid #667eea; }
+    .action-btn.secondary:hover { background: #e0e3ff; }
+
+    .bank-creator { font-size: 11px; color: #aaa; margin-top: 4px; }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="container">
+    <div class="header">
+        <h1>Assignment Bank</h1>
+        <p>Shared library of assignments. Search, browse, and assign to your classes.</p>
+    </div>
+
+    <div class="action-row">
+        <button class="action-btn primary" onclick="openBulkUpload()">Bulk Upload (CSV + ZIP)</button>
+    </div>
+
+    <!-- Search -->
+    <div class="search-bar">
+        <input type="text" class="search-input" id="searchInput" placeholder="Search by title, subject, or #tags..." value="{{ q }}" onkeydown="if(event.key==='Enter')doSearch()">
+        <button class="action-btn primary" onclick="doSearch()" style="padding:12px 24px;">Search</button>
+        {% if q or level %}
+        <a href="/bank" class="action-btn secondary" style="padding:12px 24px;">Clear</a>
+        {% endif %}
+    </div>
+
+    <!-- Level Pills -->
+    <div class="level-pills">
+        <a href="/bank{% if q %}?q={{ q }}{% endif %}" class="level-pill {% if not level %}active{% endif %}">All Levels</a>
+        {% for lv in ['Sec 1', 'Sec 2', 'Sec 3', 'Sec 4', 'Sec 5'] %}
+        <a href="/bank?level={{ lv }}{% if q %}&q={{ q }}{% endif %}" class="level-pill {% if level == lv %}active{% endif %}">{{ lv }}</a>
+        {% endfor %}
+    </div>
+
+    <!-- Bank Items -->
+    {% if items %}
+    <div class="bank-grid">
+        {% for item in items %}
+        <div class="bank-card">
+            <div>
+                {% if item.level %}<span class="bank-level">{{ item.level }}</span>{% endif %}
+                <span class="bank-title">{{ item.title or 'Untitled' }}</span>
+            </div>
+            <div class="bank-subject">{{ item.subject }}</div>
+            <div class="bank-meta">
+                <span>{{ item.assign_type | replace('_', ' ') | title }}</span>
+                <span>{{ item.scoring_mode | title }}</span>
+                {% if item.total_marks %}<span>{{ item.total_marks }} marks</span>{% endif %}
+            </div>
+            {% if item.tags %}
+            <div class="bank-tags">
+                {% for tag in item.get_tags_list() %}
+                <span class="bank-tag">#{{ tag }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% if item.creator %}
+            <div class="bank-creator">by {{ item.creator.name }}</div>
+            {% endif %}
+            <div class="bank-actions">
+                <button class="btn-sm use" onclick="openUseModal('{{ item.id }}', '{{ item.title | e }}')">Use in Class</button>
+                <button class="btn-sm delete" onclick="deleteItem('{{ item.id }}')">Delete</button>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <h3>No assignments in the bank{% if q or level %} matching your search{% endif %}</h3>
+        <p>Publish assignments from the assignment page, or use Bulk Upload to add many at once.</p>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Use in Class Modal -->
+<div class="modal-overlay" id="useModal">
+    <div class="modal-box">
+        <h3>Assign to Classes</h3>
+        <p style="font-size:14px;color:#667eea;font-weight:600;" id="useItemTitle"></p>
+        <div class="modal-label">Select classes to assign to:</div>
+        <div class="class-checklist" id="useClassList">
+            {% for cls in classes %}
+            <div class="class-check-item">
+                <input type="checkbox" id="cls-{{ cls.id }}" value="{{ cls.id }}">
+                <label for="cls-{{ cls.id }}">{{ cls.name }}{% if cls.level %} ({{ cls.level }}){% endif %}</label>
+            </div>
+            {% endfor %}
+        </div>
+        <div class="error-msg" id="useError" style="display:none;"></div>
+        <div class="bulk-results" id="useResults" style="display:none;"></div>
+        <div class="modal-actions">
+            <button class="modal-cancel" onclick="closeUseModal()">Cancel</button>
+            <button class="modal-submit" id="useBtn" onclick="useInClasses()">Assign</button>
+        </div>
+    </div>
+</div>
+
+<!-- Bulk Upload Modal -->
+<div class="modal-overlay" id="bulkModal">
+    <div class="modal-box" style="max-width:600px;">
+        <h3>Bulk Upload Assignments</h3>
+        <div class="upload-hint">
+            <strong>How it works:</strong><br>
+            1. Prepare a <strong>CSV file</strong> with columns: <code>title</code>, <code>folder</code> (required), plus optional: <code>subject</code>, <code>level</code>, <code>tags</code>, <code>type</code>, <code>scoring</code>, <code>marks</code>, <code>review_instructions</code>, <code>marking_instructions</code><br>
+            2. Prepare a <strong>ZIP file</strong> containing folders matching the <code>folder</code> column. Each folder should have:<br>
+            &nbsp;&nbsp;- <code>question_paper.pdf</code> (required)<br>
+            &nbsp;&nbsp;- <code>answer_key.pdf</code> (required for short_answer type)<br>
+            &nbsp;&nbsp;- <code>rubrics.pdf</code> (required for rubrics type)<br>
+            &nbsp;&nbsp;- <code>reference.pdf</code> (optional)<br><br>
+            <strong>Level values:</strong> Sec 1, Sec 2, Sec 3, Sec 4, Sec 5<br>
+            <strong>Type values:</strong> short_answer (default), rubrics<br>
+            <strong>Tags:</strong> comma-separated, e.g. <code>#algebra,#quadratics</code>
+        </div>
+
+        <div class="modal-label">CSV File</div>
+        <input type="file" class="modal-input" id="bulkCsv" accept=".csv" style="padding:8px;">
+
+        <div class="modal-label">ZIP File</div>
+        <input type="file" class="modal-input" id="bulkZip" accept=".zip" style="padding:8px;">
+
+        <div class="error-msg" id="bulkError" style="display:none;"></div>
+        <div class="bulk-results" id="bulkResults" style="display:none;"></div>
+
+        <div class="modal-actions">
+            <button class="modal-cancel" onclick="closeBulkModal()">Cancel</button>
+            <button class="modal-submit" id="bulkBtn" onclick="doBulkUpload()">Upload</button>
+        </div>
+
+        <div style="margin-top:16px;">
+            <a href="#" onclick="downloadSampleCsv(); return false;" style="color:#667eea;font-size:13px;">Download sample CSV</a>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var useBankId = null;
+
+function doSearch() {
+    var q = document.getElementById('searchInput').value.trim();
+    var params = new URLSearchParams(window.location.search);
+    if (q) params.set('q', q); else params.delete('q');
+    window.location.href = '/bank?' + params.toString();
+}
+
+/* Use in Class Modal */
+function openUseModal(bankId, title) {
+    useBankId = bankId;
+    document.getElementById('useItemTitle').textContent = title;
+    document.getElementById('useError').style.display = 'none';
+    document.getElementById('useResults').style.display = 'none';
+    document.getElementById('useBtn').disabled = false;
+    document.getElementById('useBtn').textContent = 'Assign';
+    document.querySelectorAll('#useClassList input').forEach(function(cb) { cb.checked = false; });
+    document.getElementById('useModal').classList.add('active');
+}
+
+function closeUseModal() { document.getElementById('useModal').classList.remove('active'); }
+
+async function useInClasses() {
+    var errEl = document.getElementById('useError');
+    errEl.style.display = 'none';
+    var classIds = [];
+    document.querySelectorAll('#useClassList input:checked').forEach(function(cb) { classIds.push(cb.value); });
+    if (classIds.length === 0) { errEl.textContent = 'Select at least one class.'; errEl.style.display = 'block'; return; }
+
+    var btn = document.getElementById('useBtn');
+    btn.disabled = true; btn.textContent = 'Assigning...';
+
+    try {
+        var res = await fetch('/bank/use', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bank_id: useBankId, class_ids: classIds })
+        });
+        var data = await res.json();
+        if (!data.success) { errEl.textContent = data.error || 'Failed.'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Assign'; return; }
+
+        var rEl = document.getElementById('useResults');
+        var html = '<span class="success">Assigned to ' + data.count + ' class(es):</span><br>';
+        (data.created || []).forEach(function(c) { html += c['class'] + ' (code: ' + c.code + ')<br>'; });
+        rEl.innerHTML = html;
+        rEl.style.display = 'block';
+        btn.textContent = 'Done';
+    } catch (err) { errEl.textContent = 'Network error.'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Assign'; }
+}
+
+/* Bulk Upload Modal */
+function openBulkUpload() { document.getElementById('bulkModal').classList.add('active'); }
+function closeBulkModal() { document.getElementById('bulkModal').classList.remove('active'); }
+
+async function doBulkUpload() {
+    var errEl = document.getElementById('bulkError');
+    errEl.style.display = 'none';
+    document.getElementById('bulkResults').style.display = 'none';
+
+    var csvInput = document.getElementById('bulkCsv');
+    var zipInput = document.getElementById('bulkZip');
+    if (!csvInput.files.length) { errEl.textContent = 'Please select a CSV file.'; errEl.style.display = 'block'; return; }
+    if (!zipInput.files.length) { errEl.textContent = 'Please select a ZIP file.'; errEl.style.display = 'block'; return; }
+
+    var btn = document.getElementById('bulkBtn');
+    btn.disabled = true; btn.textContent = 'Uploading...';
+
+    var fd = new FormData();
+    fd.append('csv', csvInput.files[0]);
+    fd.append('zip', zipInput.files[0]);
+
+    try {
+        var res = await fetch('/bank/upload', { method: 'POST', body: fd });
+        var data = await res.json();
+        if (!data.success) { errEl.textContent = data.error || 'Upload failed.'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Upload'; return; }
+
+        var rEl = document.getElementById('bulkResults');
+        var html = '<span class="success">' + data.created + ' assignment(s) uploaded successfully.</span>';
+        if (data.errors && data.errors.length) {
+            html += '<br><strong style="color:#e68a00;">Warnings:</strong>';
+            data.errors.forEach(function(e) { html += '<div class="error-item">' + e + '</div>'; });
+        }
+        rEl.innerHTML = html;
+        rEl.style.display = 'block';
+        btn.textContent = 'Done';
+        setTimeout(function() { window.location.reload(); }, 2000);
+    } catch (err) { errEl.textContent = 'Network error.'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Upload'; }
+}
+
+function downloadSampleCsv() {
+    var csv = 'title,folder,subject,level,tags,type,scoring,marks\n';
+    csv += 'Mid-Year Exam 2026,midyear_math,Mathematics,Sec 3,#algebra#geometry,short_answer,marks,100\n';
+    csv += 'Essay Assignment 1,essay1_eng,English,Sec 4,#essay#writing,rubrics,marks,30\n';
+    var blob = new Blob([csv], { type: 'text/csv' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'assignment_bank_sample.csv';
+    a.click();
+}
+
+/* Delete */
+async function deleteItem(bankId) {
+    if (!confirm('Delete this assignment from the bank?')) return;
+    try {
+        var res = await fetch('/bank/delete/' + bankId, { method: 'POST' });
+        var data = await res.json();
+        if (data.success) window.location.reload();
+        else alert(data.error || 'Delete failed.');
+    } catch (err) { alert('Network error.'); }
+}
+
+document.getElementById('useModal').addEventListener('click', function(e) { if (e.target === this) closeUseModal(); });
+document.getElementById('bulkModal').addEventListener('click', function(e) { if (e.target === this) closeBulkModal(); });
+</script>
+{% endblock %}
