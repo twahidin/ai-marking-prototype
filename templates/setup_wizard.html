@@ -5,12 +5,21 @@
 {% block head %}
 <style>
     .wizard { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 40px 20px; }
-    .wizard-container { max-width: 700px; width: 100%; text-align: center; }
+    .wizard-container { max-width: 720px; width: 100%; text-align: center; }
     .wizard-container h1 { font-size: 28px; font-weight: 700; color: #333; margin-bottom: 8px; }
     .wizard-container .subtitle { color: #888; font-size: 15px; margin-bottom: 36px; }
 
     .wizard-step { display: none; }
     .wizard-step.active { display: block; }
+
+    /* Progress indicator */
+    .wizard-progress { display: flex; justify-content: center; gap: 8px; margin-bottom: 32px; }
+    .wizard-progress .dot {
+        width: 10px; height: 10px; border-radius: 50%;
+        background: #e0e0e0; transition: background 0.3s;
+    }
+    .wizard-progress .dot.active { background: #667eea; }
+    .wizard-progress .dot.done { background: #28a745; }
 
     /* Mode cards */
     .mode-cards { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
@@ -41,15 +50,19 @@
         width: 20px; height: 20px; accent-color: #667eea; flex-shrink: 0;
     }
 
-    .wizard-next {
-        margin-top: 32px; padding: 14px 40px; border: none; border-radius: 10px;
+    /* Buttons */
+    .wizard-btn {
+        padding: 14px 40px; border: none; border-radius: 10px;
         background: #667eea; color: white; font-size: 16px; font-weight: 700;
-        cursor: pointer; transition: background 0.2s; display: none;
+        cursor: pointer; transition: background 0.2s; display: inline-block;
     }
-    .wizard-next:hover { background: #5a6fd6; }
-    .wizard-next:disabled { background: #ccc; cursor: not-allowed; }
+    .wizard-btn:hover { background: #5a6fd6; }
+    .wizard-btn:disabled { background: #ccc; cursor: not-allowed; }
+    .wizard-btn.secondary { background: transparent; color: #667eea; border: 2px solid #667eea; }
+    .wizard-btn.secondary:hover { background: #f0f2ff; }
+    .wizard-btn-row { margin-top: 32px; display: flex; gap: 12px; justify-content: center; }
 
-    /* Config step */
+    /* Config card */
     .config-card {
         background: white; border-radius: 16px; padding: 40px 36px;
         box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: left;
@@ -88,10 +101,100 @@
         margin-bottom: 16px;
     }
 
-    .api-note {
-        font-size: 12px; color: #888; background: #f8f9fa; padding: 10px 14px;
-        border-radius: 8px; margin-top: 4px; line-height: 1.5;
+    /* Welcome step */
+    .welcome-card {
+        background: white; border-radius: 16px; padding: 40px 36px;
+        box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: left;
+        max-width: 600px; margin: 0 auto;
     }
+    .welcome-card h2 { text-align: center; font-size: 22px; font-weight: 700; color: #333; margin-bottom: 8px; }
+    .welcome-card .wc-sub { text-align: center; color: #888; font-size: 14px; margin-bottom: 28px; }
+    .checklist-item {
+        display: flex; gap: 14px; align-items: flex-start; padding: 14px 0;
+        border-bottom: 1px solid #f0f0f0;
+    }
+    .checklist-item:last-child { border-bottom: none; }
+    .checklist-icon {
+        width: 36px; height: 36px; border-radius: 10px;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 18px; flex-shrink: 0;
+    }
+    .checklist-icon.blue { background: #eef0ff; }
+    .checklist-icon.green { background: #e8f5e9; }
+    .checklist-icon.orange { background: #fff3e0; }
+    .checklist-text h4 { font-size: 15px; font-weight: 600; color: #333; margin-bottom: 2px; }
+    .checklist-text p { font-size: 13px; color: #888; line-height: 1.4; margin: 0; }
+    .checklist-text .time { font-size: 11px; color: #bbb; }
+
+    /* API guide step */
+    .guide-card {
+        background: white; border-radius: 16px; padding: 36px 32px;
+        box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: left;
+        max-width: 600px; margin: 0 auto;
+    }
+    .guide-card h2 { text-align: center; font-size: 20px; font-weight: 700; color: #333; margin-bottom: 4px; }
+    .guide-card .guide-sub { text-align: center; color: #888; font-size: 13px; margin-bottom: 24px; }
+
+    .provider-tab {
+        display: none; animation: fadeIn 0.3s ease;
+    }
+    .provider-tab.active { display: block; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+    .provider-header {
+        display: flex; align-items: center; gap: 12px; margin-bottom: 20px;
+        padding-bottom: 14px; border-bottom: 2px solid #f0f0f0;
+    }
+    .provider-logo {
+        width: 44px; height: 44px; border-radius: 12px;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 22px; font-weight: 700;
+    }
+    .provider-logo.anthropic { background: #d4a574; color: white; }
+    .provider-logo.openai { background: #10a37f; color: white; }
+    .provider-logo.qwen { background: #6c5ce7; color: white; }
+    .provider-name { font-size: 18px; font-weight: 700; color: #333; }
+    .provider-name small { font-size: 12px; color: #aaa; font-weight: 400; display: block; }
+
+    .guide-steps { margin-bottom: 20px; }
+    .guide-step {
+        display: flex; gap: 12px; align-items: flex-start; padding: 10px 0;
+    }
+    .step-num {
+        width: 26px; height: 26px; border-radius: 50%;
+        background: #667eea; color: white; font-size: 13px; font-weight: 700;
+        display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .step-text { font-size: 14px; color: #555; line-height: 1.5; }
+    .step-text a { color: #667eea; font-weight: 600; text-decoration: none; }
+    .step-text a:hover { text-decoration: underline; }
+    .step-text code {
+        background: #f0f2ff; padding: 1px 6px; border-radius: 4px;
+        font-size: 13px; color: #667eea;
+    }
+
+    .key-input-row { display: flex; gap: 10px; align-items: center; }
+    .key-input-row input { flex: 1; }
+
+    .env-badge {
+        display: inline-block; padding: 3px 10px; border-radius: 12px;
+        font-size: 11px; font-weight: 600; background: #d4edda; color: #155724;
+        margin-left: 8px;
+    }
+
+    /* Provider nav dots */
+    .provider-nav { display: flex; justify-content: center; gap: 8px; margin-bottom: 16px; }
+    .provider-dot {
+        padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600;
+        border: 2px solid #e0e0e0; background: white; color: #888;
+        cursor: pointer; transition: all 0.2s;
+    }
+    .provider-dot.active { border-color: #667eea; background: #f0f2ff; color: #667eea; }
+    .provider-dot.done { border-color: #28a745; background: #e8f5e9; color: #155724; }
+    .provider-dot.skipped { border-color: #e0e0e0; background: #f8f8f8; color: #bbb; }
+
+    .skip-link { font-size: 13px; color: #888; cursor: pointer; text-decoration: none; }
+    .skip-link:hover { color: #667eea; }
 </style>
 {% endblock %}
 
@@ -99,10 +202,57 @@
 <div class="wizard">
     <div class="wizard-container">
 
+        <div class="wizard-progress" id="progress">
+            <div class="dot active" id="dot-0"></div>
+            <div class="dot" id="dot-1"></div>
+            <div class="dot" id="dot-2"></div>
+            <div class="dot" id="dot-3"></div>
+        </div>
+
+        <!-- Step 0: Welcome -->
+        <div class="wizard-step active" id="step-welcome">
+            <h1>Welcome to {{ app_title }}</h1>
+            <p class="subtitle">Let's get you set up in a few minutes</p>
+
+            <div class="welcome-card">
+                <h2>Here's what you'll need</h2>
+                <p class="wc-sub">We'll walk you through getting each one</p>
+
+                <div class="checklist-item">
+                    <div class="checklist-icon blue">&#128736;</div>
+                    <div class="checklist-text">
+                        <h4>Choose your setup mode</h4>
+                        <p>Personal teacher use, department-wide, or demo showcase</p>
+                        <span class="time">30 seconds</span>
+                    </div>
+                </div>
+                <div class="checklist-item">
+                    <div class="checklist-icon green">&#128273;</div>
+                    <div class="checklist-text">
+                        <h4>At least one AI API key</h4>
+                        <p>From Anthropic, OpenAI, or Qwen — we'll show you exactly where to get one</p>
+                        <span class="time">2-3 minutes per provider</span>
+                    </div>
+                </div>
+                <div class="checklist-item">
+                    <div class="checklist-icon orange">&#128221;</div>
+                    <div class="checklist-text">
+                        <h4>Your name and a login code</h4>
+                        <p>You'll pick a code to access the app (like a password)</p>
+                        <span class="time">30 seconds</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="wizard-btn-row">
+                <button class="wizard-btn" onclick="goToStep(1)">Let's go</button>
+            </div>
+        </div>
+
         <!-- Step 1: Mode Selection -->
-        <div class="wizard-step active" id="step-mode">
-            <h1>Welcome to AI Feedback Systems</h1>
-            <p class="subtitle">Let's get you set up. How will you be using this app?</p>
+        <div class="wizard-step" id="step-mode">
+            <h1>How will you use this?</h1>
+            <p class="subtitle">Pick the mode that fits your needs</p>
 
             <div class="mode-cards">
                 <div class="mode-card" onclick="selectMode('normal')" id="card-normal">
@@ -127,13 +277,159 @@
                 <label for="demo-dept-toggle">Include department showcase with sample data?</label>
             </div>
 
-            <button class="wizard-next" id="btn-next-mode" onclick="goToConfig()">Continue</button>
+            <div class="wizard-btn-row">
+                <button class="wizard-btn secondary" onclick="goToStep(0)">Back</button>
+                <button class="wizard-btn" id="btn-next-mode" onclick="saveMode()" disabled>Continue</button>
+            </div>
         </div>
 
-        <!-- Step 2: Configuration -->
+        <!-- Step 2: API Keys (guided) -->
+        <div class="wizard-step" id="step-api">
+            <div class="guide-card">
+                <h2>Connect your AI providers</h2>
+                <p class="guide-sub">You need at least one. We'll guide you through each.</p>
+
+                <div class="provider-nav">
+                    <div class="provider-dot active" id="pnav-anthropic" onclick="showProvider('anthropic')">Anthropic</div>
+                    <div class="provider-dot" id="pnav-openai" onclick="showProvider('openai')">OpenAI</div>
+                    <div class="provider-dot" id="pnav-qwen" onclick="showProvider('qwen')">Qwen</div>
+                </div>
+
+                <!-- Anthropic -->
+                <div class="provider-tab active" id="ptab-anthropic">
+                    <div class="provider-header">
+                        <div class="provider-logo anthropic">A</div>
+                        <div class="provider-name">
+                            Anthropic
+                            <small>Claude models — Haiku, Sonnet, Opus</small>
+                        </div>
+                        {% if env_keys.anthropic %}
+                        <span class="env-badge">Already configured</span>
+                        {% endif %}
+                    </div>
+
+                    {% if env_keys.anthropic %}
+                    <p style="color:#555; font-size:14px; text-align:center; padding:16px 0;">
+                        This key is already set in your server environment. You're good to go!
+                    </p>
+                    {% else %}
+                    <div class="guide-steps">
+                        <div class="guide-step">
+                            <div class="step-num">1</div>
+                            <div class="step-text">Go to <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a> and sign in (or create an account)</div>
+                        </div>
+                        <div class="guide-step">
+                            <div class="step-num">2</div>
+                            <div class="step-text">Click <code>Create Key</code>, give it a name like "AI Marking"</div>
+                        </div>
+                        <div class="guide-step">
+                            <div class="step-num">3</div>
+                            <div class="step-text">Copy the key (starts with <code>sk-ant-</code>) and paste it below</div>
+                        </div>
+                    </div>
+                    <div class="config-field">
+                        <input type="password" class="config-input" id="cfg-key-anthropic" placeholder="sk-ant-...">
+                    </div>
+                    {% endif %}
+
+                    <div class="wizard-btn-row" style="justify-content:space-between;">
+                        <a class="skip-link" onclick="skipProvider('anthropic')">Skip this provider</a>
+                        <button class="wizard-btn" onclick="nextProvider('anthropic')" style="padding:10px 28px; font-size:14px;">Next provider</button>
+                    </div>
+                </div>
+
+                <!-- OpenAI -->
+                <div class="provider-tab" id="ptab-openai">
+                    <div class="provider-header">
+                        <div class="provider-logo openai">O</div>
+                        <div class="provider-name">
+                            OpenAI
+                            <small>GPT models — Mini, GPT-5, GPT-5.4</small>
+                        </div>
+                        {% if env_keys.openai %}
+                        <span class="env-badge">Already configured</span>
+                        {% endif %}
+                    </div>
+
+                    {% if env_keys.openai %}
+                    <p style="color:#555; font-size:14px; text-align:center; padding:16px 0;">
+                        This key is already set in your server environment. You're good to go!
+                    </p>
+                    {% else %}
+                    <div class="guide-steps">
+                        <div class="guide-step">
+                            <div class="step-num">1</div>
+                            <div class="step-text">Go to <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com</a> and sign in (or create an account)</div>
+                        </div>
+                        <div class="guide-step">
+                            <div class="step-num">2</div>
+                            <div class="step-text">Click <code>Create new secret key</code>, name it "AI Marking"</div>
+                        </div>
+                        <div class="guide-step">
+                            <div class="step-num">3</div>
+                            <div class="step-text">Copy the key (starts with <code>sk-</code>) and paste it below</div>
+                        </div>
+                    </div>
+                    <div class="config-field">
+                        <input type="password" class="config-input" id="cfg-key-openai" placeholder="sk-...">
+                    </div>
+                    {% endif %}
+
+                    <div class="wizard-btn-row" style="justify-content:space-between;">
+                        <a class="skip-link" onclick="skipProvider('openai')">Skip this provider</a>
+                        <button class="wizard-btn" onclick="nextProvider('openai')" style="padding:10px 28px; font-size:14px;">Next provider</button>
+                    </div>
+                </div>
+
+                <!-- Qwen -->
+                <div class="provider-tab" id="ptab-qwen">
+                    <div class="provider-header">
+                        <div class="provider-logo qwen">Q</div>
+                        <div class="provider-name">
+                            Qwen
+                            <small>Alibaba Cloud — Qwen 3.5 models</small>
+                        </div>
+                        {% if env_keys.qwen %}
+                        <span class="env-badge">Already configured</span>
+                        {% endif %}
+                    </div>
+
+                    {% if env_keys.qwen %}
+                    <p style="color:#555; font-size:14px; text-align:center; padding:16px 0;">
+                        This key is already set in your server environment. You're good to go!
+                    </p>
+                    {% else %}
+                    <div class="guide-steps">
+                        <div class="guide-step">
+                            <div class="step-num">1</div>
+                            <div class="step-text">Go to <a href="https://dashscope.console.aliyun.com/apiKey" target="_blank">dashscope.console.aliyun.com</a> and sign in</div>
+                        </div>
+                        <div class="guide-step">
+                            <div class="step-num">2</div>
+                            <div class="step-text">Navigate to <code>API Keys</code> and click <code>Create</code></div>
+                        </div>
+                        <div class="guide-step">
+                            <div class="step-num">3</div>
+                            <div class="step-text">Copy the key (starts with <code>sk-</code>) and paste it below</div>
+                        </div>
+                    </div>
+                    <div class="config-field">
+                        <input type="password" class="config-input" id="cfg-key-qwen" placeholder="sk-...">
+                    </div>
+                    {% endif %}
+
+                    <div class="wizard-btn-row" style="justify-content:space-between;">
+                        <a class="skip-link" onclick="skipProvider('qwen')">Skip this provider</a>
+                        <button class="wizard-btn" onclick="goToStep(3)" style="padding:10px 28px; font-size:14px;">Continue</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 3: Account / Final Config -->
         <div class="wizard-step" id="step-config">
-            <div class="config-card animate__animated animate__fadeInUp" style="animation-duration:0.5s;">
-                <h2>Configure Your App</h2>
+            <div class="config-card">
+                <h2>Final details</h2>
                 <div class="config-subtitle" id="config-mode-label"></div>
 
                 <div class="config-section">
@@ -158,33 +454,10 @@
                     </div>
                 </div>
 
-                <div class="config-section">
-                    <h3>API Keys</h3>
-                    <div class="api-note">
-                        At least one API key is required. Keys are encrypted and stored securely.
-                        If keys are already configured via environment variables, you can skip this.
-                    </div>
-                    <div class="config-field" style="margin-top:14px;">
-                        <label class="config-label">Anthropic API Key</label>
-                        <input type="password" class="config-input" id="cfg-key-anthropic" placeholder="sk-ant-...">
-                        <div class="config-hint">Get yours at console.anthropic.com</div>
-                    </div>
-                    <div class="config-field">
-                        <label class="config-label">OpenAI API Key</label>
-                        <input type="password" class="config-input" id="cfg-key-openai" placeholder="sk-...">
-                        <div class="config-hint">Get yours at platform.openai.com</div>
-                    </div>
-                    <div class="config-field">
-                        <label class="config-label">Qwen API Key</label>
-                        <input type="password" class="config-input" id="cfg-key-qwen" placeholder="sk-...">
-                        <div class="config-hint">Get yours at dashscope.aliyuncs.com</div>
-                    </div>
-                </div>
-
                 <button class="config-btn" id="btn-finish" onclick="finishSetup()">Complete Setup</button>
                 <div class="config-error" id="config-error"></div>
                 <div style="text-align:center; margin-top:16px;">
-                    <a href="#" onclick="goBack(); return false;" style="color:#667eea; font-size:13px; text-decoration:none;">Back to mode selection</a>
+                    <a href="#" onclick="goToStep(2); return false;" style="color:#667eea; font-size:13px; text-decoration:none;">Back to API keys</a>
                 </div>
             </div>
         </div>
@@ -196,12 +469,35 @@
 {% block scripts %}
 <script>
 var selectedMode = null;
+var currentStep = 0;
+var providerOrder = ['anthropic', 'openai', 'qwen'];
+var providerState = { anthropic: 'pending', openai: 'pending', qwen: 'pending' };
+// Track which providers are pre-configured via env vars
+var envKeys = {{ env_keys | tojson }};
+
+function goToStep(n) {
+    document.querySelectorAll('.wizard-step').forEach(function(s) { s.classList.remove('active'); });
+    var steps = ['step-welcome', 'step-mode', 'step-api', 'step-config'];
+    document.getElementById(steps[n]).classList.add('active');
+
+    // Update progress dots
+    for (var i = 0; i < 4; i++) {
+        var dot = document.getElementById('dot-' + i);
+        dot.classList.remove('active', 'done');
+        if (i < n) dot.classList.add('done');
+        else if (i === n) dot.classList.add('active');
+    }
+    currentStep = n;
+
+    // If going to config step, set up the labels
+    if (n === 3) setupConfigStep();
+}
 
 function selectMode(mode) {
     selectedMode = mode;
     document.querySelectorAll('.mode-card').forEach(function(c) { c.classList.remove('selected'); });
     document.getElementById('card-' + mode).classList.add('selected');
-    document.getElementById('btn-next-mode').style.display = 'inline-block';
+    document.getElementById('btn-next-mode').disabled = false;
 
     var demoSub = document.getElementById('demo-sub');
     if (mode === 'demo') {
@@ -212,16 +508,14 @@ function selectMode(mode) {
     }
 }
 
-function goToConfig() {
+function saveMode() {
     if (!selectedMode) return;
 
-    // If demo + dept toggle is checked, use demo_department
     var finalMode = selectedMode;
     if (selectedMode === 'demo' && document.getElementById('demo-dept-toggle').checked) {
         finalMode = 'demo_department';
     }
 
-    // Save mode to server
     fetch('/setup/wizard', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -231,15 +525,46 @@ function goToConfig() {
     .then(function(data) {
         if (data.success) {
             selectedMode = finalMode;
-            showConfigStep();
+            goToStep(2);
+            showProvider('anthropic');
         }
     });
 }
 
-function showConfigStep() {
-    document.getElementById('step-mode').classList.remove('active');
-    document.getElementById('step-config').classList.add('active');
+function showProvider(prov) {
+    providerOrder.forEach(function(p) {
+        document.getElementById('ptab-' + p).classList.remove('active');
+        document.getElementById('pnav-' + p).classList.remove('active');
+    });
+    document.getElementById('ptab-' + prov).classList.add('active');
+    document.getElementById('pnav-' + prov).classList.add('active');
+}
 
+function nextProvider(currentProv) {
+    // Mark current as done if they entered a key or it's env-configured
+    var inp = document.getElementById('cfg-key-' + currentProv);
+    if ((inp && inp.value.trim()) || envKeys[currentProv]) {
+        providerState[currentProv] = 'done';
+        document.getElementById('pnav-' + currentProv).classList.add('done');
+    }
+
+    var idx = providerOrder.indexOf(currentProv);
+    if (idx < providerOrder.length - 1) {
+        showProvider(providerOrder[idx + 1]);
+    } else {
+        goToStep(3);
+    }
+}
+
+function skipProvider(prov) {
+    providerState[prov] = 'skipped';
+    var dot = document.getElementById('pnav-' + prov);
+    dot.classList.add('skipped');
+    dot.classList.remove('done');
+    nextProvider(prov);
+}
+
+function setupConfigStep() {
     var labels = {
         'normal': 'Teacher Mode',
         'department': 'Department Mode',
@@ -249,11 +574,9 @@ function showConfigStep() {
     document.getElementById('config-mode-label').innerHTML =
         '<span class="mode-badge">' + (labels[selectedMode] || selectedMode) + '</span>';
 
-    // Show/hide account section
     var needsAccount = (selectedMode === 'normal' || selectedMode === 'department');
     document.getElementById('section-account').style.display = needsAccount ? 'block' : 'none';
 
-    // Update placeholder for title
     var titlePlaceholders = {
         'normal': 'AI Feedback Systems',
         'department': 'Mathematics Department',
@@ -261,11 +584,6 @@ function showConfigStep() {
         'demo_department': 'AI Marking Demo'
     };
     document.getElementById('cfg-title').placeholder = titlePlaceholders[selectedMode] || 'AI Feedback Systems';
-}
-
-function goBack() {
-    document.getElementById('step-config').classList.remove('active');
-    document.getElementById('step-mode').classList.add('active');
 }
 
 function finishSetup() {
@@ -279,12 +597,18 @@ function finishSetup() {
     var payload = {
         step: 'config',
         title: document.getElementById('cfg-title').value,
-        name: document.getElementById('cfg-name').value,
-        code: document.getElementById('cfg-code').value,
-        api_key_anthropic: document.getElementById('cfg-key-anthropic').value,
-        api_key_openai: document.getElementById('cfg-key-openai').value,
-        api_key_qwen: document.getElementById('cfg-key-qwen').value
+        name: document.getElementById('cfg-name') ? document.getElementById('cfg-name').value : '',
+        code: document.getElementById('cfg-code') ? document.getElementById('cfg-code').value : ''
     };
+
+    // Collect API keys (may not exist if env-configured)
+    var keyFields = ['anthropic', 'openai', 'qwen'];
+    keyFields.forEach(function(prov) {
+        var inp = document.getElementById('cfg-key-' + prov);
+        if (inp) {
+            payload['api_key_' + prov] = inp.value;
+        }
+    });
 
     fetch('/setup/wizard', {
         method: 'POST',

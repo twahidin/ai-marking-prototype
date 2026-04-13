@@ -23,6 +23,14 @@ def _get_fernet():
         return None
     key = os.getenv('FLASK_SECRET_KEY', '')
     if not key:
+        # Fall back to DB-stored secret key (auto-generated on first boot)
+        try:
+            cfg = DepartmentConfig.query.filter_by(key='flask_secret_key').first()
+            if cfg and cfg.value:
+                key = cfg.value
+        except Exception:
+            pass
+    if not key:
         return None
     derived = hashlib.sha256(key.encode()).digest()
     return Fernet(base64.urlsafe_b64encode(derived))

@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 _flask_secret = os.getenv('FLASK_SECRET_KEY', '')
+_secret_from_env = bool(_flask_secret)
 if not _flask_secret:
     _flask_secret = os.urandom(32).hex()
-    logger.warning('FLASK_SECRET_KEY not set — using random key (sessions will not survive restarts)')
 app.secret_key = _flask_secret
 
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
@@ -58,6 +58,32 @@ DEMO_MODELS = {
 
 # Initialize database
 init_db(app)
+
+# ---------------------------------------------------------------------------
+# Auto-persist FLASK_SECRET_KEY in DB so Railway deployments need zero env vars
+# ---------------------------------------------------------------------------
+with app.app_context():
+    if not _secret_from_env:
+        _stored = DepartmentConfig.query.filter_by(key='flask_secret_key').first()
+        if _stored and _stored.value:
+            # Reuse the persisted key so sessions & encrypted data survive restarts
+            _flask_secret = _stored.value
+            app.secret_key = _flask_secret
+        else:
+            # First boot — persist the generated key
+            _cfg = DepartmentConfig(key='flask_secret_key', value=_flask_secret)
+            db.session.add(_cfg)
+            db.session.commit()
+            logger.info('Auto-generated FLASK_SECRET_KEY and stored in database')
+    else:
+        # Env var is set — ensure DB copy stays in sync for _get_fernet fallback
+        _stored = DepartmentConfig.query.filter_by(key='flask_secret_key').first()
+        if _stored:
+            _stored.value = _flask_secret
+        else:
+            _cfg = DepartmentConfig(key='flask_secret_key', value=_flask_secret)
+            db.session.add(_cfg)
+        db.session.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -3126,7 +3152,13 @@ def setup_wizard():
 
         return jsonify({'success': False, 'error': 'Invalid step'}), 400
 
-    return render_template('setup_wizard.html')
+    # Check which API keys are already set via env vars
+    from ai_marking import PROVIDER_KEY_MAP
+    env_keys = {}
+    for prov, env_name in PROVIDER_KEY_MAP.items():
+        env_keys[prov] = bool(os.getenv(env_name, ''))
+
+    return render_template('setup_wizard.html', env_keys=env_keys)
 
 
 @app.route('/settings')
