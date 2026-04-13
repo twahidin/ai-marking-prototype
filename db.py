@@ -39,6 +39,18 @@ def _migrate_add_columns(app):
                 db.session.execute(text('ALTER TABLE submissions ADD COLUMN script_pages_json TEXT'))
                 db.session.commit()
                 logger.info('Added script_pages_json column to submissions table')
+            if 'extracted_text_json' not in columns:
+                db.session.execute(text('ALTER TABLE submissions ADD COLUMN extracted_text_json TEXT'))
+                db.session.commit()
+                logger.info('Added extracted_text_json column to submissions table')
+            if 'student_text_json' not in columns:
+                db.session.execute(text('ALTER TABLE submissions ADD COLUMN student_text_json TEXT'))
+                db.session.commit()
+                logger.info('Added student_text_json column to submissions table')
+            if 'student_amended' not in columns:
+                db.session.execute(text('ALTER TABLE submissions ADD COLUMN student_amended BOOLEAN DEFAULT FALSE'))
+                db.session.commit()
+                logger.info('Added student_amended column to submissions table')
         if 'students' in inspector.get_table_names():
             columns = [c['name'] for c in inspector.get_columns('students')]
             if 'class_id' not in columns:
@@ -204,8 +216,11 @@ class Submission(db.Model):
     assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)
     script_bytes = db.Column(db.LargeBinary)
     script_pages_json = db.Column(db.Text)  # JSON list of base64-encoded file bytes
-    status = db.Column(db.String(20), default='pending')  # pending, processing, done, error
+    status = db.Column(db.String(20), default='pending')  # pending, extracting, preview, processing, done, error
     result_json = db.Column(db.Text)
+    extracted_text_json = db.Column(db.Text)  # AI-extracted answers (original)
+    student_text_json = db.Column(db.Text)  # Student-confirmed answers (may be edited)
+    student_amended = db.Column(db.Boolean, default=False)  # True if student edited extracted text
     submitted_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     marked_at = db.Column(db.DateTime)
 
@@ -232,3 +247,21 @@ class Submission(db.Model):
 
     def set_result(self, result_dict):
         self.result_json = json.dumps(result_dict)
+
+    def get_extracted_text(self):
+        try:
+            return json.loads(self.extracted_text_json or '[]')
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def set_extracted_text(self, answers_list):
+        self.extracted_text_json = json.dumps(answers_list)
+
+    def get_student_text(self):
+        try:
+            return json.loads(self.student_text_json or '[]')
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def set_student_text(self, answers_list):
+        self.student_text_json = json.dumps(answers_list)

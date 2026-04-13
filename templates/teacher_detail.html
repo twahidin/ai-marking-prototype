@@ -98,6 +98,28 @@
         border-radius: 10px; height: 100%; transition: width 0.3s; width: 0%;
     }
     .progress-status { font-size: 13px; color: #555; }
+
+    .badge-amended {
+        display: inline-block; font-size: 10px; font-weight: 700; color: #e68a00;
+        background: #fff8e1; padding: 2px 8px; border-radius: 4px; margin-left: 6px;
+        border: 1px solid #f0ad4e;
+    }
+    .view-extracted-btn {
+        padding: 4px 10px; border: 1px solid #e68a00; border-radius: 6px;
+        background: white; color: #e68a00; font-size: 11px; font-weight: 600;
+        cursor: pointer; transition: all 0.2s; margin-left: 6px;
+    }
+    .view-extracted-btn:hover { background: #fff8e1; }
+
+    .extracted-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+    .extracted-modal.active { display: flex; }
+    .extracted-modal-box { background: white; border-radius: 16px; padding: 32px; width: 90%; max-width: 600px; max-height: 80vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+    .extracted-modal-box h3 { font-size: 18px; font-weight: 700; color: #333; margin-bottom: 6px; }
+    .extracted-diff { margin-top: 16px; }
+    .diff-block { margin-bottom: 16px; padding: 12px; background: #f8f9fa; border-radius: 10px; }
+    .diff-label { font-size: 12px; font-weight: 700; color: #667eea; text-transform: uppercase; margin-bottom: 6px; }
+    .diff-original { font-size: 13px; color: #888; line-height: 1.6; white-space: pre-wrap; }
+    .diff-amended { font-size: 13px; color: #333; line-height: 1.6; white-space: pre-wrap; border-left: 3px solid #e68a00; padding-left: 10px; margin-top: 6px; background: #fffcf5; }
 </style>
 {% endblock %}
 
@@ -211,7 +233,7 @@
         <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:20px;">
             <div style="display:flex; align-items:center;">
                 <h2 style="margin-bottom:0;">Submissions</h2>
-                {% set processing = students | selectattr('status', 'in', ['pending', 'processing']) | list | length %}
+                {% set processing = students | selectattr('status', 'in', ['pending', 'processing', 'extracting', 'preview']) | list | length %}
                 {% if processing > 0 %}
                     <span class="refresh-indicator"><span class="refresh-dot"></span>Auto-refreshing</span>
                 {% endif %}
@@ -243,10 +265,12 @@
                             <td>
                                 {% if s.status == 'not_submitted' %}<span class="badge badge-gray">Not Submitted</span>
                                 {% elif s.status in ['pending', 'processing'] %}<span class="badge badge-blue">Marking...</span>
+                                {% elif s.status in ['extracting', 'preview'] %}<span class="badge badge-blue">Extracting...</span>
                                 {% elif s.status == 'done' %}<span class="badge badge-green">Done</span>
                                 {% elif s.status == 'error' %}<span class="badge badge-red">Error</span>
                                 {% else %}<span class="badge badge-gray">{{ s.status }}</span>
                                 {% endif %}
+                                {% if s.student_amended %}<span class="badge-amended">Amended</span>{% endif %}
                             </td>
                             <td>{{ s.score if s.score else '-' }}</td>
                             <td style="color:#888; font-size:13px;">{{ s.submitted_at if s.submitted_at else '-' }}</td>
@@ -254,6 +278,9 @@
                                 <button class="upload-btn" onclick="openUploadModal('{{ s.student_id }}', '{{ s.name | e }}')">
                                     {% if s.status == 'not_submitted' %}Upload{% else %}Re-upload{% endif %}
                                 </button>
+                                {% if s.student_amended and s.submission_id %}
+                                <button class="view-extracted-btn" onclick="viewExtracted({{ s.submission_id }}, '{{ s.name | e }}')">View Edits</button>
+                                {% endif %}
                             </td>
                         </tr>
                         {% endfor %}
@@ -307,6 +334,18 @@
         <p style="font-size:13px;font-weight:700;margin-top:12px;" id="modalTotalPages"></p>
         <div class="modal-actions">
             <button class="modal-cancel" onclick="closePagesModal()">Close</button>
+        </div>
+    </div>
+</div>
+<!-- Extracted Text Modal -->
+<div class="extracted-modal" id="extractedModal">
+    <div class="extracted-modal-box">
+        <h3>Student Answer Edits</h3>
+        <p style="font-size:13px;color:#e68a00;font-weight:600;margin-bottom:4px;" id="extractedStudentName"></p>
+        <p style="font-size:12px;color:#888;margin-bottom:16px;">The student modified the AI-extracted text before submitting. Original extraction shown in grey, student's version highlighted.</p>
+        <div class="extracted-diff" id="extractedDiffContent"></div>
+        <div style="text-align:right;margin-top:20px;">
+            <button class="modal-cancel" onclick="closeExtractedModal()" style="padding:10px 24px;border-radius:8px;border:none;cursor:pointer;">Close</button>
         </div>
     </div>
 </div>
@@ -411,7 +450,7 @@ document.getElementById('uploadModal').addEventListener('click', function(e) {
     if (e.target === this) closeUploadModal();
 });
 
-{% set processing_count = students | selectattr('status', 'in', ['pending', 'processing']) | list | length %}
+{% set processing_count = students | selectattr('status', 'in', ['pending', 'processing', 'extracting', 'preview']) | list | length %}
 {% if processing_count > 0 %}
 setTimeout(function() { window.location.reload(); }, 10000);
 {% endif %}
@@ -553,5 +592,49 @@ document.addEventListener('DOMContentLoaded', function() {
         MathJax.typesetPromise();
     }
 });
+
+// --- Extracted Text Modal ---
+function escHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+async function viewExtracted(submissionId, studentName) {
+    document.getElementById('extractedStudentName').textContent = studentName;
+    document.getElementById('extractedDiffContent').innerHTML = '<p style="color:#888;">Loading...</p>';
+    document.getElementById('extractedModal').classList.add('active');
+
+    try {
+        var res = await fetch('/api/submission/' + submissionId + '/extracted');
+        var data = await res.json();
+        if (!data.success) { document.getElementById('extractedDiffContent').innerHTML = '<p style="color:red;">Error loading data.</p>'; return; }
+
+        var extracted = data.extracted || [];
+        var studentText = data.student_text || [];
+        var html = '';
+        for (var i = 0; i < Math.max(extracted.length, studentText.length); i++) {
+            var orig = extracted[i] || {};
+            var edited = studentText[i] || {};
+            var label = orig.label || edited.label || ('Question ' + (i + 1));
+            var origText = orig.extracted_text || '';
+            var editedText = edited.extracted_text || '';
+            var changed = origText.trim() !== editedText.trim();
+
+            html += '<div class="diff-block">';
+            html += '<div class="diff-label">' + escHtml(label) + (changed ? ' <span style="color:#e68a00;font-size:10px;">EDITED</span>' : '') + '</div>';
+            if (changed) {
+                html += '<div class="diff-original"><strong style="font-size:11px;color:#aaa;">AI Extracted:</strong><br>' + escHtml(origText) + '</div>';
+                html += '<div class="diff-amended"><strong style="font-size:11px;color:#e68a00;">Student Version:</strong><br>' + escHtml(editedText) + '</div>';
+            } else {
+                html += '<div class="diff-original">' + escHtml(origText) + '</div>';
+            }
+            html += '</div>';
+        }
+        document.getElementById('extractedDiffContent').innerHTML = html;
+    } catch (err) {
+        document.getElementById('extractedDiffContent').innerHTML = '<p style="color:red;">Failed to load.</p>';
+    }
+}
+
+function closeExtractedModal() {
+    document.getElementById('extractedModal').classList.remove('active');
+}
 </script>
 {% endblock %}

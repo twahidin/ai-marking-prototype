@@ -2116,6 +2116,45 @@ def _generate_classroom_code():
             return code
 
 
+def _run_submission_extraction(app_obj, submission_id, assignment_id):
+    """Background thread: extract answers from student script (preview step)."""
+    with app_obj.app_context():
+        sub = Submission.query.get(submission_id)
+        asn = Assignment.query.get(assignment_id)
+        if not sub or not asn:
+            return
+
+        try:
+            from ai_marking import extract_answers
+            qp = [asn.question_paper] if asn.question_paper else []
+            script = sub.get_script_pages()
+
+            result = extract_answers(
+                provider=asn.provider,
+                question_paper_pages=qp,
+                script_pages=script,
+                subject=asn.subject,
+                assign_type=asn.assign_type,
+                model=asn.model,
+                session_keys=_resolve_api_keys(asn),
+            )
+
+            if result.get('error'):
+                sub.set_result({'error': result['error']})
+                sub.status = 'error'
+            else:
+                answers = result.get('answers', [])
+                sub.set_extracted_text(answers)
+                sub.status = 'preview'
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Submission {submission_id} extraction failed: {e}")
+            sub.set_result({'error': str(e)})
+            sub.status = 'error'
+
+        db.session.commit()
+
+
 def _run_submission_marking(app_obj, submission_id, assignment_id):
     """Background thread: mark a student submission."""
     with app_obj.app_context():
@@ -2316,6 +2355,8 @@ def teacher_assignment_detail(assignment_id):
             'status': sub.status if sub else 'not_submitted',
             'score': score,
             'submitted_at': sub.submitted_at.strftime('%d %b %H:%M') if sub and sub.submitted_at else None,
+            'student_amended': sub.student_amended if sub else False,
+            'submission_id': sub.id if sub else None,
         })
 
     return render_template('teacher_detail.html',
@@ -2471,6 +2512,7 @@ def student_verify(assignment_id):
 
 @app.route('/submit/<assignment_id>/upload', methods=['POST'])
 def student_upload(assignment_id):
+    """Upload script and start AI extraction (preview step before marking)."""
     if is_demo_mode():
         return jsonify({'success': False, 'error': 'Submissions are disabled in demo mode'}), 403
     if not session.get(f'student_auth_{assignment_id}'):
@@ -2510,15 +2552,15 @@ def student_upload(assignment_id):
         student_id=student.id,
         assignment_id=assignment_id,
         script_bytes=script_pages[0] if script_pages else None,
-        status='pending',
+        status='extracting',
     )
     sub.set_script_pages(script_pages)
     db.session.add(sub)
     db.session.commit()
 
-    # Start marking in background
+    # Start extraction in background
     thread = threading.Thread(
-        target=_run_submission_marking,
+        target=_run_submission_extraction,
         args=(app, sub.id, assignment_id),
         daemon=True,
     )
@@ -2529,6 +2571,49 @@ def student_upload(assignment_id):
         'submission_id': sub.id,
         'show_results': asn.show_results,
     })
+
+
+@app.route('/submit/<assignment_id>/confirm/<int:submission_id>', methods=['POST'])
+def student_confirm(assignment_id, submission_id):
+    """Student confirms (possibly edited) extracted text, then start marking."""
+    if is_demo_mode():
+        return jsonify({'success': False, 'error': 'Submissions are disabled in demo mode'}), 403
+    if not session.get(f'student_auth_{assignment_id}'):
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Not found'}), 404
+    if sub.status != 'preview':
+        return jsonify({'success': False, 'error': 'Submission is not ready for confirmation'}), 400
+
+    data = request.get_json()
+    student_answers = data.get('answers', [])
+
+    # Store student-confirmed text
+    sub.set_student_text(student_answers)
+
+    # Check if student amended any answers
+    original = sub.get_extracted_text()
+    amended = False
+    for orig, student in zip(original, student_answers):
+        if orig.get('extracted_text', '').strip() != student.get('extracted_text', '').strip():
+            amended = True
+            break
+    sub.student_amended = amended
+
+    sub.status = 'pending'
+    db.session.commit()
+
+    # Start marking in background
+    thread = threading.Thread(
+        target=_run_submission_marking,
+        args=(app, sub.id, assignment_id),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({'success': True})
 
 
 @app.route('/submit/<assignment_id>/status/<int:submission_id>')
@@ -2543,6 +2628,10 @@ def student_submission_status(assignment_id, submission_id):
 
     asn = Assignment.query.get(assignment_id)
     response = {'success': True, 'status': sub.status}
+
+    if sub.status == 'preview':
+        # Return extracted answers for student preview
+        response['extracted'] = sub.get_extracted_text()
 
     if sub.status in ('done', 'error'):
         result = sub.get_result()
@@ -2618,6 +2707,20 @@ def api_assignment_students(assignment_id):
             'marked_at': sub.marked_at.isoformat() if sub and sub.marked_at else None,
         })
     return jsonify(result)
+
+
+@app.route('/api/submission/<int:submission_id>/extracted')
+def api_submission_extracted(submission_id):
+    """Teacher endpoint: view extracted vs student-amended text for a submission."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    sub = Submission.query.get_or_404(submission_id)
+    return jsonify({
+        'success': True,
+        'extracted': sub.get_extracted_text(),
+        'student_text': sub.get_student_text(),
+        'student_amended': sub.student_amended or False,
+    })
 
 
 # ---------------------------------------------------------------------------

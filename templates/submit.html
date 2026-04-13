@@ -48,6 +48,34 @@
     .processing-card .warning-text { color: #e68a00; font-size: 12px; margin-top: 16px; font-weight: 600; }
     .processing-card .progress-bar-track { height: 6px; margin-top: 20px; }
 
+    /* Preview/Edit state */
+    .preview-card { padding: 28px 24px; }
+    .preview-card h2 { font-size: 20px; color: #2D2D2D; margin-bottom: 4px; }
+    .preview-subtitle { color: #888; font-size: 13px; margin-bottom: 20px; line-height: 1.5; }
+    .answer-block { margin-bottom: 18px; }
+    .answer-label {
+        font-size: 13px; font-weight: 700; color: #667eea; text-transform: uppercase;
+        letter-spacing: 0.3px; margin-bottom: 6px;
+    }
+    .answer-textarea {
+        width: 100%; min-height: 80px; padding: 12px 14px; border: 2px solid #e0e0e0;
+        border-radius: 10px; font-size: 14px; line-height: 1.6; resize: vertical;
+        outline: none; box-sizing: border-box; font-family: inherit; transition: border-color 0.2s;
+    }
+    .answer-textarea:focus { border-color: #667eea; }
+    .answer-textarea.edited { border-color: #e68a00; background: #fffcf5; }
+    .edited-badge {
+        display: inline-block; font-size: 11px; color: #e68a00; font-weight: 600;
+        margin-left: 8px; padding: 1px 6px; background: #fff8e1; border-radius: 4px;
+    }
+    .confirm-btn {
+        width: 100%; padding: 18px; background: #28a745; color: white; border: none;
+        border-radius: 10px; font-size: 17px; font-weight: 700; cursor: pointer;
+        transition: background 0.2s; -webkit-tap-highlight-color: transparent; margin-top: 8px;
+    }
+    .confirm-btn:hover { background: #22963e; }
+    .confirm-btn:disabled { background: #ccc; cursor: not-allowed; }
+
     .q-dot { width: 32px; height: 32px; font-size: 12px; }
     .q-nav-btn { padding: 12px 20px; -webkit-tap-highlight-color: transparent; }
     .q-card-header { padding: 14px 16px; }
@@ -125,7 +153,40 @@
     </div>
 </div>
 
-<!-- State 3: Processing -->
+<!-- State 3a: Extracting -->
+<div id="extractingSection" class="hidden">
+    <div class="container">
+        <div class="processing-card">
+            <div class="spinner"></div>
+            <h3>Reading your script...</h3>
+            <p>AI is extracting your answers for you to review</p>
+            <div class="status-text" id="extractingStatus">Uploading...</div>
+            <div class="progress-bar-track"><div class="progress-bar-fill" style="width:30%;animation:indeterminate 1.5s ease-in-out infinite;"></div></div>
+            <div class="warning-text">Please do not close this page</div>
+        </div>
+    </div>
+</div>
+
+<!-- State 3b: Preview/Edit Extracted Answers -->
+<div id="previewSection" class="hidden">
+    <div class="container">
+        <div class="card preview-card">
+            <h2>Review Your Answers</h2>
+            <p class="preview-subtitle">
+                The AI has extracted your answers below. Please check they are correct.
+                You may edit any answer if the extraction is wrong.
+            </p>
+            <div id="previewAnswers"></div>
+            <button class="confirm-btn" id="confirmBtn" onclick="confirmSubmission()">Confirm &amp; Submit for Marking</button>
+            <div class="error-msg" id="previewError"></div>
+            <div style="text-align:center; margin-top:12px;">
+                <a href="#" onclick="goBackToForm(); return false;" style="color:#667eea; font-size:13px; text-decoration:none;">Re-upload script</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- State 3c: Processing (Marking) -->
 <div id="processingSection" class="hidden">
     <div class="container">
         <div class="processing-card">
@@ -196,8 +257,10 @@ var statusElapsed = 0;
 
 var STATUS_LABELS = { correct: 'Correct', partially_correct: 'Partially Correct', incorrect: 'Incorrect' };
 
+var extractedAnswers = [];  // original AI-extracted answers
+
 function showSection(id) {
-    ['gateSection', 'formSection', 'processingSection', 'resultsSection', 'confirmSection', 'errorSection']
+    ['gateSection', 'formSection', 'extractingSection', 'previewSection', 'processingSection', 'resultsSection', 'confirmSection', 'errorSection']
         .forEach(function(s) { document.getElementById(s).classList.add('hidden'); });
     document.getElementById(id).classList.remove('hidden');
     window.scrollTo(0, 0);
@@ -279,31 +342,133 @@ async function submitWork() {
         if (!data.success) { showFormError(data.error || 'Upload failed.'); btn.disabled = false; btn.textContent = 'Submit'; return; }
         submissionId = data.submission_id;
         showResults = data.show_results;
-        showSection('processingSection');
+        showSection('extractingSection');
         statusElapsed = 0;
-        startPolling();
+        startExtractionPolling();
     } catch (err) { showFormError('Connection error. Please try again.'); btn.disabled = false; btn.textContent = 'Submit'; }
 }
 
-/* --- State 3: Polling --- */
+/* --- State 3a: Extraction Polling --- */
 
-function startPolling() {
+function startExtractionPolling() {
     if (pollTimer) clearInterval(pollTimer);
-    var msgs = ['Uploading...', 'AI is reading your work...', 'Evaluating answers...', 'Generating feedback...', 'Almost done...'];
+    var msgs = ['Uploading...', 'AI is reading your handwriting...', 'Extracting answers...', 'Almost done...'];
+    pollTimer = setInterval(function() {
+        statusElapsed++;
+        var idx = Math.min(Math.floor(statusElapsed / 4), msgs.length - 1);
+        document.getElementById('extractingStatus').textContent = msgs[idx];
+    }, 1000);
+    pollExtraction();
+}
+
+async function pollExtraction() {
+    if (!submissionId) return;
+    try {
+        var res = await fetch('/submit/' + ASSIGNMENT_ID + '/status/' + submissionId);
+        var data = await res.json();
+        if (data.status === 'extracting') { setTimeout(pollExtraction, 2000); return; }
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        if (data.status === 'error') {
+            var errMsg = (data.result && data.result.error) ? data.result.error : 'Could not read your script. Please try again.';
+            document.getElementById('errorMessage').textContent = errMsg;
+            showSection('errorSection');
+            return;
+        }
+        if (data.status === 'preview' && data.extracted) {
+            extractedAnswers = data.extracted;
+            renderPreview(data.extracted);
+            showSection('previewSection');
+        } else {
+            setTimeout(pollExtraction, 2000);
+        }
+    } catch (err) { setTimeout(pollExtraction, 3000); }
+}
+
+/* --- State 3b: Preview/Edit --- */
+
+function renderPreview(answers) {
+    var html = '';
+    answers.forEach(function(a, i) {
+        var label = a.label || ('Question ' + a.question_num);
+        html += '<div class="answer-block">' +
+            '<div class="answer-label">' + esc(label) + '<span class="edited-badge" id="edited-' + i + '" style="display:none;">Edited</span></div>' +
+            '<textarea class="answer-textarea" id="answer-' + i + '" data-index="' + i + '" oninput="markEdited(' + i + ')">' + esc(a.extracted_text || '') + '</textarea>' +
+            '</div>';
+    });
+    document.getElementById('previewAnswers').innerHTML = html;
+}
+
+function markEdited(idx) {
+    var textarea = document.getElementById('answer-' + idx);
+    var original = (extractedAnswers[idx] || {}).extracted_text || '';
+    var badge = document.getElementById('edited-' + idx);
+    if (textarea.value.trim() !== original.trim()) {
+        textarea.classList.add('edited');
+        badge.style.display = 'inline-block';
+    } else {
+        textarea.classList.remove('edited');
+        badge.style.display = 'none';
+    }
+}
+
+async function confirmSubmission() {
+    var errEl = document.getElementById('previewError');
+    errEl.style.display = 'none';
+    var btn = document.getElementById('confirmBtn');
+    btn.disabled = true; btn.textContent = 'Submitting...';
+
+    // Collect current textarea values
+    var answers = extractedAnswers.map(function(a, i) {
+        var textarea = document.getElementById('answer-' + i);
+        return {
+            question_num: a.question_num,
+            label: a.label || ('Question ' + a.question_num),
+            extracted_text: textarea ? textarea.value : a.extracted_text
+        };
+    });
+
+    try {
+        var res = await fetch('/submit/' + ASSIGNMENT_ID + '/confirm/' + submissionId, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ answers: answers })
+        });
+        var data = await res.json();
+        if (!data.success) {
+            errEl.textContent = data.error || 'Confirmation failed.';
+            errEl.style.display = 'block';
+            btn.disabled = false; btn.textContent = 'Confirm & Submit for Marking';
+            return;
+        }
+        showSection('processingSection');
+        statusElapsed = 0;
+        startMarkingPolling();
+    } catch (err) {
+        errEl.textContent = 'Connection error. Please try again.';
+        errEl.style.display = 'block';
+        btn.disabled = false; btn.textContent = 'Confirm & Submit for Marking';
+    }
+}
+
+/* --- State 3c: Marking Polling --- */
+
+function startMarkingPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    var msgs = ['Starting marking...', 'AI is evaluating your answers...', 'Generating feedback...', 'Almost done...'];
     pollTimer = setInterval(function() {
         statusElapsed++;
         var idx = Math.min(Math.floor(statusElapsed / 4), msgs.length - 1);
         document.getElementById('processingStatus').textContent = msgs[idx];
     }, 1000);
-    pollStatus();
+    pollMarking();
 }
 
-async function pollStatus() {
+async function pollMarking() {
     if (!submissionId) return;
     try {
         var res = await fetch('/submit/' + ASSIGNMENT_ID + '/status/' + submissionId);
         var data = await res.json();
-        if (data.status === 'pending' || data.status === 'processing') { setTimeout(pollStatus, 2000); return; }
+        if (data.status === 'pending' || data.status === 'processing') { setTimeout(pollMarking, 2000); return; }
         if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
         if (data.status === 'error') {
             var errMsg = (data.result && data.result.error) ? data.result.error : 'Marking failed. Please try again.';
@@ -313,7 +478,7 @@ async function pollStatus() {
         }
         if (showResults && data.result && !data.result.error) { renderResults(data.result); showSection('resultsSection'); }
         else { showSection('confirmSection'); }
-    } catch (err) { setTimeout(pollStatus, 3000); }
+    } catch (err) { setTimeout(pollMarking, 3000); }
 }
 
 /* --- State 4a: Results --- */
@@ -420,7 +585,10 @@ function goQ(idx) { if (idx < 0 || idx >= resultQuestions.length) return; curren
 function goBackToForm() {
     var btn = document.getElementById('submitBtn');
     if (btn) { btn.disabled = false; btn.textContent = 'Submit'; }
+    var confirmBtn = document.getElementById('confirmBtn');
+    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = 'Confirm & Submit for Marking'; }
     submissionId = null;
+    extractedAnswers = [];
     showSection('formSection');
 }
 </script>

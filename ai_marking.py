@@ -529,6 +529,99 @@ Respond ONLY with valid JSON:
     return system_prompt, content
 
 
+def extract_answers(provider, question_paper_pages, script_pages,
+                    subject='', assign_type='short_answer',
+                    model=None, session_keys=None):
+    """
+    Extract student answers from a script using AI vision (no marking).
+
+    Returns dict with 'answers' list: [{"question_num": 1, "extracted_text": "..."}]
+    For rubrics mode, returns a single entry with the full essay text.
+    """
+    client, model_name, prov = get_ai_client(provider, model=model, session_keys=session_keys)
+    if not client:
+        return {'error': f'AI provider "{provider}" is not available (no API key configured)'}
+
+    if assign_type == 'rubrics':
+        system_prompt = f"""You are an experienced teacher's assistant. Your ONLY task is to accurately transcribe what the student has written.
+
+Subject: {subject or 'General'}
+
+HANDWRITING RULES:
+- IGNORE crossed-out or struck-through text — treat as deleted
+- A caret (^) or insertion mark means the student wants to INSERT text at that point
+- Focus on the student's FINAL intended answer, not drafts or corrections
+- Preserve paragraph breaks and formatting
+
+Respond ONLY with valid JSON:
+{{
+    "answers": [
+        {{
+            "question_num": 1,
+            "label": "Essay Response",
+            "extracted_text": "the full transcribed essay text, preserving paragraphs"
+        }}
+    ]
+}}"""
+    else:
+        system_prompt = f"""You are an experienced teacher's assistant. Your ONLY task is to accurately transcribe what the student has written for each question. Do NOT mark or evaluate — just extract the text.
+
+Subject: {subject or 'General'}
+
+HANDWRITING RULES:
+- IGNORE crossed-out or struck-through text — treat as deleted
+- A caret (^) or insertion mark means the student wants to INSERT text at that point
+- Focus on the student's FINAL intended answer, not drafts or corrections
+
+FORMATTING:
+- Use LaTeX in $ delimiters for math: $x^2 + 3x = 0$
+
+Respond ONLY with valid JSON:
+{{
+    "answers": [
+        {{
+            "question_num": 1,
+            "label": "Question 1",
+            "extracted_text": "the student's transcribed answer"
+        }}
+    ]
+}}
+
+Extract ALL questions you can identify from the student script. Match question numbers to the question paper."""
+
+    content = []
+    if question_paper_pages:
+        _append_pages(content, "QUESTION PAPER (use to identify question numbers):", question_paper_pages)
+    _append_pages(content, "\nSTUDENT SCRIPT (transcribe the answers from this):", script_pages)
+    content.append({"type": "text", "text": "\nExtract and transcribe ALL student answers. Return JSON only:"})
+
+    try:
+        response_text = make_ai_api_call(
+            client=client,
+            model_name=model_name,
+            provider=prov,
+            system_prompt=system_prompt,
+            messages_content=content,
+            max_tokens=16000
+        )
+
+        result = parse_ai_response(response_text)
+        if 'error' in result and 'answers' not in result:
+            return result
+        return {'answers': result.get('answers', []), 'assign_type': assign_type}
+
+    except Exception as e:
+        logger.error(f"Error extracting answers with {provider}: {e}")
+        err_str = str(e)
+        is_413 = '413' in err_str or 'request_too_large' in err_str.lower()
+        return {
+            'error': (
+                'Files too large for AI processing. Try smaller images or fewer pages.'
+                if is_413 else f'Error from {provider}: {err_str}'
+            )
+        }
+
+
 def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
                 subject='', rubrics_pages=None, reference_pages=None,
                 review_instructions='', marking_instructions='',
