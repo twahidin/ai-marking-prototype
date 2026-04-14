@@ -64,6 +64,37 @@
         text-decoration: none; font-size: 14px;
     }
     .back-link:hover { text-decoration: underline; }
+
+    .go-live-card {
+        border: 2px solid #28a745; background: #f6fdf6;
+    }
+    .go-live-card h2 { color: #28a745; }
+    .go-live-warning {
+        font-size: 12px; color: #856404; background: #fff3cd; padding: 10px 14px;
+        border-radius: 8px; margin-bottom: 16px; line-height: 1.6;
+    }
+    .go-live-btn {
+        width: 100%; padding: 14px; border: none; border-radius: 10px;
+        background: #28a745; color: white; font-size: 16px; font-weight: 700;
+        cursor: pointer; transition: background 0.2s;
+    }
+    .go-live-btn:hover { background: #219a38; }
+    .go-live-btn:disabled { background: #ccc; cursor: not-allowed; }
+
+    .go-live-confirm {
+        display: none; background: #fff3cd; border: 2px solid #ffc107; border-radius: 12px;
+        padding: 20px; margin-top: 16px; text-align: center;
+    }
+    .go-live-confirm p { font-size: 14px; font-weight: 600; color: #333; margin-bottom: 12px; }
+    .go-live-confirm .confirm-btns { display: flex; gap: 12px; justify-content: center; }
+    .go-live-confirm .confirm-btns button {
+        padding: 10px 24px; border: none; border-radius: 8px; font-size: 14px;
+        font-weight: 600; cursor: pointer;
+    }
+    .btn-confirm-yes { background: #dc3545; color: white; }
+    .btn-confirm-yes:hover { background: #c82333; }
+    .btn-confirm-no { background: #e0e0e0; color: #333; }
+    .btn-confirm-no:hover { background: #ccc; }
 </style>
 {% endblock %}
 
@@ -141,6 +172,54 @@
     <button class="settings-save" id="btn-save" onclick="saveSettings()">Save Changes</button>
     <div class="settings-success" id="save-success">Settings saved successfully.</div>
     <div class="settings-error" id="save-error"></div>
+
+    {% if mode in ('demo', 'demo_department') %}
+    <div class="settings-card go-live-card" style="margin-top:24px;">
+        <h2>Go Live</h2>
+        <p style="font-size:13px;color:#555;margin-bottom:16px;line-height:1.6;">
+            Switch from demo mode to a live deployment. This is a one-way action.
+        </p>
+        <div class="go-live-warning">
+            This will permanently delete all demo data (teachers, classes, students, assignments, and submissions).
+            Your API keys will be kept. You will need to set up a new access code and re-login.
+        </div>
+
+        <div class="settings-field">
+            <label class="settings-label">Live Mode</label>
+            <select class="settings-select" id="go-live-mode">
+                <option value="normal">Teacher (Personal Use)</option>
+                <option value="department">Department (Multi-teacher)</option>
+            </select>
+        </div>
+        <div class="settings-field">
+            <label class="settings-label">Your Name</label>
+            <input type="text" class="settings-input" id="go-live-name" placeholder="e.g. Mr. Tan">
+        </div>
+        <div class="settings-field">
+            <label class="settings-label">New Access Code</label>
+            <input type="text" class="settings-input" id="go-live-code" placeholder="Choose a secure code" style="letter-spacing:2px;font-weight:600;">
+            <div class="settings-hint">This will be your login code after going live.</div>
+        </div>
+
+        <div class="settings-field" style="margin-top:8px;">
+            <label class="settings-label" style="font-size:12px;color:#888;">Optionally update API keys (leave empty to keep current keys)</label>
+            <input type="password" class="settings-input" id="go-live-key-anthropic" placeholder="Anthropic API Key" style="margin-bottom:8px;">
+            <input type="password" class="settings-input" id="go-live-key-openai" placeholder="OpenAI API Key" style="margin-bottom:8px;">
+            <input type="password" class="settings-input" id="go-live-key-qwen" placeholder="Qwen API Key">
+        </div>
+
+        <button class="go-live-btn" id="btn-go-live" onclick="showGoLiveConfirm()">Go Live</button>
+
+        <div class="go-live-confirm" id="go-live-confirm">
+            <p>Are you sure? All demo data will be permanently deleted.</p>
+            <div class="confirm-btns">
+                <button class="btn-confirm-yes" onclick="executeGoLive()">Yes, Go Live</button>
+                <button class="btn-confirm-no" onclick="hideGoLiveConfirm()">Cancel</button>
+            </div>
+        </div>
+        <div class="settings-error" id="go-live-error" style="margin-top:12px;"></div>
+    </div>
+    {% endif %}
 </div>
 {% endblock %}
 
@@ -194,6 +273,65 @@ function saveSettings() {
         errorEl.style.display = 'block';
         btn.disabled = false;
         btn.textContent = 'Save Changes';
+    });
+}
+
+function showGoLiveConfirm() {
+    var name = document.getElementById('go-live-name').value.trim();
+    var code = document.getElementById('go-live-code').value.trim();
+    if (!name) return alert('Please enter your name.');
+    if (!code) return alert('Please choose an access code.');
+    document.getElementById('go-live-confirm').style.display = 'block';
+    document.getElementById('go-live-error').style.display = 'none';
+}
+
+function hideGoLiveConfirm() {
+    document.getElementById('go-live-confirm').style.display = 'none';
+}
+
+function executeGoLive() {
+    var btn = document.getElementById('btn-go-live');
+    var errorEl = document.getElementById('go-live-error');
+    hideGoLiveConfirm();
+    btn.disabled = true;
+    btn.textContent = 'Switching...';
+    errorEl.style.display = 'none';
+
+    var payload = {
+        mode: document.getElementById('go-live-mode').value,
+        name: document.getElementById('go-live-name').value.trim(),
+        code: document.getElementById('go-live-code').value.trim()
+    };
+
+    var k1 = document.getElementById('go-live-key-anthropic').value.trim();
+    var k2 = document.getElementById('go-live-key-openai').value.trim();
+    var k3 = document.getElementById('go-live-key-qwen').value.trim();
+    if (k1) payload.api_key_anthropic = k1;
+    if (k2) payload.api_key_openai = k2;
+    if (k3) payload.api_key_qwen = k3;
+
+    fetch('/settings/go-live', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success) {
+            alert('Successfully switched to live mode! You will now be redirected to log in.');
+            window.location.href = '/';
+        } else {
+            errorEl.textContent = data.error || 'Something went wrong.';
+            errorEl.style.display = 'block';
+            btn.disabled = false;
+            btn.textContent = 'Go Live';
+        }
+    })
+    .catch(function() {
+        errorEl.textContent = 'Network error. Please try again.';
+        errorEl.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Go Live';
     });
 }
 </script>

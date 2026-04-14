@@ -1,0 +1,844 @@
+{% extends "base.html" %}
+
+{% block title %}Class Insights - {{ assignment.title or assignment.subject or 'Untitled' }} - {{ app_title }}{% endblock %}
+
+{% block head %}
+<style>
+    .back-link { color: #667eea; text-decoration: none; font-size: 13px; font-weight: 600; }
+    .back-link:hover { text-decoration: underline; }
+
+    .ci-header { margin-bottom: 24px; }
+    .ci-header h1 { font-size: 22px; font-weight: 700; color: #1a1a2e; margin: 8px 0 4px; }
+    .ci-header p { color: #888; font-size: 14px; margin: 0; }
+
+    .ci-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+    @media (max-width: 600px) { .ci-stats { grid-template-columns: repeat(2, 1fr); } }
+    .ci-stat {
+        background: white; border-radius: 14px; padding: 20px; text-align: center;
+        box-shadow: 0 1px 12px rgba(0,0,0,0.06); border: 1px solid rgba(0,0,0,0.04);
+    }
+    .ci-stat .num { font-size: 28px; font-weight: 800; color: #1a1a2e; }
+    .ci-stat .label { font-size: 12px; color: #888; font-weight: 600; margin-top: 4px; }
+
+    .ci-card {
+        background: white; border-radius: 14px; padding: 24px;
+        box-shadow: 0 1px 12px rgba(0,0,0,0.06); border: 1px solid rgba(0,0,0,0.04);
+        margin-bottom: 24px;
+    }
+    .ci-card h3 { font-size: 16px; font-weight: 700; color: #1a1a2e; margin: 0 0 16px; display: flex; align-items: center; gap: 8px; }
+
+    /* Heatmap */
+    .heatmap-legend { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+    .legend-item { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666; }
+    .legend-swatch { width: 20px; height: 14px; border-radius: 3px; }
+
+    .heatmap-wrap { overflow-x: auto; max-height: 600px; overflow-y: auto; }
+    .heatmap-table { border-collapse: collapse; font-size: 12px; width: 100%; min-width: 600px; }
+    .heatmap-table th {
+        padding: 8px 6px; background: #f8f8f8; font-weight: 700; font-size: 11px; color: #555;
+        text-align: center; border-bottom: 2px solid #eee; position: sticky; top: 0; z-index: 2;
+    }
+    .heatmap-table th:first-child { text-align: left; min-width: 180px; position: sticky; left: 0; z-index: 3; background: #f8f8f8; }
+    .heatmap-table td { padding: 6px; text-align: center; border-bottom: 1px solid #f0f0f0; font-size: 12px; font-weight: 600; }
+    .heatmap-table td:first-child {
+        text-align: left; font-weight: 600; color: #333; position: sticky; left: 0;
+        background: white; z-index: 1; min-width: 180px;
+    }
+    .heatmap-table td:last-child { font-weight: 700; }
+    .heatmap-cell { border-radius: 4px; padding: 4px 6px; display: inline-block; min-width: 36px; }
+
+    .stu-index { font-size: 10px; color: #aaa; display: block; }
+
+    /* Item Analysis */
+    .ia-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .ia-table th { padding: 10px 8px; background: #f8f8f8; font-size: 11px; color: #888; text-align: center; border-bottom: 2px solid #eee; }
+    .ia-table th:first-child, .ia-table th:nth-child(2) { text-align: left; }
+    .ia-table td { padding: 8px; text-align: center; border-bottom: 1px solid #f0f0f0; }
+    .ia-table td:first-child { text-align: left; font-weight: 700; }
+    .ia-table td:nth-child(2) { text-align: left; font-size: 12px; color: #555; }
+
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; }
+    .badge-green { background: #e8f5e9; color: #28a745; }
+    .badge-yellow { background: #fff3cd; color: #856404; }
+    .badge-red { background: #fde8e8; color: #dc3545; }
+    .badge-blue { background: #e3f2fd; color: #1565c0; }
+
+    .diff-easy { color: #28a745; }
+    .diff-moderate { color: #856404; }
+    .diff-hard { color: #dc3545; }
+
+    /* AI Summary */
+    .ai-controls { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-bottom: 16px; }
+    .ai-controls .filter-group { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+    .ai-controls .filter-group label { font-size: 12px; font-weight: 600; color: #888; }
+    .ai-controls .filter-group select { padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; outline: none; }
+    .ai-controls .filter-group select:focus { border-color: #667eea; }
+
+    .gen-btn {
+        padding: 10px 20px; border: none; border-radius: 8px;
+        background: #667eea; color: white; font-weight: 600; font-size: 14px;
+        cursor: pointer; transition: background 0.2s;
+    }
+    .gen-btn:hover { background: #5a6fd6; }
+    .gen-btn:disabled { opacity: 0.5; cursor: default; }
+
+    .ai-loading { display: none; padding: 20px; text-align: center; color: #888; font-size: 14px; }
+    .ai-loading.visible { display: block; }
+
+    .ai-section {
+        border-left: 4px solid; border-radius: 0 12px 12px 0; padding: 16px 20px;
+        margin-bottom: 16px; display: none;
+    }
+    .ai-section.visible { display: block; }
+    .ai-section h4 { font-size: 14px; font-weight: 700; margin: 0 0 10px; }
+    .ai-section ul { margin: 0; padding-left: 20px; }
+    .ai-section li { margin-bottom: 6px; font-size: 13px; line-height: 1.6; color: #333; }
+
+    .ai-concepts { border-color: #28a745; background: #f6fdf6; }
+    .ai-concepts h4 { color: #28a745; }
+    .ai-misconceptions { border-color: #dc3545; background: #fef6f6; }
+    .ai-misconceptions h4 { color: #dc3545; }
+    .ai-clarification { border-color: #ffc107; background: #fffdf0; }
+    .ai-clarification h4 { color: #b8860b; }
+    .ai-recommended { border-color: #667eea; background: #f8f9ff; }
+    .ai-recommended h4 { color: #667eea; }
+
+    .ai-meta { font-size: 11px; color: #aaa; margin-top: 8px; }
+
+    /* Per-question notes */
+    .pq-notes { margin-top: 16px; }
+    .pq-note {
+        border: 1px solid #eee; border-radius: 10px; margin-bottom: 8px; overflow: hidden;
+    }
+    .pq-note-header {
+        padding: 12px 16px; cursor: pointer; display: flex; justify-content: space-between;
+        align-items: center; font-size: 13px; font-weight: 600; color: #333;
+        background: #fafafa; transition: background 0.2s;
+    }
+    .pq-note-header:hover { background: #f0f0f0; }
+    .pq-note-header .arrow { transition: transform 0.2s; }
+    .pq-note.open .pq-note-header .arrow { transform: rotate(90deg); }
+    .pq-note-body {
+        display: none; padding: 12px 16px; font-size: 13px; line-height: 1.7; color: #444;
+        border-top: 1px solid #eee;
+    }
+    .pq-note.open .pq-note-body { display: block; }
+    .pq-label { font-weight: 600; color: #667eea; display: block; margin-top: 8px; margin-bottom: 2px; }
+    .pq-label:first-child { margin-top: 0; }
+
+    /* Score Distribution */
+    .dist-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .dist-label { width: 120px; font-size: 13px; font-weight: 600; color: #333; flex-shrink: 0; }
+    .dist-bar-track { flex: 1; background: #f0f0f0; border-radius: 8px; height: 28px; position: relative; overflow: hidden; }
+    .dist-bar-fill { height: 100%; border-radius: 8px; transition: width 0.5s; display: flex; align-items: center; padding: 0 10px; }
+    .dist-bar-fill span { font-size: 11px; font-weight: 700; color: white; white-space: nowrap; }
+    .dist-count { width: 110px; font-size: 12px; color: #666; flex-shrink: 0; }
+    .needs-improvement { margin-top: 12px; }
+    .needs-improvement .ni-row {
+        display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px;
+    }
+    .ni-badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; color: white; }
+
+    /* Student List */
+    .filter-tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+    .filter-tab {
+        padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600;
+        cursor: pointer; border: 2px solid #e0e0e0; background: white; color: #555;
+        transition: all 0.2s;
+    }
+    .filter-tab.active { background: #667eea; color: white; border-color: #667eea; }
+    .filter-tab:hover:not(.active) { border-color: #667eea; color: #667eea; }
+
+    .stu-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .stu-table th { padding: 10px 12px; background: #f8f8f8; font-size: 12px; color: #888; text-align: left; border-bottom: 2px solid #eee; }
+    .stu-table td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
+    .stu-table tr.hidden { display: none; }
+
+    .status-badge { display: inline-block; padding: 3px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+    .status-done { background: #e0f7fa; color: #00838f; }
+    .status-processing { background: #fff3cd; color: #856404; }
+    .status-pending { background: #f3e5f5; color: #7b1fa2; }
+    .status-not-submitted { background: #f5f5f5; color: #999; }
+
+    .score-bar-cell { display: flex; align-items: center; gap: 8px; }
+    .score-mini-bar { width: 80px; height: 8px; background: #f0f0f0; border-radius: 4px; overflow: hidden; }
+    .score-mini-fill { height: 100%; border-radius: 4px; }
+
+    /* Chat Panel */
+    .chat-fab {
+        position: fixed; bottom: 24px; right: 24px; z-index: 900;
+        padding: 12px 20px; border: none; border-radius: 24px;
+        background: #667eea; color: white; font-weight: 700; font-size: 14px;
+        cursor: pointer; box-shadow: 0 4px 16px rgba(102,126,234,0.4);
+        transition: all 0.2s;
+    }
+    .chat-fab:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(102,126,234,0.5); }
+
+    .chat-panel {
+        position: fixed; top: 0; right: -420px; width: 400px; height: 100vh; z-index: 1000;
+        background: white; box-shadow: -4px 0 24px rgba(0,0,0,0.12);
+        display: flex; flex-direction: column; transition: right 0.3s;
+    }
+    .chat-panel.open { right: 0; }
+    .chat-overlay {
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 999;
+        background: rgba(0,0,0,0.3); display: none;
+    }
+    .chat-overlay.open { display: block; }
+
+    .chat-header {
+        padding: 16px 20px; border-bottom: 1px solid #eee; display: flex;
+        justify-content: space-between; align-items: center; flex-shrink: 0;
+    }
+    .chat-header h3 { margin: 0; font-size: 16px; font-weight: 700; color: #1a1a2e; }
+    .chat-close {
+        border: none; background: none; font-size: 20px; cursor: pointer;
+        color: #888; padding: 4px 8px; border-radius: 6px;
+    }
+    .chat-close:hover { background: #f0f0f0; color: #333; }
+
+    .chat-messages { flex: 1; overflow-y: auto; padding: 16px 20px; }
+    .chat-msg { margin-bottom: 14px; max-width: 90%; }
+    .chat-msg.user { margin-left: auto; }
+    .chat-msg .bubble {
+        padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.6;
+        word-wrap: break-word; white-space: pre-wrap;
+    }
+    .chat-msg.user .bubble { background: #667eea; color: white; border-bottom-right-radius: 4px; }
+    .chat-msg.assistant .bubble { background: #f4f4f8; color: #333; border-bottom-left-radius: 4px; }
+    .chat-msg .sender { font-size: 10px; color: #aaa; margin-bottom: 2px; font-weight: 600; }
+    .chat-msg.user .sender { text-align: right; }
+
+    .chat-input-area {
+        padding: 12px 16px; border-top: 1px solid #eee; display: flex; gap: 8px;
+        flex-shrink: 0; align-items: end;
+    }
+    .chat-input-area textarea {
+        flex: 1; padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 10px;
+        font-size: 13px; resize: none; outline: none; font-family: inherit;
+        min-height: 40px; max-height: 120px;
+    }
+    .chat-input-area textarea:focus { border-color: #667eea; }
+    .chat-send {
+        padding: 10px 16px; border: none; border-radius: 10px;
+        background: #667eea; color: white; font-weight: 600; font-size: 13px;
+        cursor: pointer; flex-shrink: 0;
+    }
+    .chat-send:hover { background: #5a6fd6; }
+    .chat-send:disabled { opacity: 0.5; cursor: default; }
+
+    .no-data { text-align: center; padding: 40px; color: #888; font-size: 14px; }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="dept-page">
+    <a href="/department/insights" class="back-link animate__animated animate__fadeIn">&larr; Back to Department Insights</a>
+
+    <div class="ci-header animate__animated animate__fadeInDown" style="animation-duration:0.5s;">
+        <h1>{{ cls.name if cls else 'Unknown' }} &mdash; {{ assignment.title or assignment.subject or 'Untitled' }}</h1>
+        <p>Class-level performance analysis</p>
+    </div>
+
+    <!-- Summary Stats -->
+    <div class="ci-stats">
+        <div class="ci-stat animate__animated animate__fadeInUp" style="animation-delay:0.1s;animation-duration:0.5s;">
+            <div class="num" id="statStudents">&mdash;</div>
+            <div class="label">Total Students</div>
+        </div>
+        <div class="ci-stat animate__animated animate__fadeInUp" style="animation-delay:0.15s;animation-duration:0.5s;">
+            <div class="num" id="statSubmitted">&mdash;</div>
+            <div class="label">Submitted</div>
+        </div>
+        <div class="ci-stat animate__animated animate__fadeInUp" style="animation-delay:0.2s;animation-duration:0.5s;">
+            <div class="num" id="statAvg">&mdash;</div>
+            <div class="label">Average Score</div>
+        </div>
+        <div class="ci-stat animate__animated animate__fadeInUp" style="animation-delay:0.25s;animation-duration:0.5s;">
+            <div class="num" id="statPass">&mdash;</div>
+            <div class="label">Pass Rate</div>
+        </div>
+    </div>
+
+    <!-- Score Heatmap -->
+    <div class="ci-card animate__animated animate__fadeIn" style="animation-delay:0.3s;animation-duration:0.5s;">
+        <h3>&#128293; Score Heatmap</h3>
+        <div class="heatmap-legend">
+            <div class="legend-item"><span class="legend-swatch" style="background:#28a745;"></span> 100%</div>
+            <div class="legend-item"><span class="legend-swatch" style="background:#7bc67e;"></span> 60&ndash;99%</div>
+            <div class="legend-item"><span class="legend-swatch" style="background:#ffc107;"></span> 40&ndash;59%</div>
+            <div class="legend-item"><span class="legend-swatch" style="background:#dc3545;"></span> &lt;40%</div>
+            <div class="legend-item"><span class="legend-swatch" style="background:#f5f5f5; border:1px solid #ddd;"></span> Not attempted</div>
+        </div>
+        <div class="heatmap-wrap" id="heatmapWrap">
+            <div class="no-data">Loading...</div>
+        </div>
+    </div>
+
+    <!-- Item Analysis -->
+    <div class="ci-card animate__animated animate__fadeIn" style="animation-delay:0.35s;animation-duration:0.5s;">
+        <h3>&#128202; Item Analysis
+            <span style="margin-left:auto;">
+                <button class="gen-btn" id="loBtn" onclick="generateLOs()" style="font-size:12px;padding:6px 14px;">Tag to LOs</button>
+            </span>
+            <span style="margin-left:8px;font-size:12px;color:#888;font-weight:400;" id="loStatus"></span>
+        </h3>
+        <div style="overflow-x:auto;">
+            <table class="ia-table" id="iaTable">
+                <thead><tr>
+                    <th>QUESTION</th><th>LEARNING OBJECTIVE</th><th>FI</th><th>DI</th>
+                    <th>Difficulty</th><th>MEAN SCORE</th><th>ATTEMPTS</th><th>INTERPRETATION</th>
+                </tr></thead>
+                <tbody id="iaBody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- AI Class Summary -->
+    <div class="ci-card animate__animated animate__fadeIn" style="animation-delay:0.4s;animation-duration:0.5s;">
+        <h3>&#129302; AI Class Summary
+            <span style="margin-left:auto;font-size:12px;color:#888;font-weight:400;" id="aiGenTime"></span>
+        </h3>
+        <div class="ai-controls">
+            <div class="filter-group">
+                <label>Provider</label>
+                <select id="aiProvider" onchange="updateAiModels()"></select>
+            </div>
+            <div class="filter-group">
+                <label>Model</label>
+                <select id="aiModel"></select>
+            </div>
+            <button class="gen-btn" id="analyzeBtn" onclick="generateAnalysis()">Generate Analysis</button>
+        </div>
+        <div class="ai-loading" id="aiLoading">Analyzing class data... this may take a moment.</div>
+
+        <div class="ai-section ai-concepts" id="secConcepts">
+            <h4>&#9989; Concepts Grasped</h4>
+            <ul id="listConcepts"></ul>
+        </div>
+        <div class="ai-section ai-misconceptions" id="secMisconceptions">
+            <h4>&#10060; Misconceptions</h4>
+            <ul id="listMisconceptions"></ul>
+        </div>
+        <div class="ai-section ai-clarification" id="secClarification">
+            <h4>&#9888;&#65039; Areas Needing Clarification</h4>
+            <ul id="listClarification"></ul>
+        </div>
+        <div class="ai-section ai-recommended" id="secRecommended">
+            <h4>&#10145;&#65039; Recommended Actions</h4>
+            <ul id="listRecommended"></ul>
+        </div>
+        <div class="ai-meta" id="aiMeta"></div>
+
+        <div class="pq-notes" id="pqNotes"></div>
+    </div>
+
+    <!-- Score Distribution -->
+    <div class="ci-card animate__animated animate__fadeIn" style="animation-delay:0.45s;animation-duration:0.5s;">
+        <h3>&#128200; Score Distribution</h3>
+        <div id="distChart"></div>
+        <div class="needs-improvement" id="needsImprovement"></div>
+    </div>
+
+    <!-- Student Submissions -->
+    <div class="ci-card animate__animated animate__fadeIn" style="animation-delay:0.5s;animation-duration:0.5s;">
+        <h3>&#128101; Student Submissions</h3>
+        <div class="filter-tabs" id="filterTabs">
+            <span class="filter-tab active" data-filter="all" onclick="filterStudents('all', this)">All</span>
+            <span class="filter-tab" data-filter="done" onclick="filterStudents('done', this)">Reviewed</span>
+            <span class="filter-tab" data-filter="processing" onclick="filterStudents('processing', this)">Pending Review</span>
+            <span class="filter-tab" data-filter="pending" onclick="filterStudents('pending', this)">AI Feedback Sent</span>
+            <span class="filter-tab" data-filter="not_submitted" onclick="filterStudents('not_submitted', this)">Not Submitted</span>
+        </div>
+        <table class="stu-table">
+            <thead><tr><th>STUDENT</th><th>CLASS</th><th>STATUS</th><th>SCORE</th></tr></thead>
+            <tbody id="stuBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Chat FAB -->
+<button class="chat-fab" onclick="toggleChat()">&#128172; Ask AI</button>
+<div class="chat-overlay" id="chatOverlay" onclick="toggleChat()"></div>
+<div class="chat-panel" id="chatPanel">
+    <div class="chat-header">
+        <h3>&#128172; Chat with AI</h3>
+        <button class="chat-close" onclick="toggleChat()">&times;</button>
+    </div>
+    <div class="chat-messages" id="chatMessages">
+        <div class="chat-msg assistant">
+            <div class="sender">AI Assistant</div>
+            <div class="bubble">Hi! I have access to all the performance data for this class. Ask me anything about student scores, question difficulty, patterns, or teaching strategies.</div>
+        </div>
+    </div>
+    <div class="chat-input-area">
+        <textarea id="chatInput" placeholder="Ask about this class's performance..." rows="1"
+            onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}"></textarea>
+        <button class="chat-send" id="chatSendBtn" onclick="sendChat()">Send</button>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+var ASSIGNMENT_ID = {{ assignment.id }};
+var CLASS_NAME = {{ (cls.name if cls else 'Unknown') | tojson }};
+var AI_PROVIDERS = {{ ai_providers | tojson }};
+var chatHistory = [];
+var perfData = null;
+
+/* ========== Data Loading ========== */
+
+function loadData() {
+    fetch('/department/insights/class/' + ASSIGNMENT_ID + '/data')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (!data.success) { document.getElementById('heatmapWrap').innerHTML = '<div class="no-data">No data available.</div>'; return; }
+        perfData = data;
+        document.getElementById('statStudents').textContent = data.total_students;
+        document.getElementById('statSubmitted').textContent = data.submitted_count;
+        document.getElementById('statAvg').textContent = data.overall_avg + '%';
+        document.getElementById('statPass').textContent = data.pass_rate + '%';
+        renderHeatmap(data);
+        renderItemAnalysis(data);
+        renderDistribution(data);
+        renderStudentList(data);
+        loadSavedAnalysis();
+    });
+}
+
+/* ========== Heatmap ========== */
+
+function heatColor(pct) {
+    if (pct >= 80) return { bg: '#28a745', fg: '#fff' };
+    if (pct >= 60) return { bg: '#7bc67e', fg: '#fff' };
+    if (pct >= 40) return { bg: '#ffc107', fg: '#333' };
+    if (pct >= 20) return { bg: '#dc3545', fg: '#fff' };
+    return { bg: '#8b0000', fg: '#fff' };
+}
+
+function renderHeatmap(data) {
+    var el = document.getElementById('heatmapWrap');
+    if (!data.heatmap.length) { el.innerHTML = '<div class="no-data">No students found.</div>'; return; }
+
+    var qnums = data.question_nums || [];
+    if (!qnums.length) { el.innerHTML = '<div class="no-data">No submission data.</div>'; return; }
+
+    var html = '<table class="heatmap-table"><thead><tr><th>STUDENT</th>';
+    for (var i = 0; i < qnums.length; i++) {
+        html += '<th>Q' + esc(qnums[i]) + '</th>';
+    }
+    html += '<th>TOTAL</th></tr></thead><tbody>';
+
+    for (var s = 0; s < data.heatmap.length; s++) {
+        var row = data.heatmap[s];
+        html += '<tr><td>' + esc(row.student_name) + '<span class="stu-index">' + esc(row.student_index || '') + '</span></td>';
+        for (var q = 0; q < qnums.length; q++) {
+            var qnum = qnums[q];
+            var val = row.questions[qnum];
+            if (val == null || !row.submitted) {
+                html += '<td>&mdash;</td>';
+            } else {
+                var c = heatColor(val);
+                html += '<td><span class="heatmap-cell" style="background:' + c.bg + ';color:' + c.fg + ';">' + Math.round(val) + '%</span></td>';
+            }
+        }
+        // Total
+        if (row.total_pct != null) {
+            var tc = heatColor(row.total_pct);
+            html += '<td><span class="heatmap-cell" style="background:' + tc.bg + ';color:' + tc.fg + ';">' + Math.round(row.total_pct) + '%</span></td>';
+        } else {
+            html += '<td>&mdash;</td>';
+        }
+        html += '</tr>';
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+/* ========== Item Analysis ========== */
+
+function fiBadge(fi) {
+    if (fi >= 0.7) return '<span class="badge badge-green">' + fi.toFixed(2) + '</span>';
+    if (fi >= 0.4) return '<span class="badge badge-yellow">' + fi.toFixed(2) + '</span>';
+    return '<span class="badge badge-red">' + fi.toFixed(2) + '</span>';
+}
+function diBadge(di) {
+    if (di >= 0.3) return '<span class="badge badge-green">' + di.toFixed(2) + '</span>';
+    if (di >= 0.2) return '<span class="badge badge-yellow">' + di.toFixed(2) + '</span>';
+    return '<span class="badge badge-red">' + di.toFixed(2) + '</span>';
+}
+
+function renderItemAnalysis(data) {
+    var el = document.getElementById('iaBody');
+    if (!data.item_analysis.length) { el.innerHTML = '<tr><td colspan="8" class="no-data">No data</td></tr>'; return; }
+    var html = '';
+    for (var i = 0; i < data.item_analysis.length; i++) {
+        var ia = data.item_analysis[i];
+        var diffClass = ia.difficulty === 'Easy' ? 'diff-easy' : (ia.difficulty === 'Moderate' ? 'diff-moderate' : 'diff-hard');
+        html += '<tr>';
+        html += '<td>Q' + esc(ia.question_num) + '</td>';
+        html += '<td class="lo-cell" id="lo-' + esc(ia.question_num) + '">&mdash;</td>';
+        html += '<td>' + fiBadge(ia.fi) + '</td>';
+        html += '<td>' + diBadge(ia.di) + '</td>';
+        html += '<td class="' + diffClass + '" style="font-weight:600;">' + esc(ia.difficulty) + '</td>';
+        html += '<td>' + esc(ia.mean_score) + '</td>';
+        html += '<td>' + ia.attempts + '</td>';
+        html += '<td style="font-size:12px;color:#555;text-align:left;">' + esc(ia.interpretation) + '</td>';
+        html += '</tr>';
+    }
+    el.innerHTML = html;
+}
+
+/* ========== AI Summary ========== */
+
+function updateAiProviderSelect() {
+    var sel = document.getElementById('aiProvider');
+    sel.innerHTML = '';
+    var order = ['anthropic', 'openai', 'qwen'];
+    order.forEach(function(key) {
+        if (!AI_PROVIDERS[key]) return;
+        var o = document.createElement('option');
+        o.value = key;
+        o.textContent = AI_PROVIDERS[key].label;
+        sel.appendChild(o);
+    });
+    updateAiModels();
+}
+
+function updateAiModels() {
+    var prov = document.getElementById('aiProvider').value;
+    var sel = document.getElementById('aiModel');
+    sel.innerHTML = '';
+    if (!prov || !AI_PROVIDERS[prov]) return;
+    var models = AI_PROVIDERS[prov].models;
+    var budgetModels = { 'anthropic': 'claude-haiku-4-5-20251001', 'openai': 'gpt-5.4-mini', 'qwen': 'qwen3.5-plus-2026-02-15' };
+    var defaultModel = budgetModels[prov] || AI_PROVIDERS[prov].default;
+    for (var id in models) {
+        var o = document.createElement('option');
+        o.value = id;
+        o.textContent = models[id];
+        if (id === defaultModel) o.selected = true;
+        sel.appendChild(o);
+    }
+}
+
+function generateAnalysis() {
+    var provider = document.getElementById('aiProvider').value;
+    var model = document.getElementById('aiModel').value;
+    if (!provider) return alert('Select a provider.');
+
+    document.getElementById('aiLoading').classList.add('visible');
+    document.getElementById('analyzeBtn').disabled = true;
+    ['secConcepts','secMisconceptions','secClarification','secRecommended'].forEach(function(id) {
+        document.getElementById(id).classList.remove('visible');
+    });
+    document.getElementById('pqNotes').innerHTML = '';
+
+    fetch('/department/insights/class/' + ASSIGNMENT_ID + '/analyze', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ provider: provider, model: model })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        document.getElementById('aiLoading').classList.remove('visible');
+        document.getElementById('analyzeBtn').disabled = false;
+        if (!data.success) { alert(data.error || 'Analysis failed.'); return; }
+        renderAISummary(data);
+    })
+    .catch(function() {
+        document.getElementById('aiLoading').classList.remove('visible');
+        document.getElementById('analyzeBtn').disabled = false;
+        alert('Connection error.');
+    });
+}
+
+function renderAISummary(data) {
+    renderSection('secConcepts', 'listConcepts', data.concepts_grasped);
+    renderSection('secMisconceptions', 'listMisconceptions', data.misconceptions);
+    renderSection('secClarification', 'listClarification', data.areas_needing_clarification);
+    renderSection('secRecommended', 'listRecommended', data.recommended_actions);
+
+    var meta = '';
+    if (data.provider) meta += data.provider;
+    if (data.model) meta += ' / ' + data.model;
+    if (data.generated_at) meta += ' \u2014 Generated: ' + new Date(data.generated_at).toLocaleString();
+    document.getElementById('aiMeta').textContent = meta;
+    document.getElementById('aiGenTime').textContent = data.generated_at ? 'Generated: just now' : '';
+    document.getElementById('analyzeBtn').textContent = 'Regenerate';
+
+    // Per-question notes
+    var pqEl = document.getElementById('pqNotes');
+    var notes = data.per_question_notes || [];
+    if (!notes.length) { pqEl.innerHTML = ''; return; }
+    var html = '<h4 style="font-size:14px;font-weight:700;color:#1a1a2e;margin:16px 0 8px;">Per-Question Notes</h4>';
+    for (var i = 0; i < notes.length; i++) {
+        var n = notes[i];
+        html += '<div class="pq-note" onclick="this.classList.toggle(\'open\')">';
+        html += '<div class="pq-note-header"><span>Q' + esc(n.question_num) + ' &mdash; ' + esc(n.summary || '') + '</span><span class="arrow">&#9654;</span></div>';
+        html += '<div class="pq-note-body">';
+        if (n.common_errors) html += '<span class="pq-label">Common Errors</span>' + esc(n.common_errors);
+        if (n.teaching_suggestion) html += '<span class="pq-label">Teaching Suggestion</span>' + esc(n.teaching_suggestion);
+        html += '</div></div>';
+    }
+    pqEl.innerHTML = html;
+
+    // Trigger MathJax if available
+    if (window.MathJax && MathJax.typesetPromise) MathJax.typesetPromise();
+}
+
+function renderSection(secId, listId, items) {
+    var sec = document.getElementById(secId);
+    var ul = document.getElementById(listId);
+    ul.innerHTML = '';
+    if (!items || !items.length) { sec.classList.remove('visible'); return; }
+    items.forEach(function(item) {
+        var li = document.createElement('li');
+        li.textContent = item;
+        ul.appendChild(li);
+    });
+    sec.classList.add('visible');
+}
+
+function loadSavedAnalysis() {
+    fetch('/department/insights/class/' + ASSIGNMENT_ID + '/analysis')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success && data.exists) renderAISummary(data);
+    });
+}
+
+/* ========== Learning Objectives ========== */
+
+function generateLOs() {
+    var provider = document.getElementById('aiProvider').value;
+    var model = document.getElementById('aiModel').value;
+    if (!provider) return alert('Select a provider first.');
+    if (!perfData) return;
+
+    var btn = document.getElementById('loBtn');
+    btn.disabled = true;
+    btn.textContent = 'Generating...';
+    document.getElementById('loStatus').textContent = '';
+
+    // Use the chat endpoint with a specific request for LOs
+    var prompt = 'For each question (Q' + perfData.question_nums.join(', Q') + '), provide a brief learning objective (1 short sentence each). Respond ONLY with JSON: {"objectives": {"1": "LO text", "2": "LO text", ...}}';
+
+    fetch('/department/insights/class/' + ASSIGNMENT_ID + '/chat', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            provider: provider,
+            model: model,
+            messages: [{ role: 'user', content: prompt }]
+        })
+    })
+    .then(function(r) { return r.text(); })
+    .then(function(text) {
+        btn.disabled = false;
+        btn.textContent = 'Tag to LOs';
+        var fullText = '';
+        text.split('\n').forEach(function(line) {
+            if (line.startsWith('data: ')) {
+                try {
+                    var d = JSON.parse(line.substring(6));
+                    if (d.text) fullText += d.text;
+                } catch(e) {}
+            }
+        });
+        // Try parse JSON from response
+        var m = fullText.match(/\{[\s\S]*\}/);
+        if (m) {
+            try {
+                var parsed = JSON.parse(m[0]);
+                var objs = parsed.objectives || parsed;
+                for (var qnum in objs) {
+                    var cell = document.getElementById('lo-' + qnum);
+                    if (cell) cell.textContent = objs[qnum];
+                }
+                document.getElementById('loStatus').textContent = 'Done';
+            } catch(e) {
+                document.getElementById('loStatus').textContent = 'Parse error';
+            }
+        } else {
+            document.getElementById('loStatus').textContent = 'No data returned';
+        }
+    })
+    .catch(function() {
+        btn.disabled = false;
+        btn.textContent = 'Tag to LOs';
+        document.getElementById('loStatus').textContent = 'Error';
+    });
+}
+
+/* ========== Score Distribution ========== */
+
+function renderDistribution(data) {
+    var el = document.getElementById('distChart');
+    var dist = data.score_distribution;
+    var bands = ['A', 'B', 'C', 'D'];
+    var colors = { A: '#28a745', B: '#7bc67e', C: '#ffc107', D: '#dc3545' };
+    var maxCount = Math.max.apply(null, bands.map(function(b) { return dist[b].count; }));
+    if (maxCount === 0) maxCount = 1;
+
+    var html = '';
+    for (var i = 0; i < bands.length; i++) {
+        var b = bands[i];
+        var d = dist[b];
+        var w = (d.count / maxCount) * 100;
+        html += '<div class="dist-row">';
+        html += '<div class="dist-label">' + esc(d.label) + '</div>';
+        html += '<div class="dist-bar-track"><div class="dist-bar-fill" style="width:' + w + '%;background:' + colors[b] + ';"><span>' + d.count + '</span></div></div>';
+        html += '<div class="dist-count">' + d.count + ' students (' + d.pct + '%)</div>';
+        html += '</div>';
+    }
+    el.innerHTML = html;
+
+    // Needs improvement section
+    var niEl = document.getElementById('needsImprovement');
+    var niHtml = '';
+    var niColors = { D: '#dc3545', C: '#ffc107', B: '#7bc67e' };
+    ['D', 'C', 'B'].forEach(function(b) {
+        var d = dist[b];
+        if (d.count === 0) return;
+        var pct = d.count + '/' + data.submitted_count;
+        var pctNum = d.pct;
+        niHtml += '<div class="ni-row">';
+        niHtml += '<span class="ni-badge" style="background:' + niColors[b] + ';">' + b + '</span>';
+        niHtml += '<span>' + pct + ' need improvement (' + pctNum + '%)</span>';
+        niHtml += '</div>';
+    });
+    if (niHtml) niEl.innerHTML = niHtml;
+}
+
+/* ========== Student List ========== */
+
+function renderStudentList(data) {
+    var el = document.getElementById('stuBody');
+    var list = data.student_list;
+    var statusLabels = { done: 'Reviewed', processing: 'Pending Review', pending: 'AI Feedback Sent', not_submitted: 'Not Submitted' };
+    var statusClasses = { done: 'status-done', processing: 'status-processing', pending: 'status-pending', not_submitted: 'status-not-submitted' };
+
+    var html = '';
+    for (var i = 0; i < list.length; i++) {
+        var s = list[i];
+        var scoreHtml = '&mdash;';
+        if (s.score != null) {
+            var sc = heatColor(s.score);
+            scoreHtml = '<div class="score-bar-cell">' +
+                '<div class="score-mini-bar"><div class="score-mini-fill" style="width:' + s.score + '%;background:' + sc.bg + ';"></div></div>' +
+                '<span style="font-weight:600;">' + Math.round(s.score) + '%</span></div>';
+        }
+        html += '<tr data-status="' + s.status + '">';
+        html += '<td>' + esc(s.name) + '<span class="stu-index">' + esc(s.index || '') + '</span></td>';
+        html += '<td>' + esc(CLASS_NAME) + '</td>';
+        html += '<td><span class="status-badge ' + (statusClasses[s.status] || '') + '">' + (statusLabels[s.status] || s.status) + '</span></td>';
+        html += '<td>' + scoreHtml + '</td>';
+        html += '</tr>';
+    }
+    el.innerHTML = html;
+}
+
+function filterStudents(filter, tab) {
+    document.querySelectorAll('.filter-tab').forEach(function(t) { t.classList.remove('active'); });
+    tab.classList.add('active');
+    document.querySelectorAll('#stuBody tr').forEach(function(tr) {
+        if (filter === 'all' || tr.dataset.status === filter) {
+            tr.classList.remove('hidden');
+        } else {
+            tr.classList.add('hidden');
+        }
+    });
+}
+
+/* ========== Chat ========== */
+
+function toggleChat() {
+    document.getElementById('chatPanel').classList.toggle('open');
+    document.getElementById('chatOverlay').classList.toggle('open');
+    if (document.getElementById('chatPanel').classList.contains('open')) {
+        document.getElementById('chatInput').focus();
+    }
+}
+
+function appendChatMsg(role, text) {
+    var el = document.getElementById('chatMessages');
+    var div = document.createElement('div');
+    div.className = 'chat-msg ' + role;
+    div.innerHTML = '<div class="sender">' + (role === 'user' ? 'You' : 'AI Assistant') + '</div><div class="bubble"></div>';
+    div.querySelector('.bubble').textContent = text;
+    el.appendChild(div);
+    el.scrollTop = el.scrollHeight;
+    return div.querySelector('.bubble');
+}
+
+async function sendChat() {
+    var input = document.getElementById('chatInput');
+    var msg = input.value.trim();
+    if (!msg) return;
+
+    var provider = document.getElementById('aiProvider').value;
+    var model = document.getElementById('aiModel').value;
+    if (!provider) { alert('Select a provider in the AI Summary section first.'); return; }
+
+    chatHistory.push({ role: 'user', content: msg });
+    appendChatMsg('user', msg);
+    input.value = '';
+    input.style.height = 'auto';
+
+    var bubble = appendChatMsg('assistant', '');
+    document.getElementById('chatSendBtn').disabled = true;
+
+    try {
+        var res = await fetch('/department/insights/class/' + ASSIGNMENT_ID + '/chat', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ provider: provider, model: model, messages: chatHistory })
+        });
+
+        var reader = res.body.getReader();
+        var decoder = new TextDecoder();
+        var fullText = '';
+        var buffer = '';
+
+        while (true) {
+            var result = await reader.read();
+            if (result.done) break;
+            buffer += decoder.decode(result.value, { stream: true });
+
+            var lines = buffer.split('\n');
+            buffer = lines.pop(); // keep incomplete line
+
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i].trim();
+                if (!line.startsWith('data: ')) continue;
+                try {
+                    var d = JSON.parse(line.substring(6));
+                    if (d.text) {
+                        fullText += d.text;
+                        bubble.textContent = fullText;
+                        document.getElementById('chatMessages').scrollTop = document.getElementById('chatMessages').scrollHeight;
+                    }
+                    if (d.error) {
+                        bubble.textContent = 'Error: ' + d.error;
+                    }
+                } catch(e) {}
+            }
+        }
+        if (fullText) chatHistory.push({ role: 'assistant', content: fullText });
+    } catch(e) {
+        bubble.textContent = 'Connection error.';
+    }
+    document.getElementById('chatSendBtn').disabled = false;
+
+    // Trigger MathJax if available
+    if (window.MathJax && MathJax.typesetPromise) MathJax.typesetPromise();
+}
+
+/* ========== Init ========== */
+updateAiProviderSelect();
+loadData();
+</script>
+{% endblock %}

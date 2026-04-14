@@ -127,6 +127,7 @@
             </select>
         </div>
         <button class="filter-btn" onclick="loadInsights()">Apply</button>
+        <a class="filter-btn" id="classInsightsLink" href="#" style="display:none;background:#28a745;text-decoration:none;color:white;">View Class Insights &rarr;</a>
     </div>
 
     <div class="dept-summary-grid" style="grid-template-columns: repeat(3, 1fr);">
@@ -223,6 +224,15 @@ function loadInsights() {
     var params = new URLSearchParams();
     if (asnId) params.set('assignment_id', asnId);
     if (clsId) params.set('class_id', clsId);
+
+    // Show/hide class insights link
+    var ciLink = document.getElementById('classInsightsLink');
+    if (asnId) {
+        ciLink.href = '/department/insights/class/' + asnId;
+        ciLink.style.display = 'inline-block';
+    } else {
+        ciLink.style.display = 'none';
+    }
 
     // Update CSV link
     var csvParams = new URLSearchParams(params);

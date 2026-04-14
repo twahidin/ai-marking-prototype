@@ -77,7 +77,8 @@ At least one AI provider API key must be set. Providers only appear in the UI if
 - **`ai_marking.py`** — AI provider abstraction. Builds multimodal prompts, calls Anthropic/OpenAI/Qwen APIs, parses JSON responses with 3 fallback strategies.
 - **`pdf_generator.py`** — ReportLab PDF report + class overview generation. Converts LaTeX to Unicode via `clean_for_pdf()`.
 - **`seed_data.py`** — Fake data generator for demo+dept mode.
-- **`templates/`** — 13 Jinja2 templates extending `base.html`.
+- **`templates/`** — 16 Jinja2 templates extending `base.html`. Key pages: `hub.html` (teacher home), `class.html` (class/assignment/marking view), `dashboard.html` (HOD dashboard), `submit.html` (student submission portal), `setup_wizard.html` (first-run setup), `settings.html` (teacher settings). Department pages: `department*.html`. Auth: `_gate.html`, `index.html`.
+- **`docs/plans/`** — Design documents for features (student submission portal, algorithm flow, setup wizard).
 
 ## Key Data Model
 
@@ -98,11 +99,7 @@ At least one AI provider API key must be set. Providers only appear in the UI if
 - **API key resolution**: Assignment keys → Department keys → Env vars.
 - **Teacher roles**: `owner` (normal mode), `teacher` (dept mode), `hod` (dept mode). `TEACHER_CODE` env var is permanent master key.
 
-## graphify
+## System Dependencies
 
-This project has a graphify knowledge graph at graphify-out/.
-
-Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- After modifying code files in this session, run `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"` to keep the graph current
+- **poppler** is required for `pdf2image` (PDF-to-image conversion for OpenAI/Qwen providers). Install via `brew install poppler` (macOS) or `apt-get install poppler-utils` (Linux).
+- Railway/Nixpacks handles this automatically in production.

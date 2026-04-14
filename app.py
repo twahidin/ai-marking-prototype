@@ -1706,6 +1706,572 @@ Respond in JSON format:
     return jsonify({'success': True, **saved})
 
 
+# ---------------------------------------------------------------------------
+# Class-level insights (heatmap, item analysis, AI summary, chat)
+# ---------------------------------------------------------------------------
+
+def _build_class_performance_data(assignment_id):
+    """Gather per-student, per-question performance data for a single assignment.
+
+    Returns dict with heatmap, item_analysis, score_distribution, student_list,
+    and summary stats.  Shared by the data, analyze, and chat routes.
+    """
+    asn = Assignment.query.get(assignment_id)
+    if not asn or not asn.class_id:
+        return None
+
+    cls = Class.query.get(asn.class_id)
+    students = Student.query.filter_by(class_id=asn.class_id)\
+        .order_by(Student.index_number).all()
+    subs = {s.student_id: s for s in
+            Submission.query.filter_by(assignment_id=assignment_id).all()}
+
+    heatmap = []
+    all_scores = []  # (student_id, total_pct)
+    q_accum = {}     # qnum -> list of score ratios (0-1)
+
+    for stu in students:
+        sub = subs.get(stu.id)
+        row = {
+            'student_name': stu.name,
+            'student_index': stu.index_number,
+            'student_id': stu.id,
+            'submitted': False,
+            'total_pct': None,
+            'questions': {},
+        }
+        if not sub or sub.status != 'done':
+            heatmap.append(row)
+            continue
+
+        result = sub.get_result()
+        questions = result.get('questions', [])
+        if not questions:
+            heatmap.append(row)
+            continue
+
+        row['submitted'] = True
+        has_marks = any(q.get('marks_awarded') is not None for q in questions)
+
+        q_pcts = {}
+        total_awarded = 0
+        total_possible = 0
+        correct_count = 0
+
+        for i, q in enumerate(questions):
+            qnum = str(q.get('question_number', q.get('question_num', i + 1)))
+            if has_marks:
+                awarded = q.get('marks_awarded', 0)
+                possible = q.get('marks_total', 0)
+                ratio = (awarded / possible) if possible > 0 else 0
+                total_awarded += awarded
+                total_possible += possible
+                q_pcts[qnum] = round(ratio * 100, 1)
+            else:
+                status = q.get('status', '')
+                if status == 'correct':
+                    ratio = 1.0
+                    correct_count += 1
+                elif status == 'partially_correct':
+                    ratio = 0.5
+                else:
+                    ratio = 0.0
+                q_pcts[qnum] = round(ratio * 100, 1)
+
+            q_accum.setdefault(qnum, []).append(ratio)
+
+        if has_marks:
+            total_pct = (total_awarded / total_possible * 100) if total_possible > 0 else 0
+        else:
+            total_pct = (correct_count / len(questions) * 100) if questions else 0
+
+        row['total_pct'] = round(total_pct, 1)
+        row['questions'] = q_pcts
+        all_scores.append((stu.id, total_pct))
+        heatmap.append(row)
+
+    # --- Item analysis (FI, DI) ---
+    sorted_by_total = sorted(all_scores, key=lambda x: x[1], reverse=True)
+    n = len(sorted_by_total)
+    top_n = max(1, int(n * 0.27))
+    top_ids = {s[0] for s in sorted_by_total[:top_n]}
+    bot_ids = {s[0] for s in sorted_by_total[-top_n:]}
+
+    # Build per-student ratios keyed by student_id for DI lookup
+    student_q_ratios = {}
+    for row in heatmap:
+        if not row['submitted']:
+            continue
+        sid = row['student_id']
+        for qnum, pct in row['questions'].items():
+            student_q_ratios.setdefault(sid, {})[qnum] = pct / 100.0
+
+    item_analysis = []
+    for qnum in sorted(q_accum.keys(), key=lambda x: int(x) if x.isdigit() else x):
+        ratios = q_accum[qnum]
+        fi = sum(ratios) / len(ratios) if ratios else 0
+        attempts = len(ratios)
+
+        # DI
+        top_ratios = [student_q_ratios[sid][qnum]
+                      for sid in top_ids if sid in student_q_ratios and qnum in student_q_ratios[sid]]
+        bot_ratios = [student_q_ratios[sid][qnum]
+                      for sid in bot_ids if sid in student_q_ratios and qnum in student_q_ratios[sid]]
+        top_mean = (sum(top_ratios) / len(top_ratios)) if top_ratios else 0
+        bot_mean = (sum(bot_ratios) / len(bot_ratios)) if bot_ratios else 0
+        di = round(top_mean - bot_mean, 2)
+
+        if fi >= 0.7:
+            difficulty = 'Easy'
+        elif fi >= 0.4:
+            difficulty = 'Moderate'
+        else:
+            difficulty = 'Hard'
+
+        # Interpretation
+        if fi >= 0.7 and di >= 0.3:
+            interp = 'Good item \u2014 moderate difficulty with strong discrimination'
+        elif fi >= 0.7 and di >= 0.2:
+            interp = 'Acceptable item \u2014 moderate difficulty and discrimination'
+        elif fi >= 0.4 and di >= 0.3:
+            interp = 'Good item \u2014 appropriate difficulty with strong discrimination'
+        elif fi >= 0.4 and di >= 0.2:
+            interp = 'Acceptable item \u2014 moderate difficulty and discrimination'
+        elif fi < 0.4 and di >= 0.2:
+            interp = 'Item needs review \u2014 difficult but poor discrimination'
+        elif di < 0.2:
+            interp = 'Easy but still discriminating \u2014 good foundational item' if fi >= 0.7 \
+                else 'Item needs review \u2014 moderate difficulty but poor discrimination' if fi >= 0.4 \
+                else 'Item needs review \u2014 difficult but poor discrimination'
+        else:
+            interp = 'Insufficient data'
+
+        # Mean score text
+        if q_accum[qnum]:
+            avg_ratio = fi
+            # Try to get actual marks_total from any submission
+            sample_total = None
+            for row in heatmap:
+                if row['submitted'] and qnum in row['questions']:
+                    # Look up the actual submission to get marks_total
+                    sub = subs.get(row['student_id'])
+                    if sub:
+                        res = sub.get_result()
+                        for qq in res.get('questions', []):
+                            qn = str(qq.get('question_number', qq.get('question_num', '')))
+                            if qn == qnum and qq.get('marks_total') is not None:
+                                sample_total = qq['marks_total']
+                                break
+                    if sample_total is not None:
+                        break
+            if sample_total is not None:
+                mean_score = f"{round(avg_ratio * sample_total, 1)}/{sample_total}"
+            else:
+                mean_score = f"{round(fi * 100)}%"
+        else:
+            mean_score = 'N/A'
+
+        item_analysis.append({
+            'question_num': qnum,
+            'fi': round(fi, 2),
+            'di': di,
+            'difficulty': difficulty,
+            'mean_score': mean_score,
+            'attempts': attempts,
+            'interpretation': interp,
+        })
+
+    # --- Score distribution (A/B/C/D) ---
+    dist = {
+        'A': {'label': 'A (80\u2013100%)', 'count': 0, 'pct': 0, 'students': []},
+        'B': {'label': 'B (60\u201379%)', 'count': 0, 'pct': 0, 'students': []},
+        'C': {'label': 'C (40\u201359%)', 'count': 0, 'pct': 0, 'students': []},
+        'D': {'label': 'D (0\u201339%)', 'count': 0, 'pct': 0, 'students': []},
+    }
+    for row in heatmap:
+        if row['total_pct'] is None:
+            continue
+        p = row['total_pct']
+        if p >= 80:
+            band = 'A'
+        elif p >= 60:
+            band = 'B'
+        elif p >= 40:
+            band = 'C'
+        else:
+            band = 'D'
+        dist[band]['count'] += 1
+        dist[band]['students'].append(row['student_name'])
+
+    submitted_count = sum(1 for r in heatmap if r['submitted'])
+    if submitted_count:
+        for band in dist.values():
+            band['pct'] = round(band['count'] / submitted_count * 100)
+
+    # --- Student list ---
+    student_list = []
+    for row in heatmap:
+        sub = subs.get(row['student_id'])
+        if not sub:
+            status = 'not_submitted'
+        elif sub.status == 'done':
+            status = 'done'
+        elif sub.status in ('processing', 'extracting', 'preview'):
+            status = 'processing'
+        else:
+            status = 'pending'
+        student_list.append({
+            'name': row['student_name'],
+            'index': row['student_index'],
+            'score': row['total_pct'],
+            'status': status,
+        })
+
+    # --- Summary stats ---
+    scores_only = [s[1] for s in all_scores]
+    overall_avg = round(sum(scores_only) / len(scores_only), 1) if scores_only else 0
+    pass_rate = round(sum(1 for s in scores_only if s >= 50) / len(scores_only) * 100, 1) if scores_only else 0
+    question_nums = sorted(q_accum.keys(), key=lambda x: int(x) if x.isdigit() else x)
+
+    return {
+        'assignment_title': asn.title or asn.subject or 'Untitled',
+        'class_name': cls.name if cls else 'Unknown',
+        'subject': asn.subject or '',
+        'total_students': len(students),
+        'submitted_count': submitted_count,
+        'overall_avg': overall_avg,
+        'pass_rate': pass_rate,
+        'question_count': len(question_nums),
+        'question_nums': question_nums,
+        'heatmap': heatmap,
+        'item_analysis': item_analysis,
+        'score_distribution': dist,
+        'student_list': student_list,
+    }
+
+
+@app.route('/department/insights/class/<int:assignment_id>')
+def class_insights_page(assignment_id):
+    """Render class-level insights page for a single assignment."""
+    err = _require_insights_access()
+    if err:
+        return redirect(url_for('hub'))
+
+    asn = Assignment.query.get_or_404(assignment_id)
+    cls = Class.query.get(asn.class_id) if asn.class_id else None
+
+    from ai_marking import get_available_providers, PROVIDERS
+    dept_keys = _get_dept_keys()
+    ai_providers = get_available_providers(dept_keys) if dept_keys else get_available_providers()
+    if not ai_providers:
+        ai_providers = PROVIDERS
+
+    teacher = _current_teacher()
+    return render_template('class_insights.html',
+                           assignment=asn,
+                           cls=cls,
+                           teacher=teacher,
+                           ai_providers=ai_providers,
+                           demo_mode=is_demo_mode(),
+                           dept_mode=is_dept_mode())
+
+
+@app.route('/department/insights/class/<int:assignment_id>/data')
+def class_insights_data(assignment_id):
+    """JSON data for class-level insights (heatmap, item analysis, etc.)."""
+    err = _require_insights_access()
+    if err:
+        return err
+
+    perf = _build_class_performance_data(assignment_id)
+    if not perf:
+        return jsonify({'success': False, 'error': 'Assignment not found or no class linked'}), 404
+
+    return jsonify({'success': True, **perf})
+
+
+@app.route('/department/insights/class/<int:assignment_id>/analysis')
+def class_insights_get_analysis(assignment_id):
+    """Return cached AI class analysis if available."""
+    err = _require_insights_access()
+    if err:
+        return err
+
+    cfg = DepartmentConfig.query.filter_by(key=f'class_insight_analysis:{assignment_id}').first()
+    if cfg and cfg.value:
+        try:
+            saved = json.loads(cfg.value)
+            return jsonify({'success': True, 'exists': True, **saved})
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return jsonify({'success': True, 'exists': False})
+
+
+@app.route('/department/insights/class/<int:assignment_id>/analyze', methods=['POST'])
+def class_insights_analyze(assignment_id):
+    """Generate AI class summary with structured analysis."""
+    err = _require_insights_access()
+    if err:
+        return err
+
+    data = request.get_json()
+    provider = data.get('provider')
+    model = data.get('model')
+    if not provider:
+        return jsonify({'success': False, 'error': 'No provider selected'}), 400
+
+    perf = _build_class_performance_data(assignment_id)
+    if not perf:
+        return jsonify({'success': False, 'error': 'No data'}), 404
+
+    # Resolve AI client
+    dept_keys = _get_dept_keys()
+    if not dept_keys:
+        from db import _get_fernet
+        for prov in ('anthropic', 'openai', 'qwen'):
+            cfg_row = DepartmentConfig.query.filter_by(key=f'api_key_{prov}').first()
+            if cfg_row and cfg_row.value:
+                f = _get_fernet()
+                if f:
+                    try:
+                        dept_keys[prov] = f.decrypt(cfg_row.value.encode()).decode()
+                        continue
+                    except Exception:
+                        pass
+                dept_keys[prov] = cfg_row.value
+    from ai_marking import get_ai_client
+    client, model_name, prov_type = get_ai_client(provider, model, dept_keys if dept_keys else None)
+    if not client:
+        return jsonify({'success': False, 'error': f'No API key for {provider}'}), 400
+
+    # Collect sample student answers for pattern analysis (up to 20 per question)
+    asn = Assignment.query.get(assignment_id)
+    subs = Submission.query.filter_by(assignment_id=assignment_id, status='done').all()
+    answer_samples = {}
+    for sub in subs:
+        result = sub.get_result()
+        for q in result.get('questions', []):
+            qnum = str(q.get('question_number', q.get('question_num', '')))
+            if qnum not in answer_samples:
+                answer_samples[qnum] = []
+            if len(answer_samples[qnum]) < 20:
+                answer_samples[qnum].append({
+                    'answer': (q.get('student_answer', '') or '')[:200],
+                    'status': q.get('status', ''),
+                    'feedback': (q.get('feedback', '') or '')[:200],
+                    'marks': f"{q.get('marks_awarded', '?')}/{q.get('marks_total', '?')}" if q.get('marks_awarded') is not None else q.get('status', ''),
+                })
+
+    # Build prompt
+    item_summary = '\n'.join(
+        f"  Q{ia['question_num']}: FI={ia['fi']}, DI={ia['di']}, {ia['difficulty']}, "
+        f"Mean={ia['mean_score']}, {ia['attempts']} attempts"
+        for ia in perf['item_analysis']
+    )
+
+    answer_section = ''
+    for qnum in sorted(answer_samples.keys(), key=lambda x: int(x) if x.isdigit() else x):
+        samples = answer_samples[qnum]
+        answer_section += f"\nQ{qnum} student responses ({len(samples)} samples):\n"
+        for s in samples:
+            answer_section += f"  - [{s['marks']}] {s['answer'][:100]}\n"
+            if s['feedback']:
+                answer_section += f"    Feedback: {s['feedback'][:100]}\n"
+
+    prompt_data = f"""Class: {perf['class_name']}
+Assignment: {perf['assignment_title']}
+Subject: {perf['subject']}
+Total students: {perf['total_students']}, Submitted: {perf['submitted_count']}
+Overall average: {perf['overall_avg']}%, Pass rate: {perf['pass_rate']}%
+
+Item Analysis:
+{item_summary}
+
+Score Distribution:
+  A (80-100%): {perf['score_distribution']['A']['count']} students ({perf['score_distribution']['A']['pct']}%)
+  B (60-79%): {perf['score_distribution']['B']['count']} students ({perf['score_distribution']['B']['pct']}%)
+  C (40-59%): {perf['score_distribution']['C']['count']} students ({perf['score_distribution']['C']['pct']}%)
+  D (0-39%): {perf['score_distribution']['D']['count']} students ({perf['score_distribution']['D']['pct']}%)
+
+Student Answers & Feedback:
+{answer_section}"""
+
+    system_prompt = """You are an education analytics assistant analyzing a class's performance on a specific assignment. Given the data below, provide a structured analysis in JSON format.
+
+Be specific: reference question numbers, score ranges, and student counts. Focus on patterns in student responses and actionable insights for the teacher.
+
+Respond ONLY with valid JSON:
+{
+  "concepts_grasped": [
+    "Description of a well-understood concept with evidence (e.g., question numbers, FI scores)"
+  ],
+  "misconceptions": [
+    "Description of a common misconception with evidence from student answers and question references"
+  ],
+  "areas_needing_clarification": [
+    "Description of a borderline topic where performance was mixed"
+  ],
+  "recommended_actions": [
+    "Specific, actionable teaching suggestion referencing questions and student groups"
+  ],
+  "per_question_notes": [
+    {
+      "question_num": "1",
+      "summary": "Brief performance summary for this question",
+      "common_errors": "What students got wrong and why, based on answer patterns",
+      "teaching_suggestion": "How to address this in class"
+    }
+  ]
+}"""
+
+    try:
+        if prov_type == 'anthropic':
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=4096,
+                system=system_prompt,
+                messages=[{'role': 'user', 'content': prompt_data}],
+            )
+            text = response.content[0].text
+        else:
+            response = client.chat.completions.create(
+                model=model_name,
+                max_tokens=4096,
+                messages=[
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': prompt_data},
+                ],
+            )
+            text = response.choices[0].message.content
+
+        import re as _re
+        json_match = _re.search(r'\{[\s\S]*\}', text)
+        if json_match:
+            parsed = json.loads(json_match.group())
+        else:
+            parsed = {'concepts_grasped': [], 'misconceptions': [],
+                      'areas_needing_clarification': [], 'recommended_actions': [],
+                      'per_question_notes': []}
+
+    except Exception as e:
+        logger.error(f'Class AI analysis failed: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+    saved = {
+        **parsed,
+        'provider': provider,
+        'model': model_name,
+        'generated_at': datetime.now(timezone.utc).isoformat(),
+    }
+
+    config_key = f'class_insight_analysis:{assignment_id}'
+    cfg = DepartmentConfig.query.filter_by(key=config_key).first()
+    if cfg:
+        cfg.value = json.dumps(saved)
+    else:
+        cfg = DepartmentConfig(key=config_key, value=json.dumps(saved))
+        db.session.add(cfg)
+    db.session.commit()
+
+    return jsonify({'success': True, **saved})
+
+
+@app.route('/department/insights/class/<int:assignment_id>/chat', methods=['POST'])
+def class_insights_chat(assignment_id):
+    """Streaming chat about class performance data using SSE."""
+    err = _require_insights_access()
+    if err:
+        return err
+
+    data = request.get_json()
+    provider = data.get('provider')
+    model = data.get('model')
+    messages = data.get('messages', [])
+    if not provider or not messages:
+        return jsonify({'success': False, 'error': 'Missing provider or messages'}), 400
+
+    perf = _build_class_performance_data(assignment_id)
+    if not perf:
+        return jsonify({'success': False, 'error': 'No data'}), 404
+
+    # Resolve AI client
+    dept_keys = _get_dept_keys()
+    if not dept_keys:
+        from db import _get_fernet
+        for prov in ('anthropic', 'openai', 'qwen'):
+            cfg_row = DepartmentConfig.query.filter_by(key=f'api_key_{prov}').first()
+            if cfg_row and cfg_row.value:
+                f = _get_fernet()
+                if f:
+                    try:
+                        dept_keys[prov] = f.decrypt(cfg_row.value.encode()).decode()
+                        continue
+                    except Exception:
+                        pass
+                dept_keys[prov] = cfg_row.value
+    from ai_marking import get_ai_client
+    client, model_name, prov_type = get_ai_client(provider, model, dept_keys if dept_keys else None)
+    if not client:
+        return jsonify({'success': False, 'error': f'No API key for {provider}'}), 400
+
+    # Build compact context for chat system prompt
+    item_summary = ', '.join(
+        f"Q{ia['question_num']}(FI={ia['fi']},DI={ia['di']},{ia['difficulty']},Mean={ia['mean_score']})"
+        for ia in perf['item_analysis']
+    )
+    heatmap_summary = []
+    for row in perf['heatmap']:
+        if row['submitted']:
+            heatmap_summary.append(f"{row['student_name']}({row['student_index']}): {row['total_pct']}%")
+
+    system_prompt = f"""You are an education analytics assistant. You have access to the following class performance data.
+
+Class: {perf['class_name']}
+Assignment: {perf['assignment_title']} ({perf['subject']})
+Students: {perf['total_students']} total, {perf['submitted_count']} submitted
+Overall average: {perf['overall_avg']}%, Pass rate: {perf['pass_rate']}%
+
+Item Analysis: {item_summary}
+
+Score Distribution: A({perf['score_distribution']['A']['count']}), B({perf['score_distribution']['B']['count']}), C({perf['score_distribution']['C']['count']}), D({perf['score_distribution']['D']['count']})
+
+Student Scores: {'; '.join(heatmap_summary[:50])}
+
+Answer the teacher's questions about this data. Be conversational, specific, and actionable. Reference specific question numbers and student performance patterns when relevant. Use LaTeX in $ delimiters for any math."""
+
+    def generate():
+        try:
+            if prov_type == 'anthropic':
+                with client.messages.stream(
+                    model=model_name,
+                    max_tokens=2048,
+                    system=system_prompt,
+                    messages=messages,
+                ) as stream:
+                    for text in stream.text_stream:
+                        yield f"data: {json.dumps({'text': text})}\n\n"
+            else:
+                stream = client.chat.completions.create(
+                    model=model_name,
+                    max_tokens=2048,
+                    stream=True,
+                    messages=[{'role': 'system', 'content': system_prompt}] + messages,
+                )
+                for chunk in stream:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        yield f"data: {json.dumps({'text': chunk.choices[0].delta.content})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            logger.error(f'Chat stream error: {e}')
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return app.response_class(
+        generate(),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+    )
+
+
 @app.route('/department/export/csv')
 def department_export_csv():
     """Export results as CSV."""
@@ -3346,6 +3912,70 @@ def settings_update():
                 _set_config(f'api_key_{prov}', encrypted)
 
     return jsonify({'success': True})
+
+
+@app.route('/settings/go-live', methods=['POST'])
+def settings_go_live():
+    """One-way switch from demo mode to live. Purges all demo data."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    teacher = _current_teacher()
+    # Allow in demo mode even without a teacher record
+    if teacher and teacher.role not in ('owner', 'hod'):
+        return jsonify({'success': False, 'error': 'Access denied'}), 403
+
+    current_mode = get_app_mode()
+    if current_mode not in ('demo', 'demo_department'):
+        return jsonify({'success': False, 'error': 'Already in live mode'}), 400
+
+    data = request.get_json()
+    target_mode = data.get('mode', 'normal')
+    if target_mode not in ('normal', 'department'):
+        return jsonify({'success': False, 'error': 'Target mode must be normal or department'}), 400
+
+    name = (data.get('name', '') or '').strip()
+    code = (data.get('code', '') or '').strip()
+    if not name or not code:
+        return jsonify({'success': False, 'error': 'Name and access code are required'}), 400
+
+    # --- Purge all user data ---
+    Submission.query.delete()
+    Student.query.delete()
+    Assignment.query.delete()
+    TeacherClass.query.delete()
+    Class.query.delete()
+    Teacher.query.delete()
+
+    # Clear cached analyses from DepartmentConfig but keep system config
+    keep_keys = {'app_mode', 'app_title', 'teacher_code', 'setup_complete',
+                 'flask_secret_key', 'api_key_anthropic', 'api_key_openai', 'api_key_qwen'}
+    DepartmentConfig.query.filter(~DepartmentConfig.key.in_(keep_keys)).delete()
+    db.session.commit()
+
+    # --- Set new mode and create the admin teacher ---
+    _set_config('app_mode', target_mode)
+    _set_config('teacher_code', code)
+
+    role = 'hod' if target_mode == 'department' else 'owner'
+    new_teacher = Teacher(name=name, code=code, role=role, active=True)
+    db.session.add(new_teacher)
+    db.session.commit()
+
+    # Update API keys if provided
+    from db import _get_fernet
+    f = _get_fernet()
+    for prov in ('anthropic', 'openai', 'qwen'):
+        key_field = f'api_key_{prov}'
+        if key_field in data:
+            val = (data[key_field] or '').strip()
+            if val:
+                encrypted = f.encrypt(val.encode()).decode() if f else val
+                _set_config(f'api_key_{prov}', encrypted)
+
+    # Clear session so user re-logs with new credentials
+    session.clear()
+
+    return jsonify({'success': True, 'message': 'Switched to live mode. All demo data has been removed.'})
 
 
 if __name__ == '__main__':
