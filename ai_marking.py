@@ -61,11 +61,28 @@ PROVIDER_KEY_MAP = {
 
 
 def _resolve_api_key(provider, session_keys=None):
-    """Get API key from session keys (if provided) or environment."""
+    """Get API key from session keys → env vars → wizard-stored DB keys."""
     env_name = PROVIDER_KEY_MAP.get(provider)
     if session_keys and session_keys.get(provider):
         return session_keys[provider]
-    return os.getenv(env_name) if env_name else None
+    env_val = os.getenv(env_name) if env_name else None
+    if env_val:
+        return env_val
+    # Fall back to wizard-stored encrypted keys in DepartmentConfig
+    try:
+        from db import DepartmentConfig, _get_fernet
+        cfg = DepartmentConfig.query.filter_by(key=f'api_key_{provider}').first()
+        if cfg and cfg.value:
+            f = _get_fernet()
+            if f:
+                try:
+                    return f.decrypt(cfg.value.encode()).decode()
+                except Exception:
+                    pass
+            return cfg.value
+    except Exception:
+        pass
+    return None
 
 
 def get_available_providers(session_keys=None):
