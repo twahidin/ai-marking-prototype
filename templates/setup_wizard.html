@@ -195,6 +195,38 @@
 
     .skip-link { font-size: 13px; color: #888; cursor: pointer; text-decoration: none; }
     .skip-link:hover { color: #667eea; }
+
+    /* DB warning step */
+    .db-warning-card {
+        background: white; border-radius: 16px; padding: 36px 32px;
+        box-shadow: 0 2px 20px rgba(0,0,0,0.08); text-align: left;
+        max-width: 600px; margin: 0 auto;
+        border-top: 4px solid #e65100;
+    }
+    .db-warning-card h2 { text-align: center; font-size: 20px; font-weight: 700; color: #333; margin-bottom: 4px; }
+    .db-warning-card .warn-sub { text-align: center; color: #888; font-size: 13px; margin-bottom: 24px; }
+    .db-warning-icon { text-align: center; font-size: 48px; margin-bottom: 12px; }
+    .db-warning-text { font-size: 14px; color: #555; line-height: 1.6; margin-bottom: 20px; }
+    .db-warning-text strong { color: #e65100; }
+    .db-steps { margin-bottom: 20px; }
+    .db-step {
+        display: flex; gap: 12px; align-items: flex-start; padding: 8px 0;
+    }
+    .db-step .step-num {
+        width: 26px; height: 26px; border-radius: 50%;
+        background: #e65100; color: white; font-size: 13px; font-weight: 700;
+        display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .db-step .step-text { font-size: 14px; color: #555; line-height: 1.5; }
+    .db-step .step-text code {
+        background: #fff3e0; padding: 1px 6px; border-radius: 4px;
+        font-size: 13px; color: #e65100;
+    }
+    .db-ok-badge {
+        display: flex; align-items: center; justify-content: center; gap: 8px;
+        padding: 12px 20px; background: #e8f5e9; border-radius: 10px;
+        color: #2e7d32; font-weight: 600; font-size: 14px; margin-bottom: 20px;
+    }
 </style>
 {% endblock %}
 
@@ -207,6 +239,7 @@
             <div class="dot" id="dot-1"></div>
             <div class="dot" id="dot-2"></div>
             <div class="dot" id="dot-3"></div>
+            <div class="dot" id="dot-4"></div>
         </div>
 
         <!-- Step 0: Welcome -->
@@ -245,11 +278,73 @@
             </div>
 
             <div class="wizard-btn-row">
-                <button class="wizard-btn" onclick="goToStep(1)">Let's go</button>
+                <button class="wizard-btn" onclick="goToStep({% if has_postgres %}2{% else %}1{% endif %})">Let's go</button>
             </div>
         </div>
 
-        <!-- Step 1: Mode Selection -->
+        <!-- Step 1: Database Check -->
+        <div class="wizard-step" id="step-db">
+            {% if has_postgres %}
+            <div class="db-warning-card" style="border-top-color:#28a745;">
+                <div class="db-warning-icon">&#9989;</div>
+                <h2>Database Connected</h2>
+                <div class="db-ok-badge">PostgreSQL is configured and ready</div>
+                <p style="text-align:center; color:#888; font-size:14px;">Your data will persist across restarts and deployments.</p>
+            </div>
+            {% else %}
+            <div class="db-warning-card">
+                <div class="db-warning-icon">&#9888;&#65039;</div>
+                <h2>No Database Detected</h2>
+                <p class="warn-sub">Your data won't survive restarts without a database</p>
+
+                <div class="db-warning-text">
+                    The app is currently using a <strong>temporary SQLite database</strong>. This means all your data (classes, assignments, marking results) will be <strong>lost when the server restarts or redeploys</strong>.
+                </div>
+
+                <div class="db-warning-text" style="font-weight:600; color:#333;">
+                    To add a permanent PostgreSQL database on Railway:
+                </div>
+
+                <div class="db-steps">
+                    <div class="db-step">
+                        <div class="step-num">1</div>
+                        <div class="step-text">Go to your Railway project dashboard</div>
+                    </div>
+                    <div class="db-step">
+                        <div class="step-num">2</div>
+                        <div class="step-text">Click <code>+ New</code> in the top right corner</div>
+                    </div>
+                    <div class="db-step">
+                        <div class="step-num">3</div>
+                        <div class="step-text">Select <code>Database</code> then <code>Add PostgreSQL</code></div>
+                    </div>
+                    <div class="db-step">
+                        <div class="step-num">4</div>
+                        <div class="step-text">Click on the new Postgres service, go to <code>Variables</code>, and copy <code>DATABASE_URL</code></div>
+                    </div>
+                    <div class="db-step">
+                        <div class="step-num">5</div>
+                        <div class="step-text">Go to your app service's <code>Variables</code> tab, click <code>+ New Variable</code>, paste as <code>DATABASE_URL</code></div>
+                    </div>
+                    <div class="db-step">
+                        <div class="step-num">6</div>
+                        <div class="step-text">The app will redeploy automatically -- come back to this wizard after</div>
+                    </div>
+                </div>
+
+                <div style="background:#fff3e0; padding:12px 16px; border-radius:8px; font-size:13px; color:#e65100; margin-bottom:8px;">
+                    You can continue without a database for now, but we strongly recommend adding one before entering real data.
+                </div>
+            </div>
+            {% endif %}
+
+            <div class="wizard-btn-row">
+                <button class="wizard-btn secondary" onclick="goToStep(0)">Back</button>
+                <button class="wizard-btn" onclick="goToStep(2)">{{ 'Continue' if has_postgres else 'Continue without database' }}</button>
+            </div>
+        </div>
+
+        <!-- Step 2: Mode Selection -->
         <div class="wizard-step" id="step-mode">
             <h1>How will you use this?</h1>
             <p class="subtitle">Pick the mode that fits your needs</p>
@@ -278,7 +373,7 @@
             </div>
 
             <div class="wizard-btn-row">
-                <button class="wizard-btn secondary" onclick="goToStep(0)">Back</button>
+                <button class="wizard-btn secondary" onclick="goToStep(1)">Back</button>
                 <button class="wizard-btn" id="btn-next-mode" onclick="saveMode()" disabled>Continue</button>
             </div>
         </div>
@@ -420,7 +515,7 @@
 
                     <div class="wizard-btn-row" style="justify-content:space-between;">
                         <a class="skip-link" onclick="skipProvider('qwen')">Skip this provider</a>
-                        <button class="wizard-btn" onclick="goToStep(3)" style="padding:10px 28px; font-size:14px;">Continue</button>
+                        <button class="wizard-btn" onclick="goToStep(4)" style="padding:10px 28px; font-size:14px;">Continue</button>
                     </div>
                 </div>
             </div>
@@ -457,7 +552,7 @@
                 <button class="config-btn" id="btn-finish" onclick="finishSetup()">Complete Setup</button>
                 <div class="config-error" id="config-error"></div>
                 <div style="text-align:center; margin-top:16px;">
-                    <a href="#" onclick="goToStep(2); return false;" style="color:#667eea; font-size:13px; text-decoration:none;">Back to API keys</a>
+                    <a href="#" onclick="goToStep(3); return false;" style="color:#667eea; font-size:13px; text-decoration:none;">Back to API keys</a>
                 </div>
             </div>
         </div>
@@ -477,11 +572,11 @@ var envKeys = {{ env_keys | tojson }};
 
 function goToStep(n) {
     document.querySelectorAll('.wizard-step').forEach(function(s) { s.classList.remove('active'); });
-    var steps = ['step-welcome', 'step-mode', 'step-api', 'step-config'];
+    var steps = ['step-welcome', 'step-db', 'step-mode', 'step-api', 'step-config'];
     document.getElementById(steps[n]).classList.add('active');
 
     // Update progress dots
-    for (var i = 0; i < 4; i++) {
+    for (var i = 0; i < 5; i++) {
         var dot = document.getElementById('dot-' + i);
         dot.classList.remove('active', 'done');
         if (i < n) dot.classList.add('done');
@@ -490,7 +585,7 @@ function goToStep(n) {
     currentStep = n;
 
     // If going to config step, set up the labels
-    if (n === 3) setupConfigStep();
+    if (n === 4) setupConfigStep();
 }
 
 function selectMode(mode) {
@@ -525,7 +620,7 @@ function saveMode() {
     .then(function(data) {
         if (data.success) {
             selectedMode = finalMode;
-            goToStep(2);
+            goToStep(3);
             showProvider('anthropic');
         }
     });
@@ -552,7 +647,7 @@ function nextProvider(currentProv) {
     if (idx < providerOrder.length - 1) {
         showProvider(providerOrder[idx + 1]);
     } else {
-        goToStep(3);
+        goToStep(4);
     }
 }
 

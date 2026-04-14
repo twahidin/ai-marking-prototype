@@ -3246,7 +3246,8 @@ def setup_wizard():
     for prov, env_name in PROVIDER_KEY_MAP.items():
         env_keys[prov] = bool(os.getenv(env_name, ''))
 
-    return render_template('setup_wizard.html', env_keys=env_keys)
+    has_postgres = bool(os.getenv('DATABASE_URL', ''))
+    return render_template('setup_wizard.html', env_keys=env_keys, has_postgres=has_postgres)
 
 
 @app.route('/settings')
