@@ -903,12 +903,35 @@ def department_manage():
     # All non-HOD teachers for class assignment dropdown
     assignable_teachers = Teacher.query.filter(Teacher.role != 'hod').order_by(Teacher.name).all()
 
+    # Get masked API key status for display
+    from db import _get_fernet
+    api_keys_masked = {}
+    for prov in ('anthropic', 'openai', 'qwen'):
+        cfg = DepartmentConfig.query.filter_by(key=f'api_key_{prov}').first()
+        if cfg and cfg.value:
+            f = _get_fernet()
+            try:
+                raw = f.decrypt(cfg.value.encode()).decode() if f else cfg.value
+                # Mask: show first 6 and last 4 chars
+                if len(raw) > 12:
+                    api_keys_masked[prov] = raw[:6] + '***' + raw[-4:]
+                else:
+                    api_keys_masked[prov] = raw[:3] + '***'
+            except Exception:
+                api_keys_masked[prov] = '***configured***'
+        else:
+            from ai_marking import PROVIDER_KEY_MAP
+            env_val = os.getenv(PROVIDER_KEY_MAP.get(prov, ''), '')
+            if env_val:
+                api_keys_masked[prov] = env_val[:6] + '***' + env_val[-4:] if len(env_val) > 12 else '***env***'
+
     return render_template('department_manage.html',
                            teacher=teacher,
                            classes=classes,
                            teachers=teachers,
                            assignable_teachers=assignable_teachers,
                            all_dept_roles=ALL_DEPT_ROLES,
+                           api_keys_masked=api_keys_masked,
                            dept_mode=is_dept_mode(),
                            demo_mode=is_demo_mode())
 

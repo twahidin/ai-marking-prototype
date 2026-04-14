@@ -31,7 +31,9 @@
             <a href="/dashboard">My Classes</a>
             <a href="/class">Assignments</a>
             <a href="/bank">Bank</a>
+            {% if demo_mode %}
             <a href="/mark">Mark</a>
+            {% endif %}
         </div>
         <div class="dept-nav-user">
             <span>{{ current_teacher.name }}</span>

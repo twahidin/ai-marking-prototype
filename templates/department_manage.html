@@ -265,19 +265,18 @@
     <!-- API Keys Section -->
     <div class="dept-card keys-section animate__animated animate__fadeIn" style="animation-delay:0.3s;animation-duration:0.5s;">
         <h2>Department API Keys</h2>
-        <p class="keys-note">These keys are used for all marking in the department. At least one is required.</p>
+        <p class="keys-note">These keys are used for all marking in the department. At least one is required. Leave empty to keep current key.</p>
+        {% for prov, label in [('anthropic', 'Anthropic'), ('openai', 'OpenAI'), ('qwen', 'Qwen')] %}
         <div class="key-row">
-            <label>Anthropic</label>
-            <input type="password" id="key_anthropic" placeholder="sk-ant-...">
+            <label>{{ label }}</label>
+            <input type="password" id="key_{{ prov }}" placeholder="{{ api_keys_masked.get(prov, 'sk-...') if prov != 'anthropic' else api_keys_masked.get(prov, 'sk-ant-...') }}">
+            {% if api_keys_masked.get(prov) %}
+            <span style="font-size:11px;font-weight:600;color:#28a745;white-space:nowrap;">Configured</span>
+            {% else %}
+            <span style="font-size:11px;font-weight:600;color:#dc3545;white-space:nowrap;">Not set</span>
+            {% endif %}
         </div>
-        <div class="key-row">
-            <label>OpenAI</label>
-            <input type="password" id="key_openai" placeholder="sk-...">
-        </div>
-        <div class="key-row">
-            <label>Qwen</label>
-            <input type="password" id="key_qwen" placeholder="sk-...">
-        </div>
+        {% endfor %}
         <button class="save-keys-btn" onclick="saveKeys()">Save Keys</button>
     </div>
 </div>
