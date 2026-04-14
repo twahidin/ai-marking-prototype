@@ -798,6 +798,18 @@ async function sendChat() {
             body: JSON.stringify({ provider: provider, model: model, messages: chatHistory })
         });
 
+        if (!res.ok) {
+            try {
+                var errData = await res.json();
+                bubble.textContent = 'Error: ' + (errData.error || 'Request failed.');
+            } catch(e) {
+                bubble.textContent = 'Error: Request failed.';
+            }
+            chatHistory.pop(); // remove the user message since it failed
+            document.getElementById('chatSendBtn').disabled = false;
+            return;
+        }
+
         var reader = res.body.getReader();
         var decoder = new TextDecoder();
         var fullText = '';

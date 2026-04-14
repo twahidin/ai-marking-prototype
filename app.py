@@ -1,4 +1,5 @@
 import os
+import re
 import csv
 import json
 import uuid
@@ -1666,8 +1667,7 @@ Respond in JSON format:
             text = response.choices[0].message.content
 
         # Parse JSON from response
-        import re as _re
-        json_match = _re.search(r'\{[\s\S]*\}', text)
+        json_match = re.search(r'\{[\s\S]*\}', text)
         if json_match:
             parsed = json.loads(json_match.group())
         else:
@@ -1726,6 +1726,7 @@ def _build_class_performance_data(assignment_id):
     heatmap = []
     all_scores = []  # (student_id, total_pct)
     q_accum = {}     # qnum -> list of score ratios (0-1)
+    q_marks_total = {}  # qnum -> marks_total (from first submission that has it)
 
     for stu in students:
         sub = subs.get(stu.id)
@@ -1776,6 +1777,8 @@ def _build_class_performance_data(assignment_id):
                 q_pcts[qnum] = round(ratio * 100, 1)
 
             q_accum.setdefault(qnum, []).append(ratio)
+            if qnum not in q_marks_total and has_marks and q.get('marks_total') is not None:
+                q_marks_total[qnum] = q['marks_total']
 
         if has_marks:
             total_pct = (total_awarded / total_possible * 100) if total_possible > 0 else 0
@@ -1835,34 +1838,19 @@ def _build_class_performance_data(assignment_id):
         elif fi >= 0.4 and di >= 0.2:
             interp = 'Acceptable item \u2014 moderate difficulty and discrimination'
         elif fi < 0.4 and di >= 0.2:
-            interp = 'Item needs review \u2014 difficult but poor discrimination'
+            interp = 'Item needs review \u2014 difficult with acceptable discrimination'
         elif di < 0.2:
-            interp = 'Easy but still discriminating \u2014 good foundational item' if fi >= 0.7 \
+            interp = 'Easy but poor discrimination \u2014 review needed' if fi >= 0.7 \
                 else 'Item needs review \u2014 moderate difficulty but poor discrimination' if fi >= 0.4 \
-                else 'Item needs review \u2014 difficult but poor discrimination'
+                else 'Item needs review \u2014 difficult and poor discrimination'
         else:
             interp = 'Insufficient data'
 
         # Mean score text
         if q_accum[qnum]:
-            avg_ratio = fi
-            # Try to get actual marks_total from any submission
-            sample_total = None
-            for row in heatmap:
-                if row['submitted'] and qnum in row['questions']:
-                    # Look up the actual submission to get marks_total
-                    sub = subs.get(row['student_id'])
-                    if sub:
-                        res = sub.get_result()
-                        for qq in res.get('questions', []):
-                            qn = str(qq.get('question_number', qq.get('question_num', '')))
-                            if qn == qnum and qq.get('marks_total') is not None:
-                                sample_total = qq['marks_total']
-                                break
-                    if sample_total is not None:
-                        break
+            sample_total = q_marks_total.get(qnum)
             if sample_total is not None:
-                mean_score = f"{round(avg_ratio * sample_total, 1)}/{sample_total}"
+                mean_score = f"{round(fi * sample_total, 1)}/{sample_total}"
             else:
                 mean_score = f"{round(fi * 100)}%"
         else:
@@ -2141,8 +2129,7 @@ Respond ONLY with valid JSON:
             )
             text = response.choices[0].message.content
 
-        import re as _re
-        json_match = _re.search(r'\{[\s\S]*\}', text)
+        json_match = re.search(r'\{[\s\S]*\}', text)
         if json_match:
             parsed = json.loads(json_match.group())
         else:
@@ -2152,7 +2139,7 @@ Respond ONLY with valid JSON:
 
     except Exception as e:
         logger.error(f'Class AI analysis failed: {e}')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'AI analysis failed. Check server logs.'}), 500
 
     saved = {
         **parsed,
@@ -2183,7 +2170,7 @@ def class_insights_chat(assignment_id):
     data = request.get_json()
     provider = data.get('provider')
     model = data.get('model')
-    messages = data.get('messages', [])
+    messages = data.get('messages', [])[-20:]  # limit to last 20 messages
     if not provider or not messages:
         return jsonify({'success': False, 'error': 'Missing provider or messages'}), 400
 
@@ -2260,7 +2247,7 @@ Answer the teacher's questions about this data. Be conversational, specific, and
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
             logger.error(f'Chat stream error: {e}')
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'error': 'Chat failed. Please try again.'})}\n\n"
 
     return app.response_class(
         generate(),
@@ -4071,7 +4058,7 @@ def settings_go_live():
     # Clear cached analyses from DepartmentConfig but keep system config
     keep_keys = {'app_mode', 'app_title', 'teacher_code', 'setup_complete',
                  'flask_secret_key', 'api_key_anthropic', 'api_key_openai', 'api_key_qwen'}
-    DepartmentConfig.query.filter(~DepartmentConfig.key.in_(keep_keys)).delete()
+    DepartmentConfig.query.filter(~DepartmentConfig.key.in_(keep_keys)).delete(synchronize_session='fetch')
     db.session.commit()
 
     # --- Set new mode and create the admin teacher ---
