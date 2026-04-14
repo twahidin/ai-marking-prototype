@@ -21,9 +21,11 @@
     <div class="dept-nav-inner">
         <a href="/" class="dept-nav-brand">{{ app_title }}</a>
         <div class="dept-nav-links">
-            {% if current_teacher.role == 'hod' %}
+            {% if current_teacher.role in ('hod', 'subject_head', 'manager') %}
             <a href="/department">Dashboard</a>
             <a href="/department/classes">Manage</a>
+            {% endif %}
+            {% if current_teacher.role in ('hod', 'subject_head', 'lead') %}
             <a href="/department/insights">Insights</a>
             {% endif %}
             <a href="/dashboard">My Classes</a>
@@ -33,7 +35,7 @@
         </div>
         <div class="dept-nav-user">
             <span>{{ current_teacher.name }}</span>
-            {% if current_teacher.role == 'hod' %}
+            {% if current_teacher.role in ('hod', 'subject_head') %}
             <a href="/settings" title="Settings">&#9881;</a>
             {% endif %}
             <a href="/logout">Logout</a>

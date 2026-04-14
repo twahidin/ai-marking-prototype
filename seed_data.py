@@ -29,15 +29,18 @@ def seed_demo_department(db, Teacher, Class, TeacherClass, Assignment, Student, 
 
     # Create teachers (skip if they exist by code)
     teacher_defs = [
-        ('Ms. Chen Wei Ling', 'DEMO0001'),
-        ('Mr. Rahman bin Ismail', 'DEMO0002'),
-        ('Ms. Tan Mei Xin', 'DEMO0003'),
+        ('Ms. Chen Wei Ling', 'DEMO0001', 'teacher'),
+        ('Mr. Rahman bin Ismail', 'DEMO0002', 'teacher'),
+        ('Ms. Tan Mei Xin', 'DEMO0003', 'teacher'),
+        ('Mr. David Ng', 'DEMO0004', 'subject_head'),
+        ('Ms. Priya Nair', 'DEMO0005', 'lead'),
+        ('Mr. Ahmad Fauzi', 'DEMO0006', 'manager'),
     ]
     teachers = []
-    for name, code in teacher_defs:
+    for name, code, role in teacher_defs:
         t = Teacher.query.filter_by(code=code).first()
         if not t:
-            t = Teacher(id=str(uuid.uuid4()), name=name, code=code, role='teacher')
+            t = Teacher(id=str(uuid.uuid4()), name=name, code=code, role=role)
             db.session.add(t)
         teachers.append(t)
 

@@ -41,10 +41,10 @@
     <div class="hub-container">
         {% if dept_mode and teacher %}
         <h1>{{ teacher.name }}</h1>
-        <p class="subtitle">{{ 'Head of Department' if teacher.role == 'hod' else 'Teacher' }}</p>
+        <p class="subtitle">{{ {'hod': 'Head of Department', 'subject_head': 'Subject Head', 'lead': 'Lead', 'manager': 'Manager'}.get(teacher.role, 'Teacher') }}</p>
 
         <div class="hub-cards">
-            {% if teacher.role == 'hod' %}
+            {% if teacher.role in ('hod', 'subject_head', 'manager') %}
             <a class="hub-card animate__animated animate__fadeInUp" style="animation-delay:0.1s;animation-duration:0.5s;" href="/department">
                 <div class="icon">&#127979;</div>
                 <h2>Department</h2>
@@ -56,6 +56,14 @@
                 <h2>Manage</h2>
                 <p>Create classes, add teachers, assign teachers to classes, and configure API keys.</p>
                 <span class="tag">Setup</span>
+            </a>
+            {% endif %}
+            {% if teacher.role in ('hod', 'subject_head', 'lead') %}
+            <a class="hub-card animate__animated animate__fadeInUp" style="animation-delay:0.15s;animation-duration:0.5s;" href="/department/insights">
+                <div class="icon">&#128202;</div>
+                <h2>Insights</h2>
+                <p>Department-wide analytics, AI-powered analysis, and cross-assignment performance data.</p>
+                <span class="tag">Analytics</span>
             </a>
             {% endif %}
             <a class="hub-card animate__animated animate__fadeInUp" style="animation-delay:0.25s;animation-duration:0.5s;" href="/dashboard">
@@ -79,7 +87,7 @@
         </div>
 
         <div class="hub-footer">
-            {% if teacher.role == 'hod' %}
+            {% if teacher.role in ('hod', 'subject_head') %}
             <a href="/settings" style="color:#888; text-decoration:none; margin-right:16px;" title="Settings">&#9881; Settings</a>
             {% endif %}
             <a href="/logout" style="color:#667eea; text-decoration:none;">Logout</a>

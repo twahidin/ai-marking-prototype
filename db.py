@@ -82,6 +82,16 @@ def _migrate_add_columns(app):
                 db.session.execute(text("ALTER TABLE teachers ADD COLUMN is_active BOOLEAN DEFAULT TRUE"))
                 db.session.commit()
                 logger.info('Added is_active column to teachers table')
+            # Widen role column for new roles (subject_head, lead, manager)
+            for col in inspector.get_columns('teachers'):
+                if col['name'] == 'role' and hasattr(col['type'], 'length') and col['type'].length and col['type'].length < 20:
+                    try:
+                        db.session.execute(text("ALTER TABLE teachers ALTER COLUMN role TYPE VARCHAR(20)"))
+                        db.session.commit()
+                        logger.info('Widened role column to VARCHAR(20)')
+                    except Exception:
+                        db.session.rollback()
+                    break
         if 'assignments' in inspector.get_table_names():
             columns = [c['name'] for c in inspector.get_columns('assignments')]
             if 'title' not in columns:
@@ -118,7 +128,7 @@ class Teacher(db.Model):
     id = db.Column(db.String(36), primary_key=True)
     name = db.Column(db.String(200), nullable=False)
     code = db.Column(db.String(20), unique=True, nullable=False, index=True)
-    role = db.Column(db.String(10), default='teacher')  # 'hod' or 'teacher'
+    role = db.Column(db.String(20), default='teacher')  # hod, subject_head, lead, manager, teacher
     is_active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     classes = db.relationship('Class', secondary='teacher_classes', back_populates='teachers')

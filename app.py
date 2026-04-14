@@ -266,10 +266,61 @@ def _current_teacher():
     return Teacher.query.get(teacher_id)
 
 
+# ---------------------------------------------------------------------------
+# Role hierarchy constants
+# ---------------------------------------------------------------------------
+ROLE_HIERARCHY = {'hod': 5, 'subject_head': 4, 'lead': 3, 'manager': 2, 'teacher': 1, 'owner': 5}
+ROLES_CAN_MANAGE = {'hod', 'subject_head', 'manager'}
+ROLES_CAN_VIEW_INSIGHTS = {'hod', 'subject_head', 'lead', 'owner'}
+ALL_DEPT_ROLES = ['teacher', 'lead', 'manager', 'subject_head', 'hod']
+
+
 def _is_hod():
     """Check if current user is HOD."""
     teacher = _current_teacher()
     return teacher and teacher.role == 'hod'
+
+
+def _can_manage_accounts():
+    """Check if current user can manage teacher accounts."""
+    teacher = _current_teacher()
+    return teacher and teacher.role in ROLES_CAN_MANAGE
+
+
+def _can_view_insights():
+    """Check if current user can view department insights."""
+    teacher = _current_teacher()
+    return teacher and teacher.role in ROLES_CAN_VIEW_INSIGHTS
+
+
+def _visible_teachers(viewer):
+    """Return query of teachers visible to the viewer based on their role."""
+    if not viewer:
+        return Teacher.query.filter(False)
+    if viewer.role == 'hod':
+        return Teacher.query  # sees all
+    elif viewer.role == 'subject_head':
+        return Teacher.query.filter(Teacher.role != 'hod')  # sees all except HOD
+    elif viewer.role == 'manager':
+        return Teacher.query.filter(Teacher.role.in_(['teacher', 'lead', 'manager']))
+    return Teacher.query.filter(False)  # teachers/leads see nothing
+
+
+def _can_edit_target(viewer, target):
+    """Check if viewer can edit/delete/revoke the target teacher."""
+    if not viewer or not target:
+        return False
+    if viewer.id == target.id:
+        return True  # can always edit self
+    v_rank = ROLE_HIERARCHY.get(viewer.role, 0)
+    t_rank = ROLE_HIERARCHY.get(target.role, 0)
+    if viewer.role == 'hod':
+        return True
+    if viewer.role == 'subject_head':
+        return target.role != 'hod'
+    if viewer.role == 'manager':
+        return target.role in ('teacher', 'lead', 'manager')
+    return False
 
 
 def _check_assignment_ownership(asn):
@@ -279,30 +330,30 @@ def _check_assignment_ownership(asn):
     teacher = _current_teacher()
     if not teacher:
         return None  # Non-dept mode, auth already checked
-    if teacher.role == 'hod':
-        return None  # HOD can access all
+    if teacher.role in ('hod', 'subject_head', 'lead'):
+        return None  # Senior roles can access all
     if asn.teacher_id != teacher.id:
         return jsonify({'success': False, 'error': 'Access denied'}), 403
     return None
 
 
 def _require_hod():
-    """Return error response if not HOD, or None if OK."""
+    """Return error response if not a managing role, or None if OK."""
     if not is_dept_mode() or not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-    if not _is_hod():
-        return jsonify({'success': False, 'error': 'HOD access required'}), 403
+    if not _can_manage_accounts():
+        return jsonify({'success': False, 'error': 'Management access required'}), 403
     return None
 
 
 def _require_insights_access():
-    """Return error response if not HOD or owner, or None if OK."""
+    """Return error response if not an insights-capable role, or None if OK."""
     if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
     teacher = _current_teacher()
     if not teacher:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-    if teacher.role in ('hod', 'owner'):
+    if teacher.role in ROLES_CAN_VIEW_INSIGHTS:
         return None
     return jsonify({'success': False, 'error': 'Access denied'}), 403
 
@@ -499,7 +550,7 @@ def class_page():
     if authenticated:
         if _dept:
             teacher = _current_teacher()
-            if teacher and teacher.role == 'hod':
+            if teacher and teacher.role in ('hod', 'subject_head', 'lead'):
                 assignments = Assignment.query.order_by(Assignment.created_at.desc()).all()
             elif teacher:
                 assignments = Assignment.query.filter_by(teacher_id=teacher.id)\
@@ -532,7 +583,7 @@ def verify_code():
         session['teacher_id'] = teacher.id
         session['teacher_role'] = teacher.role
         session['teacher_name'] = teacher.name
-        redirect_url = '/department' if teacher.role == 'hod' else '/dashboard'
+        redirect_url = '/department' if teacher.role in ROLES_CAN_MANAGE else '/dashboard'
         return jsonify({'success': True, 'redirect': redirect_url})
 
     # Normal mode with teacher code
@@ -776,7 +827,7 @@ def department_page():
 
     teacher = _current_teacher()
     classes = Class.query.order_by(Class.name).all()
-    teachers = Teacher.query.filter_by(role='teacher').order_by(Teacher.name).all()
+    teachers = Teacher.query.filter(Teacher.role != 'hod').order_by(Teacher.name).all()
 
     # Bulk load all assignments for these classes
     class_ids = [c.id for c in classes]
@@ -847,12 +898,17 @@ def department_manage():
 
     teacher = _current_teacher()
     classes = Class.query.order_by(Class.name).all()
-    teachers = Teacher.query.order_by(Teacher.role.desc(), Teacher.name).all()
+    # Filter teachers visible to this user based on their role
+    teachers = _visible_teachers(teacher).order_by(Teacher.role.desc(), Teacher.name).all()
+    # All non-HOD teachers for class assignment dropdown
+    assignable_teachers = Teacher.query.filter(Teacher.role != 'hod').order_by(Teacher.name).all()
 
     return render_template('department_manage.html',
                            teacher=teacher,
                            classes=classes,
                            teachers=teachers,
+                           assignable_teachers=assignable_teachers,
+                           all_dept_roles=ALL_DEPT_ROLES,
                            dept_mode=is_dept_mode(),
                            demo_mode=is_demo_mode())
 
@@ -877,8 +933,12 @@ def dept_create_teacher():
     role = data.get('role', 'teacher')
     if not name:
         return jsonify({'success': False, 'error': 'Name is required'}), 400
-    if role not in ('teacher', 'hod'):
+    if role not in ALL_DEPT_ROLES:
         return jsonify({'success': False, 'error': 'Invalid role'}), 400
+    # Check the creator has permission to create this role
+    creator = _current_teacher()
+    if not _can_edit_target(creator, type('', (), {'role': role, 'id': None})()):
+        return jsonify({'success': False, 'error': 'Cannot create accounts with this role'}), 403
 
     custom_code = (data.get('code') or '').strip()
     if custom_code:
@@ -905,6 +965,31 @@ def dept_create_teacher():
     }})
 
 
+@app.route('/department/teacher/<teacher_id>/update', methods=['POST'])
+def dept_update_teacher(teacher_id):
+    err = _require_hod()
+    if err:
+        return err
+    t = Teacher.query.get_or_404(teacher_id)
+    viewer = _current_teacher()
+    if not _can_edit_target(viewer, t):
+        return jsonify({'success': False, 'error': 'Cannot edit this account'}), 403
+    data = request.get_json()
+    new_name = (data.get('name') or '').strip()
+    new_role = (data.get('role') or '').strip()
+    if new_name:
+        t.name = new_name
+    if new_role and new_role in ALL_DEPT_ROLES:
+        # Can't promote beyond own rank (except HOD can do anything)
+        if viewer.role != 'hod' and ROLE_HIERARCHY.get(new_role, 0) >= ROLE_HIERARCHY.get(viewer.role, 0):
+            return jsonify({'success': False, 'error': 'Cannot assign this role'}), 403
+        t.role = new_role
+    db.session.commit()
+    return jsonify({'success': True, 'teacher': {
+        'id': t.id, 'name': t.name, 'role': t.role,
+    }})
+
+
 @app.route('/department/teacher/<teacher_id>/delete', methods=['POST'])
 def dept_delete_teacher(teacher_id):
     err = _require_hod()
@@ -912,8 +997,9 @@ def dept_delete_teacher(teacher_id):
         return err
 
     t = Teacher.query.get_or_404(teacher_id)
-    if t.role == 'hod':
-        return jsonify({'success': False, 'error': 'Cannot delete HOD'}), 400
+    viewer = _current_teacher()
+    if not _can_edit_target(viewer, t) or t.id == viewer.id:
+        return jsonify({'success': False, 'error': 'Cannot delete this account'}), 400
     db.session.delete(t)
     db.session.commit()
     return jsonify({'success': True})
@@ -949,8 +1035,9 @@ def dept_revoke_teacher(teacher_id):
     if err:
         return err
     t = Teacher.query.get_or_404(teacher_id)
-    if t.role == 'hod':
-        return jsonify({'success': False, 'error': 'Cannot revoke HOD'}), 400
+    viewer = _current_teacher()
+    if not _can_edit_target(viewer, t) or t.id == viewer.id:
+        return jsonify({'success': False, 'error': 'Cannot revoke this account'}), 400
     t.is_active = not t.is_active  # Toggle active status
     db.session.commit()
     return jsonify({'success': True, 'is_active': t.is_active})
@@ -962,8 +1049,9 @@ def dept_purge_teacher(teacher_id):
     if err:
         return err
     t = Teacher.query.get_or_404(teacher_id)
-    if t.role == 'hod':
-        return jsonify({'success': False, 'error': 'Cannot purge HOD'}), 400
+    viewer = _current_teacher()
+    if not _can_edit_target(viewer, t) or t.id == viewer.id:
+        return jsonify({'success': False, 'error': 'Cannot purge this account'}), 400
     data = request.get_json() or {}
     keep_data = data.get('keep_data', False)
 
@@ -1126,7 +1214,7 @@ def api_classes():
         return jsonify([])
     teacher = _current_teacher()
     if teacher:
-        if teacher.role == 'hod':
+        if teacher.role in ('hod', 'subject_head', 'lead'):
             classes = Class.query.order_by(Class.name).all()
         else:
             classes = teacher.classes
@@ -1751,8 +1839,8 @@ def teacher_dashboard():
     if not teacher:
         return redirect(url_for('hub'))
 
-    # HOD sees all classes; teachers see only their assigned classes
-    if teacher.role == 'hod':
+    # Senior roles see all classes; teachers see only their assigned classes
+    if teacher.role in ('hod', 'subject_head', 'lead'):
         teacher_classes = Class.query.all()
     else:
         teacher_classes = teacher.classes
@@ -1760,7 +1848,7 @@ def teacher_dashboard():
     teacher_class_ids = [cls.id for cls in teacher_classes]
     if teacher_class_ids:
         q = Assignment.query.filter(Assignment.class_id.in_(teacher_class_ids))
-        if teacher.role != 'hod':
+        if teacher.role not in ('hod', 'subject_head', 'lead'):
             q = q.filter(Assignment.teacher_id == teacher.id)
         all_assignments = q.order_by(Assignment.created_at.desc()).all()
     else:
