@@ -1866,6 +1866,26 @@ def _build_class_performance_data(assignment_id):
             'interpretation': interp,
         })
 
+    # --- Determine scoring mode ---
+    scoring_mode = asn.scoring_mode or 'status'
+
+    # --- Status distribution (for status-based assignments) ---
+    status_dist = {'correct': 0, 'partially_correct': 0, 'incorrect': 0}
+    per_question_status = {}  # qnum -> {correct, partially_correct, incorrect}
+    if scoring_mode == 'status':
+        for sub_obj in subs.values():
+            if sub_obj.status != 'done':
+                continue
+            result = sub_obj.get_result()
+            for q in result.get('questions', []):
+                qnum = str(q.get('question_number', q.get('question_num', '')))
+                st = q.get('status', 'incorrect')
+                if st in status_dist:
+                    status_dist[st] += 1
+                per_question_status.setdefault(qnum, {'correct': 0, 'partially_correct': 0, 'incorrect': 0})
+                if st in per_question_status[qnum]:
+                    per_question_status[qnum][st] += 1
+
     # --- Score distribution (A/B/C/D) ---
     dist = {
         'A': {'label': 'A (80\u2013100%)', 'count': 0, 'pct': 0, 'students': []},
@@ -1922,6 +1942,7 @@ def _build_class_performance_data(assignment_id):
         'assignment_title': asn.title or asn.subject or 'Untitled',
         'class_name': cls.name if cls else 'Unknown',
         'subject': asn.subject or '',
+        'scoring_mode': scoring_mode,
         'total_students': len(students),
         'submitted_count': submitted_count,
         'overall_avg': overall_avg,
@@ -1931,6 +1952,8 @@ def _build_class_performance_data(assignment_id):
         'heatmap': heatmap,
         'item_analysis': item_analysis,
         'score_distribution': dist,
+        'status_distribution': status_dist,
+        'per_question_status': per_question_status,
         'student_list': student_list,
     }
 
@@ -2063,9 +2086,38 @@ def class_insights_analyze(assignment_id):
             if s['feedback']:
                 answer_section += f"    Feedback: {s['feedback'][:100]}\n"
 
-    prompt_data = f"""Class: {perf['class_name']}
+    if perf.get('scoring_mode') == 'status':
+        sd = perf.get('status_distribution', {})
+        total_answers = sum(sd.values())
+        pqs = perf.get('per_question_status', {})
+        pqs_summary = '\n'.join(
+            f"  Q{qn}: Correct={pqs[qn].get('correct',0)}, Partial={pqs[qn].get('partially_correct',0)}, Incorrect={pqs[qn].get('incorrect',0)}"
+            for qn in sorted(pqs.keys(), key=lambda x: int(x) if x.isdigit() else x)
+        )
+        prompt_data = f"""Class: {perf['class_name']}
 Assignment: {perf['assignment_title']}
 Subject: {perf['subject']}
+Scoring Mode: Status-based (correct / partially correct / incorrect — no numerical marks)
+Total students: {perf['total_students']}, Submitted: {perf['submitted_count']}
+
+Overall Status Distribution ({total_answers} total answers):
+  Correct: {sd.get('correct', 0)}
+  Partially Correct: {sd.get('partially_correct', 0)}
+  Incorrect: {sd.get('incorrect', 0)}
+
+Per-Question Status:
+{pqs_summary}
+
+Item Analysis:
+{item_summary}
+
+Student Answers & Feedback:
+{answer_section}"""
+    else:
+        prompt_data = f"""Class: {perf['class_name']}
+Assignment: {perf['assignment_title']}
+Subject: {perf['subject']}
+Scoring Mode: Marks-based (numerical scores)
 Total students: {perf['total_students']}, Submitted: {perf['submitted_count']}
 Overall average: {perf['overall_avg']}%, Pass rate: {perf['pass_rate']}%
 

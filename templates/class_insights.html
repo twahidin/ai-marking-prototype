@@ -385,6 +385,7 @@
 var ASSIGNMENT_ID = {{ assignment.id }};
 var CLASS_NAME = {{ (cls.name if cls else 'Unknown') | tojson }};
 var AI_PROVIDERS = {{ ai_providers | tojson }};
+var SCORING_MODE = {{ (assignment.scoring_mode or 'status') | tojson }};
 var chatHistory = [];
 var perfData = null;
 
@@ -398,8 +399,18 @@ function loadData() {
         perfData = data;
         document.getElementById('statStudents').textContent = data.total_students;
         document.getElementById('statSubmitted').textContent = data.submitted_count;
-        document.getElementById('statAvg').textContent = data.overall_avg + '%';
-        document.getElementById('statPass').textContent = data.pass_rate + '%';
+        if (SCORING_MODE === 'status') {
+            var sd = data.status_distribution || {};
+            var total = (sd.correct || 0) + (sd.partially_correct || 0) + (sd.incorrect || 0);
+            var correctPct = total ? Math.round((sd.correct || 0) / total * 100) : 0;
+            document.getElementById('statAvg').textContent = correctPct + '%';
+            document.getElementById('statAvg').closest('.ci-stat').querySelector('.label').textContent = 'Correct Rate';
+            document.getElementById('statPass').textContent = (sd.correct || 0) + '/' + total;
+            document.getElementById('statPass').closest('.ci-stat').querySelector('.label').textContent = 'Correct Answers';
+        } else {
+            document.getElementById('statAvg').textContent = data.overall_avg + '%';
+            document.getElementById('statPass').textContent = data.pass_rate + '%';
+        }
         renderHeatmap(data);
         renderItemAnalysis(data);
         renderDistribution(data);
@@ -418,6 +429,13 @@ function heatColor(pct) {
     return { bg: '#8b0000', fg: '#fff' };
 }
 
+function statusLabel(pct) {
+    // For status mode: 100% = correct, 50% = partial, 0% = incorrect
+    if (pct >= 100) return { text: 'Correct', bg: '#28a745', fg: '#fff' };
+    if (pct >= 50) return { text: 'Partial', bg: '#ffc107', fg: '#333' };
+    return { text: 'Incorrect', bg: '#dc3545', fg: '#fff' };
+}
+
 function renderHeatmap(data) {
     var el = document.getElementById('heatmapWrap');
     if (!data.heatmap.length) { el.innerHTML = '<div class="no-data">No students found.</div>'; return; }
@@ -425,11 +443,23 @@ function renderHeatmap(data) {
     var qnums = data.question_nums || [];
     if (!qnums.length) { el.innerHTML = '<div class="no-data">No submission data.</div>'; return; }
 
+    // Update legend for status mode
+    if (SCORING_MODE === 'status') {
+        var legendEl = el.closest('.ci-card').querySelector('.heatmap-legend');
+        if (legendEl) {
+            legendEl.innerHTML = '<div class="legend-item"><span class="legend-swatch" style="background:#28a745;"></span> Correct</div>' +
+                '<div class="legend-item"><span class="legend-swatch" style="background:#ffc107;"></span> Partially Correct</div>' +
+                '<div class="legend-item"><span class="legend-swatch" style="background:#dc3545;"></span> Incorrect</div>' +
+                '<div class="legend-item"><span class="legend-swatch" style="background:#f5f5f5; border:1px solid #ddd;"></span> Not attempted</div>';
+        }
+    }
+
+    var isStatus = SCORING_MODE === 'status';
     var html = '<table class="heatmap-table"><thead><tr><th>STUDENT</th>';
     for (var i = 0; i < qnums.length; i++) {
         html += '<th>Q' + esc(qnums[i]) + '</th>';
     }
-    html += '<th>TOTAL</th></tr></thead><tbody>';
+    html += '<th>' + (isStatus ? 'CORRECT' : 'TOTAL') + '</th></tr></thead><tbody>';
 
     for (var s = 0; s < data.heatmap.length; s++) {
         var row = data.heatmap[s];
@@ -439,6 +469,9 @@ function renderHeatmap(data) {
             var val = row.questions[qnum];
             if (val == null || !row.submitted) {
                 html += '<td>&mdash;</td>';
+            } else if (isStatus) {
+                var sl = statusLabel(val);
+                html += '<td><span class="heatmap-cell" style="background:' + sl.bg + ';color:' + sl.fg + ';font-size:11px;">' + sl.text + '</span></td>';
             } else {
                 var c = heatColor(val);
                 html += '<td><span class="heatmap-cell" style="background:' + c.bg + ';color:' + c.fg + ';">' + Math.round(val) + '%</span></td>';
@@ -446,8 +479,17 @@ function renderHeatmap(data) {
         }
         // Total
         if (row.total_pct != null) {
-            var tc = heatColor(row.total_pct);
-            html += '<td><span class="heatmap-cell" style="background:' + tc.bg + ';color:' + tc.fg + ';">' + Math.round(row.total_pct) + '%</span></td>';
+            if (isStatus) {
+                // Show correct count out of total questions
+                var correctCount = 0;
+                for (var qi = 0; qi < qnums.length; qi++) {
+                    if (row.questions[qnums[qi]] >= 100) correctCount++;
+                }
+                html += '<td><span class="heatmap-cell" style="background:#f0f2ff;color:#667eea;font-weight:700;">' + correctCount + '/' + qnums.length + '</span></td>';
+            } else {
+                var tc = heatColor(row.total_pct);
+                html += '<td><span class="heatmap-cell" style="background:' + tc.bg + ';color:' + tc.fg + ';">' + Math.round(row.total_pct) + '%</span></td>';
+            }
         } else {
             html += '<td>&mdash;</td>';
         }
@@ -677,6 +719,61 @@ function generateLOs() {
 
 function renderDistribution(data) {
     var el = document.getElementById('distChart');
+    var niEl = document.getElementById('needsImprovement');
+
+    if (SCORING_MODE === 'status') {
+        // Status-based: show correct/partial/incorrect distribution
+        var sd = data.status_distribution || {};
+        var total = (sd.correct || 0) + (sd.partially_correct || 0) + (sd.incorrect || 0);
+        var maxCount = Math.max(sd.correct || 0, sd.partially_correct || 0, sd.incorrect || 0, 1);
+
+        var statusBands = [
+            { key: 'correct', label: 'Correct', color: '#28a745', count: sd.correct || 0 },
+            { key: 'partially_correct', label: 'Partially Correct', color: '#ffc107', count: sd.partially_correct || 0 },
+            { key: 'incorrect', label: 'Incorrect', color: '#dc3545', count: sd.incorrect || 0 },
+        ];
+
+        var html = '';
+        statusBands.forEach(function(b) {
+            var w = (b.count / maxCount) * 100;
+            var pct = total ? Math.round(b.count / total * 100) : 0;
+            html += '<div class="dist-row">';
+            html += '<div class="dist-label">' + b.label + '</div>';
+            html += '<div class="dist-bar-track"><div class="dist-bar-fill" style="width:' + w + '%;background:' + b.color + ';"><span>' + b.count + '</span></div></div>';
+            html += '<div class="dist-count">' + b.count + ' answers (' + pct + '%)</div>';
+            html += '</div>';
+        });
+
+        // Per-question status breakdown
+        var pqs = data.per_question_status || {};
+        var qnums = Object.keys(pqs).sort(function(a, b) { return (parseInt(a) || 0) - (parseInt(b) || 0); });
+        if (qnums.length) {
+            html += '<h4 style="font-size:14px;font-weight:700;color:#1a1a2e;margin:24px 0 12px;">Per-Question Status</h4>';
+            qnums.forEach(function(qnum) {
+                var qs = pqs[qnum];
+                var qTotal = (qs.correct || 0) + (qs.partially_correct || 0) + (qs.incorrect || 0);
+                if (!qTotal) return;
+                var cPct = Math.round((qs.correct || 0) / qTotal * 100);
+                var pPct = Math.round((qs.partially_correct || 0) / qTotal * 100);
+                var iPct = 100 - cPct - pPct;
+                html += '<div style="margin-bottom:8px;">';
+                html += '<div style="font-size:13px;font-weight:600;color:#333;margin-bottom:4px;">Q' + esc(qnum) + ' <span style="font-weight:400;color:#888;">(' + qTotal + ' responses)</span></div>';
+                html += '<div style="display:flex;height:24px;border-radius:6px;overflow:hidden;background:#f0f0f0;">';
+                if (cPct > 0) html += '<div style="width:' + cPct + '%;background:#28a745;display:flex;align-items:center;justify-content:center;"><span style="font-size:10px;font-weight:700;color:white;">' + cPct + '%</span></div>';
+                if (pPct > 0) html += '<div style="width:' + pPct + '%;background:#ffc107;display:flex;align-items:center;justify-content:center;"><span style="font-size:10px;font-weight:700;color:#333;">' + pPct + '%</span></div>';
+                if (iPct > 0) html += '<div style="width:' + iPct + '%;background:#dc3545;display:flex;align-items:center;justify-content:center;"><span style="font-size:10px;font-weight:700;color:white;">' + iPct + '%</span></div>';
+                html += '</div></div>';
+            });
+        }
+
+        el.innerHTML = html;
+        niEl.innerHTML = '';
+        // Update the card heading
+        el.closest('.ci-card').querySelector('h3').innerHTML = '&#128200; Status Distribution';
+        return;
+    }
+
+    // Marks-based: original A/B/C/D distribution
     var dist = data.score_distribution;
     var bands = ['A', 'B', 'C', 'D'];
     var colors = { A: '#28a745', B: '#7bc67e', C: '#ffc107', D: '#dc3545' };
@@ -697,7 +794,6 @@ function renderDistribution(data) {
     el.innerHTML = html;
 
     // Needs improvement section
-    var niEl = document.getElementById('needsImprovement');
     var niHtml = '';
     var niColors = { D: '#dc3545', C: '#ffc107', B: '#7bc67e' };
     ['D', 'C', 'B'].forEach(function(b) {
@@ -726,10 +822,15 @@ function renderStudentList(data) {
         var s = list[i];
         var scoreHtml = '&mdash;';
         if (s.score != null) {
-            var sc = heatColor(s.score);
-            scoreHtml = '<div class="score-bar-cell">' +
-                '<div class="score-mini-bar"><div class="score-mini-fill" style="width:' + s.score + '%;background:' + sc.bg + ';"></div></div>' +
-                '<span style="font-weight:600;">' + Math.round(s.score) + '%</span></div>';
+            if (SCORING_MODE === 'status') {
+                var sl = statusLabel(s.score >= 50 ? (s.score >= 100 ? 100 : 50) : 0);
+                scoreHtml = '<span style="font-weight:600;">' + Math.round(s.score) + '% correct</span>';
+            } else {
+                var sc = heatColor(s.score);
+                scoreHtml = '<div class="score-bar-cell">' +
+                    '<div class="score-mini-bar"><div class="score-mini-fill" style="width:' + s.score + '%;background:' + sc.bg + ';"></div></div>' +
+                    '<span style="font-weight:600;">' + Math.round(s.score) + '%</span></div>';
+            }
         }
         html += '<tr data-status="' + s.status + '">';
         html += '<td>' + esc(s.name) + '<span class="stu-index">' + esc(s.index || '') + '</span></td>';
