@@ -100,7 +100,10 @@
 
     <!-- Create Assignment -->
         <div class="card" id="createCard">
-            <h2>Create Assignment</h2>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <h2 style="margin:0;">Create Assignment</h2>
+                <button class="mark-btn" style="width:auto;padding:8px 16px;font-size:13px;margin:0;" onclick="openBankPicker()">Choose from Bank</button>
+            </div>
 
             <!-- Provider (only those with keys) -->
             <div style="font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">AI Provider</div>
@@ -211,6 +214,29 @@
                 <textarea class="form-textarea" id="teacher_marking_instructions" placeholder="How should answers be evaluated? e.g. strictness, what to accept..."></textarea>
             </div>
 
+            <!-- Add to bank option -->
+            <div class="check-row" style="margin-top:16px;">
+                <input type="checkbox" id="teacherAddToBank">
+                <label for="teacherAddToBank">Also add to Assignment Bank</label>
+            </div>
+            <div id="bankMetaFields" style="display:none;margin-top:8px;padding:12px;background:#f8f9fa;border-radius:8px;">
+                <div class="form-group" style="margin-bottom:8px;">
+                    <label style="font-size:12px;font-weight:600;color:#555;">Level</label>
+                    <select class="form-input" id="teacherBankLevel" style="padding:8px;">
+                        <option value="">No level</option>
+                        <option value="Sec 1">Sec 1</option>
+                        <option value="Sec 2">Sec 2</option>
+                        <option value="Sec 3">Sec 3</option>
+                        <option value="Sec 4">Sec 4</option>
+                        <option value="Sec 5">Sec 5</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin-bottom:0;">
+                    <label style="font-size:12px;font-weight:600;color:#555;">Tags (comma-separated)</label>
+                    <input type="text" class="form-input" id="teacherBankTags" placeholder="#algebra, #geometry" style="padding:8px;">
+                </div>
+            </div>
+
             <div class="error-msg" id="teacherErrorMsg"></div>
             <div class="success-msg" id="teacherSuccessMsg"></div>
             <button class="mark-btn" id="teacherCreateBtn" onclick="createAssignment()">Create Assignment</button>
@@ -259,6 +285,19 @@
         </div>
 </div>
 {% endif %}
+
+<!-- Bank Picker Modal -->
+<div class="modal-overlay" id="bankPickerModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;backdrop-filter:blur(4px);">
+    <div style="background:white;border-radius:16px;padding:32px;width:90%;max-width:560px;max-height:80vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+        <h3 style="font-size:18px;font-weight:700;color:#333;margin-bottom:16px;">Choose from Assignment Bank</h3>
+        <input type="text" id="bankPickerSearch" placeholder="Search by title, subject, or tags..." style="width:100%;padding:10px 14px;border:2px solid #e0e0e0;border-radius:10px;font-size:14px;outline:none;box-sizing:border-box;margin-bottom:12px;" oninput="searchBank()">
+        <div id="bankPickerResults" style="max-height:400px;overflow-y:auto;"></div>
+        <div style="display:flex;gap:10px;margin-top:16px;">
+            <button onclick="closeBankPicker()" style="flex:1;padding:12px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;border:none;background:#f0f0f0;color:#666;">Cancel</button>
+        </div>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -457,6 +496,13 @@ async function createAssignment() {
     fd.append('review_instructions', document.getElementById('teacher_review_instructions').value);
     fd.append('marking_instructions', document.getElementById('teacher_marking_instructions').value);
 
+    // Add to bank
+    if (document.getElementById('teacherAddToBank').checked) {
+        fd.append('add_to_bank', 'on');
+        fd.append('bank_level', document.getElementById('teacherBankLevel').value);
+        fd.append('bank_tags', document.getElementById('teacherBankTags').value);
+    }
+
     // API keys from local state (when server doesn't provide keys)
     if (savedKeys.anthropic) fd.append('api_key_anthropic', savedKeys.anthropic);
     if (savedKeys.openai) fd.append('api_key_openai', savedKeys.openai);
@@ -561,6 +607,130 @@ function onTeacherClassChange() {
     } else {
         info.textContent = '';
     }
+}
+
+/* =====================================================================
+   Add to Bank toggle
+   ===================================================================== */
+document.getElementById('teacherAddToBank').addEventListener('change', function() {
+    document.getElementById('bankMetaFields').style.display = this.checked ? 'block' : 'none';
+});
+
+/* =====================================================================
+   Bank Picker
+   ===================================================================== */
+var _bankPickerData = [];
+
+function openBankPicker() {
+    document.getElementById('bankPickerModal').style.display = 'flex';
+    document.getElementById('bankPickerSearch').value = '';
+    searchBank();
+}
+function closeBankPicker() {
+    document.getElementById('bankPickerModal').style.display = 'none';
+}
+document.getElementById('bankPickerModal').addEventListener('click', function(e) {
+    if (e.target === this) closeBankPicker();
+});
+
+var _bankSearchTimer = null;
+function searchBank() {
+    clearTimeout(_bankSearchTimer);
+    _bankSearchTimer = setTimeout(async function() {
+        var q = document.getElementById('bankPickerSearch').value.trim();
+        try {
+            var res = await fetch('/api/bank/search?q=' + encodeURIComponent(q));
+            _bankPickerData = await res.json();
+            renderBankResults();
+        } catch (e) { document.getElementById('bankPickerResults').innerHTML = '<p style="color:#dc3545;">Failed to search bank.</p>'; }
+    }, 300);
+}
+
+function renderBankResults() {
+    var el = document.getElementById('bankPickerResults');
+    if (!_bankPickerData.length) {
+        el.innerHTML = '<p style="color:#888;text-align:center;padding:20px;">No assignments found in bank.</p>';
+        return;
+    }
+    var html = '';
+    _bankPickerData.forEach(function(item, i) {
+        html += '<div style="padding:12px;border:1px solid #e8e8e8;border-radius:10px;margin-bottom:8px;cursor:pointer;transition:background 0.2s;" onmouseover="this.style.background=\'#f8f9fa\'" onmouseout="this.style.background=\'white\'" onclick="selectBankItem(' + i + ')">';
+        html += '<div style="font-weight:700;color:#333;">' + esc(item.title || 'Untitled') + '</div>';
+        html += '<div style="font-size:13px;color:#667eea;font-weight:600;">' + esc(item.subject) + '</div>';
+        html += '<div style="font-size:12px;color:#888;margin-top:4px;">';
+        html += item.assign_type.replace('_', ' ') + ' &middot; ' + item.scoring_mode;
+        if (item.total_marks) html += ' &middot; ' + esc(item.total_marks) + ' marks';
+        if (item.level) html += ' &middot; ' + esc(item.level);
+        html += '</div>';
+        if (item.tags) {
+            html += '<div style="margin-top:4px;">';
+            item.tags.split(',').forEach(function(t) {
+                t = t.trim();
+                if (t) html += '<span style="font-size:11px;font-weight:600;color:#667eea;background:#f0f2ff;padding:2px 6px;border-radius:4px;margin-right:4px;">' + esc(t) + '</span>';
+            });
+            html += '</div>';
+        }
+        html += '</div>';
+    });
+    el.innerHTML = html;
+}
+
+async function selectBankItem(idx) {
+    var item = _bankPickerData[idx];
+    if (!item) return;
+
+    // Fill form fields
+    document.getElementById('teacherTitle').value = item.title || '';
+    document.getElementById('teacherSubject').value = item.subject || '';
+
+    // Assignment type
+    if (item.assign_type === 'rubrics') {
+        document.getElementById('teacher_type_rubric').checked = true;
+    } else {
+        document.getElementById('teacher_type_short').checked = true;
+    }
+    updateTeacherAssignType();
+
+    // Scoring & marks
+    if (item.scoring_mode === 'marks') {
+        if (item.assign_type === 'rubrics') {
+            document.getElementById('teacherTotalMarksRubric').value = item.total_marks || '';
+        } else {
+            document.getElementById('teacherAllocateMarks').checked = true;
+            updateTeacherMarksVis();
+            document.getElementById('teacherTotalMarks').value = item.total_marks || '';
+        }
+    }
+
+    // Instructions
+    document.getElementById('teacher_review_instructions').value = item.review_instructions || '';
+    document.getElementById('teacher_marking_instructions').value = item.marking_instructions || '';
+
+    // Download and set files from bank
+    var fileTypes = ['question_paper', 'answer_key', 'rubrics', 'reference'];
+    for (var f of fileTypes) {
+        var inputId = 'teacher_' + f;
+        var input = document.getElementById(inputId);
+        if (!input) continue;
+        if (!item['has_' + f]) continue;
+        try {
+            var res = await fetch('/api/bank/' + item.id + '/file/' + f);
+            if (!res.ok) continue;
+            var blob = await res.blob();
+            var file = new File([blob], f + '.pdf', { type: 'application/pdf' });
+            var dt = new DataTransfer();
+            dt.items.add(file);
+            input.files = dt.files;
+            // Update filename display
+            var zone = input.closest('.upload-zone');
+            if (zone) {
+                var fnEl = zone.querySelector('.filename');
+                if (fnEl) fnEl.textContent = f + '.pdf';
+            }
+        } catch (e) { /* skip */ }
+    }
+
+    closeBankPicker();
 }
 
 /* =====================================================================

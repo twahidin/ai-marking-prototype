@@ -118,9 +118,11 @@
         <p>Shared library of assignments. Search, browse, and assign to your classes.</p>
     </div>
 
+    {% if teacher and teacher.role in ('hod', 'subject_head', 'lead', 'manager', 'owner') %}
     <div class="action-row">
         <button class="action-btn primary" onclick="openBulkUpload()">Bulk Upload (CSV + ZIP)</button>
     </div>
+    {% endif %}
 
     <!-- Search -->
     <div class="search-bar">
@@ -166,7 +168,12 @@
             {% endif %}
             <div class="bank-actions">
                 <button class="btn-sm use" onclick="openUseModal('{{ item.id }}', '{{ item.title | e }}')">Use in Class</button>
+                {% if teacher and teacher.role in ('hod', 'subject_head', 'lead', 'owner') %}
+                <button class="btn-sm" style="background:#f0f2ff;color:#667eea;" onclick="openEditModal('{{ item.id }}', '{{ item.title | e }}', '{{ item.subject | e }}', '{{ item.level | e }}', '{{ item.tags | e }}', '{{ (item.review_instructions or '') | e }}', '{{ (item.marking_instructions or '') | e }}')">Edit</button>
                 <button class="btn-sm delete" onclick="deleteItem('{{ item.id }}')">Delete</button>
+                {% elif teacher and item.created_by == teacher.id %}
+                <button class="btn-sm delete" onclick="deleteItem('{{ item.id }}')">Delete</button>
+                {% endif %}
             </div>
         </div>
         {% endfor %}
@@ -198,6 +205,38 @@
         <div class="modal-actions">
             <button class="modal-cancel" onclick="closeUseModal()">Cancel</button>
             <button class="modal-submit" id="useBtn" onclick="useInClasses()">Assign</button>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal-overlay" id="editModal">
+    <div class="modal-box">
+        <h3>Edit Bank Item</h3>
+        <input type="hidden" id="editBankId">
+        <div class="modal-label">Title</div>
+        <input type="text" class="modal-input" id="editTitle">
+        <div class="modal-label">Subject</div>
+        <input type="text" class="modal-input" id="editSubject">
+        <div class="modal-label">Level</div>
+        <select class="modal-select" id="editLevel">
+            <option value="">No level</option>
+            <option value="Sec 1">Sec 1</option>
+            <option value="Sec 2">Sec 2</option>
+            <option value="Sec 3">Sec 3</option>
+            <option value="Sec 4">Sec 4</option>
+            <option value="Sec 5">Sec 5</option>
+        </select>
+        <div class="modal-label">Tags (comma-separated)</div>
+        <input type="text" class="modal-input" id="editTags" placeholder="#algebra, #geometry">
+        <div class="modal-label">Review Instructions</div>
+        <textarea class="modal-input" id="editReviewInstructions" rows="3" style="resize:vertical;"></textarea>
+        <div class="modal-label">Marking Instructions</div>
+        <textarea class="modal-input" id="editMarkingInstructions" rows="3" style="resize:vertical;"></textarea>
+        <div class="error-msg" id="editError" style="display:none;"></div>
+        <div class="modal-actions">
+            <button class="modal-cancel" onclick="closeEditModal()">Cancel</button>
+            <button class="modal-submit" id="editBtn" onclick="saveEdit()">Save</button>
         </div>
     </div>
 </div>
@@ -356,6 +395,47 @@ async function deleteItem(bankId) {
     } catch (err) { alert('Network error.'); }
 }
 
+/* Edit Modal */
+function openEditModal(id, title, subject, level, tags, reviewInstr, markingInstr) {
+    document.getElementById('editBankId').value = id;
+    document.getElementById('editTitle').value = title;
+    document.getElementById('editSubject').value = subject;
+    document.getElementById('editLevel').value = level;
+    document.getElementById('editTags').value = tags;
+    document.getElementById('editReviewInstructions').value = reviewInstr;
+    document.getElementById('editMarkingInstructions').value = markingInstr;
+    document.getElementById('editError').style.display = 'none';
+    document.getElementById('editBtn').disabled = false;
+    document.getElementById('editBtn').textContent = 'Save';
+    document.getElementById('editModal').classList.add('active');
+}
+function closeEditModal() { document.getElementById('editModal').classList.remove('active'); }
+
+async function saveEdit() {
+    var btn = document.getElementById('editBtn');
+    btn.disabled = true; btn.textContent = 'Saving...';
+    var errEl = document.getElementById('editError');
+    errEl.style.display = 'none';
+    var id = document.getElementById('editBankId').value;
+    try {
+        var res = await fetch('/bank/edit/' + id, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                title: document.getElementById('editTitle').value,
+                subject: document.getElementById('editSubject').value,
+                level: document.getElementById('editLevel').value,
+                tags: document.getElementById('editTags').value,
+                review_instructions: document.getElementById('editReviewInstructions').value,
+                marking_instructions: document.getElementById('editMarkingInstructions').value,
+            })
+        });
+        var data = await res.json();
+        if (data.success) { window.location.reload(); }
+        else { errEl.textContent = data.error || 'Save failed.'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Save'; }
+    } catch (err) { errEl.textContent = 'Network error.'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Save'; }
+}
+
+document.getElementById('editModal').addEventListener('click', function(e) { if (e.target === this) closeEditModal(); });
 document.getElementById('useModal').addEventListener('click', function(e) { if (e.target === this) closeUseModal(); });
 document.getElementById('bulkModal').addEventListener('click', function(e) { if (e.target === this) closeBulkModal(); });
 </script>

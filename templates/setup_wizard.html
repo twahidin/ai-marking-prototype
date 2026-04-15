@@ -343,7 +343,7 @@
                     </div>
                     <div class="db-step">
                         <div class="step-num">2</div>
-                        <div class="step-text">Click <code>+ New</code> in the top right corner</div>
+                        <div class="step-text">Click <code>+ Add</code> in the top right corner</div>
                     </div>
                     <div class="db-step">
                         <div class="step-num">3</div>
@@ -359,7 +359,7 @@
                     </div>
                     <div class="db-step">
                         <div class="step-num">6</div>
-                        <div class="step-text">The app will redeploy automatically -- come back to this wizard after</div>
+                        <div class="step-text">The app will redeploy automatically — refresh this page after to detect the database</div>
                     </div>
                 </div>
 
@@ -575,8 +575,8 @@
                     </div>
                     <div class="config-field">
                         <label class="config-label">Access Code</label>
-                        <input type="text" class="config-input" id="cfg-code" placeholder="e.g. MATH2026" style="letter-spacing:2px; font-weight:600;">
-                        <div class="config-hint">You'll use this code to log in. Keep it secure. Minimum 4 characters.</div>
+                        <input type="text" class="config-input" id="cfg-code" placeholder="e.g. MATH2026" style="letter-spacing:2px; font-weight:600;" value="{{ env_teacher_code }}">
+                        <div class="config-hint">{% if env_teacher_code %}Pre-filled from TEACHER_CODE env var. {% endif %}You'll use this code to log in. Keep it secure. Minimum 4 characters.</div>
                     </div>
                 </div>
 

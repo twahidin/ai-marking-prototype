@@ -16,28 +16,28 @@
     <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
 </head>
 <body>
-{% if dept_mode and current_teacher %}
+{% if current_teacher %}
 <nav class="dept-nav">
     <div class="dept-nav-inner">
         <a href="/" class="dept-nav-brand">{{ app_title }}</a>
         <div class="dept-nav-links">
-            {% if current_teacher.role in ('hod', 'subject_head', 'manager') %}
+            {% if dept_mode and current_teacher.role in ('hod', 'subject_head', 'manager') %}
             <a href="/department">Dashboard</a>
             <a href="/department/classes">Manage</a>
             {% endif %}
-            {% if current_teacher.role in ('hod', 'subject_head', 'lead') %}
+            {% if current_teacher.role in ('hod', 'subject_head', 'lead', 'owner') %}
             <a href="/department/insights">Insights</a>
             {% endif %}
             <a href="/dashboard">My Classes</a>
             <a href="/class">Assignments</a>
             <a href="/bank">Bank</a>
-            {% if demo_mode %}
+            {% if not dept_mode or demo_mode %}
             <a href="/mark">Mark</a>
             {% endif %}
         </div>
         <div class="dept-nav-user">
             <span>{{ current_teacher.name }}</span>
-            {% if current_teacher.role in ('hod', 'subject_head') %}
+            {% if current_teacher.role in ('hod', 'subject_head', 'owner') %}
             <a href="/settings" title="Settings">&#9881;</a>
             {% endif %}
             <a href="/logout">Logout</a>

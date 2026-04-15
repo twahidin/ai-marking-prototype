@@ -9,7 +9,7 @@ import threading
 import time
 import zipfile
 from datetime import datetime, timezone
-from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for
+from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for, Response
 import io
 
 from ai_marking import mark_script, get_available_providers, PROVIDERS
@@ -120,9 +120,6 @@ def _is_setup_complete():
             return True
     except Exception:
         pass
-    # Also consider setup complete if env vars are configured
-    if os.getenv('DEPT_MODE') or os.getenv('DEMO_MODE') or os.getenv('TEACHER_CODE') or os.getenv('ACCESS_CODE'):
-        return True
     return False
 
 
@@ -2429,16 +2426,31 @@ def teacher_dashboard():
         return redirect(url_for('hub'))
 
     # Senior roles see all classes; teachers see only their assigned classes
-    if teacher.role in ('hod', 'subject_head', 'lead'):
-        teacher_classes = Class.query.all()
+    is_senior = teacher.role in ('hod', 'subject_head', 'lead')
+    all_teachers = []
+    filter_teacher_id = request.args.get('teacher_id', '').strip()
+
+    if is_senior:
+        all_teachers = Teacher.query.order_by(Teacher.name).all()
+        if filter_teacher_id:
+            # Filter classes assigned to a specific teacher
+            filter_teacher = Teacher.query.get(filter_teacher_id)
+            if filter_teacher:
+                teacher_classes = filter_teacher.classes
+            else:
+                teacher_classes = Class.query.all()
+        else:
+            teacher_classes = Class.query.all()
     else:
         teacher_classes = teacher.classes
 
     teacher_class_ids = [cls.id for cls in teacher_classes]
     if teacher_class_ids:
         q = Assignment.query.filter(Assignment.class_id.in_(teacher_class_ids))
-        if teacher.role not in ('hod', 'subject_head', 'lead'):
+        if not is_senior:
             q = q.filter(Assignment.teacher_id == teacher.id)
+        elif filter_teacher_id:
+            q = q.filter(Assignment.teacher_id == filter_teacher_id)
         all_assignments = q.order_by(Assignment.created_at.desc()).all()
     else:
         all_assignments = []
@@ -2508,7 +2520,9 @@ def teacher_dashboard():
                            teacher=teacher,
                            classes=class_data,
                            dept_mode=is_dept_mode(),
-                           demo_mode=is_demo_mode())
+                           demo_mode=is_demo_mode(),
+                           all_teachers=all_teachers,
+                           filter_teacher_id=filter_teacher_id)
 
 
 # ---------------------------------------------------------------------------
@@ -3021,6 +3035,28 @@ def teacher_create():
             user_keys[prov] = val
     asn.set_api_keys(user_keys)
     db.session.add(asn)
+
+    # Optionally add to bank
+    if request.form.get('add_to_bank') == 'on':
+        bank_item = AssignmentBank(
+            id=str(uuid.uuid4()),
+            title=asn.title,
+            subject=asn.subject,
+            level=request.form.get('bank_level', ''),
+            tags=request.form.get('bank_tags', ''),
+            assign_type=asn.assign_type,
+            scoring_mode=asn.scoring_mode,
+            total_marks=asn.total_marks,
+            review_instructions=asn.review_instructions,
+            marking_instructions=asn.marking_instructions,
+            question_paper=asn.question_paper,
+            answer_key=asn.answer_key,
+            rubrics=asn.rubrics,
+            reference=asn.reference,
+            created_by=teacher_obj.id if teacher_obj else None,
+        )
+        db.session.add(bank_item)
+
     db.session.commit()
 
     return jsonify({
@@ -3607,10 +3643,12 @@ def bank_use():
 
 @app.route('/bank/upload', methods=['POST'])
 def bank_bulk_upload():
-    """Bulk upload assignments via CSV + ZIP bundle."""
+    """Bulk upload assignments via CSV + ZIP bundle. Manager, lead, HOD, subject head only."""
     if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
     teacher = _current_teacher()
+    if teacher and teacher.role not in ('hod', 'subject_head', 'lead', 'manager', 'owner'):
+        return jsonify({'success': False, 'error': 'Not authorized'}), 403
 
     csv_file = request.files.get('csv')
     zip_file = request.files.get('zip')
@@ -3727,12 +3765,95 @@ def bank_delete(bank_id):
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
     item = AssignmentBank.query.get_or_404(bank_id)
     teacher = _current_teacher()
-    # Only creator or HOD/owner can delete
-    if teacher and teacher.role not in ('hod', 'owner') and item.created_by != teacher.id:
+    # Subject head, lead, HOD, owner can delete
+    if teacher and teacher.role not in ('hod', 'subject_head', 'lead', 'owner') and item.created_by != teacher.id:
         return jsonify({'success': False, 'error': 'Not authorized'}), 403
     db.session.delete(item)
     db.session.commit()
     return jsonify({'success': True})
+
+
+@app.route('/bank/edit/<bank_id>', methods=['POST'])
+def bank_edit(bank_id):
+    """Edit a bank item. Subject head, lead, HOD can edit."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    teacher = _current_teacher()
+    if not teacher or teacher.role not in ('hod', 'subject_head', 'lead', 'owner'):
+        return jsonify({'success': False, 'error': 'Not authorized'}), 403
+
+    item = AssignmentBank.query.get_or_404(bank_id)
+    data = request.get_json()
+
+    if 'title' in data:
+        item.title = data['title'].strip()
+    if 'subject' in data:
+        item.subject = data['subject'].strip()
+    if 'level' in data:
+        item.level = data['level'].strip()
+    if 'tags' in data:
+        item.tags = data['tags'].strip()
+    if 'review_instructions' in data:
+        item.review_instructions = data['review_instructions'].strip()
+    if 'marking_instructions' in data:
+        item.marking_instructions = data['marking_instructions'].strip()
+
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/api/bank/search')
+def bank_search_api():
+    """Search bank items for the assignment creation picker."""
+    if not _is_authenticated():
+        return jsonify([])
+    q = request.args.get('q', '').strip()
+    query = AssignmentBank.query
+    if q:
+        like = f'%{q}%'
+        query = query.filter(
+            db.or_(
+                AssignmentBank.title.ilike(like),
+                AssignmentBank.subject.ilike(like),
+                AssignmentBank.tags.ilike(like),
+            )
+        )
+    items = query.order_by(AssignmentBank.created_at.desc()).limit(20).all()
+    return jsonify([{
+        'id': it.id,
+        'title': it.title,
+        'subject': it.subject,
+        'level': it.level,
+        'assign_type': it.assign_type,
+        'scoring_mode': it.scoring_mode,
+        'total_marks': it.total_marks,
+        'tags': it.tags,
+        'has_question_paper': bool(it.question_paper),
+        'has_answer_key': bool(it.answer_key),
+        'has_rubrics': bool(it.rubrics),
+        'has_reference': bool(it.reference),
+        'review_instructions': it.review_instructions or '',
+        'marking_instructions': it.marking_instructions or '',
+    } for it in items])
+
+
+@app.route('/api/bank/<bank_id>/file/<file_type>')
+def bank_file_download(bank_id, file_type):
+    """Download a file from a bank item to pre-fill assignment creation."""
+    if not _is_authenticated():
+        return 'Not authenticated', 401
+    item = AssignmentBank.query.get_or_404(bank_id)
+    file_map = {
+        'question_paper': item.question_paper,
+        'answer_key': item.answer_key,
+        'rubrics': item.rubrics,
+        'reference': item.reference,
+    }
+    data = file_map.get(file_type)
+    if not data:
+        return 'File not found', 404
+    return Response(data, mimetype='application/pdf',
+                    headers={'Content-Disposition': f'attachment; filename={file_type}.pdf'})
 
 
 # ---------------------------------------------------------------------------
@@ -3836,7 +3957,8 @@ def setup_wizard():
         env_keys[prov] = bool(os.getenv(env_name, ''))
 
     has_postgres = bool(os.getenv('DATABASE_URL', ''))
-    return render_template('setup_wizard.html', env_keys=env_keys, has_postgres=has_postgres)
+    env_teacher_code = _ENV_TEACHER_CODE or ''
+    return render_template('setup_wizard.html', env_keys=env_keys, has_postgres=has_postgres, env_teacher_code=env_teacher_code)
 
 
 @app.route('/settings')

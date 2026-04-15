@@ -71,6 +71,18 @@
         <p>Welcome, {{ teacher.name }}</p>
     </div>
 
+    {% if all_teachers %}
+    <div style="margin-bottom:20px;display:flex;align-items:center;gap:12px;">
+        <label style="font-size:14px;font-weight:600;color:#555;">Filter by teacher:</label>
+        <select onchange="window.location.href=this.value?'/dashboard?teacher_id='+this.value:'/dashboard'" style="padding:8px 14px;border:2px solid #e0e0e0;border-radius:10px;font-size:14px;outline:none;min-width:200px;">
+            <option value="">All teachers</option>
+            {% for t in all_teachers %}
+            <option value="{{ t.id }}" {% if filter_teacher_id == t.id %}selected{% endif %}>{{ t.name }}{% if t.role != 'teacher' %} ({{ t.role | replace('_', ' ') | title }}){% endif %}</option>
+            {% endfor %}
+        </select>
+    </div>
+    {% endif %}
+
     {% if classes %}
     {% for cls in classes %}
     <div class="dept-card class-section animate__animated animate__fadeInUp" style="animation-delay:{{ loop.index0 * 0.1 }}s;animation-duration:0.5s;">
