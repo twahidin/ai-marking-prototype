@@ -898,8 +898,8 @@ def department_manage():
     classes = Class.query.order_by(Class.name).all()
     # Filter teachers visible to this user based on their role
     teachers = _visible_teachers(teacher).order_by(Teacher.role.desc(), Teacher.name).all()
-    # All non-HOD teachers for class assignment dropdown
-    assignable_teachers = Teacher.query.filter(Teacher.role != 'hod').order_by(Teacher.name).all()
+    # All teachers for class assignment dropdown (including HOD)
+    assignable_teachers = Teacher.query.order_by(Teacher.name).all()
 
     # Get masked API key status for display
     from db import _get_fernet
