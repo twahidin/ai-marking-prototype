@@ -93,6 +93,7 @@
             </h2>
             <div class="class-actions">
                 <button class="btn-sm secondary" onclick="toggleStudents('{{ cls.id }}')">View Students</button>
+                <a href="#" class="btn-sm secondary" onclick="downloadSampleCsv(); return false;" style="text-decoration:none;">Sample CSV</a>
                 <label class="btn-sm primary" style="cursor:pointer;">
                     Upload Class List
                     <input type="file" accept=".csv,.xlsx,.xls" style="display:none;" onchange="uploadClassList('{{ cls.id }}', this)">
@@ -169,6 +170,15 @@ async function toggleStudents(classId) {
         });
         section.classList.add('visible');
     } catch (e) { console.error(e); }
+}
+
+function downloadSampleCsv() {
+    var csv = 'Index,Name\n1,Tan Ah Kow\n2,Siti Nurhaliza\n3,Raj Kumar\n';
+    var blob = new Blob([csv], { type: 'text/csv' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'class_list_sample.csv';
+    a.click();
 }
 
 async function uploadClassList(classId, input) {
