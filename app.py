@@ -1157,9 +1157,15 @@ def manage_class_students(class_id):
     if len(file_bytes) > 1024 * 1024:
         return jsonify({'success': False, 'error': 'Class list too large (max 1MB)'}), 400
 
-    students_data = _parse_class_list(file_bytes, cl_file.filename)
+    try:
+        students_data = _parse_class_list(file_bytes, cl_file.filename)
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f'Class list parse error: {e}')
+        return jsonify({'success': False, 'error': 'Could not parse file. Please upload a CSV or Excel file.'}), 400
     if not students_data:
-        return jsonify({'success': False, 'error': 'Could not parse class list'}), 400
+        return jsonify({'success': False, 'error': 'Could not parse class list. Check the file format.'}), 400
     if len(students_data) > 500:
         return jsonify({'success': False, 'error': 'Maximum 500 students per class'}), 400
 
@@ -2588,8 +2594,42 @@ def _split_pdf_variable(pdf_bytes, page_counts):
 
 
 def _parse_class_list(file_bytes, filename):
-    """Parse class list CSV. Returns list of {index, name} dicts."""
-    text = file_bytes.decode('utf-8-sig')
+    """Parse class list from CSV or Excel. Returns list of {index, name} dicts."""
+    ext = (filename or '').rsplit('.', 1)[-1].lower() if filename else ''
+
+    # Handle Excel files
+    if ext in ('xlsx', 'xls'):
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True)
+            ws = wb.active
+            students = []
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c).strip() if c is not None else '' for c in row]
+                if not any(cells):
+                    continue
+                if cells[0].lower() in ('index', 'no', 'no.', 's/n', 'sn', '#', 'number', 'name'):
+                    continue
+                if len(cells) >= 2 and cells[1]:
+                    students.append({'index': cells[0], 'name': cells[1]})
+                elif cells[0]:
+                    students.append({'index': str(len(students) + 1), 'name': cells[0]})
+            wb.close()
+            return students
+        except ImportError:
+            raise ValueError('Excel support requires openpyxl. Please upload a CSV file instead.')
+
+    # Handle CSV with encoding fallback
+    text = None
+    for encoding in ('utf-8-sig', 'utf-8', 'latin-1', 'cp1252'):
+        try:
+            text = file_bytes.decode(encoding)
+            break
+        except (UnicodeDecodeError, LookupError):
+            continue
+    if text is None:
+        raise ValueError('Could not decode file. Please save as UTF-8 CSV and try again.')
+
     reader = csv.reader(io.StringIO(text))
     students = []
     for row in reader:
