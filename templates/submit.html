@@ -129,6 +129,15 @@
                     <option value="">Select your name...</option>
                 </select>
             </div>
+            <div id="reviewBanner" style="display:none;background:#e8f5e9;border:1px solid #28a745;border-radius:10px;padding:16px;margin-bottom:16px;text-align:center;">
+                <div style="font-size:14px;font-weight:600;color:#28a745;">You have a previous submission</div>
+                <div style="display:flex;gap:8px;justify-content:center;margin-top:10px;">
+                    <button onclick="reviewPrevious()" style="padding:10px 20px;background:#28a745;color:white;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;">View Feedback</button>
+                    <a id="reviewDownloadLink" href="#" style="padding:10px 20px;background:#667eea;color:white;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;text-decoration:none;">Download PDF</a>
+                </div>
+                <div style="font-size:12px;color:#888;margin-top:8px;">You can also re-submit below to get new feedback</div>
+            </div>
+
             <div class="form-group">
                 <label>Your Script</label>
                 <div class="upload-zone" id="uploadZone" onclick="document.getElementById('scriptInput').click()">
@@ -214,6 +223,7 @@
             </div>
             <div id="qCardContainer"></div>
             <div id="overallSection"></div>
+            <button onclick="showSection('formSection')" style="width:100%;padding:14px;margin-top:16px;background:#f0f0f0;color:#666;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">Back to Submission</button>
         </div>
     </div>
 </div>
@@ -282,6 +292,7 @@ async function verifyClassCode() {
         var data = await res.json();
         if (data.success) {
             students = data.students || [];
+            showResults = data.show_results || false;
             populateStudents();
             showSection('formSection');
         } else {
@@ -308,6 +319,35 @@ function populateStudents() {
         opt.textContent = s.index + ' - ' + s.name;
         sel.appendChild(opt);
     });
+    sel.addEventListener('change', function() {
+        var sid = this.value;
+        var banner = document.getElementById('reviewBanner');
+        if (!sid || !showResults) { banner.style.display = 'none'; return; }
+        var stu = students.find(function(s) { return String(s.id) === String(sid); });
+        if (stu && stu.has_submission) {
+            banner.style.display = 'block';
+            document.getElementById('reviewDownloadLink').href = '/submit/' + ASSIGNMENT_ID + '/download/' + stu.submission_id;
+            banner.dataset.submissionId = stu.submission_id;
+        } else {
+            banner.style.display = 'none';
+        }
+    });
+}
+
+async function reviewPrevious() {
+    var banner = document.getElementById('reviewBanner');
+    var subId = banner.dataset.submissionId;
+    if (!subId) return;
+    try {
+        var res = await fetch('/submit/' + ASSIGNMENT_ID + '/review/' + subId);
+        var data = await res.json();
+        if (data.success && data.result) {
+            renderResults(data.result);
+            showSection('resultsSection');
+        } else {
+            alert(data.error || 'Could not load results.');
+        }
+    } catch (e) { alert('Connection error.'); }
 }
 
 /* --- State 2: Upload & submit --- */

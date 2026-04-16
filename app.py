@@ -3326,10 +3326,40 @@ def student_verify(assignment_id):
         return jsonify({'success': False, 'error': 'Invalid classroom code'}), 401
 
     students = _sort_by_index(Student.query.filter_by(class_id=asn.class_id).all()) if asn.class_id else _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
-    student_list = [{'id': s.id, 'index': s.index_number, 'name': s.name} for s in students]
+
+    # Include submission status so students can see/review previous work
+    subs = {s.student_id: s for s in Submission.query.filter_by(assignment_id=assignment_id).all()}
+    student_list = []
+    for s in students:
+        sub = subs.get(s.id)
+        entry = {'id': s.id, 'index': s.index_number, 'name': s.name}
+        if sub and sub.status == 'done':
+            entry['has_submission'] = True
+            entry['submission_id'] = sub.id
+        student_list.append(entry)
 
     session[f'student_auth_{assignment_id}'] = True
-    return jsonify({'success': True, 'students': student_list})
+    return jsonify({'success': True, 'students': student_list, 'show_results': asn.show_results})
+
+
+@app.route('/submit/<assignment_id>/review/<int:submission_id>')
+def student_review_submission(assignment_id, submission_id):
+    """Let a student review their previous submission results."""
+    is_student = session.get(f'student_auth_{assignment_id}')
+    is_teacher = _is_authenticated()
+    if not is_student and not is_teacher:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id or sub.status != 'done':
+        return jsonify({'success': False, 'error': 'Not found'}), 404
+
+    asn = Assignment.query.get(assignment_id)
+    if not asn or not asn.show_results:
+        return jsonify({'success': False, 'error': 'Results are not available for this assignment'}), 403
+
+    result = sub.get_result()
+    return jsonify({'success': True, 'result': result})
 
 
 @app.route('/submit/<assignment_id>/upload', methods=['POST'])
