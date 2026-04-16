@@ -3392,7 +3392,27 @@ def student_upload(assignment_id):
     if len(script_files) > 10:
         return jsonify({'success': False, 'error': 'Maximum 10 files per submission'}), 400
 
-    script_pages = [f.read() for f in script_files if f.filename]
+    MAX_IMAGE_SIZE = 5 * 1024 * 1024   # 5MB per image
+    MAX_PDF_SIZE = 20 * 1024 * 1024    # 20MB per PDF
+    MAX_TOTAL_SIZE = 30 * 1024 * 1024  # 30MB total
+
+    script_pages = []
+    total_size = 0
+    for f in script_files:
+        if not f.filename:
+            continue
+        data = f.read()
+        file_size = len(data)
+        total_size += file_size
+        ext = f.filename.rsplit('.', 1)[-1].lower() if '.' in f.filename else ''
+        if ext == 'pdf':
+            if file_size > MAX_PDF_SIZE:
+                return jsonify({'success': False, 'error': f'PDF too large ({file_size // (1024*1024)}MB). Maximum is 20MB.'}), 400
+        elif file_size > MAX_IMAGE_SIZE:
+            return jsonify({'success': False, 'error': f'Image "{f.filename}" too large ({file_size // (1024*1024)}MB). Maximum is 5MB per image.'}), 400
+        if total_size > MAX_TOTAL_SIZE:
+            return jsonify({'success': False, 'error': 'Total upload too large. Maximum is 30MB combined.'}), 400
+        script_pages.append(data)
 
     # Delete existing submission if re-submitting
     existing = Submission.query.filter_by(student_id=student.id, assignment_id=assignment_id).first()

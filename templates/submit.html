@@ -144,7 +144,7 @@
                     <input type="file" id="scriptInput" accept=".pdf,.jpg,.jpeg,.png,.heic" capture="environment" multiple onchange="fileSelected(this, 10)">
                     <div class="icon">&#128247;</div>
                     <div class="label">Tap to upload or take a photo</div>
-                    <div class="hint">PDF or up to 10 images (JPG, PNG, HEIC)</div>
+                    <div class="hint">PDF (max 20MB) or up to 10 images (max 5MB each)</div>
                     <div class="filename" id="fileName"></div>
                 </div>
             </div>
@@ -355,6 +355,43 @@ async function reviewPrevious() {
 function showFormError(msg) { var el = document.getElementById('formError'); el.textContent = msg; el.style.display = 'block'; }
 function hideFormError() { document.getElementById('formError').style.display = 'none'; }
 
+var MAX_IMAGE_SIZE = 5 * 1024 * 1024;  // 5MB
+var MAX_PDF_SIZE = 20 * 1024 * 1024;   // 20MB
+var MAX_TOTAL_SIZE = 30 * 1024 * 1024; // 30MB
+var MAX_IMAGE_DIM = 2000;              // max width/height in px
+
+function compressImage(file) {
+    return new Promise(function(resolve) {
+        // Skip non-image files
+        if (!file.type.startsWith('image/')) { resolve(file); return; }
+        // Skip if already small enough
+        if (file.size <= MAX_IMAGE_SIZE) { resolve(file); return; }
+        var img = new Image();
+        img.onload = function() {
+            var w = img.width, h = img.height;
+            // Resize if too large
+            if (w > MAX_IMAGE_DIM || h > MAX_IMAGE_DIM) {
+                var ratio = Math.min(MAX_IMAGE_DIM / w, MAX_IMAGE_DIM / h);
+                w = Math.round(w * ratio);
+                h = Math.round(h * ratio);
+            }
+            var canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            var ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, w, h);
+            canvas.toBlob(function(blob) {
+                if (blob && blob.size < file.size) {
+                    resolve(new File([blob], file.name.replace(/\.\w+$/, '.jpg'), { type: 'image/jpeg' }));
+                } else {
+                    resolve(file);
+                }
+            }, 'image/jpeg', 0.85);
+        };
+        img.onerror = function() { resolve(file); };
+        img.src = URL.createObjectURL(file);
+    });
+}
+
 async function submitWork() {
     hideFormError();
     var studentId = document.getElementById('studentSelect').value;
@@ -369,11 +406,40 @@ async function submitWork() {
     if (!confirm('Please confirm you are:\n\n' + studentName)) return;
 
     var btn = document.getElementById('submitBtn');
-    btn.disabled = true; btn.textContent = 'Uploading...';
+    btn.disabled = true; btn.textContent = 'Compressing...';
+
+    // Compress images and validate sizes
+    var files = [];
+    var totalSize = 0;
+    for (var i = 0; i < scriptInput.files.length; i++) {
+        var f = scriptInput.files[i];
+        var ext = (f.name.split('.').pop() || '').toLowerCase();
+        if (ext === 'pdf') {
+            if (f.size > MAX_PDF_SIZE) {
+                showFormError('PDF too large (' + Math.round(f.size / (1024*1024)) + 'MB). Maximum is 20MB.');
+                btn.disabled = false; btn.textContent = 'Submit'; return;
+            }
+            files.push(f);
+        } else {
+            var compressed = await compressImage(f);
+            if (compressed.size > MAX_IMAGE_SIZE) {
+                showFormError('Image "' + f.name + '" too large after compression (' + Math.round(compressed.size / (1024*1024)) + 'MB). Maximum is 5MB.');
+                btn.disabled = false; btn.textContent = 'Submit'; return;
+            }
+            files.push(compressed);
+        }
+        totalSize += files[files.length - 1].size;
+    }
+    if (totalSize > MAX_TOTAL_SIZE) {
+        showFormError('Total upload too large (' + Math.round(totalSize / (1024*1024)) + 'MB). Maximum is 30MB combined.');
+        btn.disabled = false; btn.textContent = 'Submit'; return;
+    }
+
+    btn.textContent = 'Uploading...';
     var fd = new FormData();
     fd.append('student_id', studentId);
-    for (var i = 0; i < scriptInput.files.length; i++) {
-        fd.append('script', scriptInput.files[i]);
+    for (var j = 0; j < files.length; j++) {
+        fd.append('script', files[j]);
     }
 
     try {
