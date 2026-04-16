@@ -264,7 +264,7 @@
                         {% for s in students %}
                         <tr>
                             <td>{{ s.index }}</td>
-                            <td style="font-weight:600;">{{ s.name }}</td>
+                            <td style="font-weight:600;">{% if s.status == 'done' and s.submission_id %}<a href="/submit/{{ assignment.id }}/download/{{ s.submission_id }}" style="color:#667eea;text-decoration:none;" title="Download feedback report">{{ s.name }}</a>{% else %}{{ s.name }}{% endif %}</td>
                             <td>
                                 {% if s.status == 'not_submitted' %}<span class="badge badge-gray">Not Submitted</span>
                                 {% elif s.status in ['pending', 'processing'] %}<span class="badge badge-blue">Marking...</span>
@@ -278,6 +278,9 @@
                             <td>{{ s.score if s.score else '-' }}</td>
                             <td style="color:#888; font-size:13px;">{{ s.submitted_at if s.submitted_at else '-' }}</td>
                             <td>
+                                {% if s.status == 'done' and s.submission_id %}
+                                <a href="/submit/{{ assignment.id }}/download/{{ s.submission_id }}" class="upload-btn" style="text-decoration:none;display:inline-block;">Download</a>
+                                {% endif %}
                                 <button class="upload-btn" onclick="openUploadModal('{{ s.student_id }}', '{{ s.name | e }}')">
                                     {% if s.status == 'not_submitted' %}Upload{% else %}Re-upload{% endif %}
                                 </button>
