@@ -229,6 +229,12 @@
             </div>
             <div class="progress-status" id="bulkProgressStatus">Starting...</div>
         </div>
+
+        <!-- Skipped students (draft cap reached) -->
+        <div id="bulkSkippedCard" style="display:none;margin-top:16px;padding:12px;border:1px solid #f0c36d;background:#fffbe6;border-radius:6px;">
+            <div style="font-weight:600;margin-bottom:6px;">Skipped students (cap reached):</div>
+            <ul id="bulkSkippedList" style="margin:0;padding-left:20px;"></ul>
+        </div>
     </div>
 
     <!-- Submissions Table -->
@@ -574,6 +580,9 @@ async function submitBulkMarking(pageCounts) {
     try {
         var res = await fetch('/bulk/mark', { method: 'POST', body: fd });
         var data = await res.json();
+        if (data.skipped) {
+            renderBulkSkipped(data.skipped);
+        }
         if (!data.success) {
             document.getElementById('bulkProgressCard').style.display = 'none';
             showBulkError(data.error || 'Failed.');
@@ -589,11 +598,35 @@ async function submitBulkMarking(pageCounts) {
     }
 }
 
+function renderBulkSkipped(skipped) {
+    var card = document.getElementById('bulkSkippedCard');
+    var list = document.getElementById('bulkSkippedList');
+    if (!card || !list) return;
+    if (!skipped || !skipped.length) {
+        card.style.display = 'none';
+        return;
+    }
+    list.innerHTML = '';
+    for (var i = 0; i < skipped.length; i++) {
+        var s = skipped[i];
+        var li = document.createElement('li');
+        var label = (s.index ? s.index + ' — ' : '') + (s.name || '(unknown)');
+        var reason = s.reason ? ' (' + s.reason + ')' : '';
+        li.textContent = label + reason;
+        list.appendChild(li);
+    }
+    card.style.display = 'block';
+}
+
 async function pollBulkStatus() {
     if (!bulkJobId) return;
     try {
         var res = await fetch('/status/' + bulkJobId);
         var data = await res.json();
+
+        if (data.skipped) {
+            renderBulkSkipped(data.skipped);
+        }
 
         if (data.progress) {
             var pct = Math.round((data.progress.current / data.progress.total) * 100);
@@ -615,8 +648,9 @@ async function pollBulkStatus() {
             return;
         }
 
-        // Reload page to show updated statuses
-        window.location.reload();
+        // If any students were skipped, pause 3s so the teacher can see the notice before reload
+        var delay = (data.skipped && data.skipped.length) ? 3000 : 0;
+        setTimeout(function() { window.location.reload(); }, delay);
     } catch (err) { setTimeout(pollBulkStatus, 3000); }
 }
 

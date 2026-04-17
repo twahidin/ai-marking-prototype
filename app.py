@@ -867,6 +867,8 @@ def job_status(job_id):
         return jsonify({'success': False, 'error': 'Job not found'}), 404
 
     response = {'success': True, 'status': job['status']}
+    if job.get('bulk') and 'skipped' in job:
+        response['skipped'] = job.get('skipped', [])
     if job['status'] in ('done', 'error'):
         # Bulk jobs store results in 'results' (list), single in 'result' (dict)
         if job.get('bulk'):
@@ -2733,7 +2735,7 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                          rubrics_pages, reference_pages, student_scripts, students,
                          subject, review_instructions, marking_instructions,
                          assign_type, scoring_mode, total_marks, session_keys,
-                         assignment_id=None, student_id_map=None):
+                         assignment_id=None, student_id_map=None, submission_id_map=None):
     """Background thread for bulk marking — marks each student sequentially."""
     results = []
     total = len(students)
@@ -2773,22 +2775,33 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
         })
 
         # Save to DB if in dept mode
-        if assignment_id and student_id_map:
+        if assignment_id and (submission_id_map or student_id_map):
             try:
                 with app.app_context():
-                    student_db_id = student_id_map.get(student['index'])
-                    if student_db_id:
-                        sub = Submission(
-                            student_id=student_db_id,
-                            assignment_id=assignment_id,
-                            script_bytes=script_bytes,
-                            status='error' if result.get('error') else 'done',
-                            submitted_at=datetime.now(timezone.utc),
-                        )
-                        sub.set_result(result)
-                        sub.marked_at = datetime.now(timezone.utc)
-                        db.session.add(sub)
-                        db.session.commit()
+                    sub_id = (submission_id_map or {}).get(student['index'])
+                    if sub_id:
+                        # Pre-created draft: update result + status in place
+                        sub = Submission.query.get(sub_id)
+                        if sub:
+                            sub.status = 'error' if result.get('error') else 'done'
+                            sub.set_result(result)
+                            sub.marked_at = datetime.now(timezone.utc)
+                            db.session.commit()
+                    else:
+                        # Legacy fallback (no pre-created row) — create a new Submission
+                        student_db_id = (student_id_map or {}).get(student['index'])
+                        if student_db_id:
+                            sub = Submission(
+                                student_id=student_db_id,
+                                assignment_id=assignment_id,
+                                script_bytes=script_bytes,
+                                status='error' if result.get('error') else 'done',
+                                submitted_at=datetime.now(timezone.utc),
+                            )
+                            sub.set_result(result)
+                            sub.marked_at = datetime.now(timezone.utc)
+                            db.session.add(sub)
+                            db.session.commit()
             except Exception as e:
                 db.session.rollback()
                 logger.error(f"Failed to save submission for {student['name']}: {e}")
@@ -2875,17 +2888,52 @@ def bulk_mark():
     except Exception as e:
         return jsonify({'success': False, 'error': f'Error splitting PDF: {e}'}), 400
 
-    # Delete existing submissions for students being re-marked
-    for s in students_to_mark:
-        existing = Submission.query.filter_by(student_id=s['db_id'], assignment_id=assignment_id).first()
-        if existing:
-            db.session.delete(existing)
-    db.session.commit()
+    # Prepare a new submission row per student via _prepare_new_submission.
+    # This honours allow_drafts + max_drafts: students at cap are skipped and surfaced.
+    skipped = []
+    filtered_students = []
+    filtered_scripts = []
+    submission_id_map = {}  # student index -> pre-created submission id
+    for s, script_bytes in zip(students_to_mark, student_scripts):
+        student_obj = Student.query.get(s['db_id'])
+        if student_obj is None:
+            skipped.append({
+                'index': s.get('index'),
+                'name': s.get('name'),
+                'reason': 'Student not found',
+            })
+            continue
+        new_sub, err = _prepare_new_submission(student_obj, asn)
+        if err:
+            skipped.append({
+                'index': s.get('index'),
+                'name': s.get('name'),
+                'reason': err,
+            })
+            continue
+        new_sub.script_bytes = script_bytes
+        new_sub.status = 'pending'
+        new_sub.set_script_pages([script_bytes])
+        db.session.add(new_sub)
+        db.session.commit()
+        submission_id_map[s['index']] = new_sub.id
+        filtered_students.append(s)
+        filtered_scripts.append(script_bytes)
+
+    students_to_mark = filtered_students
+    student_scripts = filtered_scripts
+
+    if not students_to_mark:
+        return jsonify({
+            'success': False,
+            'error': 'No students eligible for marking (all at draft cap or no students selected).',
+            'skipped': skipped,
+        }), 400
 
     # Use assignment's stored settings
     session_keys = _resolve_api_keys(asn)
 
-    # Build student_id_map for the background thread
+    # Build student_id_map for the background thread (kept for backward-compat logging)
     student_id_map = {s['index']: s['db_id'] for s in students_to_mark}
 
     # Get files from assignment record
@@ -2901,6 +2949,7 @@ def bulk_mark():
         'status': 'processing',
         'result': None,
         'results': [],
+        'skipped': skipped,
         'subject': asn.subject,
         'created_at': time.time(),
         'progress': {'current': 0, 'total': len(students_to_mark), 'current_name': 'Starting...'},
@@ -2914,12 +2963,12 @@ def bulk_mark():
               rubrics_pages, reference_pages, student_scripts, students_to_mark,
               asn.subject, asn.review_instructions, asn.marking_instructions,
               asn.assign_type, asn.scoring_mode, asn.total_marks, session_keys,
-              assignment_id, student_id_map),
+              assignment_id, student_id_map, submission_id_map),
         daemon=True
     )
     thread.start()
 
-    return jsonify({'success': True, 'job_id': job_id})
+    return jsonify({'success': True, 'job_id': job_id, 'skipped': skipped})
 
 
 @app.route('/bulk/download/<job_id>')
