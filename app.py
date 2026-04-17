@@ -3355,17 +3355,11 @@ def teacher_submit_for_student(assignment_id, student_id):
 
     script_pages = [f.read() for f in script_files if f.filename]
 
-    existing = Submission.query.filter_by(student_id=student.id, assignment_id=assignment_id).first()
-    if existing:
-        db.session.delete(existing)
-        db.session.flush()
-
-    sub = Submission(
-        student_id=student.id,
-        assignment_id=assignment_id,
-        script_bytes=script_pages[0] if script_pages else None,
-        status='pending',
-    )
+    sub, err = _prepare_new_submission(student, asn)
+    if err:
+        return jsonify({'success': False, 'error': err}), 400
+    sub.script_bytes = script_pages[0] if script_pages else None
+    sub.status = 'pending'
     sub.set_script_pages(script_pages)
     db.session.add(sub)
     db.session.commit()
