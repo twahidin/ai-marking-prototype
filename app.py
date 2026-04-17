@@ -2739,76 +2739,130 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
     """Background thread for bulk marking — marks each student sequentially."""
     results = []
     total = len(students)
+    processed_indices = set()
 
-    for i, (student, script_bytes) in enumerate(zip(students, student_scripts)):
-        jobs[job_id]['progress'] = {
-            'current': i + 1,
-            'total': total,
-            'current_name': student['name'],
-        }
+    try:
+        for i, (student, script_bytes) in enumerate(zip(students, student_scripts)):
+            jobs[job_id]['progress'] = {
+                'current': i + 1,
+                'total': total,
+                'current_name': student['name'],
+            }
 
-        try:
-            result = mark_script(
-                provider=provider,
-                question_paper_pages=question_paper_pages,
-                answer_key_pages=answer_key_pages,
-                script_pages=[script_bytes],
-                subject=subject,
-                rubrics_pages=rubrics_pages,
-                reference_pages=reference_pages,
-                review_instructions=review_instructions,
-                marking_instructions=marking_instructions,
-                model=model,
-                assign_type=assign_type,
-                scoring_mode=scoring_mode,
-                total_marks=total_marks,
-                session_keys=session_keys,
-            )
-        except Exception as e:
-            logger.error(f"Bulk job {job_id}, student {student['name']} failed: {e}")
-            result = {'error': str(e)}
-
-        results.append({
-            'index': student['index'],
-            'name': student['name'],
-            'result': result,
-        })
-
-        # Save to DB if in dept mode
-        if assignment_id and (submission_id_map or student_id_map):
             try:
-                with app.app_context():
-                    sub_id = (submission_id_map or {}).get(student['index'])
-                    if sub_id:
-                        # Pre-created draft: update result + status in place
-                        sub = Submission.query.get(sub_id)
-                        if sub:
-                            sub.status = 'error' if result.get('error') else 'done'
-                            sub.set_result(result)
-                            sub.marked_at = datetime.now(timezone.utc)
-                            db.session.commit()
-                    else:
-                        # Legacy fallback (no pre-created row) — create a new Submission
-                        student_db_id = (student_id_map or {}).get(student['index'])
-                        if student_db_id:
-                            sub = Submission(
-                                student_id=student_db_id,
-                                assignment_id=assignment_id,
-                                script_bytes=script_bytes,
-                                status='error' if result.get('error') else 'done',
-                                submitted_at=datetime.now(timezone.utc),
-                            )
-                            sub.set_result(result)
-                            sub.marked_at = datetime.now(timezone.utc)
-                            db.session.add(sub)
-                            db.session.commit()
+                result = mark_script(
+                    provider=provider,
+                    question_paper_pages=question_paper_pages,
+                    answer_key_pages=answer_key_pages,
+                    script_pages=[script_bytes],
+                    subject=subject,
+                    rubrics_pages=rubrics_pages,
+                    reference_pages=reference_pages,
+                    review_instructions=review_instructions,
+                    marking_instructions=marking_instructions,
+                    model=model,
+                    assign_type=assign_type,
+                    scoring_mode=scoring_mode,
+                    total_marks=total_marks,
+                    session_keys=session_keys,
+                )
             except Exception as e:
-                db.session.rollback()
-                logger.error(f"Failed to save submission for {student['name']}: {e}")
+                logger.error(f"Bulk job {job_id}, student {student['name']} failed: {e}")
+                result = {'error': str(e)}
+                # Ensure the pre-created row is finalized as 'error' so it doesn't
+                # linger as 'pending' and count against the student's draft cap.
+                if assignment_id and submission_id_map:
+                    sub_id = submission_id_map.get(student['index'])
+                    if sub_id:
+                        try:
+                            with app.app_context():
+                                sub = Submission.query.get(sub_id)
+                                if sub and sub.status == 'pending':
+                                    sub.status = 'error'
+                                    sub.set_result({'error': str(e)})
+                                    sub.marked_at = datetime.now(timezone.utc)
+                                    db.session.commit()
+                        except Exception as finalize_err:
+                            db.session.rollback()
+                            logger.error(
+                                f"Failed to finalize errored submission for {student['name']}: {finalize_err}"
+                            )
 
-    jobs[job_id]['results'] = results
-    jobs[job_id]['status'] = 'done'
-    jobs[job_id]['progress'] = {'current': total, 'total': total, 'current_name': 'Complete'}
+            results.append({
+                'index': student['index'],
+                'name': student['name'],
+                'result': result,
+            })
+            processed_indices.add(student['index'])
+
+            # Save to DB if in dept mode
+            if assignment_id and (submission_id_map or student_id_map):
+                try:
+                    with app.app_context():
+                        sub_id = (submission_id_map or {}).get(student['index'])
+                        if sub_id:
+                            # Pre-created draft: update result + status in place
+                            sub = Submission.query.get(sub_id)
+                            if sub:
+                                sub.status = 'error' if result.get('error') else 'done'
+                                sub.set_result(result)
+                                sub.marked_at = datetime.now(timezone.utc)
+                                db.session.commit()
+                        else:
+                            # Legacy path retained for safety; currently unreachable
+                            # Legacy fallback (no pre-created row) — create a new Submission
+                            student_db_id = (student_id_map or {}).get(student['index'])
+                            if student_db_id:
+                                sub = Submission(
+                                    student_id=student_db_id,
+                                    assignment_id=assignment_id,
+                                    script_bytes=script_bytes,
+                                    status='error' if result.get('error') else 'done',
+                                    submitted_at=datetime.now(timezone.utc),
+                                )
+                                sub.set_result(result)
+                                sub.marked_at = datetime.now(timezone.utc)
+                                db.session.add(sub)
+                                db.session.commit()
+                except Exception as e:
+                    db.session.rollback()
+                    logger.error(f"Failed to save submission for {student['name']}: {e}")
+
+        jobs[job_id]['results'] = results
+        jobs[job_id]['status'] = 'done'
+        jobs[job_id]['progress'] = {'current': total, 'total': total, 'current_name': 'Complete'}
+    except Exception as job_err:
+        # Top-level safety: if any unexpected exception escapes the per-student
+        # handler, finalize any remaining pre-created rows so they don't stay
+        # 'pending' forever and count against students' draft caps.
+        logger.error(f"Bulk job {job_id} interrupted by unexpected error: {job_err}")
+        if assignment_id and submission_id_map:
+            remaining_ids = [
+                sid for idx, sid in submission_id_map.items()
+                if idx not in processed_indices
+            ]
+            for sid in remaining_ids:
+                try:
+                    with app.app_context():
+                        sub = Submission.query.get(sid)
+                        if sub and sub.status == 'pending':
+                            sub.status = 'error'
+                            sub.set_result({'error': 'bulk job interrupted'})
+                            sub.marked_at = datetime.now(timezone.utc)
+                            db.session.commit()
+                except Exception as finalize_err:
+                    db.session.rollback()
+                    logger.error(
+                        f"Failed to finalize interrupted submission {sid}: {finalize_err}"
+                    )
+        jobs[job_id]['results'] = results
+        jobs[job_id]['status'] = 'error'
+        jobs[job_id]['error'] = str(job_err)
+        jobs[job_id]['progress'] = {
+            'current': len(processed_indices),
+            'total': total,
+            'current_name': 'Interrupted',
+        }
 
 
 @app.route('/bulk')
