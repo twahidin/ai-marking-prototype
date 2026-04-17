@@ -335,6 +335,81 @@ def _check_assignment_ownership(asn):
     return None
 
 
+def _get_final_submission(student_id, assignment_id):
+    """Return the final Submission for a (student, assignment) or None."""
+    return Submission.query.filter_by(
+        student_id=student_id,
+        assignment_id=assignment_id,
+        is_final=True,
+    ).first()
+
+
+def _count_drafts(student_id, assignment_id):
+    """Return total draft count for a (student, assignment)."""
+    return Submission.query.filter_by(
+        student_id=student_id,
+        assignment_id=assignment_id,
+    ).count()
+
+
+def _next_draft_number(student_id, assignment_id):
+    """Return 1 + max existing draft_number, or 1 if none exist."""
+    from sqlalchemy import func
+    max_n = db.session.query(func.max(Submission.draft_number)).filter_by(
+        student_id=student_id,
+        assignment_id=assignment_id,
+    ).scalar()
+    return (max_n or 0) + 1
+
+
+def _prepare_new_submission(student, assignment):
+    """Handle the write-path decision for a new submission.
+
+    Returns (new_sub_unsaved, error_message).
+    - If assignment.allow_drafts is False: deletes the existing final (legacy behavior),
+      returns a fresh Submission with draft_number = next, is_final = True.
+    - If assignment.allow_drafts is True: enforces the cap. If at cap, returns (None, msg).
+      Otherwise flips all prior drafts to is_final=False and returns a fresh Submission
+      with draft_number = next, is_final = True.
+
+    Caller is responsible for db.session.add(new_sub) and db.session.commit().
+    """
+    if not assignment.allow_drafts:
+        existing = _get_final_submission(student.id, assignment.id)
+        if existing:
+            db.session.delete(existing)
+            db.session.flush()
+        new_sub = Submission(
+            student_id=student.id,
+            assignment_id=assignment.id,
+            draft_number=_next_draft_number(student.id, assignment.id),
+            is_final=True,
+        )
+        return new_sub, None
+
+    # Drafts-enabled path
+    count = _count_drafts(student.id, assignment.id)
+    cap = assignment.max_drafts or 3
+    if count >= cap:
+        return None, f'Draft limit reached ({count}/{cap}). Delete an older draft to free a slot.'
+
+    # Flip all prior drafts (there may be 0) to is_final=False
+    Submission.query.filter_by(
+        student_id=student.id,
+        assignment_id=assignment.id,
+        is_final=True,
+    ).update({'is_final': False})
+    db.session.flush()
+
+    new_sub = Submission(
+        student_id=student.id,
+        assignment_id=assignment.id,
+        draft_number=_next_draft_number(student.id, assignment.id),
+        is_final=True,
+    )
+    return new_sub, None
+
+
 def _require_hod():
     """Return error response if not a managing role, or None if OK."""
     if not is_dept_mode() or not _is_authenticated():
