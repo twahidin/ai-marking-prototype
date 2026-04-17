@@ -510,10 +510,8 @@ async function createAssignment() {
     fd.append('total_marks', totalMarks);
     fd.append('show_results', showResults ? 'on' : '');
     const allowDrafts = document.getElementById('allow_drafts').checked;
-    if (allowDrafts) {
-        fd.append('allow_drafts', 'on');
-        fd.append('max_drafts', document.getElementById('max_drafts').value);
-    }
+    fd.append('allow_drafts', allowDrafts ? 'on' : '');
+    fd.append('max_drafts', document.getElementById('max_drafts').value);
     fd.append('review_instructions', document.getElementById('teacher_review_instructions').value);
     fd.append('marking_instructions', document.getElementById('teacher_marking_instructions').value);
 
