@@ -3500,18 +3500,11 @@ def student_upload(assignment_id):
             return jsonify({'success': False, 'error': 'Total upload too large. Maximum is 30MB combined.'}), 400
         script_pages.append(data)
 
-    # Delete existing submission if re-submitting
-    existing = Submission.query.filter_by(student_id=student.id, assignment_id=assignment_id).first()
-    if existing:
-        db.session.delete(existing)
-        db.session.flush()
-
-    sub = Submission(
-        student_id=student.id,
-        assignment_id=assignment_id,
-        script_bytes=script_pages[0] if script_pages else None,
-        status='extracting',
-    )
+    sub, err = _prepare_new_submission(student, asn)
+    if err:
+        return jsonify({'success': False, 'error': err}), 400
+    sub.script_bytes = script_pages[0] if script_pages else None
+    sub.status = 'extracting'
     sub.set_script_pages(script_pages)
     db.session.add(sub)
     db.session.commit()
