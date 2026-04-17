@@ -335,6 +335,15 @@ def _check_assignment_ownership(asn):
     return None
 
 
+def _parse_max_drafts(raw):
+    """Clamp max_drafts input to [2, 10], default 3."""
+    try:
+        n = int(raw) if raw else 3
+    except (TypeError, ValueError):
+        n = 3
+    return max(2, min(10, n))
+
+
 def _get_final_submission(student_id, assignment_id):
     """Return the final Submission for a (student, assignment) or None."""
     return Submission.query.filter_by(
@@ -3172,6 +3181,8 @@ def teacher_create():
         provider=provider,
         model=request.form.get('model', ''),
         show_results=request.form.get('show_results') == 'on',
+        allow_drafts=request.form.get('allow_drafts') == 'on',
+        max_drafts=_parse_max_drafts(request.form.get('max_drafts')),
         review_instructions=request.form.get('review_instructions', ''),
         marking_instructions=request.form.get('marking_instructions', ''),
         question_paper=qp_files[0].read(),
