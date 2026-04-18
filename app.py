@@ -3511,18 +3511,45 @@ def student_verify(assignment_id):
     students = _sort_by_index(Student.query.filter_by(class_id=asn.class_id).all()) if asn.class_id else _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
 
     # Include submission status so students can see/review previous work
-    subs = {s.student_id: s for s in Submission.query.filter_by(assignment_id=assignment_id).all()}
+    all_subs = Submission.query.filter_by(assignment_id=assignment_id).all()
+    subs_by_student = {}
+    for sub in all_subs:
+        subs_by_student.setdefault(sub.student_id, []).append(sub)
     student_list = []
     for s in students:
-        sub = subs.get(s.id)
-        entry = {'id': s.id, 'index': s.index_number, 'name': s.name}
-        if sub and sub.status == 'done':
+        student_subs = sorted(subs_by_student.get(s.id, []), key=lambda x: x.draft_number)
+        drafts = [
+            {
+                'id': sub.id,
+                'draft_number': sub.draft_number,
+                'is_final': sub.is_final,
+                'status': sub.status,
+                'submitted_at': sub.submitted_at.strftime('%d %b %I:%M%p') if sub.submitted_at else None,
+            }
+            for sub in student_subs
+            if sub.status == 'done'
+        ]
+        entry = {
+            'id': s.id,
+            'index': s.index_number,
+            'name': s.name,
+            'drafts': drafts,
+            'draft_count': len(student_subs),
+        }
+        latest_done = drafts[-1] if drafts else None
+        if latest_done:
             entry['has_submission'] = True
-            entry['submission_id'] = sub.id
+            entry['submission_id'] = latest_done['id']
         student_list.append(entry)
 
     session[f'student_auth_{assignment_id}'] = True
-    return jsonify({'success': True, 'students': student_list, 'show_results': asn.show_results})
+    return jsonify({
+        'success': True,
+        'students': student_list,
+        'show_results': asn.show_results,
+        'allow_drafts': asn.allow_drafts,
+        'max_drafts': asn.max_drafts,
+    })
 
 
 @app.route('/submit/<assignment_id>/review/<int:submission_id>')
