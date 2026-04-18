@@ -53,14 +53,6 @@
     .btn-sm.view:hover { background: #5a6fd6; }
     .btn-sm.delete { background: #fdecea; color: #dc3545; }
     .btn-sm.delete:hover { background: #f5c6cb; }
-
-    /* Drafts strip (teacher student-detail) */
-    .drafts-strip { margin: 1em 0; padding: 0.5em; background: #f7f7fa; border-radius: 6px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5em; }
-    .drafts-pills { display: flex; gap: 0.25em; flex-wrap: wrap; }
-    .draft-pill { padding: 0.25em 0.75em; border-radius: 999px; border: 1px solid #ccc; background: white; cursor: pointer; }
-    .draft-pill.active { background: #2e7cd6; color: white; border-color: #2e7cd6; }
-    .drafts-actions button { margin-left: 0.25em; }
-    .drafts-actions button.danger { background: #e44; color: white; border: none; border-radius: 4px; padding: 0.25em 0.75em; }
 </style>
 {% endblock %}
 
@@ -302,9 +294,6 @@
         </div>
 </div>
 {% endif %}
-
-<!-- Drafts strip (populated when a student detail is opened with multiple drafts) -->
-<div id="drafts_strip" class="drafts-strip" style="display:none;"></div>
 
 <!-- Bank Picker Modal -->
 <div class="modal-overlay" id="bankPickerModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;backdrop-filter:blur(4px);">
@@ -760,64 +749,6 @@ async function selectBankItem(idx) {
     }
 
     closeBankPicker();
-}
-
-/* =====================================================================
-   Drafts strip (teacher student-detail view)
-   ===================================================================== */
-async function loadDraftsStrip(assignmentId, studentId, currentSubmissionId) {
-  const strip = document.getElementById('drafts_strip');
-  if (!strip) return;
-  const res = await fetch(`/teacher/assignment/${assignmentId}/student/${studentId}/drafts`);
-  const data = await res.json();
-  if (!data.success) { strip.innerHTML = ''; strip.style.display = 'none'; return; }
-  if (data.drafts.length <= 1) { strip.innerHTML = ''; strip.style.display = 'none'; return; }
-  const pills = data.drafts.map(d => {
-    const active = d.id === currentSubmissionId ? ' active' : '';
-    const finalMark = d.is_final ? ' &#9733;' : '';
-    return `<button type="button" class="draft-pill${active}" onclick="viewDraft('${assignmentId}', ${studentId}, ${d.id})">Draft ${d.draft_number}${finalMark}</button>`;
-  }).join('');
-  const currentDraft = data.drafts.find(d => d.id === currentSubmissionId);
-  const setFinalBtn = currentDraft && !currentDraft.is_final
-    ? `<button type="button" onclick="setFinal('${assignmentId}', ${currentSubmissionId})">Set as final</button>`
-    : '';
-  const deleteBtn = `<button type="button" class="danger" onclick="deleteDraft('${assignmentId}', ${currentSubmissionId})">Delete draft</button>`;
-  strip.innerHTML = `<div class="drafts-pills">${pills}</div><div class="drafts-actions">${setFinalBtn} ${deleteBtn}</div>`;
-  strip.style.display = 'flex';
-}
-
-async function viewDraft(assignmentId, studentId, submissionId) {
-  // Fetch the specific draft's feedback and render it
-  const res = await fetch(`/teacher/assignment/${assignmentId}/submission/${submissionId}/result`);
-  const data = await res.json();
-  if (!data.success) return;
-  // Call the existing render-feedback function with data.result (if one is present
-  // on this page). class.html is the assignments list page and does not render
-  // per-student feedback itself — the teacher_detail.html template handles that.
-  // If those hooks happen to be exposed globally, use them; otherwise fall back
-  // to refreshing the drafts strip only (known limitation: feedback body isn't
-  // swapped from this page; see teacher_detail.html for the rendering path).
-  if (typeof renderStudentFeedback === 'function') {
-    renderStudentFeedback(data.result);
-  } else if (typeof showFeedback === 'function') {
-    showFeedback(data.result);
-  }
-  loadDraftsStrip(assignmentId, studentId, submissionId);
-}
-
-async function setFinal(assignmentId, submissionId) {
-  const res = await fetch(`/teacher/assignment/${assignmentId}/submission/${submissionId}/set-final`, { method: 'POST' });
-  const data = await res.json();
-  if (data.success) { window.location.reload(); }
-  else { alert(data.error || 'Failed'); }
-}
-
-async function deleteDraft(assignmentId, submissionId) {
-  if (!confirm('Delete this draft? This cannot be undone.')) return;
-  const res = await fetch(`/teacher/assignment/${assignmentId}/submission/${submissionId}/delete`, { method: 'POST' });
-  const data = await res.json();
-  if (data.success) { window.location.reload(); }
-  else { alert(data.error || 'Failed'); }
 }
 
 /* =====================================================================
