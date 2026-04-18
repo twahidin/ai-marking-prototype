@@ -53,7 +53,6 @@
     .btn-sm.view:hover { background: #5a6fd6; }
     .btn-sm.delete { background: #fdecea; color: #dc3545; }
     .btn-sm.delete:hover { background: #f5c6cb; }
-
 </style>
 {% endblock %}
 
@@ -180,6 +179,16 @@
             <div class="check-row">
                 <input type="checkbox" id="teacherShowResults" checked>
                 <label for="teacherShowResults">Allow students to see AI feedback immediately</label>
+            </div>
+
+            <!-- Allow drafts toggle -->
+            <div class="check-row">
+                <input type="checkbox" id="allow_drafts" name="allow_drafts" onchange="onAllowDraftsChange()">
+                <label for="allow_drafts">Allow students to submit multiple drafts</label>
+            </div>
+            <div class="form-group" id="max_drafts_row" style="display:none;">
+                <label for="max_drafts">Maximum drafts per student</label>
+                <input type="number" class="marks-input" id="max_drafts" name="max_drafts" value="3" min="2" max="10">
             </div>
 
             <!-- Upload Files -->
@@ -434,6 +443,12 @@ function showTeacherError(msg) { const el = document.getElementById('teacherErro
 function hideTeacherError() { document.getElementById('teacherErrorMsg').style.display = 'none'; }
 function hideTeacherSuccess() { document.getElementById('teacherSuccessMsg').style.display = 'none'; }
 
+function onAllowDraftsChange() {
+    const cb = document.getElementById('allow_drafts');
+    const row = document.getElementById('max_drafts_row');
+    row.style.display = cb.checked ? '' : 'none';
+}
+
 async function createAssignment() {
     hideTeacherError();
     hideTeacherSuccess();
@@ -493,6 +508,9 @@ async function createAssignment() {
     fd.append('scoring_mode', scoringMode);
     fd.append('total_marks', totalMarks);
     fd.append('show_results', showResults ? 'on' : '');
+    const allowDrafts = document.getElementById('allow_drafts').checked;
+    fd.append('allow_drafts', allowDrafts ? 'on' : '');
+    fd.append('max_drafts', document.getElementById('max_drafts').value);
     fd.append('review_instructions', document.getElementById('teacher_review_instructions').value);
     fd.append('marking_instructions', document.getElementById('teacher_marking_instructions').value);
 

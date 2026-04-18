@@ -59,6 +59,18 @@ def _migrate_add_columns(app):
                 db.session.execute(text('ALTER TABLE submissions ADD COLUMN student_amended BOOLEAN DEFAULT FALSE'))
                 db.session.commit()
                 logger.info('Added student_amended column to submissions table')
+            if 'draft_number' not in columns:
+                db.session.execute(text('ALTER TABLE submissions ADD COLUMN draft_number INTEGER DEFAULT 1 NOT NULL'))
+                db.session.commit()
+                logger.info('Added draft_number column to submissions table')
+            if 'is_final' not in columns:
+                db.session.execute(text('ALTER TABLE submissions ADD COLUMN is_final BOOLEAN DEFAULT TRUE NOT NULL'))
+                db.session.execute(text('CREATE INDEX IF NOT EXISTS ix_submissions_is_final ON submissions (is_final)'))
+                db.session.commit()
+                db.session.execute(text('UPDATE submissions SET draft_number = 1 WHERE draft_number IS NULL'))
+                db.session.execute(text('UPDATE submissions SET is_final = TRUE WHERE is_final IS NULL'))
+                db.session.commit()
+                logger.info('Added is_final column to submissions table and backfilled defaults')
         if 'students' in inspector.get_table_names():
             columns = [c['name'] for c in inspector.get_columns('students')]
             if 'class_id' not in columns:
@@ -106,6 +118,14 @@ def _migrate_add_columns(app):
                 db.session.execute(text("ALTER TABLE assignments ADD COLUMN teacher_id VARCHAR(36)"))
                 db.session.commit()
                 logger.info('Added teacher_id column to assignments table')
+            if 'allow_drafts' not in columns:
+                db.session.execute(text('ALTER TABLE assignments ADD COLUMN allow_drafts BOOLEAN DEFAULT FALSE NOT NULL'))
+                db.session.commit()
+                logger.info('Added allow_drafts column to assignments table')
+            if 'max_drafts' not in columns:
+                db.session.execute(text('ALTER TABLE assignments ADD COLUMN max_drafts INTEGER DEFAULT 3 NOT NULL'))
+                db.session.commit()
+                logger.info('Added max_drafts column to assignments table')
 
 
 def init_db(app):
@@ -171,6 +191,8 @@ class Assignment(db.Model):
     provider = db.Column(db.String(20), default='anthropic')
     model = db.Column(db.String(100), default='')
     show_results = db.Column(db.Boolean, default=True)
+    allow_drafts = db.Column(db.Boolean, default=False)
+    max_drafts = db.Column(db.Integer, default=3)
     review_instructions = db.Column(db.Text, default='')
     marking_instructions = db.Column(db.Text, default='')
 
@@ -256,7 +278,7 @@ class Student(db.Model):
     index_number = db.Column(db.String(50), nullable=False)
     name = db.Column(db.String(200), nullable=False)
 
-    submission = db.relationship('Submission', backref='student', uselist=False, lazy=True, cascade='all, delete-orphan')
+    submissions = db.relationship('Submission', backref='student', lazy=True, cascade='all, delete-orphan')
 
 
 class Submission(db.Model):
@@ -272,6 +294,8 @@ class Submission(db.Model):
     extracted_text_json = db.Column(db.Text)  # AI-extracted answers (original)
     student_text_json = db.Column(db.Text)  # Student-confirmed answers (may be edited)
     student_amended = db.Column(db.Boolean, default=False)  # True if student edited extracted text
+    draft_number = db.Column(db.Integer, default=1, nullable=False)
+    is_final = db.Column(db.Boolean, default=True, nullable=False, index=True)
     submitted_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     marked_at = db.Column(db.DateTime)
 

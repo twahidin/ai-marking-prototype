@@ -120,6 +120,22 @@
     .diff-label { font-size: 12px; font-weight: 700; color: #667eea; text-transform: uppercase; margin-bottom: 6px; }
     .diff-original { font-size: 13px; color: #888; line-height: 1.6; white-space: pre-wrap; }
     .diff-amended { font-size: 13px; color: #333; line-height: 1.6; white-space: pre-wrap; border-left: 3px solid #e68a00; padding-left: 10px; margin-top: 6px; background: #fffcf5; }
+
+    /* Drafts strip (teacher student-detail) */
+    .drafts-strip { margin: 1em 0; padding: 0.5em; background: #f7f7fa; border-radius: 6px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5em; }
+    .drafts-pills { display: flex; gap: 0.25em; flex-wrap: wrap; }
+    .draft-pill { padding: 0.25em 0.75em; border-radius: 999px; border: 1px solid #ccc; background: white; cursor: pointer; font-size: 12px; }
+    .draft-pill.active { background: #2e7cd6; color: white; border-color: #2e7cd6; }
+    .drafts-actions button { margin-left: 0.25em; padding: 0.25em 0.75em; border-radius: 4px; border: 1px solid #ccc; background: white; cursor: pointer; font-size: 12px; }
+    .drafts-actions button.danger { background: #e44; color: white; border: none; }
+    .drafts-row td { padding: 0 14px !important; background: #fafaff; }
+    .drafts-row.hidden { display: none; }
+    .view-drafts-btn {
+        padding: 4px 10px; border: 1px solid #2e7cd6; border-radius: 6px;
+        background: white; color: #2e7cd6; font-size: 11px; font-weight: 600;
+        cursor: pointer; transition: all 0.2s; margin-left: 6px;
+    }
+    .view-drafts-btn:hover { background: #e8f1fc; }
 </style>
 {% endblock %}
 
@@ -229,6 +245,12 @@
             </div>
             <div class="progress-status" id="bulkProgressStatus">Starting...</div>
         </div>
+
+        <!-- Skipped students (draft cap reached) -->
+        <div id="bulkSkippedCard" style="display:none;margin-top:16px;padding:12px;border:1px solid #f0c36d;background:#fffbe6;border-radius:6px;">
+            <div style="font-weight:600;margin-bottom:6px;">Skipped students (cap reached):</div>
+            <ul id="bulkSkippedList" style="margin:0;padding-left:20px;"></ul>
+        </div>
     </div>
 
     <!-- Submissions Table -->
@@ -287,8 +309,18 @@
                                 {% if s.student_amended and s.submission_id %}
                                 <button class="view-extracted-btn" onclick="viewExtracted({{ s.submission_id }}, '{{ s.name | e }}')">View Edits</button>
                                 {% endif %}
+                                {% if assignment.allow_drafts and s.submission_id %}
+                                <button class="view-drafts-btn" onclick="toggleDraftsRow('{{ s.student_id }}', {{ s.submission_id }})">Drafts</button>
+                                {% endif %}
                             </td>
                         </tr>
+                        {% if assignment.allow_drafts and s.submission_id %}
+                        <tr class="drafts-row hidden" id="drafts_row_{{ s.student_id }}">
+                            <td colspan="6">
+                                <div id="drafts_strip_{{ s.student_id }}" class="drafts-strip" style="display:none;"></div>
+                            </td>
+                        </tr>
+                        {% endif %}
                         {% endfor %}
                     </tbody>
                 </table>
@@ -574,6 +606,9 @@ async function submitBulkMarking(pageCounts) {
     try {
         var res = await fetch('/bulk/mark', { method: 'POST', body: fd });
         var data = await res.json();
+        if (data.skipped) {
+            renderBulkSkipped(data.skipped);
+        }
         if (!data.success) {
             document.getElementById('bulkProgressCard').style.display = 'none';
             showBulkError(data.error || 'Failed.');
@@ -589,11 +624,35 @@ async function submitBulkMarking(pageCounts) {
     }
 }
 
+function renderBulkSkipped(skipped) {
+    var card = document.getElementById('bulkSkippedCard');
+    var list = document.getElementById('bulkSkippedList');
+    if (!card || !list) return;
+    if (!skipped || !skipped.length) {
+        card.style.display = 'none';
+        return;
+    }
+    list.innerHTML = '';
+    for (var i = 0; i < skipped.length; i++) {
+        var s = skipped[i];
+        var li = document.createElement('li');
+        var label = (s.index ? s.index + ' — ' : '') + (s.name || '(unknown)');
+        var reason = s.reason ? ' (' + s.reason + ')' : '';
+        li.textContent = label + reason;
+        list.appendChild(li);
+    }
+    card.style.display = 'block';
+}
+
 async function pollBulkStatus() {
     if (!bulkJobId) return;
     try {
         var res = await fetch('/status/' + bulkJobId);
         var data = await res.json();
+
+        if (data.skipped) {
+            renderBulkSkipped(data.skipped);
+        }
 
         if (data.progress) {
             var pct = Math.round((data.progress.current / data.progress.total) * 100);
@@ -615,8 +674,9 @@ async function pollBulkStatus() {
             return;
         }
 
-        // Reload page to show updated statuses
-        window.location.reload();
+        // If any students were skipped, pause 3s so the teacher can see the notice before reload
+        var delay = (data.skipped && data.skipped.length) ? 3000 : 0;
+        setTimeout(function() { window.location.reload(); }, delay);
     } catch (err) { setTimeout(pollBulkStatus, 3000); }
 }
 
@@ -684,6 +744,94 @@ function openShareModal() {
 function closeShareModal() { document.getElementById('shareModal').classList.remove('active'); }
 
 document.getElementById('shareModal').addEventListener('click', function(e) { if (e.target === this) closeShareModal(); });
+
+/* =====================================================================
+   Drafts strip (teacher student-detail view)
+   -----------------------------------------------------------------------
+   teacher_detail.html is a server-rendered table. There is no in-page
+   per-student "feedback panel" to swap. Each student's feedback is viewed
+   by downloading the PDF. The drafts strip therefore:
+     - Shows pills per draft (star marks the final one)
+     - Clicking a pill opens that draft's PDF report in a new tab
+     - "Set as final" promotes the currently-final draft and reloads
+     - "Delete draft" removes the draft and reloads
+   ===================================================================== */
+var ASSIGNMENT_ID_FOR_DRAFTS = '{{ assignment.id }}';
+
+async function toggleDraftsRow(studentId, currentSubmissionId) {
+    var row = document.getElementById('drafts_row_' + studentId);
+    if (!row) return;
+    var wasHidden = row.classList.contains('hidden');
+    row.classList.toggle('hidden');
+    if (wasHidden) {
+        await loadDraftsStrip(ASSIGNMENT_ID_FOR_DRAFTS, studentId, currentSubmissionId);
+    }
+}
+
+async function loadDraftsStrip(assignmentId, studentId, currentSubmissionId) {
+    var strip = document.getElementById('drafts_strip_' + studentId);
+    if (!strip) return;
+    try {
+        var res = await fetch('/teacher/assignment/' + assignmentId + '/student/' + studentId + '/drafts');
+        var data = await res.json();
+        if (!data.success) { strip.innerHTML = ''; strip.style.display = 'none'; return; }
+        // If no currentSubmissionId provided, pick the final one
+        if (currentSubmissionId == null) {
+            var finalDraft = data.drafts.find(function(d) { return d.is_final; });
+            currentSubmissionId = finalDraft ? finalDraft.id : (data.drafts.length ? data.drafts[data.drafts.length - 1].id : null);
+        }
+        if (!data.drafts.length) { strip.innerHTML = '<em style="color:#888;font-size:12px;">No drafts.</em>'; strip.style.display = 'flex'; return; }
+        var pills = data.drafts.map(function(d) {
+            var active = d.id === currentSubmissionId ? ' active' : '';
+            var finalMark = d.is_final ? ' &#9733;' : '';
+            return '<button type="button" class="draft-pill' + active + '" onclick="viewDraft(\'' + assignmentId + '\', ' + studentId + ', ' + d.id + ')">Draft ' + d.draft_number + finalMark + '</button>';
+        }).join('');
+        var currentDraft = data.drafts.find(function(d) { return d.id === currentSubmissionId; });
+        var setFinalBtn = currentDraft && !currentDraft.is_final
+            ? '<button type="button" onclick="setFinal(\'' + assignmentId + '\', ' + currentSubmissionId + ')">Set as final</button>'
+            : '';
+        var deleteBtn = '<button type="button" class="danger" onclick="deleteDraft(\'' + assignmentId + '\', ' + studentId + ', ' + currentSubmissionId + ')">Delete draft</button>';
+        strip.innerHTML = '<div class="drafts-pills">' + pills + '</div><div class="drafts-actions">' + setFinalBtn + ' ' + deleteBtn + '</div>';
+        strip.style.display = 'flex';
+    } catch (err) {
+        strip.innerHTML = '<em style="color:#c00;font-size:12px;">Failed to load drafts.</em>';
+        strip.style.display = 'flex';
+    }
+}
+
+async function viewDraft(assignmentId, studentId, submissionId) {
+    // Verify the draft's result endpoint responds (ownership check), then
+    // open the PDF report in a new tab. Re-render the strip with the new
+    // active pill so the UI reflects what was just viewed.
+    try {
+        var res = await fetch('/teacher/assignment/' + assignmentId + '/submission/' + submissionId + '/result');
+        var data = await res.json();
+        if (!data.success) { alert(data.error || 'Could not load draft.'); return; }
+        window.open('/submit/' + assignmentId + '/download/' + submissionId, '_blank');
+        loadDraftsStrip(assignmentId, studentId, submissionId);
+    } catch (err) {
+        alert('Network error loading draft.');
+    }
+}
+
+async function setFinal(assignmentId, submissionId) {
+    try {
+        var res = await fetch('/teacher/assignment/' + assignmentId + '/submission/' + submissionId + '/set-final', { method: 'POST' });
+        var data = await res.json();
+        if (data.success) { window.location.reload(); }
+        else { alert(data.error || 'Failed'); }
+    } catch (err) { alert('Network error.'); }
+}
+
+async function deleteDraft(assignmentId, studentId, submissionId) {
+    if (!confirm('Delete this draft? This cannot be undone.')) return;
+    try {
+        var res = await fetch('/teacher/assignment/' + assignmentId + '/submission/' + submissionId + '/delete', { method: 'POST' });
+        var data = await res.json();
+        if (data.success) { window.location.reload(); }
+        else { alert(data.error || 'Failed'); }
+    } catch (err) { alert('Network error.'); }
+}
 
 async function doShare() {
     var errEl = document.getElementById('shareError');

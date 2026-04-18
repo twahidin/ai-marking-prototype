@@ -335,6 +335,90 @@ def _check_assignment_ownership(asn):
     return None
 
 
+def _parse_max_drafts(raw):
+    """Clamp max_drafts input to [2, 10], default 3."""
+    try:
+        n = int(raw) if raw else 3
+    except (TypeError, ValueError):
+        n = 3
+    return max(2, min(10, n))
+
+
+def _get_final_submission(student_id, assignment_id):
+    """Return the final Submission for a (student, assignment) or None."""
+    return Submission.query.filter_by(
+        student_id=student_id,
+        assignment_id=assignment_id,
+        is_final=True,
+    ).first()
+
+
+def _count_drafts(student_id, assignment_id):
+    """Return total draft count for a (student, assignment)."""
+    return Submission.query.filter_by(
+        student_id=student_id,
+        assignment_id=assignment_id,
+    ).count()
+
+
+def _next_draft_number(student_id, assignment_id):
+    """Return 1 + max existing draft_number, or 1 if none exist."""
+    from sqlalchemy import func
+    max_n = db.session.query(func.max(Submission.draft_number)).filter_by(
+        student_id=student_id,
+        assignment_id=assignment_id,
+    ).scalar()
+    return (max_n or 0) + 1
+
+
+def _prepare_new_submission(student, assignment):
+    """Handle the write-path decision for a new submission.
+
+    Returns (new_sub_unsaved, error_message).
+    - If assignment.allow_drafts is False: deletes the existing final (legacy behavior),
+      returns a fresh Submission with draft_number = next, is_final = True.
+    - If assignment.allow_drafts is True: enforces the cap. If at cap, returns (None, msg).
+      Otherwise flips all prior drafts to is_final=False and returns a fresh Submission
+      with draft_number = next, is_final = True.
+
+    Caller is responsible for db.session.add(new_sub) and db.session.commit().
+    """
+    if not assignment.allow_drafts:
+        existing = _get_final_submission(student.id, assignment.id)
+        if existing:
+            db.session.delete(existing)
+            db.session.flush()
+        new_sub = Submission(
+            student_id=student.id,
+            assignment_id=assignment.id,
+            draft_number=_next_draft_number(student.id, assignment.id),
+            is_final=True,
+        )
+        return new_sub, None
+
+    # Drafts-enabled path
+    count = _count_drafts(student.id, assignment.id)
+    cap = assignment.max_drafts or 3
+    if count >= cap:
+        return None, f'Draft limit reached ({count}/{cap}). Delete an older draft to free a slot.'
+
+    # Flip all prior drafts (there may be 0) to is_final=False
+    Submission.query.filter_by(
+        student_id=student.id,
+        assignment_id=assignment.id,
+        is_final=True,
+    ).update({'is_final': False})
+    db.session.flush()
+
+    new_sub = Submission(
+        student_id=student.id,
+        assignment_id=assignment.id,
+        draft_number=_next_draft_number(student.id, assignment.id),
+        is_final=True,
+    )
+    return new_sub, None
+
+
 def _require_hod():
     """Return error response if not a managing role, or None if OK."""
     if not is_dept_mode() or not _is_authenticated():
@@ -783,6 +867,8 @@ def job_status(job_id):
         return jsonify({'success': False, 'error': 'Job not found'}), 404
 
     response = {'success': True, 'status': job['status']}
+    if job.get('bulk') and 'skipped' in job:
+        response['skipped'] = job.get('skipped', [])
     if job['status'] in ('done', 'error'):
         # Bulk jobs store results in 'results' (list), single in 'result' (dict)
         if job.get('bulk'):
@@ -1354,7 +1440,7 @@ def department_insights_data():
     assignment_id = request.args.get('assignment_id')
     class_id = request.args.get('class_id')
 
-    query = Submission.query.filter_by(status='done')
+    query = Submission.query.filter_by(status='done', is_final=True)
     if assignment_id:
         query = query.filter_by(assignment_id=assignment_id)
 
@@ -1453,7 +1539,7 @@ def department_item_analysis():
     all_qnums = set()
 
     for asn in assignments:
-        subs = Submission.query.filter_by(assignment_id=asn.id, status='done').all()
+        subs = Submission.query.filter_by(assignment_id=asn.id, status='done', is_final=True).all()
         q_stats = {}
         for sub in subs:
             questions = sub.get_result().get('questions', [])
@@ -1556,7 +1642,7 @@ def department_analyze():
         return jsonify({'success': False, 'error': f'No API key for {provider}'}), 400
 
     # Gather insights data
-    query = Submission.query.filter_by(status='done')
+    query = Submission.query.filter_by(status='done', is_final=True)
     if asn_filter:
         query = query.filter_by(assignment_id=asn_filter)
 
@@ -1727,7 +1813,7 @@ def _build_class_performance_data(assignment_id):
     students = Student.query.filter_by(class_id=asn.class_id)\
         .order_by(Student.index_number).all()
     subs = {s.student_id: s for s in
-            Submission.query.filter_by(assignment_id=assignment_id).all()}
+            Submission.query.filter_by(assignment_id=assignment_id, is_final=True).all()}
 
     heatmap = []
     all_scores = []  # (student_id, total_pct)
@@ -2060,7 +2146,7 @@ def class_insights_analyze(assignment_id):
 
     # Collect sample student answers for pattern analysis (up to 20 per question)
     asn = Assignment.query.get(assignment_id)
-    subs = Submission.query.filter_by(assignment_id=assignment_id, status='done').all()
+    subs = Submission.query.filter_by(assignment_id=assignment_id, status='done', is_final=True).all()
     answer_samples = {}
     for sub in subs:
         result = sub.get_result()
@@ -2326,7 +2412,7 @@ def department_export_csv():
     assignment_id = request.args.get('assignment_id')
     class_id = request.args.get('class_id')
 
-    query = Submission.query.filter_by(status='done')
+    query = Submission.query.filter_by(status='done', is_final=True)
     if assignment_id:
         query = query.filter_by(assignment_id=assignment_id)
 
@@ -2649,69 +2735,134 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                          rubrics_pages, reference_pages, student_scripts, students,
                          subject, review_instructions, marking_instructions,
                          assign_type, scoring_mode, total_marks, session_keys,
-                         assignment_id=None, student_id_map=None):
+                         assignment_id=None, student_id_map=None, submission_id_map=None):
     """Background thread for bulk marking — marks each student sequentially."""
     results = []
     total = len(students)
+    processed_indices = set()
 
-    for i, (student, script_bytes) in enumerate(zip(students, student_scripts)):
-        jobs[job_id]['progress'] = {
-            'current': i + 1,
-            'total': total,
-            'current_name': student['name'],
-        }
+    try:
+        for i, (student, script_bytes) in enumerate(zip(students, student_scripts)):
+            jobs[job_id]['progress'] = {
+                'current': i + 1,
+                'total': total,
+                'current_name': student['name'],
+            }
 
-        try:
-            result = mark_script(
-                provider=provider,
-                question_paper_pages=question_paper_pages,
-                answer_key_pages=answer_key_pages,
-                script_pages=[script_bytes],
-                subject=subject,
-                rubrics_pages=rubrics_pages,
-                reference_pages=reference_pages,
-                review_instructions=review_instructions,
-                marking_instructions=marking_instructions,
-                model=model,
-                assign_type=assign_type,
-                scoring_mode=scoring_mode,
-                total_marks=total_marks,
-                session_keys=session_keys,
-            )
-        except Exception as e:
-            logger.error(f"Bulk job {job_id}, student {student['name']} failed: {e}")
-            result = {'error': str(e)}
-
-        results.append({
-            'index': student['index'],
-            'name': student['name'],
-            'result': result,
-        })
-
-        # Save to DB if in dept mode
-        if assignment_id and student_id_map:
             try:
-                with app.app_context():
-                    student_db_id = student_id_map.get(student['index'])
-                    if student_db_id:
-                        sub = Submission(
-                            student_id=student_db_id,
-                            assignment_id=assignment_id,
-                            script_bytes=script_bytes,
-                            status='error' if result.get('error') else 'done',
-                            submitted_at=datetime.now(timezone.utc),
-                        )
-                        sub.set_result(result)
-                        sub.marked_at = datetime.now(timezone.utc)
-                        db.session.add(sub)
-                        db.session.commit()
+                result = mark_script(
+                    provider=provider,
+                    question_paper_pages=question_paper_pages,
+                    answer_key_pages=answer_key_pages,
+                    script_pages=[script_bytes],
+                    subject=subject,
+                    rubrics_pages=rubrics_pages,
+                    reference_pages=reference_pages,
+                    review_instructions=review_instructions,
+                    marking_instructions=marking_instructions,
+                    model=model,
+                    assign_type=assign_type,
+                    scoring_mode=scoring_mode,
+                    total_marks=total_marks,
+                    session_keys=session_keys,
+                )
             except Exception as e:
-                db.session.rollback()
-                logger.error(f"Failed to save submission for {student['name']}: {e}")
+                logger.error(f"Bulk job {job_id}, student {student['name']} failed: {e}")
+                result = {'error': str(e)}
+                # Ensure the pre-created row is finalized as 'error' so it doesn't
+                # linger as 'pending' and count against the student's draft cap.
+                if assignment_id and submission_id_map:
+                    sub_id = submission_id_map.get(student['index'])
+                    if sub_id:
+                        try:
+                            with app.app_context():
+                                sub = Submission.query.get(sub_id)
+                                if sub and sub.status == 'pending':
+                                    sub.status = 'error'
+                                    sub.set_result({'error': str(e)})
+                                    sub.marked_at = datetime.now(timezone.utc)
+                                    db.session.commit()
+                        except Exception as finalize_err:
+                            db.session.rollback()
+                            logger.error(
+                                f"Failed to finalize errored submission for {student['name']}: {finalize_err}"
+                            )
 
-    jobs[job_id]['results'] = results
-    jobs[job_id]['status'] = 'done'
-    jobs[job_id]['progress'] = {'current': total, 'total': total, 'current_name': 'Complete'}
+            results.append({
+                'index': student['index'],
+                'name': student['name'],
+                'result': result,
+            })
+            processed_indices.add(student['index'])
+
+            # Save to DB if in dept mode
+            if assignment_id and (submission_id_map or student_id_map):
+                try:
+                    with app.app_context():
+                        sub_id = (submission_id_map or {}).get(student['index'])
+                        if sub_id:
+                            # Pre-created draft: update result + status in place
+                            sub = Submission.query.get(sub_id)
+                            if sub:
+                                sub.status = 'error' if result.get('error') else 'done'
+                                sub.set_result(result)
+                                sub.marked_at = datetime.now(timezone.utc)
+                                db.session.commit()
+                        else:
+                            # Legacy path retained for safety; currently unreachable
+                            # Legacy fallback (no pre-created row) — create a new Submission
+                            student_db_id = (student_id_map or {}).get(student['index'])
+                            if student_db_id:
+                                sub = Submission(
+                                    student_id=student_db_id,
+                                    assignment_id=assignment_id,
+                                    script_bytes=script_bytes,
+                                    status='error' if result.get('error') else 'done',
+                                    submitted_at=datetime.now(timezone.utc),
+                                )
+                                sub.set_result(result)
+                                sub.marked_at = datetime.now(timezone.utc)
+                                db.session.add(sub)
+                                db.session.commit()
+                except Exception as e:
+                    db.session.rollback()
+                    logger.error(f"Failed to save submission for {student['name']}: {e}")
+
+        jobs[job_id]['results'] = results
+        jobs[job_id]['status'] = 'done'
+        jobs[job_id]['progress'] = {'current': total, 'total': total, 'current_name': 'Complete'}
+    except Exception as job_err:
+        # Top-level safety: if any unexpected exception escapes the per-student
+        # handler, finalize any remaining pre-created rows so they don't stay
+        # 'pending' forever and count against students' draft caps.
+        logger.error(f"Bulk job {job_id} interrupted by unexpected error: {job_err}")
+        if assignment_id and submission_id_map:
+            remaining_ids = [
+                sid for idx, sid in submission_id_map.items()
+                if idx not in processed_indices
+            ]
+            for sid in remaining_ids:
+                try:
+                    with app.app_context():
+                        sub = Submission.query.get(sid)
+                        if sub and sub.status == 'pending':
+                            sub.status = 'error'
+                            sub.set_result({'error': 'bulk job interrupted'})
+                            sub.marked_at = datetime.now(timezone.utc)
+                            db.session.commit()
+                except Exception as finalize_err:
+                    db.session.rollback()
+                    logger.error(
+                        f"Failed to finalize interrupted submission {sid}: {finalize_err}"
+                    )
+        jobs[job_id]['results'] = results
+        jobs[job_id]['status'] = 'error'
+        jobs[job_id]['error'] = str(job_err)
+        jobs[job_id]['progress'] = {
+            'current': len(processed_indices),
+            'total': total,
+            'current_name': 'Interrupted',
+        }
 
 
 @app.route('/bulk')
@@ -2791,17 +2942,52 @@ def bulk_mark():
     except Exception as e:
         return jsonify({'success': False, 'error': f'Error splitting PDF: {e}'}), 400
 
-    # Delete existing submissions for students being re-marked
-    for s in students_to_mark:
-        existing = Submission.query.filter_by(student_id=s['db_id'], assignment_id=assignment_id).first()
-        if existing:
-            db.session.delete(existing)
-    db.session.commit()
+    # Prepare a new submission row per student via _prepare_new_submission.
+    # This honours allow_drafts + max_drafts: students at cap are skipped and surfaced.
+    skipped = []
+    filtered_students = []
+    filtered_scripts = []
+    submission_id_map = {}  # student index -> pre-created submission id
+    for s, script_bytes in zip(students_to_mark, student_scripts):
+        student_obj = Student.query.get(s['db_id'])
+        if student_obj is None:
+            skipped.append({
+                'index': s.get('index'),
+                'name': s.get('name'),
+                'reason': 'Student not found',
+            })
+            continue
+        new_sub, err = _prepare_new_submission(student_obj, asn)
+        if err:
+            skipped.append({
+                'index': s.get('index'),
+                'name': s.get('name'),
+                'reason': err,
+            })
+            continue
+        new_sub.script_bytes = script_bytes
+        new_sub.status = 'pending'
+        new_sub.set_script_pages([script_bytes])
+        db.session.add(new_sub)
+        db.session.commit()
+        submission_id_map[s['index']] = new_sub.id
+        filtered_students.append(s)
+        filtered_scripts.append(script_bytes)
+
+    students_to_mark = filtered_students
+    student_scripts = filtered_scripts
+
+    if not students_to_mark:
+        return jsonify({
+            'success': False,
+            'error': 'No students eligible for marking (all at draft cap or no students selected).',
+            'skipped': skipped,
+        }), 400
 
     # Use assignment's stored settings
     session_keys = _resolve_api_keys(asn)
 
-    # Build student_id_map for the background thread
+    # Build student_id_map for the background thread (kept for backward-compat logging)
     student_id_map = {s['index']: s['db_id'] for s in students_to_mark}
 
     # Get files from assignment record
@@ -2817,6 +3003,7 @@ def bulk_mark():
         'status': 'processing',
         'result': None,
         'results': [],
+        'skipped': skipped,
         'subject': asn.subject,
         'created_at': time.time(),
         'progress': {'current': 0, 'total': len(students_to_mark), 'current_name': 'Starting...'},
@@ -2830,12 +3017,12 @@ def bulk_mark():
               rubrics_pages, reference_pages, student_scripts, students_to_mark,
               asn.subject, asn.review_instructions, asn.marking_instructions,
               asn.assign_type, asn.scoring_mode, asn.total_marks, session_keys,
-              assignment_id, student_id_map),
+              assignment_id, student_id_map, submission_id_map),
         daemon=True
     )
     thread.start()
 
-    return jsonify({'success': True, 'job_id': job_id})
+    return jsonify({'success': True, 'job_id': job_id, 'skipped': skipped})
 
 
 @app.route('/bulk/download/<job_id>')
@@ -3097,6 +3284,8 @@ def teacher_create():
         provider=provider,
         model=request.form.get('model', ''),
         show_results=request.form.get('show_results') == 'on',
+        allow_drafts=request.form.get('allow_drafts') == 'on',
+        max_drafts=_parse_max_drafts(request.form.get('max_drafts')),
         review_instructions=request.form.get('review_instructions', ''),
         marking_instructions=request.form.get('marking_instructions', ''),
         question_paper=qp_files[0].read(),
@@ -3155,7 +3344,7 @@ def teacher_assignment_detail(assignment_id):
 
     student_data = []
     for s in students:
-        sub = Submission.query.filter_by(student_id=s.id, assignment_id=assignment_id).first()
+        sub = Submission.query.filter_by(student_id=s.id, assignment_id=assignment_id, is_final=True).first()
         result = sub.get_result() if sub else {}
         questions = result.get('questions', [])
         has_marks = any(q.get('marks_awarded') is not None for q in questions)
@@ -3192,7 +3381,7 @@ def teacher_download_all(assignment_id):
     err = _check_assignment_ownership(asn)
     if err:
         return err
-    submissions = Submission.query.filter_by(assignment_id=assignment_id, status='done').all()
+    submissions = Submission.query.filter_by(assignment_id=assignment_id, status='done', is_final=True).all()
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -3218,7 +3407,7 @@ def teacher_overview(assignment_id):
     err = _check_assignment_ownership(asn)
     if err:
         return err
-    submissions = Submission.query.filter_by(assignment_id=assignment_id, status='done').all()
+    submissions = Submission.query.filter_by(assignment_id=assignment_id, status='done', is_final=True).all()
 
     student_results = []
     for sub in submissions:
@@ -3269,17 +3458,11 @@ def teacher_submit_for_student(assignment_id, student_id):
 
     script_pages = [f.read() for f in script_files if f.filename]
 
-    existing = Submission.query.filter_by(student_id=student.id, assignment_id=assignment_id).first()
-    if existing:
-        db.session.delete(existing)
-        db.session.flush()
-
-    sub = Submission(
-        student_id=student.id,
-        assignment_id=assignment_id,
-        script_bytes=script_pages[0] if script_pages else None,
-        status='pending',
-    )
+    sub, err = _prepare_new_submission(student, asn)
+    if err:
+        return jsonify({'success': False, 'error': err}), 400
+    sub.script_bytes = script_pages[0] if script_pages else None
+    sub.status = 'pending'
     sub.set_script_pages(script_pages)
     db.session.add(sub)
     db.session.commit()
@@ -3292,6 +3475,92 @@ def teacher_submit_for_student(assignment_id, student_id):
     thread.start()
 
     return jsonify({'success': True})
+
+
+@app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/set-final', methods=['POST'])
+def teacher_set_final(assignment_id, submission_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+    Submission.query.filter_by(
+        student_id=sub.student_id,
+        assignment_id=assignment_id,
+        is_final=True,
+    ).update({'is_final': False})
+    sub.is_final = True
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/delete', methods=['POST'])
+def teacher_delete_draft(assignment_id, submission_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+    was_final = sub.is_final
+    student_id = sub.student_id
+    db.session.delete(sub)
+    db.session.flush()
+    if was_final:
+        latest = Submission.query.filter_by(
+            student_id=student_id,
+            assignment_id=assignment_id,
+        ).order_by(Submission.draft_number.desc()).first()
+        if latest:
+            latest.is_final = True
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/teacher/assignment/<assignment_id>/student/<int:student_id>/drafts')
+def teacher_student_drafts(assignment_id, student_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    subs = Submission.query.filter_by(
+        student_id=student_id,
+        assignment_id=assignment_id,
+    ).order_by(Submission.draft_number).all()
+    return jsonify({
+        'success': True,
+        'drafts': [
+            {
+                'id': s.id,
+                'draft_number': s.draft_number,
+                'is_final': s.is_final,
+                'status': s.status,
+                'submitted_at': s.submitted_at.strftime('%d %b %I:%M%p') if s.submitted_at else None,
+            }
+            for s in subs
+        ],
+    })
+
+
+@app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/result')
+def teacher_submission_result(assignment_id, submission_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+    return jsonify({
+        'success': True,
+        'result': sub.get_result(),
+        'status': sub.status,
+        'draft_number': sub.draft_number,
+        'is_final': sub.is_final,
+    })
 
 
 @app.route('/teacher/assignment/<assignment_id>/delete', methods=['POST'])
@@ -3328,18 +3597,45 @@ def student_verify(assignment_id):
     students = _sort_by_index(Student.query.filter_by(class_id=asn.class_id).all()) if asn.class_id else _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
 
     # Include submission status so students can see/review previous work
-    subs = {s.student_id: s for s in Submission.query.filter_by(assignment_id=assignment_id).all()}
+    all_subs = Submission.query.filter_by(assignment_id=assignment_id).all()
+    subs_by_student = {}
+    for sub in all_subs:
+        subs_by_student.setdefault(sub.student_id, []).append(sub)
     student_list = []
     for s in students:
-        sub = subs.get(s.id)
-        entry = {'id': s.id, 'index': s.index_number, 'name': s.name}
-        if sub and sub.status == 'done':
+        student_subs = sorted(subs_by_student.get(s.id, []), key=lambda x: x.draft_number)
+        drafts = [
+            {
+                'id': sub.id,
+                'draft_number': sub.draft_number,
+                'is_final': sub.is_final,
+                'status': sub.status,
+                'submitted_at': sub.submitted_at.strftime('%d %b %I:%M%p') if sub.submitted_at else None,
+            }
+            for sub in student_subs
+            if sub.status == 'done'
+        ]
+        entry = {
+            'id': s.id,
+            'index': s.index_number,
+            'name': s.name,
+            'drafts': drafts,
+            'draft_count': len(student_subs),
+        }
+        latest_done = drafts[-1] if drafts else None
+        if latest_done:
             entry['has_submission'] = True
-            entry['submission_id'] = sub.id
+            entry['submission_id'] = latest_done['id']
         student_list.append(entry)
 
     session[f'student_auth_{assignment_id}'] = True
-    return jsonify({'success': True, 'students': student_list, 'show_results': asn.show_results})
+    return jsonify({
+        'success': True,
+        'students': student_list,
+        'show_results': asn.show_results,
+        'allow_drafts': asn.allow_drafts,
+        'max_drafts': asn.max_drafts,
+    })
 
 
 @app.route('/submit/<assignment_id>/review/<int:submission_id>')
@@ -3414,18 +3710,11 @@ def student_upload(assignment_id):
             return jsonify({'success': False, 'error': 'Total upload too large. Maximum is 30MB combined.'}), 400
         script_pages.append(data)
 
-    # Delete existing submission if re-submitting
-    existing = Submission.query.filter_by(student_id=student.id, assignment_id=assignment_id).first()
-    if existing:
-        db.session.delete(existing)
-        db.session.flush()
-
-    sub = Submission(
-        student_id=student.id,
-        assignment_id=assignment_id,
-        script_bytes=script_pages[0] if script_pages else None,
-        status='extracting',
-    )
+    sub, err = _prepare_new_submission(student, asn)
+    if err:
+        return jsonify({'success': False, 'error': err}), 400
+    sub.script_bytes = script_pages[0] if script_pages else None
+    sub.status = 'extracting'
     sub.set_script_pages(script_pages)
     db.session.add(sub)
     db.session.commit()
@@ -3568,7 +3857,7 @@ def api_assignment_students(assignment_id):
 
     result = []
     for s in students:
-        sub = Submission.query.filter_by(student_id=s.id, assignment_id=assignment_id).first()
+        sub = Submission.query.filter_by(student_id=s.id, assignment_id=assignment_id, is_final=True).first()
         result.append({
             'id': s.id,
             'index': s.index_number,
