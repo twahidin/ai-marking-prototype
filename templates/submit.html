@@ -399,6 +399,14 @@ function reviewSubmission(subId) {
 function selectStudent(sid) {
     var sel = document.getElementById('studentSelect');
     if (sel) sel.value = String(sid);
+    var uploadZone = document.getElementById('uploadZone') || document.getElementById('scriptInput');
+    if (uploadZone) {
+        uploadZone.scrollIntoView({behavior: 'smooth', block: 'center'});
+    }
+    var scriptInput = document.getElementById('scriptInput');
+    if (scriptInput) {
+        scriptInput.focus();
+    }
 }
 
 async function reviewPrevious() {
