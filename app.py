@@ -3477,6 +3477,92 @@ def teacher_submit_for_student(assignment_id, student_id):
     return jsonify({'success': True})
 
 
+@app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/set-final', methods=['POST'])
+def teacher_set_final(assignment_id, submission_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+    Submission.query.filter_by(
+        student_id=sub.student_id,
+        assignment_id=assignment_id,
+        is_final=True,
+    ).update({'is_final': False})
+    sub.is_final = True
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/delete', methods=['POST'])
+def teacher_delete_draft(assignment_id, submission_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+    was_final = sub.is_final
+    student_id = sub.student_id
+    db.session.delete(sub)
+    db.session.flush()
+    if was_final:
+        latest = Submission.query.filter_by(
+            student_id=student_id,
+            assignment_id=assignment_id,
+        ).order_by(Submission.draft_number.desc()).first()
+        if latest:
+            latest.is_final = True
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/teacher/assignment/<assignment_id>/student/<int:student_id>/drafts')
+def teacher_student_drafts(assignment_id, student_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    subs = Submission.query.filter_by(
+        student_id=student_id,
+        assignment_id=assignment_id,
+    ).order_by(Submission.draft_number).all()
+    return jsonify({
+        'success': True,
+        'drafts': [
+            {
+                'id': s.id,
+                'draft_number': s.draft_number,
+                'is_final': s.is_final,
+                'status': s.status,
+                'submitted_at': s.submitted_at.strftime('%d %b %I:%M%p') if s.submitted_at else None,
+            }
+            for s in subs
+        ],
+    })
+
+
+@app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/result')
+def teacher_submission_result(assignment_id, submission_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+    return jsonify({
+        'success': True,
+        'result': sub.get_result(),
+        'status': sub.status,
+        'draft_number': sub.draft_number,
+        'is_final': sub.is_final,
+    })
+
+
 @app.route('/teacher/assignment/<assignment_id>/delete', methods=['POST'])
 def teacher_delete_assignment(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)
