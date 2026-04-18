@@ -1440,7 +1440,7 @@ def department_insights_data():
     assignment_id = request.args.get('assignment_id')
     class_id = request.args.get('class_id')
 
-    query = Submission.query.filter_by(status='done')
+    query = Submission.query.filter_by(status='done', is_final=True)
     if assignment_id:
         query = query.filter_by(assignment_id=assignment_id)
 
@@ -1539,7 +1539,7 @@ def department_item_analysis():
     all_qnums = set()
 
     for asn in assignments:
-        subs = Submission.query.filter_by(assignment_id=asn.id, status='done').all()
+        subs = Submission.query.filter_by(assignment_id=asn.id, status='done', is_final=True).all()
         q_stats = {}
         for sub in subs:
             questions = sub.get_result().get('questions', [])
@@ -1642,7 +1642,7 @@ def department_analyze():
         return jsonify({'success': False, 'error': f'No API key for {provider}'}), 400
 
     # Gather insights data
-    query = Submission.query.filter_by(status='done')
+    query = Submission.query.filter_by(status='done', is_final=True)
     if asn_filter:
         query = query.filter_by(assignment_id=asn_filter)
 
@@ -1813,7 +1813,7 @@ def _build_class_performance_data(assignment_id):
     students = Student.query.filter_by(class_id=asn.class_id)\
         .order_by(Student.index_number).all()
     subs = {s.student_id: s for s in
-            Submission.query.filter_by(assignment_id=assignment_id).all()}
+            Submission.query.filter_by(assignment_id=assignment_id, is_final=True).all()}
 
     heatmap = []
     all_scores = []  # (student_id, total_pct)
@@ -2146,7 +2146,7 @@ def class_insights_analyze(assignment_id):
 
     # Collect sample student answers for pattern analysis (up to 20 per question)
     asn = Assignment.query.get(assignment_id)
-    subs = Submission.query.filter_by(assignment_id=assignment_id, status='done').all()
+    subs = Submission.query.filter_by(assignment_id=assignment_id, status='done', is_final=True).all()
     answer_samples = {}
     for sub in subs:
         result = sub.get_result()
@@ -2412,7 +2412,7 @@ def department_export_csv():
     assignment_id = request.args.get('assignment_id')
     class_id = request.args.get('class_id')
 
-    query = Submission.query.filter_by(status='done')
+    query = Submission.query.filter_by(status='done', is_final=True)
     if assignment_id:
         query = query.filter_by(assignment_id=assignment_id)
 
@@ -3344,7 +3344,7 @@ def teacher_assignment_detail(assignment_id):
 
     student_data = []
     for s in students:
-        sub = Submission.query.filter_by(student_id=s.id, assignment_id=assignment_id).first()
+        sub = Submission.query.filter_by(student_id=s.id, assignment_id=assignment_id, is_final=True).first()
         result = sub.get_result() if sub else {}
         questions = result.get('questions', [])
         has_marks = any(q.get('marks_awarded') is not None for q in questions)
@@ -3381,7 +3381,7 @@ def teacher_download_all(assignment_id):
     err = _check_assignment_ownership(asn)
     if err:
         return err
-    submissions = Submission.query.filter_by(assignment_id=assignment_id, status='done').all()
+    submissions = Submission.query.filter_by(assignment_id=assignment_id, status='done', is_final=True).all()
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -3407,7 +3407,7 @@ def teacher_overview(assignment_id):
     err = _check_assignment_ownership(asn)
     if err:
         return err
-    submissions = Submission.query.filter_by(assignment_id=assignment_id, status='done').all()
+    submissions = Submission.query.filter_by(assignment_id=assignment_id, status='done', is_final=True).all()
 
     student_results = []
     for sub in submissions:
@@ -3744,7 +3744,7 @@ def api_assignment_students(assignment_id):
 
     result = []
     for s in students:
-        sub = Submission.query.filter_by(student_id=s.id, assignment_id=assignment_id).first()
+        sub = Submission.query.filter_by(student_id=s.id, assignment_id=assignment_id, is_final=True).first()
         result.append({
             'id': s.id,
             'index': s.index_number,
