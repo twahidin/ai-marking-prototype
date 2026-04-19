@@ -299,7 +299,7 @@ class Submission(db.Model):
     submitted_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     marked_at = db.Column(db.DateTime)
 
-    assignment = db.relationship('Assignment', backref='submissions')
+    assignment = db.relationship('Assignment', backref=db.backref('submissions', cascade='all, delete-orphan'))
 
     def get_script_pages(self):
         """Return list of file bytes for all uploaded pages."""
