@@ -344,6 +344,47 @@ def _parse_max_drafts(raw):
     return max(2, min(10, n))
 
 
+def _compress_pdf(data, target_bytes, dpi_options=(150, 100, 72)):
+    """Re-render a PDF at lower DPI until it fits under target_bytes.
+
+    Uses pdf2image + Pillow. Returns compressed bytes if a smaller version is
+    produced, otherwise the original data. Never raises — on failure, returns
+    the original data and the caller can apply its size check normally.
+    """
+    if len(data) <= target_bytes:
+        return data
+    try:
+        from pdf2image import convert_from_bytes
+    except ImportError:
+        return data
+    best = data
+    for dpi in dpi_options:
+        try:
+            images = convert_from_bytes(data, dpi=dpi)
+            if not images:
+                continue
+            images = [im.convert('RGB') for im in images]
+            buf = io.BytesIO()
+            images[0].save(
+                buf,
+                format='PDF',
+                save_all=True,
+                append_images=images[1:],
+                resolution=dpi,
+            )
+            compressed = buf.getvalue()
+            if len(compressed) < len(best):
+                best = compressed
+                logger.info(
+                    f'PDF compressed at {dpi}dpi: {len(data)} -> {len(compressed)} bytes'
+                )
+            if len(best) <= target_bytes:
+                return best
+        except Exception as e:
+            logger.warning(f'PDF compression at {dpi}dpi failed: {e}')
+    return best
+
+
 def _get_final_submission(student_id, assignment_id):
     """Return the final Submission for a (student, assignment) or None."""
     return Submission.query.filter_by(
@@ -3775,13 +3816,19 @@ def student_upload(assignment_id):
         if not f.filename:
             continue
         data = f.read()
+        ext = f.filename.rsplit('.', 1)[-1].lower() if '.' in f.filename else ''
+        if ext == 'pdf' and len(data) > MAX_PDF_SIZE:
+            # Try server-side downscale before rejecting
+            original_size = len(data)
+            data = _compress_pdf(data, MAX_PDF_SIZE)
+            if len(data) > MAX_PDF_SIZE:
+                return jsonify({
+                    'success': False,
+                    'error': f'PDF too large even after auto-compression ({original_size // (1024*1024)}MB original, {len(data) // (1024*1024)}MB compressed). Maximum is 20MB. Try splitting into multiple files.',
+                }), 400
         file_size = len(data)
         total_size += file_size
-        ext = f.filename.rsplit('.', 1)[-1].lower() if '.' in f.filename else ''
-        if ext == 'pdf':
-            if file_size > MAX_PDF_SIZE:
-                return jsonify({'success': False, 'error': f'PDF too large ({file_size // (1024*1024)}MB). Maximum is 20MB.'}), 400
-        elif file_size > MAX_IMAGE_SIZE:
+        if ext != 'pdf' and file_size > MAX_IMAGE_SIZE:
             return jsonify({'success': False, 'error': f'Image "{f.filename}" too large ({file_size // (1024*1024)}MB). Maximum is 5MB per image.'}), 400
         if total_size > MAX_TOTAL_SIZE:
             return jsonify({'success': False, 'error': 'Total upload too large. Maximum is 30MB combined.'}), 400
