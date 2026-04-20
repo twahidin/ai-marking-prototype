@@ -113,7 +113,7 @@ body {
 .upload-zone:hover { border-color: #667eea; background: #fafafe; }
 .upload-zone:active { background: #f0f2ff; }
 .upload-zone.has-file { border-color: #28a745; background: #f0fdf4; border-style: solid; }
-.upload-zone input { display: none; }
+.upload-zone input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; clip: rect(0 0 0 0); border: 0; padding: 0; margin: -1px; }
 .upload-zone .icon { font-size: 28px; margin-bottom: 6px; }
 .upload-zone .label { font-size: 13px; font-weight: 600; color: #555; }
 .upload-zone .filename { font-size: 11px; color: #28a745; margin-top: 6px; word-break: break-all; }
