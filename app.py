@@ -1266,6 +1266,74 @@ def manage_class_students(class_id):
     return jsonify({'success': True, 'count': count})
 
 
+def _check_class_access(class_id):
+    """Returns an error response if the current teacher can't access this class, else None."""
+    teacher = _current_teacher()
+    if not teacher:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    if teacher.role in ('hod', 'owner'):
+        return None
+    tc = TeacherClass.query.filter_by(teacher_id=teacher.id, class_id=class_id).first()
+    if not tc:
+        return jsonify({'success': False, 'error': 'Not assigned to this class'}), 403
+    return None
+
+
+@app.route('/class/<class_id>/students/<int:student_id>/edit', methods=['POST'])
+def edit_class_student(class_id, student_id):
+    """Edit a student's index_number and/or name."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    err = _check_class_access(class_id)
+    if err:
+        return err
+    student = Student.query.get_or_404(student_id)
+    if student.class_id != class_id:
+        return jsonify({'success': False, 'error': 'Student not in this class'}), 400
+
+    data = request.get_json() or {}
+    new_index = (data.get('index') or '').strip()
+    new_name = (data.get('name') or '').strip()
+    if not new_index or not new_name:
+        return jsonify({'success': False, 'error': 'Index and name are required'}), 400
+    if len(new_name) > 200 or len(new_index) > 50:
+        return jsonify({'success': False, 'error': 'Name or index too long'}), 400
+
+    # Prevent duplicate index within the same class (excluding self)
+    dup = Student.query.filter_by(class_id=class_id, index_number=new_index).first()
+    if dup and dup.id != student.id:
+        return jsonify({'success': False, 'error': f'Another student already has index {new_index}'}), 400
+
+    student.index_number = new_index
+    student.name = new_name
+    db.session.commit()
+    return jsonify({'success': True, 'student': {'id': student.id, 'index': student.index_number, 'name': student.name}})
+
+
+@app.route('/class/<class_id>/students/<int:student_id>/delete', methods=['POST'])
+def delete_class_student(class_id, student_id):
+    """Delete a student, blocked if they have any submissions."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    err = _check_class_access(class_id)
+    if err:
+        return err
+    student = Student.query.get_or_404(student_id)
+    if student.class_id != class_id:
+        return jsonify({'success': False, 'error': 'Student not in this class'}), 400
+
+    sub_count = Submission.query.filter_by(student_id=student.id).count()
+    if sub_count > 0:
+        return jsonify({
+            'success': False,
+            'error': f'Cannot delete: {student.name} has {sub_count} submission(s). Delete their submissions first.'
+        }), 400
+
+    db.session.delete(student)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
 @app.route('/my/class/create', methods=['POST'])
 def create_my_class():
     """Create a class in normal (non-dept) mode."""

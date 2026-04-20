@@ -61,6 +61,10 @@
 
     .student-count { font-size: 13px; color: #888; margin-left: 8px; }
 
+    .student-action-btn { padding: 4px 8px; font-size: 14px; border: 1px solid #ddd; background: white; border-radius: 4px; cursor: pointer; }
+    .student-action-btn:hover { background: #f0f0f5; }
+    .student-action-btn.danger { color: #c33; border-color: #e4a9a9; }
+    .student-action-btn.danger:hover { background: #fdecec; }
 </style>
 {% endblock %}
 
@@ -165,11 +169,69 @@ async function toggleStudents(classId) {
         tbody.innerHTML = '';
         data.students.forEach(function(s, i) {
             var tr = document.createElement('tr');
-            tr.innerHTML = '<td>' + (i + 1) + '</td><td>' + esc(s.index) + '</td><td>' + esc(s.name) + '</td>';
+            var editBtn = '<button class="student-action-btn" data-id="' + s.id + '" data-index="' + esc(s.index) + '" data-name="' + esc(s.name) + '" data-class="' + classId + '" onclick="editStudentFromBtn(this)" title="Edit">&#9998;</button>';
+            var delBtn = '<button class="student-action-btn danger" data-id="' + s.id + '" data-name="' + esc(s.name) + '" data-class="' + classId + '" onclick="deleteStudentFromBtn(this)" title="Delete">&times;</button>';
+            tr.innerHTML = '<td>' + (i + 1) + '</td><td>' + esc(s.index) + '</td><td>' + esc(s.name) + '</td><td style="text-align:right;white-space:nowrap;">' + editBtn + ' ' + delBtn + '</td>';
             tbody.appendChild(tr);
         });
         section.classList.add('visible');
     } catch (e) { console.error(e); }
+}
+
+async function editStudentFromBtn(btn) {
+    var studentId = btn.dataset.id;
+    var classId = btn.dataset.class;
+    var currentIndex = btn.dataset.index;
+    var currentName = btn.dataset.name;
+    var newIndex = prompt('Student index:', currentIndex);
+    if (newIndex === null) return;
+    var newName = prompt('Student name:', currentName);
+    if (newName === null) return;
+    newIndex = newIndex.trim();
+    newName = newName.trim();
+    if (!newIndex || !newName) { alert('Index and name cannot be empty.'); return; }
+    try {
+        var res = await fetch('/class/' + classId + '/students/' + studentId + '/edit', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({index: newIndex, name: newName})
+        });
+        var data = await res.json();
+        if (data.success) {
+            var section = document.getElementById('students_' + classId);
+            if (section && section.classList.contains('visible')) {
+                section.classList.remove('visible');
+                toggleStudents(classId);
+            }
+        } else {
+            alert(data.error || 'Failed to update student.');
+        }
+    } catch (e) { alert('Connection error.'); }
+}
+
+async function deleteStudentFromBtn(btn) {
+    var studentId = btn.dataset.id;
+    var classId = btn.dataset.class;
+    var name = btn.dataset.name;
+    if (!confirm('Delete ' + name + '? This cannot be undone.')) return;
+    try {
+        var res = await fetch('/class/' + classId + '/students/' + studentId + '/delete', { method: 'POST' });
+        var data = await res.json();
+        if (data.success) {
+            var section = document.getElementById('students_' + classId);
+            if (section && section.classList.contains('visible')) {
+                section.classList.remove('visible');
+                toggleStudents(classId);
+            }
+            var countEl = document.getElementById('count_' + classId);
+            if (countEl) {
+                var m = (countEl.textContent || '').match(/(\d+)/);
+                if (m) countEl.textContent = (parseInt(m[1]) - 1) + ' students';
+            }
+        } else {
+            alert(data.error || 'Failed to delete student.');
+        }
+    } catch (e) { alert('Connection error.'); }
 }
 
 function downloadSampleCsv() {
