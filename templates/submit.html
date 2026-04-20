@@ -152,7 +152,7 @@
             <div class="form-group">
                 <label>Your Script</label>
                 <div class="upload-zone" id="uploadZone" onclick="document.getElementById('scriptInput').click()">
-                    <input type="file" id="scriptInput" accept=".pdf,.jpg,.jpeg,.png,.heic" capture="environment" multiple onchange="fileSelected(this, 10)">
+                    <input type="file" id="scriptInput" accept=".pdf,.jpg,.jpeg,.png,.heic,image/*,application/pdf" multiple onchange="fileSelected(this, 10)">
                     <div class="icon">&#128247;</div>
                     <div class="label">Tap to upload or take a photo</div>
                     <div class="hint">PDF (max 20MB) or up to 10 images (max 5MB each)</div>
