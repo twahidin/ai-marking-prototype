@@ -303,11 +303,11 @@
                                 {% if s.status == 'done' and s.submission_id %}
                                 <a href="/submit/{{ assignment.id }}/download/{{ s.submission_id }}" class="upload-btn" style="text-decoration:none;display:inline-block;">Download</a>
                                 {% endif %}
-                                <button class="upload-btn" onclick="openUploadModal('{{ s.student_id }}', '{{ s.name | e }}')">
+                                <button class="upload-btn" onclick='openUploadModal({{ s.student_id|tojson }}, {{ s.name|tojson }})'>
                                     {% if s.status == 'not_submitted' %}Upload{% else %}Re-upload{% endif %}
                                 </button>
                                 {% if s.student_amended and s.submission_id %}
-                                <button class="view-extracted-btn" onclick="viewExtracted({{ s.submission_id }}, '{{ s.name | e }}')">View Edits</button>
+                                <button class="view-extracted-btn" onclick='viewExtracted({{ s.submission_id|tojson }}, {{ s.name|tojson }})'>View Edits</button>
                                 {% endif %}
                                 {% if assignment.allow_drafts and s.submission_id %}
                                 <button class="view-drafts-btn" onclick="toggleDraftsRow('{{ s.student_id }}', {{ s.submission_id }})">Drafts</button>
