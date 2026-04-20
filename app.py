@@ -3642,6 +3642,22 @@ def student_page(assignment_id):
     return render_template('submit.html', assignment_id=assignment_id, subject=asn.subject, demo_mode=is_demo_mode())
 
 
+@app.route('/submit/<assignment_id>/question-paper')
+def student_question_paper(assignment_id):
+    """Serve the assignment's question paper to a student who has verified the classroom code."""
+    if not session.get(f'student_auth_{assignment_id}'):
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    asn = Assignment.query.get_or_404(assignment_id)
+    if not asn.question_paper:
+        return jsonify({'success': False, 'error': 'No question paper available'}), 404
+    return send_file(
+        io.BytesIO(asn.question_paper),
+        mimetype='application/pdf',
+        as_attachment=False,
+        download_name=f'{asn.classroom_code}_question_paper.pdf',
+    )
+
+
 @app.route('/submit/<assignment_id>/verify', methods=['POST'])
 def student_verify(assignment_id):
     if is_demo_mode():
@@ -3695,6 +3711,7 @@ def student_verify(assignment_id):
         'show_results': asn.show_results,
         'allow_drafts': asn.allow_drafts,
         'max_drafts': asn.max_drafts,
+        'has_question_paper': bool(asn.question_paper),
     })
 
 
