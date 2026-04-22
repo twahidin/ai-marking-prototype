@@ -549,7 +549,7 @@
 
         <div class="edit-form-group" id="editMaxDraftsRow" style="{% if not assignment.allow_drafts %}display:none;{% endif %}">
             <label for="editMaxDrafts">Max Drafts</label>
-            <input type="number" id="editMaxDrafts" min="1" max="20" value="{{ assignment.max_drafts or 3 }}">
+            <input type="number" id="editMaxDrafts" min="2" max="10" value="{{ assignment.max_drafts or 3 }}">
         </div>
 
         <div class="edit-form-group">
@@ -1045,6 +1045,7 @@ async function doShare() {
 
 <script>
 const ALL_PROVIDERS = {{ all_providers | tojson }};
+const AVAILABLE_PROVIDERS = {{ available_providers | tojson }};
 const CURRENT_PROVIDER = {{ assignment.provider | tojson }};
 const CURRENT_MODEL = {{ assignment.model | tojson }};
 
@@ -1053,6 +1054,7 @@ function populateEditProviderModel() {
     const modelSel = document.getElementById('editModel');
     provSel.innerHTML = '';
     for (const [key, config] of Object.entries(ALL_PROVIDERS)) {
+        if (!AVAILABLE_PROVIDERS.includes(key) && key !== CURRENT_PROVIDER) continue;
         const opt = document.createElement('option');
         opt.value = key;
         opt.textContent = config.label;
@@ -1088,6 +1090,11 @@ function openEditModal() {
 
 function closeEditModal() {
     document.getElementById('editModal').classList.remove('active');
+    if (new URLSearchParams(window.location.search).has('edit')) {
+        const url = new URL(window.location);
+        url.searchParams.delete('edit');
+        window.history.replaceState({}, '', url.pathname + (url.search || ''));
+    }
 }
 
 async function submitEdit() {
@@ -1129,8 +1136,14 @@ async function submitEdit() {
             btn.textContent = 'Save Changes';
             return;
         }
-        // Reload to reflect new state (banner, last-edited line, populated fields)
-        window.location.reload();
+        // Strip ?edit=1 (if present) before reload so the modal doesn't auto-reopen
+        const url = new URL(window.location);
+        if (url.searchParams.has('edit')) {
+            url.searchParams.delete('edit');
+            window.location.href = url.pathname + (url.search || '');
+        } else {
+            window.location.reload();
+        }
     } catch (e) {
         errEl.textContent = 'Network error: ' + e.message;
         errEl.style.display = 'block';

@@ -3596,10 +3596,21 @@ def teacher_assignment_detail(assignment_id):
             'submission_id': sub.id if sub else None,
         })
 
+    # Compute which providers have a usable key for this assignment (assignment → dept → env).
+    edit_api_keys = _resolve_api_keys(asn) or {}
+    from ai_marking import PROVIDER_KEY_MAP
+    for prov, env_name in PROVIDER_KEY_MAP.items():
+        if prov not in edit_api_keys:
+            env_val = os.getenv(env_name, '')
+            if env_val:
+                edit_api_keys[prov] = env_val
+    available_providers = sorted(edit_api_keys.keys())
+
     return render_template('teacher_detail.html',
                            assignment=asn,
                            students=student_data,
-                           all_providers=PROVIDERS)
+                           all_providers=PROVIDERS,
+                           available_providers=available_providers)
 
 
 @app.route('/teacher/assignment/<assignment_id>/download')
