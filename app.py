@@ -3598,7 +3598,8 @@ def teacher_assignment_detail(assignment_id):
 
     return render_template('teacher_detail.html',
                            assignment=asn,
-                           students=student_data)
+                           students=student_data,
+                           all_providers=PROVIDERS)
 
 
 @app.route('/teacher/assignment/<assignment_id>/download')

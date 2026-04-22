@@ -136,6 +136,51 @@
         cursor: pointer; transition: all 0.2s; margin-left: 6px;
     }
     .view-drafts-btn:hover { background: #e8f1fc; }
+    .last-edited-line {
+        font-size: 12px; color: #888; margin-bottom: 16px;
+        display: flex; align-items: center; gap: 6px;
+    }
+    .needs-remark-banner {
+        background: #fff8e1; border: 1px solid #f0ad4e; color: #8a6d3b;
+        border-radius: 10px; padding: 14px 18px; margin-bottom: 20px;
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 16px; flex-wrap: wrap;
+    }
+    .needs-remark-banner .nrb-text { font-size: 13px; font-weight: 600; flex: 1 1 auto; min-width: 220px; }
+    .needs-remark-banner .nrb-btn {
+        padding: 8px 16px; border-radius: 8px; border: 1px solid #f0ad4e;
+        background: white; color: #b8860b; font-size: 12px; font-weight: 700;
+        cursor: pointer; white-space: nowrap;
+    }
+    .needs-remark-banner .nrb-btn:hover { background: #f0ad4e; color: white; }
+
+    .edit-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+    .edit-modal.active { display: flex; }
+    .edit-modal-box { background: white; border-radius: 16px; padding: 28px; width: 92%; max-width: 640px; max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+    .edit-modal-box h3 { font-size: 18px; font-weight: 700; color: #333; margin-bottom: 14px; }
+    .edit-form-group { margin-bottom: 14px; }
+    .edit-form-group label { display: block; font-size: 12px; font-weight: 700; color: #555; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
+    .edit-form-group input[type="text"], .edit-form-group input[type="number"], .edit-form-group select, .edit-form-group textarea {
+        width: 100%; padding: 9px 12px; border: 1px solid #ddd; border-radius: 8px;
+        font-size: 13px; box-sizing: border-box; font-family: inherit;
+    }
+    .edit-form-group textarea { min-height: 80px; resize: vertical; }
+    .edit-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 600px) { .edit-form-row { grid-template-columns: 1fr; } }
+    .edit-disabled-field {
+        padding: 9px 12px; background: #f5f5f5; border: 1px solid #e0e0e0;
+        border-radius: 8px; font-size: 13px; color: #666;
+    }
+    .edit-disabled-hint { font-size: 11px; color: #999; margin-top: 4px; }
+    .edit-current-file { font-size: 11px; color: #667eea; margin-top: 4px; font-weight: 600; }
+    .edit-modal-actions { display: flex; gap: 10px; margin-top: 18px; }
+    .edit-modal-actions button { flex: 1; padding: 11px; border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; border: none; }
+    .edit-cancel { background: #f0f0f0; color: #666; }
+    .edit-cancel:hover { background: #e0e0e0; }
+    .edit-save { background: #667eea; color: white; }
+    .edit-save:hover { background: #5a6fd6; }
+    .edit-save:disabled { background: #ccc; cursor: not-allowed; }
+    .edit-error { color: #c0392b; font-size: 12px; margin-top: 8px; display: none; }
 </style>
 {% endblock %}
 
@@ -150,6 +195,22 @@
             <span class="classroom-code-inline">{{ assignment.classroom_code }}</span>
         </h1>
     </div>
+
+    {% if assignment.last_edited_at %}
+    <div class="last-edited-line">
+        <span>&#9999;&#65039;</span>
+        <span>Last edited: {{ assignment.last_edited_at.strftime('%d %b %Y, %H:%M') }}</span>
+    </div>
+    {% endif %}
+
+    {% if assignment.needs_remark %}
+    <div class="needs-remark-banner" id="needsRemarkBanner">
+        <div class="nrb-text">
+            &#9888;&#65039; This assignment was edited with changes that may affect grading. Re-run <strong>Bulk Mark</strong> to update existing submissions.
+        </div>
+        <button class="nrb-btn" type="button" onclick="document.querySelector('.bulk-section').scrollIntoView({behavior:'smooth', block:'start'});">Jump to Bulk Mark</button>
+    </div>
+    {% endif %}
 
     <!-- Info Card -->
     <div class="card">
@@ -190,7 +251,8 @@
                 <div class="info-value">{{ assignment.created_at.strftime('%d %b %Y, %H:%M') if assignment.created_at else 'N/A' }}</div>
             </div>
         </div>
-        <div style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;">
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;display:flex;gap:10px;flex-wrap:wrap;">
+            <button class="upload-btn" onclick="openEditModal()" style="padding:8px 20px;font-size:13px;">Edit Assignment</button>
             <button class="upload-btn" onclick="openShareModal()" style="padding:8px 20px;font-size:13px;">Share to Assignment Bank</button>
         </div>
     </div>
@@ -415,6 +477,122 @@
         <div class="modal-actions">
             <button class="modal-cancel" onclick="closeShareModal()">Cancel</button>
             <button class="modal-submit" id="shareBtn" onclick="doShare()">Publish</button>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Assignment Modal -->
+<div class="edit-modal" id="editModal">
+    <div class="edit-modal-box">
+        <h3>Edit Assignment</h3>
+
+        <div class="edit-form-group">
+            <label>Type (locked after creation)</label>
+            <div class="edit-disabled-field">
+                {% if assignment.assign_type == 'rubrics' %}Rubrics / Essay{% else %}Short Answer{% endif %}
+            </div>
+            <div class="edit-disabled-hint">Type cannot be changed after creation.</div>
+        </div>
+
+        <div class="edit-form-row">
+            <div class="edit-form-group">
+                <label for="editTitle">Title</label>
+                <input type="text" id="editTitle" value="{{ assignment.title or '' }}">
+            </div>
+            <div class="edit-form-group">
+                <label for="editSubject">Subject</label>
+                <input type="text" id="editSubject" value="{{ assignment.subject or '' }}">
+            </div>
+        </div>
+
+        <div class="edit-form-row">
+            <div class="edit-form-group">
+                <label for="editProvider">AI Provider</label>
+                <select id="editProvider" onchange="updateEditModelOptions()"></select>
+            </div>
+            <div class="edit-form-group">
+                <label for="editModel">Model</label>
+                <select id="editModel"></select>
+            </div>
+        </div>
+
+        <div class="edit-form-row">
+            <div class="edit-form-group">
+                <label for="editScoringMode">Scoring Mode</label>
+                <select id="editScoringMode">
+                    <option value="status" {% if assignment.scoring_mode == 'status' %}selected{% endif %}>Status (correct / partial / incorrect)</option>
+                    <option value="marks" {% if assignment.scoring_mode == 'marks' %}selected{% endif %}>Marks (numerical)</option>
+                </select>
+            </div>
+            <div class="edit-form-group">
+                <label for="editTotalMarks">Total Marks</label>
+                <input type="text" id="editTotalMarks" value="{{ assignment.total_marks or '' }}" placeholder="e.g. 100">
+            </div>
+        </div>
+
+        <div class="edit-form-row">
+            <div class="edit-form-group">
+                <label for="editShowResults">Show Results to Students</label>
+                <select id="editShowResults">
+                    <option value="on" {% if assignment.show_results %}selected{% endif %}>Yes</option>
+                    <option value="" {% if not assignment.show_results %}selected{% endif %}>No</option>
+                </select>
+            </div>
+            <div class="edit-form-group">
+                <label for="editAllowDrafts">Allow Drafts</label>
+                <select id="editAllowDrafts" onchange="document.getElementById('editMaxDraftsRow').style.display = this.value === 'on' ? '' : 'none';">
+                    <option value="on" {% if assignment.allow_drafts %}selected{% endif %}>Yes</option>
+                    <option value="" {% if not assignment.allow_drafts %}selected{% endif %}>No</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="edit-form-group" id="editMaxDraftsRow" style="{% if not assignment.allow_drafts %}display:none;{% endif %}">
+            <label for="editMaxDrafts">Max Drafts</label>
+            <input type="number" id="editMaxDrafts" min="1" max="20" value="{{ assignment.max_drafts or 3 }}">
+        </div>
+
+        <div class="edit-form-group">
+            <label for="editReviewInstructions">Feedback / Review Instructions</label>
+            <textarea id="editReviewInstructions">{{ assignment.review_instructions or '' }}</textarea>
+        </div>
+
+        <div class="edit-form-group">
+            <label for="editMarkingInstructions">Marking Instructions</label>
+            <textarea id="editMarkingInstructions">{{ assignment.marking_instructions or '' }}</textarea>
+        </div>
+
+        <div class="edit-form-group">
+            <label>Question Paper</label>
+            <input type="file" id="editQuestionPaper" accept=".pdf,.jpg,.jpeg,.png,.heic">
+            {% if assignment.question_paper %}<div class="edit-current-file">Current: file already uploaded. Leave empty to keep, or upload a new file to replace.</div>{% endif %}
+        </div>
+
+        {% if assignment.assign_type != 'rubrics' %}
+        <div class="edit-form-group">
+            <label>Answer Key</label>
+            <input type="file" id="editAnswerKey" accept=".pdf,.jpg,.jpeg,.png,.heic">
+            {% if assignment.answer_key %}<div class="edit-current-file">Current: file already uploaded. Leave empty to keep.</div>{% endif %}
+        </div>
+        {% else %}
+        <div class="edit-form-group">
+            <label>Rubrics</label>
+            <input type="file" id="editRubrics" accept=".pdf,.jpg,.jpeg,.png,.heic">
+            {% if assignment.rubrics %}<div class="edit-current-file">Current: file already uploaded. Leave empty to keep.</div>{% endif %}
+        </div>
+        {% endif %}
+
+        <div class="edit-form-group">
+            <label>Reference Materials (optional)</label>
+            <input type="file" id="editReference" accept=".pdf,.jpg,.jpeg,.png,.heic">
+            {% if assignment.reference %}<div class="edit-current-file">Current: file already uploaded. Leave empty to keep.</div>{% endif %}
+        </div>
+
+        <div class="edit-error" id="editErrorMsg"></div>
+
+        <div class="edit-modal-actions">
+            <button type="button" class="edit-cancel" onclick="closeEditModal()">Cancel</button>
+            <button type="button" class="edit-save" id="editSaveBtn" onclick="submitEdit()">Save Changes</button>
         </div>
     </div>
 </div>
@@ -863,5 +1041,110 @@ async function doShare() {
         btn.disabled = false; btn.textContent = 'Publish';
     }
 }
+</script>
+
+<script>
+const ALL_PROVIDERS = {{ all_providers | tojson }};
+const CURRENT_PROVIDER = {{ assignment.provider | tojson }};
+const CURRENT_MODEL = {{ assignment.model | tojson }};
+
+function populateEditProviderModel() {
+    const provSel = document.getElementById('editProvider');
+    const modelSel = document.getElementById('editModel');
+    provSel.innerHTML = '';
+    for (const [key, config] of Object.entries(ALL_PROVIDERS)) {
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = config.label;
+        if (key === CURRENT_PROVIDER) opt.selected = true;
+        provSel.appendChild(opt);
+    }
+    updateEditModelOptions(true);
+}
+
+function updateEditModelOptions(initial) {
+    const provSel = document.getElementById('editProvider');
+    const modelSel = document.getElementById('editModel');
+    const prov = provSel.value;
+    modelSel.innerHTML = '';
+    if (!ALL_PROVIDERS[prov]) return;
+    const models = ALL_PROVIDERS[prov].models;
+    const def = ALL_PROVIDERS[prov].default;
+    for (const [id, label] of Object.entries(models)) {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = label;
+        if (initial && id === CURRENT_MODEL) opt.selected = true;
+        else if (!initial && id === def) opt.selected = true;
+        modelSel.appendChild(opt);
+    }
+}
+
+function openEditModal() {
+    populateEditProviderModel();
+    document.getElementById('editErrorMsg').style.display = 'none';
+    document.getElementById('editModal').classList.add('active');
+}
+
+function closeEditModal() {
+    document.getElementById('editModal').classList.remove('active');
+}
+
+async function submitEdit() {
+    const btn = document.getElementById('editSaveBtn');
+    const errEl = document.getElementById('editErrorMsg');
+    errEl.style.display = 'none';
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+
+    const fd = new FormData();
+    fd.append('title', document.getElementById('editTitle').value);
+    fd.append('subject', document.getElementById('editSubject').value);
+    fd.append('provider', document.getElementById('editProvider').value);
+    fd.append('model', document.getElementById('editModel').value);
+    fd.append('scoring_mode', document.getElementById('editScoringMode').value);
+    fd.append('total_marks', document.getElementById('editTotalMarks').value);
+    if (document.getElementById('editShowResults').value === 'on') fd.append('show_results', 'on');
+    if (document.getElementById('editAllowDrafts').value === 'on') fd.append('allow_drafts', 'on');
+    fd.append('max_drafts', document.getElementById('editMaxDrafts').value);
+    fd.append('review_instructions', document.getElementById('editReviewInstructions').value);
+    fd.append('marking_instructions', document.getElementById('editMarkingInstructions').value);
+
+    const qp = document.getElementById('editQuestionPaper');
+    if (qp && qp.files.length) fd.append('question_paper', qp.files[0]);
+    const ak = document.getElementById('editAnswerKey');
+    if (ak && ak.files.length) fd.append('answer_key', ak.files[0]);
+    const rub = document.getElementById('editRubrics');
+    if (rub && rub.files.length) fd.append('rubrics', rub.files[0]);
+    const ref = document.getElementById('editReference');
+    if (ref && ref.files.length) fd.append('reference', ref.files[0]);
+
+    try {
+        const res = await fetch('/teacher/assignment/{{ assignment.id }}/edit', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!data.success) {
+            errEl.textContent = data.error || 'Failed to save changes.';
+            errEl.style.display = 'block';
+            btn.disabled = false;
+            btn.textContent = 'Save Changes';
+            return;
+        }
+        // Reload to reflect new state (banner, last-edited line, populated fields)
+        window.location.reload();
+    } catch (e) {
+        errEl.textContent = 'Network error: ' + e.message;
+        errEl.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Save Changes';
+    }
+}
+
+// Auto-open edit modal if ?edit=1 in URL (used by the Class page Edit button)
+window.addEventListener('DOMContentLoaded', () => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('edit') === '1') {
+        openEditModal();
+    }
+});
 </script>
 {% endblock %}
