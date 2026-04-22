@@ -321,17 +321,6 @@ def _can_edit_target(viewer, target):
     return False
 
 
-# Fields whose changes require re-running bulk mark to update existing submissions.
-# File fields are detected separately (any new upload counts as a change).
-ASSIGNMENT_MAJOR_TEXT_FIELDS = (
-    'marking_instructions',
-    'review_instructions',
-    'provider',
-    'model',
-    'total_marks',
-)
-
-
 def _check_assignment_ownership(asn):
     """Return error response if current user doesn't own this assignment, or None if OK."""
     if not _is_authenticated():
@@ -3464,6 +3453,14 @@ def teacher_edit(assignment_id):
         if val:
             api_keys[prov] = val
 
+    # Fall back to env-var keys for any provider not yet covered (parity with teacher_create)
+    from ai_marking import PROVIDER_KEY_MAP
+    for prov, env_name in PROVIDER_KEY_MAP.items():
+        if prov not in api_keys:
+            env_val = os.getenv(env_name, '')
+            if env_val:
+                api_keys[prov] = env_val
+
     new_provider = request.form.get('provider', asn.provider)
     new_model = request.form.get('model', asn.model)
 
@@ -3504,11 +3501,11 @@ def teacher_edit(assignment_id):
     # Detect major change BEFORE applying writes
     major_change = (
         qp_changed or ak_changed or rub_changed or ref_changed
-        or (new_marking != (asn.marking_instructions or ''))
-        or (new_review != (asn.review_instructions or ''))
+        or (new_marking.strip() != (asn.marking_instructions or '').strip())
+        or (new_review.strip() != (asn.review_instructions or '').strip())
         or (new_provider != asn.provider)
         or (new_model != asn.model)
-        or (new_total_marks != (asn.total_marks or ''))
+        or (new_total_marks.strip() != (asn.total_marks or '').strip())
     )
 
     # Apply updates
@@ -3541,7 +3538,7 @@ def teacher_edit(assignment_id):
     except Exception as e:
         db.session.rollback()
         logger.error(f"Failed to save edits for assignment {assignment_id}: {e}")
-        return jsonify({'success': False, 'error': f'Failed to save: {e}'}), 500
+        return jsonify({'success': False, 'error': 'Failed to save changes. Please try again.'}), 500
 
     return jsonify({
         'success': True,
