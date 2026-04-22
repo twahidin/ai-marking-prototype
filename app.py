@@ -2932,6 +2932,18 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
         jobs[job_id]['results'] = results
         jobs[job_id]['status'] = 'done'
         jobs[job_id]['progress'] = {'current': total, 'total': total, 'current_name': 'Complete'}
+
+        # Clear the "needs re-mark" flag on the assignment now that bulk-mark finished.
+        if assignment_id:
+            try:
+                with app.app_context():
+                    asn = Assignment.query.get(assignment_id)
+                    if asn and asn.needs_remark:
+                        asn.needs_remark = False
+                        db.session.commit()
+            except Exception as flag_err:
+                db.session.rollback()
+                logger.error(f"Failed to clear needs_remark for assignment {assignment_id}: {flag_err}")
     except Exception as job_err:
         # Top-level safety: if any unexpected exception escapes the per-student
         # handler, finalize any remaining pre-created rows so they don't stay
