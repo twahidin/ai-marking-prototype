@@ -321,6 +321,17 @@ def _can_edit_target(viewer, target):
     return False
 
 
+# Fields whose changes require re-running bulk mark to update existing submissions.
+# File fields are detected separately (any new upload counts as a change).
+ASSIGNMENT_MAJOR_TEXT_FIELDS = (
+    'marking_instructions',
+    'review_instructions',
+    'provider',
+    'model',
+    'total_marks',
+)
+
+
 def _check_assignment_ownership(asn):
     """Return error response if current user doesn't own this assignment, or None if OK."""
     if not _is_authenticated():
@@ -3432,6 +3443,111 @@ def teacher_create():
         'success': True,
         'assignment_id': asn.id,
         'classroom_code': asn.classroom_code,
+    })
+
+
+@app.route('/teacher/assignment/<assignment_id>/edit', methods=['POST'])
+def teacher_edit(assignment_id):
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+
+    # Resolve API keys (assignment → dept → env). Provider must have a key.
+    api_keys = _resolve_api_keys(asn) or {}
+    # Also accept fresh user-provided keys from the request (rare; usually omitted in edit)
+    for prov in ('anthropic', 'openai', 'qwen'):
+        val = request.form.get(f'api_key_{prov}', '').strip()
+        if val:
+            api_keys[prov] = val
+
+    new_provider = request.form.get('provider', asn.provider)
+    new_model = request.form.get('model', asn.model)
+
+    if new_provider not in api_keys:
+        return jsonify({'success': False, 'error': 'Selected provider has no API key configured'}), 400
+
+    # Parse incoming text/scalar fields (default to current value if missing)
+    new_title = request.form.get('title', asn.title or '')
+    new_subject = request.form.get('subject', asn.subject or '')
+    new_scoring_mode = request.form.get('scoring_mode', asn.scoring_mode or 'status')
+    new_total_marks = request.form.get('total_marks', asn.total_marks or '')
+    new_show_results = request.form.get('show_results') == 'on'
+    new_allow_drafts = request.form.get('allow_drafts') == 'on'
+    new_max_drafts = _parse_max_drafts(request.form.get('max_drafts')) if request.form.get('max_drafts') is not None else asn.max_drafts
+    new_review = request.form.get('review_instructions', asn.review_instructions or '')
+    new_marking = request.form.get('marking_instructions', asn.marking_instructions or '')
+
+    # File handling: new upload replaces; empty input keeps existing.
+    def _maybe_read(field_name):
+        files = request.files.getlist(field_name)
+        if files and files[0].filename:
+            return files[0].read(), True
+        return None, False
+
+    qp_bytes, qp_changed = _maybe_read('question_paper')
+    ak_bytes, ak_changed = _maybe_read('answer_key')
+    rub_bytes, rub_changed = _maybe_read('rubrics')
+    ref_bytes, ref_changed = _maybe_read('reference')
+
+    # Type-specific required-file invariant: don't allow ending up with no answer_key
+    # for short_answer or no rubrics for rubrics. Replacement is fine; removal is not allowed
+    # via this endpoint (no "delete file" UI).
+    if asn.assign_type == 'rubrics' and rub_changed and not rub_bytes:
+        return jsonify({'success': False, 'error': 'Rubrics file cannot be empty for essay type'}), 400
+    if asn.assign_type != 'rubrics' and ak_changed and not ak_bytes:
+        return jsonify({'success': False, 'error': 'Answer key cannot be empty for short answer type'}), 400
+
+    # Detect major change BEFORE applying writes
+    major_change = (
+        qp_changed or ak_changed or rub_changed or ref_changed
+        or (new_marking != (asn.marking_instructions or ''))
+        or (new_review != (asn.review_instructions or ''))
+        or (new_provider != asn.provider)
+        or (new_model != asn.model)
+        or (new_total_marks != (asn.total_marks or ''))
+    )
+
+    # Apply updates
+    asn.title = new_title
+    asn.subject = new_subject
+    asn.scoring_mode = new_scoring_mode
+    asn.total_marks = new_total_marks
+    asn.show_results = new_show_results
+    asn.allow_drafts = new_allow_drafts
+    asn.max_drafts = new_max_drafts
+    asn.review_instructions = new_review
+    asn.marking_instructions = new_marking
+    asn.provider = new_provider
+    asn.model = new_model
+    if qp_changed:
+        asn.question_paper = qp_bytes
+    if ak_changed:
+        asn.answer_key = ak_bytes
+    if rub_changed:
+        asn.rubrics = rub_bytes
+    if ref_changed:
+        asn.reference = ref_bytes
+
+    asn.last_edited_at = datetime.now(timezone.utc)
+    if major_change:
+        asn.needs_remark = True
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Failed to save edits for assignment {assignment_id}: {e}")
+        return jsonify({'success': False, 'error': f'Failed to save: {e}'}), 500
+
+    return jsonify({
+        'success': True,
+        'major_change': major_change,
+        'needs_remark': asn.needs_remark,
+        'last_edited_at': asn.last_edited_at.isoformat(),
     })
 
 
