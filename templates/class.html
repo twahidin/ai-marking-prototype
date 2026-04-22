@@ -280,6 +280,7 @@
                     </div>
                     <div class="assignment-actions">
                         <a href="/teacher/assignment/{{ asn.id }}" class="btn-sm view">View</a>
+                        <a href="/teacher/assignment/{{ asn.id }}?edit=1" class="btn-sm view" style="background:#fff8e1;color:#b8860b;border-color:#f0ad4e;">Edit</a>
                         <button class="btn-sm delete" onclick="deleteAssignment('{{ asn.id }}', '{{ asn.subject | e }}')">Delete</button>
                     </div>
                 </div>
