@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for, Response, abort
 import io
 
-from ai_marking import mark_script, get_available_providers, PROVIDERS
+from ai_marking import mark_script, get_available_providers, PROVIDERS, generate_exemplar_analysis
 from pdf_generator import generate_report_pdf, generate_overview_pdf
 from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig
 
@@ -3687,6 +3687,185 @@ def teacher_overview(assignment_id):
         as_attachment=False,
         download_name=f'{asn.classroom_code}_overview.pdf'
     )
+
+
+@app.route('/teacher/assignment/<assignment_id>/exemplars')
+def teacher_exemplars_page(assignment_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+
+    total = Student.query.filter_by(class_id=asn.class_id).count()
+    done_count = Submission.query.filter_by(
+        assignment_id=assignment_id, status='done', is_final=True,
+    ).count()
+    gate_pct = int((done_count / total) * 100) if total > 0 else 0
+    can_generate = total > 0 and gate_pct >= 20
+
+    analysis = None
+    student_names = {}
+    if asn.exemplar_analysis_json:
+        try:
+            analysis = json.loads(asn.exemplar_analysis_json)
+        except Exception:
+            analysis = None
+    if analysis and isinstance(analysis.get('areas'), list):
+        ids = set()
+        for area in analysis['areas']:
+            for key in ('needs_work_examples', 'strong_examples'):
+                for ex in area.get(key) or []:
+                    if isinstance(ex.get('submission_id'), int):
+                        ids.add(ex['submission_id'])
+        if ids:
+            rows = (
+                db.session.query(Submission, Student)
+                .join(Student, Submission.student_id == Student.id)
+                .filter(Submission.id.in_(ids))
+                .all()
+            )
+            student_names = {sub.id: st.name for (sub, st) in rows}
+
+    return render_template(
+        'exemplars.html',
+        assignment=asn,
+        total_students=total,
+        done_count=done_count,
+        gate_pct=gate_pct,
+        can_generate=can_generate,
+        analysis=analysis,
+        analyzed_at=asn.exemplar_analyzed_at,
+        student_names=student_names,
+    )
+
+
+@app.route('/teacher/assignment/<assignment_id>/exemplars/generate', methods=['POST'])
+def teacher_exemplars_generate(assignment_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+
+    total = Student.query.filter_by(class_id=asn.class_id).count()
+    done_subs = (
+        Submission.query
+        .filter_by(assignment_id=assignment_id, status='done', is_final=True)
+        .all()
+    )
+    if total == 0 or (len(done_subs) / total) * 100 < 20:
+        return jsonify({'success': False, 'error': 'At least 20% of the class must have done submissions.'}), 400
+
+    # Cap to 40 submissions, sampled evenly across mark buckets if we have more.
+    MAX_SUBS = 40
+    selected = done_subs
+    if len(done_subs) > MAX_SUBS:
+        def _score(sub):
+            r = sub.get_result() or {}
+            qs = r.get('questions') or []
+            awarded = sum((q.get('marks_awarded') or 0) for q in qs)
+            total_m = sum((q.get('marks_total') or 0) for q in qs)
+            return (awarded / total_m) if total_m > 0 else 0.5
+        scored = sorted(done_subs, key=_score)
+        step = len(scored) / MAX_SUBS
+        selected = [scored[int(i * step)] for i in range(MAX_SUBS)]
+
+    # Build per-submission payload for the AI.
+    student_by_id = {
+        st.id: st.name for st in Student.query.filter_by(class_id=asn.class_id).all()
+    }
+    submissions_data = []
+    valid_subs = {}
+    for sub in selected:
+        result = sub.get_result() or {}
+        pages = sub.get_script_pages() or []
+        submissions_data.append({
+            'submission_id': sub.id,
+            'student_name': student_by_id.get(sub.student_id, ''),
+            'marks_awarded': sum((q.get('marks_awarded') or 0) for q in (result.get('questions') or [])) or None,
+            'marks_total': sum((q.get('marks_total') or 0) for q in (result.get('questions') or [])) or None,
+            'questions': result.get('questions') or [],
+            'overall_feedback': result.get('overall_feedback') or '',
+            'page_count': len(pages),
+        })
+        valid_subs[sub.id] = len(pages)
+
+    try:
+        parsed = generate_exemplar_analysis(
+            provider=asn.provider,
+            model=asn.model,
+            session_keys=_resolve_api_keys(asn),
+            subject=asn.subject or '',
+            submissions_data=submissions_data,
+        )
+    except Exception as e:
+        logger.error(f"Exemplar analysis failed for assignment {assignment_id}: {e}")
+        return jsonify({'success': False, 'error': f'AI analysis failed: {e}'}), 502
+
+    # Validate + sanitise AI output.
+    areas_in = parsed.get('areas') or []
+    areas_out = []
+    for area in areas_in:
+        if not isinstance(area, dict):
+            continue
+        def _clean_examples(lst):
+            out = []
+            seen = set()
+            for ex in (lst or []):
+                if not isinstance(ex, dict):
+                    continue
+                sid = ex.get('submission_id')
+                pidx = ex.get('page_index')
+                note = (ex.get('note') or '').strip()
+                if not isinstance(sid, int) or sid not in valid_subs:
+                    continue
+                if not isinstance(pidx, int) or pidx < 0 or pidx >= valid_subs[sid]:
+                    continue
+                if sid in seen:
+                    continue
+                seen.add(sid)
+                out.append({'submission_id': sid, 'page_index': pidx, 'note': note})
+                if len(out) >= 2:
+                    break
+            return out
+        needs = _clean_examples(area.get('needs_work_examples'))
+        strong = _clean_examples(area.get('strong_examples'))
+        if len(needs) < 2 or len(strong) < 2:
+            continue
+        areas_out.append({
+            'question_part': (area.get('question_part') or '').strip() or 'Area',
+            'label': (area.get('label') or '').strip() or 'Discussion area',
+            'description': (area.get('description') or '').strip(),
+            'needs_work_examples': needs,
+            'strong_examples': strong,
+        })
+
+    if not areas_out:
+        return jsonify({'success': False, 'error': 'AI analysis could not produce valid exemplars. Try regenerating.'}), 502
+
+    sanitised = {'areas': areas_out}
+    asn.exemplar_analysis_json = json.dumps(sanitised)
+    asn.exemplar_analyzed_at = datetime.now(timezone.utc)
+    db.session.commit()
+
+    # Build student-name map for the response.
+    ids = set()
+    for area in areas_out:
+        for ex in area['needs_work_examples'] + area['strong_examples']:
+            ids.add(ex['submission_id'])
+    rows = (
+        db.session.query(Submission, Student)
+        .join(Student, Submission.student_id == Student.id)
+        .filter(Submission.id.in_(ids))
+        .all()
+    )
+    student_names = {sub.id: st.name for (sub, st) in rows}
+
+    return jsonify({
+        'success': True,
+        'analysis': sanitised,
+        'student_names': student_names,
+        'analyzed_at': asn.exemplar_analyzed_at.isoformat(),
+    })
 
 
 @app.route('/teacher/assignment/<assignment_id>/submit/<int:student_id>', methods=['POST'])
