@@ -13,46 +13,67 @@
     var ZOOM_MIN = 0.5, ZOOM_MAX = 3.0, ZOOM_STEP = 0.25;
 
     function create(scrollContainerEl) {
-        // Outer sizer: its width/height are driven by the scaled content so the
-        // scroll container sees real overflow and shows scrollbars. This is the
-        // reliable way to make transform: scale() scrollable across all browsers.
-        var sizer = document.createElement('div');
-        sizer.className = 'dv-sizer';
-        sizer.style.cssText = 'position: relative; margin: 0 auto;';
-
-        // Inner wrap: receives the scale + rotate transform.
         var wrap = document.createElement('div');
         wrap.className = 'dv-scale-wrap';
-        wrap.style.transformOrigin = 'top left';
-
-        sizer.appendChild(wrap);
         scrollContainerEl.innerHTML = '';
-        scrollContainerEl.appendChild(sizer);
+        scrollContainerEl.appendChild(wrap);
         scrollContainerEl.style.cursor = 'grab';
 
-        var state = { scale: 1.0, rotation: 0, loadToken: 0, naturalW: 0, naturalH: 0 };
+        var state = { scale: 1.0, rotation: 0, loadToken: 0, lastContainerWidth: 0 };
 
-        function applyTransform() {
-            wrap.style.transform = 'scale(' + state.scale + ') rotate(' + state.rotation + 'deg)';
-            // When rotated by 90° or 270°, the visual footprint swaps W and H.
-            var sideways = (state.rotation === 90 || state.rotation === 270);
-            var effW = sideways ? state.naturalH : state.naturalW;
-            var effH = sideways ? state.naturalW : state.naturalH;
-            sizer.style.width = (effW * state.scale) + 'px';
-            sizer.style.height = (effH * state.scale) + 'px';
+        function ensureBaseWidth() {
+            // Capture the scale-1 width of each canvas/img the first time we see it
+            // laid out. Before capture, an element stores no dataset value and the
+            // applyTransform call is a no-op for it (it keeps its default styling).
+            var kids = wrap.querySelectorAll('canvas, img');
+            kids.forEach(function (el) {
+                if (!el.dataset.dvBase && el.offsetWidth > 0) {
+                    el.dataset.dvBase = String(el.offsetWidth);
+                }
+            });
         }
 
-        // Track wrap's natural (pre-transform) size as content loads asynchronously.
+        function applyTransform() {
+            ensureBaseWidth();
+            var kids = wrap.querySelectorAll('canvas, img');
+            kids.forEach(function (el) {
+                var base = parseFloat(el.dataset.dvBase || '0');
+                if (base > 0) {
+                    el.style.maxWidth = 'none';
+                    el.style.width = Math.round(base * state.scale) + 'px';
+                    el.style.height = 'auto';
+                }
+            });
+            // Rotation via transform on the wrap (layout-neutral; visual only).
+            wrap.style.transform = state.rotation ? ('rotate(' + state.rotation + 'deg)') : '';
+            wrap.style.transformOrigin = 'center top';
+        }
+
+        // Re-apply sizing whenever a page is appended or the container is resized.
+        if (typeof MutationObserver !== 'undefined') {
+            var mo = new MutationObserver(function () { applyTransform(); });
+            mo.observe(wrap, { childList: true });
+        }
         if (typeof ResizeObserver !== 'undefined') {
             var ro = new ResizeObserver(function (entries) {
+                // Only react to actual container width changes (e.g. user drags the
+                // split resizer). Ignore height-only changes, which happen when the
+                // horizontal scrollbar appears/disappears from our own zoom — acting
+                // on those would cause a feedback loop.
                 for (var i = 0; i < entries.length; i++) {
-                    var r = entries[i].contentRect;
-                    state.naturalW = r.width;
-                    state.naturalH = r.height;
+                    var w = entries[i].contentRect.width;
+                    if (Math.abs(w - state.lastContainerWidth) < 1) continue;
+                    state.lastContainerWidth = w;
+                    var kids = wrap.querySelectorAll('canvas, img');
+                    kids.forEach(function (el) {
+                        delete el.dataset.dvBase;
+                        el.style.width = '';
+                        el.style.maxWidth = '100%';
+                    });
+                    applyTransform();
                 }
-                applyTransform();
             });
-            ro.observe(wrap);
+            ro.observe(scrollContainerEl);
         }
 
         // Click-drag panning on the scroll container.
@@ -133,9 +154,12 @@
 
         function appendImage(url) {
             var img = document.createElement('img');
-            img.src = url;
             img.style.cssText = 'display:block; margin:0 auto 12px; max-width:100%; height:auto;';
+            // When the image finishes loading, its offsetWidth becomes valid; re-run
+            // applyTransform so its base size gets captured and current zoom applied.
+            img.onload = function () { applyTransform(); };
             img.onerror = function () { appendError('Could not load image'); };
+            img.src = url;
             wrap.appendChild(img);
         }
 
@@ -203,10 +227,10 @@
                 } else if (ctype.indexOf('image/') === 0) {
                     var objUrl = URL.createObjectURL(blob);
                     var img = new Image();
-                    img.onload = function () { URL.revokeObjectURL(objUrl); };
+                    img.onload = function () { URL.revokeObjectURL(objUrl); applyTransform(); };
                     img.onerror = function () { URL.revokeObjectURL(objUrl); appendError('Could not load image'); };
-                    img.src = objUrl;
                     img.style.cssText = 'display:block; margin:0 auto 12px; max-width:100%; height:auto;';
+                    img.src = objUrl;
                     wrap.appendChild(img);
                 } else {
                     appendError('Unsupported document format');
