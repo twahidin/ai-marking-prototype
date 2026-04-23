@@ -401,7 +401,7 @@
                         {% for s in students %}
                         <tr>
                             <td>{{ s.index }}</td>
-                            <td style="font-weight:600;">{% if s.status == 'done' and s.submission_id %}<a href="/submit/{{ assignment.id }}/download/{{ s.submission_id }}" style="color:#667eea;text-decoration:none;" title="Download feedback report">{{ s.name }}</a>{% else %}{{ s.name }}{% endif %}</td>
+                            <td style="font-weight:600;">{% if s.status == 'done' and s.submission_id %}<a href="/teacher/assignment/{{ assignment.id }}/submission/{{ s.submission_id }}/review" target="_blank" rel="noopener" style="color:#667eea;text-decoration:none;" title="Open split-view review">{{ s.name }}</a>{% else %}{{ s.name }}{% endif %}</td>
                             <td>
                                 {% if s.status == 'not_submitted' %}<span class="badge badge-gray">Not Submitted</span>
                                 {% elif s.status in ['pending', 'processing'] %}<span class="badge badge-blue">Marking...</span>
