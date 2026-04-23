@@ -206,6 +206,111 @@ function initLeftViewer() {
 if (window.pdfjsLib) initLeftViewer();
 else window.addEventListener('pdfjs-ready', initLeftViewer);
 
-// Task 5 wires up the right pane.
+// --- Right pane ---
+var rightViewer = null;        // Only for answer_key / compare-work modes
+var rightMode = 'feedback';
+
+function clearRightBody() {
+    var body = document.getElementById('rightBody');
+    body.innerHTML = '';
+    rightViewer = null;
+    document.getElementById('rightInfo').textContent = '';
+}
+
+function ensureRightDocViewer() {
+    var body = document.getElementById('rightBody');
+    body.innerHTML = '';
+    // Wrap with a mini toolbar for zoom/rotate
+    body.innerHTML =
+        '<div class="review-subtoolbar" style="border-bottom:1px solid #eee; margin:-16px -16px 12px; padding:0 12px; background:#fff;">' +
+            '<button type="button" id="rightZoomOut">−</button>' +
+            '<button type="button" id="rightZoomIn">+</button>' +
+            '<button type="button" id="rightReset">Reset</button>' +
+            '<button type="button" id="rightRotate">⟳ Rotate</button>' +
+        '</div>' +
+        '<div id="rightScroll" style="overflow:auto;"></div>';
+    rightViewer = DocumentViewer.create(document.getElementById('rightScroll'));
+    document.getElementById('rightZoomIn').addEventListener('click', function () { rightViewer.zoomIn(); });
+    document.getElementById('rightZoomOut').addEventListener('click', function () { rightViewer.zoomOut(); });
+    document.getElementById('rightReset').addEventListener('click', function () { rightViewer.reset(); });
+    document.getElementById('rightRotate').addEventListener('click', function () { rightViewer.rotate(); });
+    return rightViewer;
+}
+
+async function renderRightFeedback(submissionId, label) {
+    clearRightBody();
+    var body = document.getElementById('rightBody');
+    body.innerHTML = '<p style="color:#888;">Loading feedback…</p>';
+    try {
+        var res = await fetch('/teacher/assignment/' + REVIEW_ASSIGNMENT_ID + '/submission/' + submissionId + '/result');
+        var data = await res.json();
+        if (!data.success || !data.result) {
+            body.innerHTML = '<p style="color:red;">Could not load feedback.</p>';
+            return;
+        }
+        body.innerHTML = '';
+        FeedbackRender.render(body, data.result, { idPrefix: 'rf' });
+        if (label) document.getElementById('rightInfo').textContent = label;
+    } catch (err) {
+        body.innerHTML = '<p style="color:red;">Failed to load feedback.</p>';
+    }
+}
+
+function renderRightAnswerKey() {
+    var viewer = ensureRightDocViewer();
+    viewer.loadFromUrl('/teacher/assignment/' + REVIEW_ASSIGNMENT_ID + '/answer-key');
+    document.getElementById('rightInfo').textContent = 'Answer key';
+}
+
+function renderRightCompareWork(submissionId, label) {
+    var viewer = ensureRightDocViewer();
+    viewer.loadFromManifest(
+        '/teacher/assignment/' + REVIEW_ASSIGNMENT_ID + '/submission/' + submissionId + '/script/manifest',
+        function (idx) {
+            return '/teacher/assignment/' + REVIEW_ASSIGNMENT_ID + '/submission/' + submissionId + '/script/page/' + idx;
+        }
+    );
+    document.getElementById('rightInfo').textContent = label || '';
+}
+
+function handleModeChange() {
+    var mode = document.getElementById('rightMode').value;
+    rightMode = mode;
+    var cmp = document.getElementById('compareControls');
+    cmp.style.display = (mode === 'compare') ? 'flex' : 'none';
+    if (mode === 'feedback') {
+        renderRightFeedback(REVIEW_SUBMISSION_ID, null);
+    } else if (mode === 'answer_key') {
+        renderRightAnswerKey();
+    } else if (mode === 'compare') {
+        handleCompareChange();
+    }
+}
+
+function handleCompareChange() {
+    var studentSel = document.getElementById('compareStudent');
+    var submissionId = studentSel.value;
+    if (!submissionId) {
+        clearRightBody();
+        document.getElementById('rightBody').innerHTML = '<p style="color:#888;">Pick a student to compare.</p>';
+        return;
+    }
+    var label = studentSel.options[studentSel.selectedIndex].text;
+    var view = document.querySelector('input[name="compareView"]:checked').value;
+    if (view === 'work') {
+        renderRightCompareWork(submissionId, label + ' — Work');
+    } else {
+        renderRightFeedback(submissionId, label + ' — Feedback');
+    }
+}
+
+document.getElementById('rightMode').addEventListener('change', handleModeChange);
+document.getElementById('compareStudent').addEventListener('change', handleCompareChange);
+document.querySelectorAll('input[name="compareView"]').forEach(function (r) {
+    r.addEventListener('change', handleCompareChange);
+});
+
+// Initial render: AI Feedback for this student
+renderRightFeedback(REVIEW_SUBMISSION_ID, null);
 </script>
 {% endblock %}
