@@ -136,6 +136,13 @@
         cursor: pointer; transition: all 0.2s; margin-left: 6px;
     }
     .view-drafts-btn:hover { background: #e8f1fc; }
+    .remark-btn {
+        padding: 4px 10px; border: 1px solid #b8860b; border-radius: 6px;
+        background: white; color: #b8860b; font-size: 11px; font-weight: 600;
+        cursor: pointer; transition: all 0.2s; margin-left: 6px;
+    }
+    .remark-btn:hover { background: #fff8e1; }
+    .remark-btn:disabled { opacity: 0.6; cursor: not-allowed; }
     .last-edited-line {
         font-size: 12px; color: #888; margin-bottom: 16px;
         display: flex; align-items: center; gap: 6px;
@@ -411,6 +418,9 @@
                                 {% if s.status == 'done' and s.submission_id %}
                                 <button class="upload-btn" type="button" onclick='openFeedbackModal({{ s.submission_id|tojson }}, {{ s.name|tojson }})'>View Feedback</button>
                                 <a href="/submit/{{ assignment.id }}/download/{{ s.submission_id }}" class="upload-btn" style="text-decoration:none;display:inline-block;">Download</a>
+                                {% endif %}
+                                {% if s.status in ('done', 'error') and s.submission_id %}
+                                <button class="remark-btn" type="button" data-submission-id="{{ s.submission_id }}" onclick='remarkStudent(this, {{ s.submission_id|tojson }})'>Re-mark</button>
                                 {% endif %}
                                 <button class="upload-btn" onclick='openUploadModal({{ s.student_id|tojson }}, {{ s.name|tojson }})'>
                                     {% if s.status == 'not_submitted' %}Upload{% else %}Re-upload{% endif %}
@@ -1135,6 +1145,49 @@ document.getElementById('feedbackModal').addEventListener('click', function(e) {
 document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape' && document.getElementById('feedbackModal').classList.contains('active')) closeFeedbackModal();
 });
+
+// --- Per-student Re-mark ---
+var REMARK_ASSIGNMENT_ID = '{{ assignment.id }}';
+var remarkPollTimers = {};
+
+async function remarkStudent(btn, submissionId) {
+    if (!confirm('Re-mark this student using the stored script? The existing result will be replaced.')) return;
+    btn.disabled = true;
+    btn.textContent = 'Marking…';
+    try {
+        var res = await fetch('/teacher/assignment/' + REMARK_ASSIGNMENT_ID + '/submission/' + submissionId + '/remark', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        });
+        var data = await res.json();
+        if (!data.success) {
+            alert(data.error || 'Re-mark failed to start.');
+            btn.disabled = false;
+            btn.textContent = 'Re-mark';
+            return;
+        }
+        pollRemarkStatus(submissionId);
+    } catch (err) {
+        alert('Network error. Please try again.');
+        btn.disabled = false;
+        btn.textContent = 'Re-mark';
+    }
+}
+
+function pollRemarkStatus(submissionId) {
+    if (remarkPollTimers[submissionId]) clearTimeout(remarkPollTimers[submissionId]);
+    remarkPollTimers[submissionId] = setTimeout(async function() {
+        try {
+            var res = await fetch('/teacher/assignment/' + REMARK_ASSIGNMENT_ID + '/submission/' + submissionId + '/result');
+            var data = await res.json();
+            if (data.success && (data.status === 'done' || data.status === 'error')) {
+                window.location.reload();
+                return;
+            }
+        } catch (err) { /* ignore, retry */ }
+        pollRemarkStatus(submissionId);
+    }, 3000);
+}
 
 // --- Share to Bank ---
 function openShareModal() {
