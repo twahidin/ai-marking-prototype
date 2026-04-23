@@ -3801,6 +3801,24 @@ def teacher_student_drafts(assignment_id, student_id):
     })
 
 
+def _detect_mime(data):
+    """Infer MIME type from the first bytes of a blob. Falls back to octet-stream."""
+    if not data:
+        return 'application/octet-stream'
+    b = bytes(data[:8])
+    if b.startswith(b'%PDF'):
+        return 'application/pdf'
+    if b.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    if b.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png'
+    if b[:6] in (b'GIF87a', b'GIF89a'):
+        return 'image/gif'
+    if b.startswith(b'RIFF') and b[8:12] == b'WEBP':
+        return 'image/webp'
+    return 'application/octet-stream'
+
+
 @app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/result')
 def teacher_submission_result(assignment_id, submission_id):
     asn = Assignment.query.get_or_404(assignment_id)
@@ -3846,6 +3864,101 @@ def teacher_submission_remark(assignment_id, submission_id):
     thread.start()
 
     return jsonify({'success': True})
+
+
+@app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/script/manifest')
+def teacher_submission_script_manifest(assignment_id, submission_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+    pages = sub.get_script_pages() or []
+    return jsonify({
+        'success': True,
+        'pages': [{'index': i, 'mime': _detect_mime(p)} for i, p in enumerate(pages)],
+    })
+
+
+@app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/script/page/<int:page_idx>')
+def teacher_submission_script_page(assignment_id, submission_id, page_idx):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+    pages = sub.get_script_pages() or []
+    if page_idx < 0 or page_idx >= len(pages):
+        return jsonify({'success': False, 'error': 'Page out of range'}), 404
+    data = pages[page_idx]
+    return send_file(
+        io.BytesIO(data),
+        mimetype=_detect_mime(data),
+        as_attachment=False,
+    )
+
+
+@app.route('/teacher/assignment/<assignment_id>/answer-key')
+def teacher_assignment_answer_key(assignment_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    if not asn.answer_key:
+        return jsonify({'success': False, 'error': 'No answer key available'}), 404
+    data = asn.answer_key
+    return send_file(
+        io.BytesIO(data),
+        mimetype=_detect_mime(data),
+        as_attachment=False,
+    )
+
+
+@app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/review')
+def teacher_submission_review(assignment_id, submission_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id or sub.status != 'done':
+        return jsonify({'success': False, 'error': 'Submission not available for review'}), 404
+
+    student = Student.query.get(sub.student_id)
+    pages = sub.get_script_pages() or []
+    manifest = [{'index': i, 'mime': _detect_mime(p)} for i, p in enumerate(pages)]
+
+    # Build list of OTHER students on this assignment with done submissions
+    other_subs = (
+        db.session.query(Submission, Student)
+        .join(Student, Submission.student_id == Student.id)
+        .filter(
+            Submission.assignment_id == assignment_id,
+            Submission.status == 'done',
+            Submission.id != submission_id,
+            Submission.is_final == True,  # noqa: E712
+        )
+        .order_by(Student.index)
+        .all()
+    )
+    other_students = [
+        {'submission_id': s.id, 'name': st.name, 'index': st.index}
+        for (s, st) in other_subs
+    ]
+
+    return render_template(
+        'review.html',
+        assignment=asn,
+        submission=sub,
+        student=student,
+        manifest=manifest,
+        other_students=other_students,
+        has_answer_key=bool(asn.answer_key),
+    )
 
 
 @app.route('/teacher/assignment/<assignment_id>/delete', methods=['POST'])
