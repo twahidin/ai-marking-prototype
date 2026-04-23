@@ -1001,11 +1001,13 @@ async function openFeedbackModal(submissionId, studentName) {
         var data = await res.json();
         if (!data.success || !data.result) {
             document.getElementById('fbModalBody').innerHTML = '<p style="color:red;">Could not load feedback.</p>';
+            dl.style.display = 'none';
             return;
         }
         renderFeedbackResult(data.result);
     } catch (err) {
         document.getElementById('fbModalBody').innerHTML = '<p style="color:red;">Failed to load feedback.</p>';
+        dl.style.display = 'none';
     }
 }
 
