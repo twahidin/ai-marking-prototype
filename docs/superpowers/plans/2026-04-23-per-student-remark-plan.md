@@ -67,13 +67,13 @@ def teacher_submission_remark(assignment_id, submission_id):
     sub = Submission.query.get_or_404(submission_id)
     if sub.assignment_id != assignment_id:
         return jsonify({'success': False, 'error': 'Invalid submission'}), 400
-    if sub.status in ('pending', 'processing'):
-        return jsonify({'success': False, 'error': 'Already marking'}), 409
+    if sub.status in ('pending', 'processing', 'extracting', 'preview'):
+        return jsonify({'success': False, 'error': 'Already in progress'}), 409
     if not sub.get_script_pages():
         return jsonify({'success': False, 'error': 'No stored script available to re-mark'}), 400
 
     sub.status = 'pending'
-    sub.set_result(None)
+    sub.result_json = None
     sub.marked_at = None
     db.session.commit()
 
