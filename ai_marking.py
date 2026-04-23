@@ -24,6 +24,14 @@ try:
 except ImportError:
     PDF2IMAGE_AVAILABLE = False
 
+# Register the HEIF opener so PIL can open HEIC files uploaded from iPhones/iPads.
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+    HEIF_AVAILABLE = True
+except ImportError:
+    HEIF_AVAILABLE = False
+
 # Provider and model configuration
 PROVIDERS = {
     'anthropic': {
@@ -192,6 +200,40 @@ def build_content_block(file_bytes):
         media_type = "image/gif"
     elif file_bytes[:4] == b'RIFF' and len(file_bytes) > 12 and file_bytes[8:12] == b'WEBP':
         media_type = "image/webp"
+    elif len(file_bytes) > 12 and file_bytes[4:8] == b'ftyp' and file_bytes[8:12] in (
+        b'heic', b'heix', b'hevc', b'heim', b'heis', b'mif1', b'msf1', b'heif'
+    ):
+        # HEIC / HEIF (iPhone photos). Convert to JPEG so AI APIs accept it.
+        if not HEIF_AVAILABLE or not PDF2IMAGE_AVAILABLE:
+            logger.error("HEIC upload received but pillow-heif or Pillow is not installed")
+            return {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": base64.standard_b64encode(file_bytes).decode('utf-8')
+                }
+            }
+        try:
+            img = Image.open(io.BytesIO(file_bytes))
+            if img.mode in ('RGBA', 'P'):
+                img = img.convert('RGB')
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG', quality=85)
+            file_bytes = buf.getvalue()
+            media_type = "image/jpeg"
+        except Exception as e:
+            logger.error(f"Failed to convert HEIC to JPEG: {e}")
+            return {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": base64.standard_b64encode(file_bytes).decode('utf-8')
+                }
+            }
     else:
         # Default to PDF
         return {
