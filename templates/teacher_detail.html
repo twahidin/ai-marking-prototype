@@ -1151,7 +1151,7 @@ var REMARK_ASSIGNMENT_ID = '{{ assignment.id }}';
 var remarkPollTimers = {};
 
 async function remarkStudent(btn, submissionId) {
-    if (!confirm('Re-mark this student using the stored script? The existing result will be replaced.')) return;
+    if (!confirm('Re-mark this student using the stored script?')) return;
     btn.disabled = true;
     btn.textContent = 'Marking…';
     try {
@@ -1174,6 +1174,8 @@ async function remarkStudent(btn, submissionId) {
     }
 }
 
+var remarkPollFailures = {};
+
 function pollRemarkStatus(submissionId) {
     if (remarkPollTimers[submissionId]) clearTimeout(remarkPollTimers[submissionId]);
     remarkPollTimers[submissionId] = setTimeout(async function() {
@@ -1184,7 +1186,14 @@ function pollRemarkStatus(submissionId) {
                 window.location.reload();
                 return;
             }
-        } catch (err) { /* ignore, retry */ }
+            remarkPollFailures[submissionId] = 0;
+        } catch (err) {
+            remarkPollFailures[submissionId] = (remarkPollFailures[submissionId] || 0) + 1;
+            if (remarkPollFailures[submissionId] >= 20) {
+                alert('Lost connection while checking re-mark status. Please refresh the page.');
+                return;
+            }
+        }
         pollRemarkStatus(submissionId);
     }, 3000);
 }
