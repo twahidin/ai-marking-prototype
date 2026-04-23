@@ -3684,7 +3684,7 @@ def teacher_overview(assignment_id):
     return send_file(
         io.BytesIO(pdf_bytes),
         mimetype='application/pdf',
-        as_attachment=True,
+        as_attachment=False,
         download_name=f'{asn.classroom_code}_overview.pdf'
     )
 
