@@ -713,3 +713,121 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
                 if is_413 else f'Error from {provider}: {err_str}'
             )
         }
+
+
+def generate_exemplar_analysis(provider, model, session_keys, subject, submissions_data):
+    """Run AI exemplar analysis across all done submissions for a class.
+
+    submissions_data: list of dicts, one per done submission, each with:
+        - submission_id (int)
+        - student_name (str)
+        - marks_awarded (int or None)
+        - marks_total (int or None)
+        - questions: list of {question_num, student_answer, correct_answer, feedback, improvement, status}
+        - overall_feedback (str)
+        - page_count (int)
+
+    Returns: {"areas": [{question_part, label, description,
+              needs_work_examples:[{submission_id, page_index, note}],
+              strong_examples:[{submission_id, page_index, note}]}, ...]}
+
+    Raises an Exception on API/parse failure; the caller translates to HTTP.
+    """
+    import json as _json
+
+    # Build a compact textual representation to fit the prompt.
+    lines = [f"Subject: {subject}", f"Total students: {len(submissions_data)}", ""]
+    for s in submissions_data:
+        score = ''
+        if s.get('marks_awarded') is not None and s.get('marks_total') is not None:
+            score = f" ({s['marks_awarded']}/{s['marks_total']})"
+        lines.append(f"--- Student (submission_id={s['submission_id']}){score} | pages={s['page_count']} ---")
+        for q in s.get('questions') or []:
+            qn = q.get('question_num') or '?'
+            ans = (q.get('student_answer') or '').strip().replace('\n', ' ')
+            fb = (q.get('feedback') or '').strip().replace('\n', ' ')
+            if len(ans) > 400:
+                ans = ans[:400] + '…'
+            if len(fb) > 300:
+                fb = fb[:300] + '…'
+            lines.append(f"Q{qn}: student_answer: {ans}")
+            if fb:
+                lines.append(f"Q{qn}: feedback: {fb}")
+        if s.get('overall_feedback'):
+            of = s['overall_feedback'].strip().replace('\n', ' ')
+            if len(of) > 300:
+                of = of[:300] + '…'
+            lines.append(f"overall_feedback: {of}")
+        lines.append("")
+    user_prompt = "\n".join(lines)
+
+    system_prompt = (
+        "You are an education analytics assistant preparing exemplars for a post-marking class discussion.\n\n"
+        "You will receive every student's answers and AI feedback for a class's assignment. Produce a short JSON list of 'areas for analysis'. "
+        "Each area should be:\n"
+        "- Tied to a SPECIFIC, CONCRETE issue observed in the ACTUAL submissions — not a generic textbook category. "
+        "Label it so a teacher scanning a grid of buttons can tell what the area is about at a glance. "
+        "Example good labels: 'Used weight instead of mass in F=ma', 'Missed the word \"except\" in Q3', 'Weak topic sentence in intro'. "
+        "Example bad labels (too generic): 'Misconception about force', 'Question-answering technique', 'Paragraph structure'.\n"
+        "- Cross-subject: include question-answering technique issues (misread the question, missed keywords, "
+        "didn't quote evidence, answered a different question, ignored mark allocation) alongside conceptual misconceptions, "
+        "procedural errors, presentation issues, and argumentation issues, as appropriate to the subject.\n"
+        "- Accompanied by FOUR concrete exemplars: TWO students whose work illustrates the issue (needs_work_examples) "
+        "and TWO whose work handles it well (strong_examples). For each exemplar give submission_id (integer, must match one of the "
+        "students above), page_index (0-based integer, must be < that student's page_count), and a short note pointing to where on the page to look.\n\n"
+        "Return 3–8 areas, ordered by teaching value (most discussion-worthy first). Exemplars within one area should be four DIFFERENT students.\n\n"
+        "Respond ONLY with valid JSON in this exact shape:\n"
+        '{"areas":[{"question_part":"...","label":"...","description":"...",'
+        '"needs_work_examples":[{"submission_id":0,"page_index":0,"note":"..."},{"submission_id":0,"page_index":0,"note":"..."}],'
+        '"strong_examples":[{"submission_id":0,"page_index":0,"note":"..."},{"submission_id":0,"page_index":0,"note":"..."}]'
+        '}]}'
+    )
+
+    prov_cfg = PROVIDERS.get(provider)
+    if not prov_cfg:
+        raise ValueError(f"Unknown provider: {provider}")
+    prov_type = prov_cfg['type']
+
+    api_key = session_keys.get(provider) if session_keys else None
+    if not api_key:
+        env_name = PROVIDER_KEY_MAP.get(provider)
+        if env_name:
+            api_key = os.getenv(env_name)
+    if not api_key:
+        raise ValueError(f"No API key configured for provider: {provider}")
+
+    if prov_type == 'anthropic':
+        client = Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=system_prompt,
+            messages=[{'role': 'user', 'content': user_prompt}],
+        )
+        text = resp.content[0].text
+    else:
+        if not OPENAI_AVAILABLE:
+            raise RuntimeError("OpenAI SDK not installed")
+        base_url = prov_cfg.get('base_url')
+        client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
+        kwargs = {
+            'model': model,
+            'messages': [
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt},
+            ],
+        }
+        if model.startswith('gpt-5') or 'gpt-5' in model:
+            kwargs['max_completion_tokens'] = 4096
+        else:
+            kwargs['max_tokens'] = 4096
+        resp = client.chat.completions.create(**kwargs)
+        text = resp.choices[0].message.content
+
+    match = re.search(r'\{[\s\S]*\}', text)
+    if not match:
+        raise ValueError("AI response contained no JSON object")
+    parsed = _json.loads(match.group())
+    if 'areas' not in parsed or not isinstance(parsed['areas'], list):
+        raise ValueError("AI response missing 'areas' list")
+    return parsed
