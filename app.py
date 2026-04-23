@@ -3302,6 +3302,24 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
 
         db.session.commit()
 
+        # Auto-clear needs_remark once every done submission for this assignment
+        # has been marked after the last edit. No-op when stale submissions remain
+        # or when the flag is already False.
+        try:
+            asn_refreshed = Assignment.query.get(assignment_id)
+            if asn_refreshed and asn_refreshed.needs_remark and asn_refreshed.last_edited_at:
+                stale_exists = db.session.query(Submission.id).filter(
+                    Submission.assignment_id == assignment_id,
+                    Submission.status == 'done',
+                    Submission.marked_at < asn_refreshed.last_edited_at,
+                ).first() is not None
+                if not stale_exists:
+                    asn_refreshed.needs_remark = False
+                    db.session.commit()
+        except Exception as flag_err:
+            db.session.rollback()
+            logger.error(f"Failed to auto-clear needs_remark for assignment {assignment_id}: {flag_err}")
+
 
 @app.route('/teacher')
 def teacher_page():
@@ -3799,6 +3817,35 @@ def teacher_submission_result(assignment_id, submission_id):
         'draft_number': sub.draft_number,
         'is_final': sub.is_final,
     })
+
+
+@app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/remark', methods=['POST'])
+def teacher_submission_remark(assignment_id, submission_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+    if sub.status in ('pending', 'processing'):
+        return jsonify({'success': False, 'error': 'Already marking'}), 409
+    if not sub.get_script_pages():
+        return jsonify({'success': False, 'error': 'No stored script available to re-mark'}), 400
+
+    sub.status = 'pending'
+    sub.result_json = None
+    sub.marked_at = None
+    db.session.commit()
+
+    thread = threading.Thread(
+        target=_run_submission_marking,
+        args=(app, sub.id, assignment_id),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({'success': True})
 
 
 @app.route('/teacher/assignment/<assignment_id>/delete', methods=['POST'])
