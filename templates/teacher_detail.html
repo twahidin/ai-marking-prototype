@@ -902,7 +902,11 @@ async function viewExtracted(submissionId, studentName) {
             }
             html += '</div>';
         }
-        document.getElementById('extractedDiffContent').innerHTML = html;
+        var diffEl = document.getElementById('extractedDiffContent');
+        diffEl.innerHTML = html;
+        if (window.MathJax && MathJax.typesetPromise) {
+            MathJax.typesetPromise([diffEl]).catch(function() {});
+        }
     } catch (err) {
         document.getElementById('extractedDiffContent').innerHTML = '<p style="color:red;">Failed to load.</p>';
     }
