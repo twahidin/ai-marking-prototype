@@ -89,6 +89,12 @@
         width: 60px; padding: 6px 4px; text-align: center;
         border: 1px solid #ddd; border-radius: 6px; font-size: 13px;
     }
+    .bulk-page-input:disabled { background: #f5f5f5; color: #999; cursor: not-allowed; }
+    /* Per-student row coloring in the Pages modal */
+    .page-row td { transition: background-color 0.15s; }
+    .page-row.mark > td { background-color: #e8f5e9; }
+    .page-row.skip > td { background-color: #fdecea; }
+    .skip-checkbox { cursor: pointer; width: 16px; height: 16px; }
     .progress-bar-track {
         background: #f0f0f0; border-radius: 10px; height: 10px;
         width: 100%; overflow: hidden; margin-bottom: 12px;
@@ -476,19 +482,20 @@
 </div>
 <!-- Pages Modal -->
 <div class="upload-modal" id="pagesModal">
-    <div class="upload-modal-box" style="max-width:520px;">
+    <div class="upload-modal-box" style="max-width:560px;">
         <h3>Set Individual Page Counts</h3>
-        <p style="font-size:13px;color:#888;margin-bottom:16px;">Set how many pages each student's script has. Use 0 to skip.</p>
+        <p style="font-size:13px;color:#888;margin-bottom:16px;">Check the box to mark a student as "did not submit" (sets pages to 0). Press <strong>Enter</strong> in a Pages field to jump to the next student. Green rows will be marked; red rows will be skipped.</p>
         <div style="max-height:400px;overflow-y:auto;border:1px solid #eee;border-radius:8px;">
             <table class="results-table" style="font-size:13px;margin:0;">
-                <thead><tr><th>#</th><th>Name</th><th style="width:80px;text-align:center;">Pages</th></tr></thead>
+                <thead><tr><th>#</th><th style="width:50px;text-align:center;" title="Did not submit">DNS</th><th>Name</th><th style="width:80px;text-align:center;">Pages</th></tr></thead>
                 <tbody id="pagesModalBody">
                     {% for s in students %}
-                    <tr>
+                    <tr class="page-row mark" data-idx="{{ loop.index0 }}">
                         <td>{{ s.index }}</td>
+                        <td style="text-align:center;"><input type="checkbox" class="skip-checkbox" data-idx="{{ loop.index0 }}" onchange="onSkipToggle(this)" title="Did not submit"></td>
                         <td>{{ s.name }}</td>
                         <td style="text-align:center;">
-                            <input type="number" class="bulk-page-input" data-idx="{{ loop.index0 }}" value="2" min="0" max="50" onchange="updateBulkTotalPages()" oninput="updateBulkTotalPages()">
+                            <input type="number" class="bulk-page-input" data-idx="{{ loop.index0 }}" value="2" min="0" max="50" oninput="onPagesChanged(this)" onkeydown="onPagesKeydown(event, this)">
                         </td>
                     </tr>
                     {% endfor %}
@@ -788,9 +795,67 @@ var ASSIGNMENT_ID = '{{ assignment.id }}';
 function setAllPages() {
     var defaultPages = parseInt(document.getElementById('bulk_pages_per_student').value) || 2;
     document.querySelectorAll('.bulk-page-input[data-idx]').forEach(function(inp) {
+        inp.disabled = false;
         inp.value = defaultPages;
+        var chk = document.querySelector('.skip-checkbox[data-idx="' + inp.dataset.idx + '"]');
+        if (chk) chk.checked = (defaultPages === 0);
+        syncRowState(inp.dataset.idx);
     });
     updateBulkTotalPages();
+}
+
+function syncRowState(idx) {
+    var row = document.querySelector('tr.page-row[data-idx="' + idx + '"]');
+    var input = document.querySelector('.bulk-page-input[data-idx="' + idx + '"]');
+    if (!row || !input) return;
+    var pages = parseInt(input.value) || 0;
+    row.classList.toggle('mark', pages > 0);
+    row.classList.toggle('skip', pages === 0);
+}
+
+function onSkipToggle(chk) {
+    var idx = chk.dataset.idx;
+    var input = document.querySelector('.bulk-page-input[data-idx="' + idx + '"]');
+    if (!input) return;
+    if (chk.checked) {
+        // Remember the last non-zero value so un-toggling can restore it.
+        var v = parseInt(input.value) || 0;
+        if (v > 0) input.dataset.lastValue = String(v);
+        input.value = 0;
+        input.disabled = true;
+    } else {
+        input.disabled = false;
+        input.value = input.dataset.lastValue || '2';
+        input.focus();
+        input.select();
+    }
+    syncRowState(idx);
+    updateBulkTotalPages();
+}
+
+function onPagesChanged(input) {
+    var idx = input.dataset.idx;
+    var chk = document.querySelector('.skip-checkbox[data-idx="' + idx + '"]');
+    var pages = parseInt(input.value) || 0;
+    if (chk) chk.checked = (pages === 0);
+    syncRowState(idx);
+    updateBulkTotalPages();
+}
+
+function onPagesKeydown(e, input) {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        var inputs = Array.prototype.slice.call(document.querySelectorAll('.bulk-page-input[data-idx]'));
+        var pos = inputs.indexOf(input);
+        for (var i = pos + 1; i < inputs.length; i++) {
+            if (!inputs[i].disabled) {
+                inputs[i].focus();
+                inputs[i].select();
+                return;
+            }
+        }
+        input.blur();
+    }
 }
 
 function openPagesModal() {
