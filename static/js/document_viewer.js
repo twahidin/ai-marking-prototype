@@ -149,6 +149,8 @@
                 } else if (ctype.indexOf('image/') === 0) {
                     var objUrl = URL.createObjectURL(blob);
                     var img = new Image();
+                    img.onload = function () { URL.revokeObjectURL(objUrl); };
+                    img.onerror = function () { URL.revokeObjectURL(objUrl); appendError('Could not load image'); };
                     img.src = objUrl;
                     img.style.cssText = 'display:block; margin:0 auto 12px; max-width:100%; height:auto;';
                     wrap.appendChild(img);
