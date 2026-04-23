@@ -696,11 +696,18 @@ function generateLOs() {
             try {
                 var parsed = JSON.parse(m[0]);
                 var objs = parsed.objectives || parsed;
+                var filledCells = [];
                 for (var qnum in objs) {
                     var cell = document.getElementById('lo-' + qnum);
-                    if (cell) cell.textContent = objs[qnum];
+                    if (cell) {
+                        cell.textContent = objs[qnum];
+                        filledCells.push(cell);
+                    }
                 }
                 document.getElementById('loStatus').textContent = 'Done';
+                if (filledCells.length && window.MathJax && MathJax.typesetPromise) {
+                    MathJax.typesetPromise(filledCells).catch(function() {});
+                }
             } catch(e) {
                 document.getElementById('loStatus').textContent = 'Parse error';
             }

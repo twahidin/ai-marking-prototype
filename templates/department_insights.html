@@ -400,7 +400,8 @@ function generateAnalysis() {
 }
 
 function renderAnalysis(data) {
-    document.getElementById('aiSummary').textContent = data.summary || '';
+    var summaryEl = document.getElementById('aiSummary');
+    summaryEl.textContent = data.summary || '';
     var ul = document.getElementById('aiActions');
     ul.innerHTML = '';
     (data.action_items || []).forEach(function(item) {
@@ -415,6 +416,9 @@ function renderAnalysis(data) {
     document.getElementById('aiMeta').textContent = meta;
     document.getElementById('aiResult').classList.add('visible');
     document.getElementById('analyzeBtn').textContent = 'Regenerate';
+    if (window.MathJax && MathJax.typesetPromise) {
+        MathJax.typesetPromise([summaryEl, ul]).catch(function() {});
+    }
 }
 
 function loadSavedAnalysis() {
