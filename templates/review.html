@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% block title %}Review — {{ student.name }} — {{ app_title }}{% endblock %}
+
+{% block head %}
+<style>
+    body { background: #f7f7fa; margin: 0; }
+    .review-root { height: 100vh; display: flex; flex-direction: column; }
+    .review-topbar {
+        height: 52px; padding: 0 16px; background: white; border-bottom: 1px solid #e0e0e0;
+        display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+    }
+    .review-topbar .title { font-size: 15px; font-weight: 600; color: #2D2D2D; }
+    .review-topbar .title .muted { color: #888; font-weight: 400; margin-left: 8px; }
+    .review-topbar .close-link {
+        font-size: 13px; color: #667eea; text-decoration: none; padding: 6px 12px; border-radius: 6px;
+    }
+    .review-topbar .close-link:hover { background: #f0f0f0; }
+
+    .review-body { flex: 1; display: flex; min-height: 0; }
+    .review-pane { display: flex; flex-direction: column; min-height: 0; background: white; }
+    .review-pane-left { flex: 0 0 var(--left-width, 50%); border-right: 0; }
+    .review-pane-right { flex: 1 1 auto; }
+
+    .review-resizer {
+        flex: 0 0 8px; cursor: col-resize; background: #e8e8e8; position: relative;
+        transition: background 0.15s;
+    }
+    .review-resizer:hover, .review-resizer.dragging { background: #c8c8c8; }
+
+    .review-subtoolbar {
+        height: 44px; padding: 0 12px; background: #fafafa; border-bottom: 1px solid #eee;
+        display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+    }
+    .review-subtoolbar button, .review-subtoolbar select {
+        padding: 6px 12px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 6px;
+        background: white; cursor: pointer;
+    }
+    .review-subtoolbar button:hover { background: #f0f0f0; }
+    .review-subtoolbar .toolbar-info { font-size: 12px; color: #888; margin-left: auto; }
+
+    .review-scroll { flex: 1; overflow: auto; padding: 16px; background: #f0f0f3; }
+    .dv-scale-wrap { transform-origin: top center; transition: none; }
+
+    .review-right-body { flex: 1; overflow: auto; padding: 16px; background: white; }
+    .compare-controls { display: flex; align-items: center; gap: 10px; margin-left: 12px; }
+    .compare-controls label { font-size: 13px; color: #555; }
+
+    /* Feedback rendering reuses .fb-* classes. Duplicate a minimal subset needed on this page. */
+    .fb-summary-bar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+    .fb-summary-item { font-size: 13px; font-weight: 700; padding: 6px 12px; border-radius: 6px; background: #f0f0f0; color: #333; }
+    .fb-summary-marks { background: #e8eaff; color: #4a54c4; }
+    .fb-summary-correct { background: #e8f5e9; color: #28a745; }
+    .fb-summary-partial { background: #fff8e1; color: #e68a00; }
+    .fb-summary-incorrect { background: #fdecea; color: #dc3545; }
+    .fb-overall-box { background: #f8f9fa; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
+    .fb-overall-box h4 { font-size: 13px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 6px; }
+    .fb-overall-box p { font-size: 14px; color: #333; line-height: 1.6; margin: 0; white-space: pre-wrap; }
+    .fb-overall-box ul { margin: 0; padding-left: 20px; }
+    .fb-overall-box li { font-size: 14px; color: #333; line-height: 1.6; }
+    .fb-q-dots { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
+    .fb-q-dot { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; background: #eee; color: #555; cursor: pointer; border: 2px solid transparent; }
+    .fb-q-dot.active { border-color: #667eea; }
+    .fb-q-dot.correct { background: #e8f5e9; color: #28a745; }
+    .fb-q-dot.partially_correct { background: #fff8e1; color: #e68a00; }
+    .fb-q-dot.incorrect { background: #fdecea; color: #dc3545; }
+    .fb-q-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .fb-q-nav button { padding: 8px 14px; border: 1px solid #e0e0e0; background: white; border-radius: 8px; font-size: 13px; cursor: pointer; }
+    .fb-q-nav button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .fb-q-card { border: 1px solid #eee; border-radius: 10px; margin-bottom: 10px; }
+    .fb-q-card-header { padding: 12px 14px; background: #fafafa; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+    .fb-q-num { font-size: 14px; font-weight: 700; color: #333; }
+    .fb-status-badge { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.3px; }
+    .fb-status-badge.correct { background: #e8f5e9; color: #28a745; }
+    .fb-status-badge.partially_correct { background: #fff8e1; color: #e68a00; }
+    .fb-status-badge.incorrect { background: #fdecea; color: #dc3545; }
+    .fb-q-card-body { padding: 14px; }
+    .fb-q-field { margin-bottom: 12px; }
+    .fb-q-field-label { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px; }
+    .fb-q-field-value { font-size: 14px; color: #333; line-height: 1.6; white-space: pre-wrap; }
+    .fb-q-field-value.feedback { background: #f0f4ff; padding: 10px 12px; border-radius: 8px; border-left: 3px solid #667eea; }
+    .fb-q-field-value.improvement { background: #fff8e1; padding: 10px 12px; border-radius: 8px; border-left: 3px solid #e68a00; }
+    .fb-errors-list { margin-top: 10px; }
+    .fb-error-item { padding: 10px 12px; border-radius: 6px; margin-bottom: 4px; background: #fafafa; border-left: 3px solid #888; font-size: 13px; }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="review-root" id="reviewRoot">
+    <div class="review-topbar">
+        <div class="title">
+            {{ student.name }}<span class="muted">{{ assignment.title or assignment.subject or 'Assignment' }}</span>
+        </div>
+        <a href="#" class="close-link" onclick="reviewClose(); return false;">Close ×</a>
+    </div>
+    <div class="review-body" id="reviewBody">
+        <div class="review-pane review-pane-left">
+            <div class="review-subtoolbar">
+                <button type="button" id="leftZoomOut">−</button>
+                <button type="button" id="leftZoomIn">+</button>
+                <button type="button" id="leftReset">Reset</button>
+                <button type="button" id="leftRotate">⟳ Rotate</button>
+                <span class="toolbar-info">{{ manifest|length }} page{{ 's' if manifest|length != 1 else '' }}</span>
+            </div>
+            <div class="review-scroll" id="leftScroll"></div>
+        </div>
+        <div class="review-resizer" id="reviewResizer"></div>
+        <div class="review-pane review-pane-right">
+            <div class="review-subtoolbar">
+                <select id="rightMode">
+                    <option value="feedback">AI Feedback</option>
+                    <option value="answer_key"{% if not has_answer_key %} disabled{% endif %}>Answer Key{% if not has_answer_key %} (none){% endif %}</option>
+                    <option value="compare"{% if not other_students %} disabled{% endif %}>Compare with another student{% if not other_students %} (none available){% endif %}</option>
+                </select>
+                <div class="compare-controls" id="compareControls" style="display:none;">
+                    <select id="compareStudent">
+                        <option value="">— pick a student —</option>
+                        {% for o in other_students %}
+                        <option value="{{ o.submission_id }}">{{ o.name }}{% if o.index %} ({{ o.index }}){% endif %}</option>
+                        {% endfor %}
+                    </select>
+                    <label><input type="radio" name="compareView" value="work" checked> Work</label>
+                    <label><input type="radio" name="compareView" value="feedback"> Feedback</label>
+                </div>
+                <span class="toolbar-info" id="rightInfo"></span>
+            </div>
+            <div class="review-right-body" id="rightBody">
+                <p style="color:#888;">Loading feedback…</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.min.mjs" type="module"></script>
+<script type="module">
+    import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.min.mjs';
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs';
+    window.pdfjsLib = pdfjsLib;
+    window.dispatchEvent(new Event('pdfjs-ready'));
+</script>
+<script src="{{ url_for('static', filename='js/feedback_render.js') }}"></script>
+<script src="{{ url_for('static', filename='js/document_viewer.js') }}"></script>
+<script>
+var REVIEW_ASSIGNMENT_ID = '{{ assignment.id }}';
+var REVIEW_SUBMISSION_ID = {{ submission.id }};
+
+// --- Resizer ---
+(function initResizer() {
+    var root = document.getElementById('reviewRoot');
+    var body = document.getElementById('reviewBody');
+    var resizer = document.getElementById('reviewResizer');
+    var stored = parseFloat(localStorage.getItem('review-split-left-width'));
+    if (!isNaN(stored) && stored >= 20 && stored <= 80) {
+        body.style.setProperty('--left-width', stored + '%');
+    }
+    var dragging = false;
+    resizer.addEventListener('mousedown', function (e) {
+        dragging = true;
+        resizer.classList.add('dragging');
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    });
+    window.addEventListener('mousemove', function (e) {
+        if (!dragging) return;
+        var rect = body.getBoundingClientRect();
+        var pct = ((e.clientX - rect.left) / rect.width) * 100;
+        pct = Math.max(20, Math.min(80, pct));
+        body.style.setProperty('--left-width', pct + '%');
+    });
+    window.addEventListener('mouseup', function () {
+        if (!dragging) return;
+        dragging = false;
+        resizer.classList.remove('dragging');
+        document.body.style.userSelect = '';
+        var current = body.style.getPropertyValue('--left-width');
+        if (current) {
+            var num = parseFloat(current);
+            if (!isNaN(num)) localStorage.setItem('review-split-left-width', num);
+        }
+    });
+})();
+
+// --- Close ---
+function reviewClose() {
+    try { window.close(); } catch (e) {}
+    if (!window.closed) window.location.href = '/teacher/assignment/' + REVIEW_ASSIGNMENT_ID;
+}
+
+// --- Left pane viewer ---
+var leftViewer = null;
+function initLeftViewer() {
+    leftViewer = DocumentViewer.create(document.getElementById('leftScroll'));
+    leftViewer.loadFromManifest(
+        '/teacher/assignment/' + REVIEW_ASSIGNMENT_ID + '/submission/' + REVIEW_SUBMISSION_ID + '/script/manifest',
+        function (idx) {
+            return '/teacher/assignment/' + REVIEW_ASSIGNMENT_ID + '/submission/' + REVIEW_SUBMISSION_ID + '/script/page/' + idx;
+        }
+    );
+    document.getElementById('leftZoomIn').addEventListener('click', function () { leftViewer.zoomIn(); });
+    document.getElementById('leftZoomOut').addEventListener('click', function () { leftViewer.zoomOut(); });
+    document.getElementById('leftReset').addEventListener('click', function () { leftViewer.reset(); });
+    document.getElementById('leftRotate').addEventListener('click', function () { leftViewer.rotate(); });
+}
+
+if (window.pdfjsLib) initLeftViewer();
+else window.addEventListener('pdfjs-ready', initLeftViewer);
+
+// Task 5 wires up the right pane.
+</script>
+{% endblock %}
