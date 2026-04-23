@@ -783,20 +783,14 @@ def generate_exemplar_analysis(provider, model, session_keys, subject, submissio
         '}]}'
     )
 
-    prov_cfg = PROVIDERS.get(provider)
-    if not prov_cfg:
+    if provider not in PROVIDERS:
         raise ValueError(f"Unknown provider: {provider}")
-    prov_type = prov_cfg['type']
 
-    api_key = session_keys.get(provider) if session_keys else None
-    if not api_key:
-        env_name = PROVIDER_KEY_MAP.get(provider)
-        if env_name:
-            api_key = os.getenv(env_name)
+    api_key = _resolve_api_key(provider, session_keys)
     if not api_key:
         raise ValueError(f"No API key configured for provider: {provider}")
 
-    if prov_type == 'anthropic':
+    if provider == 'anthropic':
         client = Anthropic(api_key=api_key)
         resp = client.messages.create(
             model=model,
@@ -808,8 +802,10 @@ def generate_exemplar_analysis(provider, model, session_keys, subject, submissio
     else:
         if not OPENAI_AVAILABLE:
             raise RuntimeError("OpenAI SDK not installed")
-        base_url = prov_cfg.get('base_url')
-        client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
+        if provider == 'qwen':
+            client = OpenAI(api_key=api_key, base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+        else:
+            client = OpenAI(api_key=api_key)
         kwargs = {
             'model': model,
             'messages': [
@@ -817,7 +813,7 @@ def generate_exemplar_analysis(provider, model, session_keys, subject, submissio
                 {'role': 'user', 'content': user_prompt},
             ],
         }
-        if model.startswith('gpt-5') or 'gpt-5' in model:
+        if provider == 'openai':
             kwargs['max_completion_tokens'] = 4096
         else:
             kwargs['max_tokens'] = 4096
