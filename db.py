@@ -134,6 +134,14 @@ def _migrate_add_columns(app):
                 db.session.execute(text('ALTER TABLE assignments ADD COLUMN needs_remark BOOLEAN DEFAULT FALSE NOT NULL'))
                 db.session.commit()
                 logger.info('Added needs_remark column to assignments table')
+            if 'exemplar_analysis_json' not in columns:
+                db.session.execute(text('ALTER TABLE assignments ADD COLUMN exemplar_analysis_json TEXT'))
+                db.session.commit()
+                logger.info('Added exemplar_analysis_json column to assignments table')
+            if 'exemplar_analyzed_at' not in columns:
+                db.session.execute(text('ALTER TABLE assignments ADD COLUMN exemplar_analyzed_at TIMESTAMP'))
+                db.session.commit()
+                logger.info('Added exemplar_analyzed_at column to assignments table')
 
 
 def init_db(app):
@@ -220,6 +228,8 @@ class Assignment(db.Model):
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     last_edited_at = db.Column(db.DateTime, nullable=True)
     needs_remark = db.Column(db.Boolean, default=False, nullable=False)
+    exemplar_analysis_json = db.Column(db.Text)
+    exemplar_analyzed_at = db.Column(db.DateTime)
 
     students = db.relationship('Student', backref='assignment', lazy=True, cascade='all, delete-orphan')
 
