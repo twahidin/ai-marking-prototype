@@ -10,7 +10,7 @@ import threading
 import time
 import zipfile
 from datetime import datetime, timezone
-from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for, Response, abort
+from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for, Response, abort, make_response
 import io
 
 from ai_marking import mark_script, get_available_providers, PROVIDERS, generate_exemplar_analysis
@@ -3266,6 +3266,11 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
         sub.status = 'processing'
         db.session.commit()
 
+        logger.info(
+            f"Marking submission {submission_id} for assignment {assignment_id} — "
+            f"scoring_mode={asn.scoring_mode!r} total_marks={asn.total_marks!r}"
+        )
+
         try:
             qp = [asn.question_paper] if asn.question_paper else []
             ak = [asn.answer_key] if asn.answer_key else []
@@ -3293,6 +3298,14 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
             sub.set_result(result)
             sub.status = 'error' if result.get('error') else 'done'
             sub.marked_at = datetime.now(timezone.utc)
+            if sub.status == 'done':
+                qs = (result or {}).get('questions') or []
+                ta = sum((q.get('marks_awarded') or 0) for q in qs)
+                tp = sum((q.get('marks_total') or 0) for q in qs)
+                logger.info(
+                    f"Submission {submission_id} marked → {ta}/{tp} "
+                    f"(total_marks requested={asn.total_marks!r})"
+                )
         except Exception as e:
             db.session.rollback()
             logger.error(f"Submission {submission_id} marking failed: {e}")
@@ -3624,11 +3637,16 @@ def teacher_assignment_detail(assignment_id):
                 edit_api_keys[prov] = env_val
     available_providers = sorted(edit_api_keys.keys())
 
-    return render_template('teacher_detail.html',
+    resp = make_response(render_template('teacher_detail.html',
                            assignment=asn,
                            students=student_data,
                            all_providers=PROVIDERS,
-                           available_providers=available_providers)
+                           available_providers=available_providers))
+    # Prevent the browser/proxy from caching the score cells — a stale cache here
+    # makes post-remark reloads show old marks even though the DB is fresh.
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['Pragma'] = 'no-cache'
+    return resp
 
 
 @app.route('/teacher/assignment/<assignment_id>/download')
