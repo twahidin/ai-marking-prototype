@@ -10,7 +10,7 @@ import threading
 import time
 import zipfile
 from datetime import datetime, timezone
-from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for, Response
+from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for, Response, abort
 import io
 
 from ai_marking import mark_script, get_available_providers, PROVIDERS
@@ -3895,11 +3895,14 @@ def teacher_submission_script_page(assignment_id, submission_id, page_idx):
     if page_idx < 0 or page_idx >= len(pages):
         return jsonify({'success': False, 'error': 'Page out of range'}), 404
     data = pages[page_idx]
-    return send_file(
+    resp = send_file(
         io.BytesIO(data),
         mimetype=_detect_mime(data),
         as_attachment=False,
     )
+    resp.cache_control.private = True
+    resp.cache_control.no_store = True
+    return resp
 
 
 @app.route('/teacher/assignment/<assignment_id>/answer-key')
@@ -3911,11 +3914,14 @@ def teacher_assignment_answer_key(assignment_id):
     if not asn.answer_key:
         return jsonify({'success': False, 'error': 'No answer key available'}), 404
     data = asn.answer_key
-    return send_file(
+    resp = send_file(
         io.BytesIO(data),
         mimetype=_detect_mime(data),
         as_attachment=False,
     )
+    resp.cache_control.private = True
+    resp.cache_control.no_store = True
+    return resp
 
 
 @app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/review')
@@ -3926,7 +3932,7 @@ def teacher_submission_review(assignment_id, submission_id):
         return err
     sub = Submission.query.get_or_404(submission_id)
     if sub.assignment_id != assignment_id or sub.status != 'done':
-        return jsonify({'success': False, 'error': 'Submission not available for review'}), 404
+        abort(404)
 
     student = Student.query.get(sub.student_id)
     pages = sub.get_script_pages() or []
@@ -3942,11 +3948,11 @@ def teacher_submission_review(assignment_id, submission_id):
             Submission.id != submission_id,
             Submission.is_final == True,  # noqa: E712
         )
-        .order_by(Student.index)
+        .order_by(Student.index_number)
         .all()
     )
     other_students = [
-        {'submission_id': s.id, 'name': st.name, 'index': st.index}
+        {'submission_id': s.id, 'name': st.name, 'index': st.index_number}
         for (s, st) in other_subs
     ]
 

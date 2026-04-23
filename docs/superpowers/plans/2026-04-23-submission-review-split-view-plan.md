@@ -120,7 +120,7 @@ def teacher_submission_review(assignment_id, submission_id):
         return err
     sub = Submission.query.get_or_404(submission_id)
     if sub.assignment_id != assignment_id or sub.status != 'done':
-        return jsonify({'success': False, 'error': 'Submission not available for review'}), 404
+        abort(404)
 
     student = Student.query.get(sub.student_id)
     pages = sub.get_script_pages() or []
@@ -136,11 +136,11 @@ def teacher_submission_review(assignment_id, submission_id):
             Submission.id != submission_id,
             Submission.is_final == True,  # noqa: E712
         )
-        .order_by(Student.index)
+        .order_by(Student.index_number)
         .all()
     )
     other_students = [
-        {'submission_id': s.id, 'name': st.name, 'index': st.index}
+        {'submission_id': s.id, 'name': st.name, 'index': st.index_number}
         for (s, st) in other_subs
     ]
 
