@@ -670,6 +670,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', filename='js/feedback_render.js') }}"></script>
 <script>
 function getFullUrl(path) { return window.location.origin + path; }
 document.getElementById('submitUrl').textContent = getFullUrl('/submit/{{ assignment.id }}');
@@ -989,13 +990,6 @@ function closeExtractedModal() {
 
 // --- Feedback Viewer Modal ---
 var FB_ASSIGNMENT_ID = '{{ assignment.id }}';
-var fbQuestions = [];
-var fbErrors = [];
-var fbAssignType = 'short_answer';
-var fbRecommendedActions = [];
-var fbOverallFeedback = '';
-var fbCurrentQ = 0;
-var FB_STATUS_LABELS = { correct: 'Correct', partially_correct: 'Partially Correct', incorrect: 'Incorrect' };
 
 async function openFeedbackModal(submissionId, studentName) {
     document.getElementById('fbModalTitle').textContent = studentName + ' — Feedback';
@@ -1014,7 +1008,7 @@ async function openFeedbackModal(submissionId, studentName) {
             dl.style.display = 'none';
             return;
         }
-        renderFeedbackResult(data.result);
+        FeedbackRender.render(document.getElementById('fbModalBody'), data.result, { idPrefix: 'fb' });
     } catch (err) {
         document.getElementById('fbModalBody').innerHTML = '<p style="color:red;">Failed to load feedback.</p>';
         dl.style.display = 'none';
@@ -1024,119 +1018,6 @@ async function openFeedbackModal(submissionId, studentName) {
 function closeFeedbackModal() {
     document.getElementById('feedbackModal').classList.remove('active');
 }
-
-function fbEsc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
-
-function renderFeedbackResult(result) {
-    fbQuestions = result.questions || [];
-    fbErrors = result.errors || [];
-    fbAssignType = result.assign_type || 'short_answer';
-    fbRecommendedActions = result.recommended_actions || [];
-    fbOverallFeedback = result.overall_feedback || '';
-    fbCurrentQ = 0;
-
-    var hasMarks = fbQuestions.some(function(q) { return q.marks_awarded != null; });
-    var summary = '';
-    if (hasMarks) {
-        var ta = 0, tp = 0;
-        fbQuestions.forEach(function(q) { ta += (q.marks_awarded || 0); tp += (q.marks_total || 0); });
-        var pct = tp > 0 ? Math.round(ta / tp * 100) : 0;
-        summary = '<div class="fb-summary-item fb-summary-marks">' + ta + ' / ' + tp + ' marks</div>' +
-                  '<div class="fb-summary-item fb-summary-marks">' + pct + '%</div>';
-    } else {
-        var c = { correct: 0, partially_correct: 0, incorrect: 0 };
-        fbQuestions.forEach(function(q) { if (c.hasOwnProperty(q.status)) c[q.status]++; });
-        summary = '<div class="fb-summary-item fb-summary-correct">' + c.correct + ' Correct</div>' +
-                  '<div class="fb-summary-item fb-summary-partial">' + c.partially_correct + ' Partial</div>' +
-                  '<div class="fb-summary-item fb-summary-incorrect">' + c.incorrect + ' Incorrect</div>';
-    }
-
-    var dots = '';
-    fbQuestions.forEach(function(q, i) {
-        var s = q.status || 'incorrect';
-        var label = (fbAssignType === 'rubrics' && q.criterion_name)
-            ? q.criterion_name.substring(0, 2).toUpperCase() : (q.question_num || i + 1);
-        dots += '<div class="fb-q-dot ' + fbEsc(s) + (i === 0 ? ' active' : '') + '" onclick="fbGoQ(' + i + ')">' + fbEsc(String(label)) + '</div>';
-    });
-
-    var overall = '';
-    if (fbOverallFeedback) {
-        overall += '<div class="fb-overall-box"><h4>Overall Feedback</h4><p>' + fbEsc(fbOverallFeedback) + '</p></div>';
-    }
-    if (fbRecommendedActions.length) {
-        overall += '<div class="fb-overall-box"><h4>Recommended Actions</h4><ul>';
-        fbRecommendedActions.forEach(function(a) { overall += '<li>' + fbEsc(a) + '</li>'; });
-        overall += '</ul></div>';
-    }
-    if (fbErrors.length) {
-        overall += '<div class="fb-overall-box"><h4>Line-by-Line Errors (' + fbErrors.length + ')</h4><div class="fb-errors-list">';
-        fbErrors.forEach(function(e) {
-            overall += '<div class="fb-error-item"><strong>' + fbEsc((e.type || 'error').toUpperCase()) + '</strong>';
-            if (e.location) overall += ' <span style="color:#999;">' + fbEsc(e.location) + '</span>';
-            overall += '<div style="margin-top:4px;"><span style="text-decoration:line-through;color:#dc3545;">' + fbEsc(e.original || '') + '</span> &rarr; <span style="color:#28a745;">' + fbEsc(e.correction || '') + '</span></div></div>';
-        });
-        overall += '</div></div>';
-    }
-
-    var html =
-        '<div class="fb-summary-bar">' + summary + '</div>' +
-        (fbQuestions.length ? (
-            '<div class="fb-q-dots">' + dots + '</div>' +
-            '<div class="fb-q-nav">' +
-                '<button id="fbPrevBtn" type="button" onclick="fbNavQ(-1)">&larr; Prev</button>' +
-                '<span id="fbQNavInfo"></span>' +
-                '<button id="fbNextBtn" type="button" onclick="fbNavQ(1)">Next &rarr;</button>' +
-            '</div>' +
-            '<div id="fbQCardContainer"></div>'
-        ) : '<p style="color:#888;font-style:italic;">No per-question feedback.</p>') +
-        overall;
-
-    document.getElementById('fbModalBody').innerHTML = html;
-    if (fbQuestions.length) fbRenderQuestion();
-
-    if (window.MathJax && MathJax.typesetPromise) {
-        MathJax.typesetPromise([document.getElementById('fbModalBody')]).catch(function() {});
-    }
-}
-
-function fbRenderQuestion() {
-    if (!fbQuestions.length) return;
-    var q = fbQuestions[fbCurrentQ];
-    var s = q.status || 'incorrect';
-    var label = FB_STATUS_LABELS[s] || s;
-    var hasMarks = q.marks_awarded != null;
-    var badge = hasMarks
-        ? '<span class="fb-status-badge ' + fbEsc(s) + '">' + fbEsc(String(q.marks_awarded)) + '/' + fbEsc(String(q.marks_total || '?')) + '</span>'
-        : '<span class="fb-status-badge ' + fbEsc(s) + '">' + fbEsc(label) + '</span>';
-
-    var isRubrics = fbAssignType === 'rubrics';
-    var headerLabel = isRubrics ? (q.criterion_name || 'Criterion ' + (q.question_num || fbCurrentQ + 1)) : 'Question ' + (q.question_num || fbCurrentQ + 1);
-    var ansLabel = isRubrics ? 'Assessment' : "Student's Answer";
-    var refLabel = isRubrics ? 'Band Descriptor' : 'Correct Answer';
-    var bandInfo = (isRubrics && q.band) ? ' <span style="font-size:12px;color:#667eea;font-weight:600;">(' + fbEsc(q.band) + ')</span>' : '';
-
-    var html = '<div class="fb-q-card"><div class="fb-q-card-header"><span class="fb-q-num">' + fbEsc(headerLabel) + bandInfo + '</span>' + badge + '</div><div class="fb-q-card-body">' +
-        '<div class="fb-q-field"><div class="fb-q-field-label">' + ansLabel + '</div><div class="fb-q-field-value">' + fbEsc(q.student_answer || 'N/A') + '</div></div>' +
-        '<div class="fb-q-field"><div class="fb-q-field-label">' + refLabel + '</div><div class="fb-q-field-value">' + fbEsc(q.correct_answer || 'N/A') + '</div></div>';
-    if (q.feedback) html += '<div class="fb-q-field"><div class="fb-q-field-label">Feedback</div><div class="fb-q-field-value feedback">' + fbEsc(q.feedback) + '</div></div>';
-    if (q.improvement) html += '<div class="fb-q-field"><div class="fb-q-field-label">Suggested Improvement</div><div class="fb-q-field-value improvement">' + fbEsc(q.improvement) + '</div></div>';
-    html += '</div></div>';
-
-    var container = document.getElementById('fbQCardContainer');
-    container.innerHTML = html;
-
-    document.getElementById('fbQNavInfo').textContent = 'Q' + (fbCurrentQ + 1) + ' of ' + fbQuestions.length;
-    document.getElementById('fbPrevBtn').disabled = fbCurrentQ === 0;
-    document.getElementById('fbNextBtn').disabled = fbCurrentQ === fbQuestions.length - 1;
-    document.querySelectorAll('#fbModalBody .fb-q-dot').forEach(function(d, i) { d.classList.toggle('active', i === fbCurrentQ); });
-
-    if (window.MathJax && MathJax.typesetPromise) {
-        MathJax.typesetPromise([container]).catch(function() {});
-    }
-}
-
-function fbNavQ(dir) { fbGoQ(fbCurrentQ + dir); }
-function fbGoQ(idx) { if (idx < 0 || idx >= fbQuestions.length) return; fbCurrentQ = idx; fbRenderQuestion(); }
 
 // Close on backdrop click and Escape
 document.getElementById('feedbackModal').addEventListener('click', function(e) {
