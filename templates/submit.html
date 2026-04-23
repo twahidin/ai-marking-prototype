@@ -64,6 +64,21 @@
     }
     .answer-textarea:focus { border-color: #667eea; }
     .answer-textarea.edited { border-color: #e68a00; background: #fffcf5; }
+    .answer-preview {
+        margin-top: 8px; padding-top: 8px;
+        border-top: 1px dashed #e0e0e0;
+    }
+    .answer-preview-label {
+        font-size: 11px; color: #888; text-transform: uppercase;
+        letter-spacing: 0.05em; margin-bottom: 4px; font-weight: 600;
+    }
+    .answer-preview-body {
+        font-size: 14px; color: #333; line-height: 1.6;
+        min-height: 1.5em; white-space: pre-wrap; word-break: break-word;
+    }
+    .answer-preview-body:empty::before {
+        content: "(empty)"; color: #bbb; font-style: italic;
+    }
     .edited-badge {
         display: inline-block; font-size: 11px; color: #e68a00; font-weight: 600;
         margin-left: 8px; padding: 1px 6px; background: #fff8e1; border-radius: 4px;
@@ -582,10 +597,18 @@ function renderPreview(answers) {
         var label = a.label || ('Question ' + a.question_num);
         html += '<div class="answer-block">' +
             '<div class="answer-label">' + esc(label) + '<span class="edited-badge" id="edited-' + i + '" style="display:none;">Edited</span></div>' +
-            '<textarea class="answer-textarea" id="answer-' + i + '" data-index="' + i + '" oninput="markEdited(' + i + ')">' + esc(a.extracted_text || '') + '</textarea>' +
+            '<textarea class="answer-textarea" id="answer-' + i + '" data-index="' + i + '" oninput="onPreviewInput(' + i + ')">' + esc(a.extracted_text || '') + '</textarea>' +
+            '<div class="answer-preview">' +
+                '<div class="answer-preview-label">Preview</div>' +
+                '<div class="answer-preview-body" id="preview-body-' + i + '"></div>' +
+            '</div>' +
             '</div>';
     });
     document.getElementById('previewAnswers').innerHTML = html;
+    // Initial render of each preview with the AI-extracted text
+    answers.forEach(function(a, i) {
+        updatePreview(i, a.extracted_text || '');
+    });
 }
 
 function markEdited(idx) {
@@ -598,6 +621,26 @@ function markEdited(idx) {
     } else {
         textarea.classList.remove('edited');
         badge.style.display = 'none';
+    }
+}
+
+var previewDebounceTimers = {};
+
+function onPreviewInput(idx) {
+    markEdited(idx);
+    if (previewDebounceTimers[idx]) clearTimeout(previewDebounceTimers[idx]);
+    previewDebounceTimers[idx] = setTimeout(function() {
+        var textarea = document.getElementById('answer-' + idx);
+        updatePreview(idx, textarea ? textarea.value : '');
+    }, 200);
+}
+
+function updatePreview(idx, text) {
+    var body = document.getElementById('preview-body-' + idx);
+    if (!body) return;
+    body.textContent = text;  // textContent preserves $ delimiters for MathJax
+    if (window.MathJax && MathJax.typesetPromise) {
+        MathJax.typesetPromise([body]).catch(function() {});
     }
 }
 
