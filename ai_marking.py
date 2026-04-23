@@ -246,6 +246,12 @@ def build_content_block(file_bytes):
         }
 
     resized = resize_image_for_ai(file_bytes)
+    # resize_image_for_ai re-encodes as JPEG when Pillow is available. If the
+    # returned bytes start with the JPEG magic, the content block's media_type
+    # must match the actual bytes — otherwise Anthropic rejects a PNG-labelled
+    # JPEG payload.
+    if resized[:3] == b'\xff\xd8\xff':
+        media_type = "image/jpeg"
     return {
         "type": "image",
         "source": {
