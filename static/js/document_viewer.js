@@ -13,20 +13,46 @@
     var ZOOM_MIN = 0.5, ZOOM_MAX = 3.0, ZOOM_STEP = 0.25;
 
     function create(scrollContainerEl) {
+        // Outer sizer: its width/height are driven by the scaled content so the
+        // scroll container sees real overflow and shows scrollbars. This is the
+        // reliable way to make transform: scale() scrollable across all browsers.
+        var sizer = document.createElement('div');
+        sizer.className = 'dv-sizer';
+        sizer.style.cssText = 'position: relative; margin: 0 auto;';
+
+        // Inner wrap: receives the scale + rotate transform.
         var wrap = document.createElement('div');
         wrap.className = 'dv-scale-wrap';
-        wrap.style.transformOrigin = 'top center';
+        wrap.style.transformOrigin = 'top left';
+
+        sizer.appendChild(wrap);
         scrollContainerEl.innerHTML = '';
-        scrollContainerEl.appendChild(wrap);
+        scrollContainerEl.appendChild(sizer);
         scrollContainerEl.style.cursor = 'grab';
 
-        var state = { scale: 1.0, rotation: 0, loadToken: 0 };
+        var state = { scale: 1.0, rotation: 0, loadToken: 0, naturalW: 0, naturalH: 0 };
 
         function applyTransform() {
-            // Use CSS `zoom` (affects layout → scrollbars work) for scaling.
-            // Only `transform` for rotation so we don't defeat the scroll container.
-            wrap.style.zoom = state.scale;
-            wrap.style.transform = state.rotation ? ('rotate(' + state.rotation + 'deg)') : '';
+            wrap.style.transform = 'scale(' + state.scale + ') rotate(' + state.rotation + 'deg)';
+            // When rotated by 90° or 270°, the visual footprint swaps W and H.
+            var sideways = (state.rotation === 90 || state.rotation === 270);
+            var effW = sideways ? state.naturalH : state.naturalW;
+            var effH = sideways ? state.naturalW : state.naturalH;
+            sizer.style.width = (effW * state.scale) + 'px';
+            sizer.style.height = (effH * state.scale) + 'px';
+        }
+
+        // Track wrap's natural (pre-transform) size as content loads asynchronously.
+        if (typeof ResizeObserver !== 'undefined') {
+            var ro = new ResizeObserver(function (entries) {
+                for (var i = 0; i < entries.length; i++) {
+                    var r = entries[i].contentRect;
+                    state.naturalW = r.width;
+                    state.naturalH = r.height;
+                }
+                applyTransform();
+            });
+            ro.observe(wrap);
         }
 
         // Click-drag panning on the scroll container.
