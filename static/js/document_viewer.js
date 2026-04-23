@@ -16,15 +16,43 @@
         var wrap = document.createElement('div');
         wrap.className = 'dv-scale-wrap';
         wrap.style.transformOrigin = 'top center';
-        wrap.style.transform = 'scale(1) rotate(0deg)';
         scrollContainerEl.innerHTML = '';
         scrollContainerEl.appendChild(wrap);
+        scrollContainerEl.style.cursor = 'grab';
 
         var state = { scale: 1.0, rotation: 0, loadToken: 0 };
 
         function applyTransform() {
-            wrap.style.transform = 'scale(' + state.scale + ') rotate(' + state.rotation + 'deg)';
+            // Use CSS `zoom` (affects layout → scrollbars work) for scaling.
+            // Only `transform` for rotation so we don't defeat the scroll container.
+            wrap.style.zoom = state.scale;
+            wrap.style.transform = state.rotation ? ('rotate(' + state.rotation + 'deg)') : '';
         }
+
+        // Click-drag panning on the scroll container.
+        var panState = null;
+        scrollContainerEl.addEventListener('mousedown', function (e) {
+            if (e.button !== 0) return;
+            panState = {
+                startX: e.clientX,
+                startY: e.clientY,
+                scrollLeft: scrollContainerEl.scrollLeft,
+                scrollTop: scrollContainerEl.scrollTop,
+            };
+            scrollContainerEl.style.cursor = 'grabbing';
+            e.preventDefault();
+        });
+        window.addEventListener('mousemove', function (e) {
+            if (!panState) return;
+            scrollContainerEl.scrollLeft = panState.scrollLeft - (e.clientX - panState.startX);
+            scrollContainerEl.scrollTop = panState.scrollTop - (e.clientY - panState.startY);
+        });
+        window.addEventListener('mouseup', function () {
+            if (panState) {
+                panState = null;
+                scrollContainerEl.style.cursor = 'grab';
+            }
+        });
 
         function clearPages() {
             wrap.innerHTML = '';
