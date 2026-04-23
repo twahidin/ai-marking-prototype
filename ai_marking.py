@@ -518,9 +518,16 @@ def _build_short_answer_prompt(subject, rubrics_pages, answer_key_pages, questio
         total_marks_str = total_marks or '100'
         scoring_instructions = f"""SCORING: Award numerical marks for each question.
 Total Marks for this assessment: {total_marks_str}
-- Award marks out of each question's total based on correctness and completeness
+
+READING THE MARK ALLOCATION (critical):
+- Each question or sub-part in the QUESTION PAPER has its mark allocation written in square brackets, usually on the right-hand side of that part — e.g. "[2]", "[3]", "[5]". That number IS the marks_total for that part. Use it exactly; do not guess or redistribute.
+- Sub-parts each get their own entry in the JSON. If Q1 has parts (a)[2], (b)[3], (c)[5], output three entries with question_num "1a", "1b", "1c" and marks_total 2, 3, 5 respectively — not one combined entry for Q1.
+- If a question has NO bracketed mark, fall back to splitting the assignment's total marks ({total_marks_str}) evenly across the questions that don't specify one, and note this in the feedback.
+- The sum of marks_total across all output entries should match the total visible in the question paper's mark allocations (which should in turn match {total_marks_str}).
+
+- Award marks out of each part's total based on correctness and completeness
 - Also assign a status: "correct", "partially_correct", or "incorrect"
-- Include "marks_awarded" and "marks_total" for each question"""
+- Include "marks_awarded" and "marks_total" for every question or sub-part"""
 
         question_schema = """{{
             "question_num": 1,
