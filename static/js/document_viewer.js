@@ -1,0 +1,177 @@
+// Shared document viewer: renders a scrollable column of PDF pages
+// (via PDF.js) and/or images, with zoom & rotate controls.
+//
+// Usage:
+//   var viewer = DocumentViewer.create(scrollContainerEl);
+//   viewer.loadFromManifest(manifestUrl, pageUrlBuilder);  // for script with per-page endpoints
+//   viewer.loadFromUrl(url);                               // for a single blob (answer key)
+//   viewer.zoomIn() / zoomOut() / reset() / rotate();
+//
+// Requires PDF.js to be loaded (pdfjsLib global).
+
+(function (global) {
+    var ZOOM_MIN = 0.5, ZOOM_MAX = 3.0, ZOOM_STEP = 0.25;
+
+    function create(scrollContainerEl) {
+        var wrap = document.createElement('div');
+        wrap.className = 'dv-scale-wrap';
+        wrap.style.transformOrigin = 'top center';
+        wrap.style.transform = 'scale(1) rotate(0deg)';
+        scrollContainerEl.innerHTML = '';
+        scrollContainerEl.appendChild(wrap);
+
+        var state = { scale: 1.0, rotation: 0, loadToken: 0 };
+
+        function applyTransform() {
+            wrap.style.transform = 'scale(' + state.scale + ') rotate(' + state.rotation + 'deg)';
+        }
+
+        function clearPages() {
+            wrap.innerHTML = '';
+        }
+
+        function appendLoadingBox(label) {
+            var d = document.createElement('div');
+            d.className = 'dv-loading';
+            d.textContent = label;
+            d.style.cssText = 'padding:20px; color:#888; text-align:center;';
+            wrap.appendChild(d);
+            return d;
+        }
+
+        function appendError(label) {
+            var d = document.createElement('div');
+            d.className = 'dv-error';
+            d.textContent = label;
+            d.style.cssText = 'padding:14px; color:#b00020; background:#fdecea; border-radius:6px; margin:10px 0;';
+            wrap.appendChild(d);
+        }
+
+        async function renderPdfBlob(blob, token) {
+            try {
+                var ab = await blob.arrayBuffer();
+                if (token !== state.loadToken) return;
+                var loadingTask = pdfjsLib.getDocument({ data: ab });
+                var pdf = await loadingTask.promise;
+                if (token !== state.loadToken) return;
+                for (var i = 1; i <= pdf.numPages; i++) {
+                    if (token !== state.loadToken) return;
+                    var page = await pdf.getPage(i);
+                    if (token !== state.loadToken) return;
+                    var viewport = page.getViewport({ scale: 2 });
+                    var canvas = document.createElement('canvas');
+                    canvas.width = viewport.width;
+                    canvas.height = viewport.height;
+                    canvas.style.display = 'block';
+                    canvas.style.margin = '0 auto 12px';
+                    canvas.style.maxWidth = '100%';
+                    canvas.style.height = 'auto';
+                    var ctx = canvas.getContext('2d');
+                    await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+                    if (token !== state.loadToken) return;
+                    wrap.appendChild(canvas);
+                }
+            } catch (err) {
+                if (token !== state.loadToken) return;
+                appendError('Could not render PDF page');
+            }
+        }
+
+        function appendImage(url) {
+            var img = document.createElement('img');
+            img.src = url;
+            img.style.cssText = 'display:block; margin:0 auto 12px; max-width:100%; height:auto;';
+            img.onerror = function () { appendError('Could not load image'); };
+            wrap.appendChild(img);
+        }
+
+        async function loadFromManifest(manifestUrl, pageUrlBuilder) {
+            state.loadToken++;
+            var token = state.loadToken;
+            clearPages();
+            var loading = appendLoadingBox('Loading…');
+            try {
+                var res = await fetch(manifestUrl);
+                var data = await res.json();
+                if (token !== state.loadToken) return;
+                if (!data.success) {
+                    loading.remove();
+                    appendError('Could not load document manifest');
+                    return;
+                }
+                loading.remove();
+                for (var i = 0; i < data.pages.length; i++) {
+                    if (token !== state.loadToken) return;
+                    var p = data.pages[i];
+                    var url = pageUrlBuilder(p.index);
+                    if (p.mime === 'application/pdf') {
+                        try {
+                            var pageRes = await fetch(url);
+                            if (token !== state.loadToken) return;
+                            var blob = await pageRes.blob();
+                            await renderPdfBlob(blob, token);
+                        } catch (e) {
+                            if (token !== state.loadToken) return;
+                            appendError('Could not load page ' + (i + 1));
+                        }
+                    } else if (p.mime && p.mime.indexOf('image/') === 0) {
+                        appendImage(url);
+                    } else {
+                        appendError('Page ' + (i + 1) + ' (unsupported format)');
+                    }
+                }
+            } catch (err) {
+                if (token !== state.loadToken) return;
+                if (loading) loading.remove();
+                appendError('Could not load document');
+            }
+        }
+
+        async function loadFromUrl(url) {
+            state.loadToken++;
+            var token = state.loadToken;
+            clearPages();
+            var loading = appendLoadingBox('Loading…');
+            try {
+                var res = await fetch(url);
+                if (token !== state.loadToken) return;
+                if (!res.ok) {
+                    loading.remove();
+                    appendError('Document not available');
+                    return;
+                }
+                var ctype = (res.headers.get('Content-Type') || '').toLowerCase();
+                var blob = await res.blob();
+                if (token !== state.loadToken) return;
+                loading.remove();
+                if (ctype.indexOf('application/pdf') === 0) {
+                    await renderPdfBlob(blob, token);
+                } else if (ctype.indexOf('image/') === 0) {
+                    var objUrl = URL.createObjectURL(blob);
+                    var img = new Image();
+                    img.src = objUrl;
+                    img.style.cssText = 'display:block; margin:0 auto 12px; max-width:100%; height:auto;';
+                    wrap.appendChild(img);
+                } else {
+                    appendError('Unsupported document format');
+                }
+            } catch (err) {
+                if (token !== state.loadToken) return;
+                if (loading) loading.remove();
+                appendError('Could not load document');
+            }
+        }
+
+        return {
+            loadFromManifest: loadFromManifest,
+            loadFromUrl: loadFromUrl,
+            zoomIn: function () { state.scale = Math.min(ZOOM_MAX, state.scale + ZOOM_STEP); applyTransform(); },
+            zoomOut: function () { state.scale = Math.max(ZOOM_MIN, state.scale - ZOOM_STEP); applyTransform(); },
+            reset: function () { state.scale = 1.0; state.rotation = 0; applyTransform(); },
+            rotate: function () { state.rotation = (state.rotation + 90) % 360; applyTransform(); },
+            getScale: function () { return state.scale; },
+        };
+    }
+
+    global.DocumentViewer = { create: create };
+})(window);
