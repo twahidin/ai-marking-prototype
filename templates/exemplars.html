@@ -38,14 +38,16 @@
     .ex-row-label.needs { color: #c0392b; }
     .ex-row-label.strong { color: #28a745; }
 
-    .ex-tile { border: 1px solid #eee; border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; background: #fafafa; min-height: 360px; }
+    .ex-tile { border: 1px solid #eee; border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; background: #fafafa; }
     .ex-tile-header { padding: 10px 12px; background: white; border-bottom: 1px solid #eee; }
     .ex-tile-student { font-size: 13px; font-weight: 700; color: #2D2D2D; }
     .ex-tile-note { font-size: 12px; color: #666; margin-top: 2px; line-height: 1.4; }
     .ex-tile-toolbar { display: flex; gap: 6px; padding: 6px 10px; background: #f5f5f7; border-bottom: 1px solid #eee; }
     .ex-tile-toolbar button { padding: 4px 10px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 5px; background: white; cursor: pointer; }
     .ex-tile-toolbar button:hover { background: #eee; }
-    .ex-tile-scroll { flex: 1; overflow: auto; padding: 10px; background: #f0f0f3; min-height: 200px; cursor: grab; }
+    /* Fixed-height preview so one tall script doesn't stretch the whole page.
+       The DocumentViewer handles scrolling and click-drag panning inside. */
+    .ex-tile-scroll { height: 420px; overflow: auto; padding: 10px; background: #f0f0f3; cursor: grab; }
     .ex-tile-scroll .dv-scale-wrap { transform-origin: top center; }
 </style>
 {% endblock %}
