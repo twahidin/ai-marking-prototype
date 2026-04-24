@@ -1,6 +1,9 @@
 import io
+import os
 import re
+import hashlib
 import logging
+import tempfile
 from datetime import datetime, timezone
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -10,6 +13,125 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
 
 logger = logging.getLogger(__name__)
+
+# --- LaTeX → inline PNG rendering for PDF reports ---
+# Teacher / AI feedback may contain LaTeX in $...$ or $$...$$ delimiters. We
+# render each math segment to a small PNG via matplotlib.mathtext and embed it
+# inline in ReportLab Paragraphs via <img src="..."/>. Plain text segments are
+# XML-escaped and passed through unchanged. Matplotlib is lazy-imported so an
+# environment without it falls back to the old Unicode-approximation path.
+
+_MATH_TMPDIR = None
+_MATH_CACHE = {}  # math_tex -> filesystem path of rendered PNG
+_MATPLOTLIB_OK = None  # tri-state: None = unprobed, True/False = probed
+
+
+def _matplotlib_available():
+    global _MATPLOTLIB_OK
+    if _MATPLOTLIB_OK is not None:
+        return _MATPLOTLIB_OK
+    try:
+        import matplotlib  # noqa: F401
+        matplotlib.use('Agg')
+        from matplotlib import mathtext  # noqa: F401
+        _MATPLOTLIB_OK = True
+    except Exception as e:
+        logger.warning(f"matplotlib unavailable, PDF math falls back to Unicode: {e}")
+        _MATPLOTLIB_OK = False
+    return _MATPLOTLIB_OK
+
+
+def _ensure_math_tmpdir():
+    global _MATH_TMPDIR
+    if _MATH_TMPDIR is None or not os.path.isdir(_MATH_TMPDIR):
+        _MATH_TMPDIR = tempfile.mkdtemp(prefix='aimark_math_')
+    return _MATH_TMPDIR
+
+
+def _render_math_to_png(math_tex, fontsize=11):
+    """Render a single math snippet to a PNG and return its path. Caches per unique tex string."""
+    cached = _MATH_CACHE.get(math_tex)
+    if cached and os.path.isfile(cached):
+        return cached
+    if not _matplotlib_available():
+        return None
+    try:
+        from matplotlib import mathtext
+        tmpdir = _ensure_math_tmpdir()
+        h = hashlib.sha1(math_tex.encode('utf-8')).hexdigest()[:16]
+        path = os.path.join(tmpdir, f'eq_{h}.png')
+        # math_to_image needs the text wrapped in $...$ (it strips its own delimiters)
+        mathtext.math_to_image(f'${math_tex}$', path, dpi=200, prop=dict(size=fontsize))
+        _MATH_CACHE[math_tex] = path
+        return path
+    except Exception as e:
+        logger.warning(f"Failed to render LaTeX '{math_tex}': {e}")
+        return None
+
+
+def _split_text_and_math(text):
+    """Yield (kind, content) tuples where kind is 'text' or 'math'.
+
+    Handles both $...$ inline and $$...$$ display math. Unbalanced delimiters
+    fall through as text so bad input never crashes the PDF.
+    """
+    i, n = 0, len(text)
+    while i < n:
+        if text[i:i + 2] == '$$':
+            end = text.find('$$', i + 2)
+            if end == -1:
+                yield ('text', text[i:])
+                return
+            yield ('math', text[i + 2:end])
+            i = end + 2
+        elif text[i] == '$':
+            end = text.find('$', i + 1)
+            if end == -1:
+                yield ('text', text[i:])
+                return
+            yield ('math', text[i + 1:end])
+            i = end + 1
+        else:
+            nxt = text.find('$', i)
+            if nxt == -1:
+                yield ('text', text[i:])
+                return
+            yield ('text', text[i:nxt])
+            i = nxt
+
+
+def render_latex_for_pdf(text, fontsize=11, img_height=14):
+    """Return ReportLab Paragraph markup with inline math rendered as PNGs.
+
+    For fields known to contain LaTeX (feedback, improvement, overall_feedback,
+    student_answer, correct_answer). Falls back to clean_for_pdf's Unicode
+    approximation when matplotlib isn't available or a specific equation fails.
+    """
+    if not text:
+        return ''
+    text = str(text)
+    # Fast path: no $ at all → defer to the Unicode-approximation helper.
+    if '$' not in text:
+        return clean_for_pdf(text)
+    if not _matplotlib_available():
+        return clean_for_pdf(text)
+
+    out = []
+    for kind, content in _split_text_and_math(text):
+        if kind == 'text':
+            # XML-escape for ReportLab; keep newlines as <br/>.
+            safe = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            safe = safe.replace('\n', '<br/>')
+            out.append(safe)
+        else:
+            png_path = _render_math_to_png(content, fontsize=fontsize)
+            if png_path:
+                # Embed as inline image. Height in points; ReportLab scales width proportionally.
+                out.append(f'<img src="{png_path}" valign="middle" height="{img_height}"/>')
+            else:
+                # Render failed — fall back to the Unicode-approximation for just this snippet.
+                out.append(clean_for_pdf(f'${content}$'))
+    return ''.join(out)
 
 # Colors
 PRIMARY_COLOR = HexColor('#667eea')
@@ -265,10 +387,10 @@ def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
         # Details
         detail_rows = []
 
-        student_ans = clean_for_pdf(q.get('student_answer', 'N/A'))
-        correct_ans = clean_for_pdf(q.get('correct_answer', 'N/A'))
-        feedback = clean_for_pdf(q.get('feedback', ''))
-        improvement = clean_for_pdf(q.get('improvement', ''))
+        student_ans = render_latex_for_pdf(q.get('student_answer', 'N/A'))
+        correct_ans = render_latex_for_pdf(q.get('correct_answer', 'N/A'))
+        feedback = render_latex_for_pdf(q.get('feedback', ''))
+        improvement = render_latex_for_pdf(q.get('improvement', ''))
 
         detail_rows.append([
             Paragraph(f'<b>{ans_label}</b>', bold_cell),
@@ -341,7 +463,7 @@ def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
     story.append(Spacer(1, 10))
     story.append(Paragraph("Overall Feedback", styles['Heading_Custom']))
 
-    overall = clean_for_pdf(result.get('overall_feedback', 'No overall feedback provided.'))
+    overall = render_latex_for_pdf(result.get('overall_feedback', 'No overall feedback provided.'))
     story.append(Paragraph(overall, styles['Body_Custom']))
     story.append(Spacer(1, 15))
 
@@ -350,7 +472,7 @@ def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
     if actions:
         story.append(Paragraph("Recommended Actions", styles['Heading_Custom']))
         for i, action in enumerate(actions, 1):
-            story.append(Paragraph(f"{i}. {clean_for_pdf(action)}", styles['Body_Custom']))
+            story.append(Paragraph(f"{i}. {render_latex_for_pdf(action)}", styles['Body_Custom']))
         story.append(Spacer(1, 15))
 
     # Footer
