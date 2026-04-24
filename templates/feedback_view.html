@@ -121,17 +121,56 @@
     .fv-correction-result.not_quite { background: #fff4d6; color: #a36a00; border: 1px solid #ecd28c; }
     .fv-correction-result.error { background: #fce6e8; color: #9e1f2a; border: 1px solid #e8b5b8; }
 
+    /* View toggle (By Mistake Type / By Question) */
+    .fv-view-toggle { display: none; margin: 18px 0 8px; background: #eef1ff; border-radius: 999px; padding: 4px; width: fit-content; gap: 4px; }
+    .fv-view-toggle.visible { display: inline-flex; }
+    .fv-view-toggle button {
+        border: none; background: transparent; padding: 8px 16px; border-radius: 999px;
+        font-size: 13px; font-weight: 600; color: #4a4f6a; cursor: pointer;
+    }
+    .fv-view-toggle button.active { background: white; color: #2D2D2D; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .fv-view-toggle button:not(.active):hover { color: #2D2D2D; }
+
+    /* Grouped view */
+    .fv-grouped { margin-top: 18px; }
+    .fv-grouped.hidden { display: none; }
+    .fv-group-card {
+        background: white; border: 1px solid #e4e6ee; border-radius: 12px;
+        margin-bottom: 14px; overflow: hidden; transition: border-color 0.15s;
+    }
+    .fv-group-card.expanded { border-color: #c5cbe8; }
+    .fv-group-head { padding: 14px 16px; cursor: pointer; user-select: none; }
+    .fv-group-head:hover { background: #fafbff; }
+    .fv-group-top { display: flex; align-items: center; gap: 10px; }
+    .fv-group-label { font-size: 15px; font-weight: 700; color: #2D2D2D; flex: 1; }
+    .fv-group-marks { font-size: 12px; color: #555; font-weight: 600; white-space: nowrap; padding: 3px 10px; background: #f2f2f5; border-radius: 999px; }
+    .fv-group-chev { color: #9aa0b3; font-size: 14px; transition: transform 0.2s; margin-left: 6px; }
+    .fv-group-card.expanded .fv-group-chev { transform: rotate(180deg); }
+    .fv-group-tags { margin-top: 6px; font-size: 12.5px; color: #666; line-height: 1.45; }
+    .fv-group-tag { display: inline; }
+    .fv-group-tag + .fv-group-tag::before { content: " · "; color: #bbb; }
+    .fv-group-habit { padding: 10px 14px 14px; border-top: 1px solid #f0f2f8; font-size: 14px; color: #2D2D2D; line-height: 1.55; background: #fafbff; }
+    .fv-group-habit-label { display: inline-block; margin-right: 8px; padding: 2px 8px; font-size: 11px; font-weight: 700; color: #6c4bd3; background: #efe9ff; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.3px; vertical-align: middle; }
+    .fv-group-body { display: none; padding: 14px 16px; border-top: 1px solid #eef0f6; }
+    .fv-group-card.expanded .fv-group-body { display: block; }
+    .fv-lowconf-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #9aa0b3; margin-left: 6px; vertical-align: middle; }
+
+    .fv-standalone-section { margin-top: 26px; }
+    .fv-standalone-title { font-size: 13px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 10px; }
+
     @media (max-width: 600px) {
         .fv-root { padding: 16px 12px 60px; }
         .fv-student-name { font-size: 19px; }
         .fv-crit-head { padding: 12px 14px; gap: 8px; }
         .fv-crit-badge { font-size: 10px; padding: 3px 8px; }
+        .fv-view-toggle button { padding: 7px 12px; font-size: 12px; }
+        .fv-group-head { padding: 12px 14px; }
     }
 </style>
 {% endblock %}
 
 {% block body %}
-<div class="fv-root">
+<div class="fv-root" data-grouping-status="{{ categorisation_status }}" data-assignment-id="{{ assignment.id }}" data-student-id="{{ student.id if student else '' }}" data-submission-id="{{ submission.id }}">
     <div class="fv-header">
         <div class="fv-student-name">{{ student.name if student else 'Student' }}</div>
         <div class="fv-subject">{{ assignment.title or assignment.subject or 'Assignment' }}{% if assignment.subject and assignment.title %} · {{ assignment.subject }}{% endif %}</div>
@@ -163,6 +202,13 @@
     <div class="fv-download-line">
         <a href="{{ download_url }}" class="fv-download-link" target="_blank" rel="noopener">Download full PDF</a>
     </div>
+
+    <div class="fv-view-toggle" id="fvViewToggle" role="tablist" aria-label="Choose feedback layout">
+        <button type="button" id="fvToggleMistake" class="active" role="tab" aria-selected="true">By Mistake Type</button>
+        <button type="button" id="fvToggleQuestion" role="tab" aria-selected="false">By Question</button>
+    </div>
+
+    <div id="fvGrouped" class="fv-grouped hidden"></div>
 
     <button type="button" class="fv-show-breakdown" id="fvShowBreakdownBtn">
         <span id="fvShowBreakdownLabel">Show breakdown</span>
@@ -233,7 +279,14 @@
             {% if needs_correction %}
                 {% set cprompt = q.get('correction_prompt') or (cname ~ ': In your own words, explain what you should have written and why.') %}
                 {% set last_attempt = (prior_attempts | selectattr('question_num', 'equalto', qnum|string) | list | last) if prior_attempts else None %}
-                <div class="fv-correction-card" data-qnum="{{ qnum }}">
+                {% set themed_map = q.get('correction_prompts_by_theme') or {} %}
+                {% set theme_key = q.get('theme_key') or '' %}
+                {% set themed_prompt = themed_map.get(theme_key) if theme_key else '' %}
+                <div class="fv-correction-card"
+                     data-qnum="{{ qnum }}"
+                     data-generic-prompt="{{ cprompt }}"
+                     data-themed-prompt="{{ themed_prompt or '' }}"
+                     data-theme-key="{{ theme_key }}">
                     <div class="fv-correction-prompt">{{ cprompt }}</div>
                     <textarea class="fv-correction-textarea" placeholder="Type your correction here…">{{ last_attempt.text if last_attempt else '' }}</textarea>
                     <button type="button" class="fv-correction-submit" onclick="fvSubmitCorrection(this, '{{ qnum }}')">Submit</button>
@@ -249,6 +302,12 @@
 <script>
 var FV_ASSIGNMENT_ID = {{ assignment.id | tojson }};
 var FV_SUBMISSION_ID = {{ submission.id | tojson }};
+// Theme metadata is injected from the server — do NOT hardcode labels or keys
+// anywhere in this file. The single source of truth is config/mistake_themes.py.
+var FV_THEMES = {{ (themes or {}) | tojson }};
+var FV_INITIAL_GROUPING = {{ (grouping_data or None) | tojson }};
+var FV_STUDENT_ID = document.querySelector('.fv-root').getAttribute('data-student-id') || '';
+var FV_VIEW_STORAGE_KEY = 'feedback_view_' + FV_ASSIGNMENT_ID + '_' + FV_STUDENT_ID;
 
 function fvToggleCrit(card) {
     card.classList.toggle('expanded');
@@ -332,10 +391,15 @@ async function fvSubmitCorrection(btn, qnum) {
     var orig = btn.textContent;
     btn.textContent = 'Checking…';
     try {
+        var themeKey = '';
+        var mistakeActive = document.getElementById('fvToggleMistake');
+        if (mistakeActive && mistakeActive.classList.contains('active')) {
+            themeKey = card.getAttribute('data-theme-key') || '';
+        }
         var res = await fetch('/feedback/' + FV_ASSIGNMENT_ID + '/' + FV_SUBMISSION_ID + '/correction', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ question_num: qnum, text: text }),
+            body: JSON.stringify({ question_num: qnum, text: text, theme_key: themeKey }),
         });
         var data = await res.json();
         if (!data.success) {
@@ -359,5 +423,184 @@ async function fvSubmitCorrection(btn, qnum) {
         btn.textContent = orig;
     }
 }
+
+// --- Group by Mistake Type: toggle + polling + grouped view rendering ---
+
+function fvEscHtml(s) {
+    var d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+}
+
+function fvBuildGroupedView(payload) {
+    // Render groups and standalone section. Criterion-level cards mirror the
+    // by-question cards so Layer 3 caching (keyed by question_num on the
+    // server) works identically across both views.
+    var container = document.getElementById('fvGrouped');
+    if (!container || !payload) return;
+    var groups = payload.groups || [];
+    var standalone = payload.standalone || [];
+    if (!groups.length && !standalone.length) { container.innerHTML = ''; return; }
+
+    var html = '';
+    groups.forEach(function (g, gi) {
+        var themeLabel = fvEscHtml(g.theme_label || (FV_THEMES[g.theme_key] && FV_THEMES[g.theme_key].label) || g.theme_key);
+        var tagHtml = (g.specific_labels || []).map(function (lbl) {
+            return '<span class="fv-group-tag">' + fvEscHtml(lbl) + '</span>';
+        }).join('');
+        html += '<div class="fv-group-card" data-group-idx="' + gi + '">' +
+            '<div class="fv-group-head" onclick="fvToggleGroup(this.parentElement)">' +
+                '<div class="fv-group-top">' +
+                    '<span class="fv-group-label">' + themeLabel + '</span>' +
+                    '<span class="fv-group-marks">' + fvEscHtml(String(g.total_marks_lost || 0)) + ' marks lost</span>' +
+                    '<span class="fv-group-chev">&#9662;</span>' +
+                '</div>' +
+                '<div class="fv-group-tags">' + tagHtml + '</div>' +
+            '</div>' +
+            (g.habit ? '<div class="fv-group-habit"><span class="fv-group-habit-label">Group habit</span>' + fvEscHtml(g.habit) + '</div>' : '') +
+            '<div class="fv-group-body">' +
+                (g.criteria || []).map(function (c) { return fvCriterionMiniCard(c, g.theme_key); }).join('') +
+            '</div>' +
+        '</div>';
+    });
+
+    if (standalone.length) {
+        html += '<div class="fv-standalone-section">' +
+            '<div class="fv-standalone-title">Specific to this question</div>' +
+            standalone.map(function (c) {
+                return '<div class="fv-crit-card" data-qnum="' + fvEscHtml(c.criterion_id) + '" data-idx="s-' + fvEscHtml(c.criterion_id) + '">' +
+                    '<div class="fv-crit-head" onclick="fvToggleCrit(this.parentElement)">' +
+                        '<span class="fv-crit-name">' + fvEscHtml(c.criterion_name || c.criterion_id) + '</span>' +
+                        '<span class="fv-crit-score">' + fvEscHtml(String(c.marks_lost || 0)) + ' marks lost</span>' +
+                        '<span class="fv-crit-chev">&#9662;</span>' +
+                    '</div>' +
+                    fvCriterionBodyHtml(c, c.theme_key || '') +
+                '</div>';
+            }).join('') +
+        '</div>';
+    }
+
+    container.innerHTML = html;
+    if (window.MathJax && MathJax.typesetPromise) MathJax.typesetPromise([container]).catch(function () {});
+}
+
+function fvCriterionMiniCard(c, themeKey) {
+    // Used inside a group body. Uses the same .fv-crit-card structure as the
+    // by-question view so the two look identical when a group is expanded.
+    return '<div class="fv-crit-card" data-qnum="' + fvEscHtml(c.criterion_id) + '" data-idx="g-' + fvEscHtml(c.criterion_id) + '">' +
+        '<div class="fv-crit-head" onclick="fvToggleCrit(this.parentElement)">' +
+            '<span class="fv-crit-name">' + fvEscHtml(c.criterion_name || c.criterion_id) +
+            (c.low_confidence ? '<span class="fv-lowconf-dot" title="Category is a best-fit"></span>' : '') +
+            '</span>' +
+            '<span class="fv-crit-score">' + fvEscHtml(String(c.marks_lost || 0)) + ' marks lost</span>' +
+            '<span class="fv-crit-chev">&#9662;</span>' +
+        '</div>' +
+        fvCriterionBodyHtml(c, themeKey) +
+    '</div>';
+}
+
+function fvCriterionBodyHtml(c, themeKey) {
+    // Pull the corresponding by-question card's feedback text so we never
+    // drift — the fb text stored server-side is the single source.
+    var srcCard = document.querySelector('#fvLayer2 .fv-crit-card[data-qnum="' + CSS.escape(c.criterion_id) + '"]');
+    var fb = srcCard ? (srcCard.querySelector('.fv-crit-feedback') || {}).innerHTML || '' : '';
+    return '<div class="fv-crit-body">' +
+        '<div class="fv-crit-feedback">' + fb + '</div>' +
+        '<button type="button" class="fv-why-btn" onclick="fvExplain(event, \'' + fvEscHtml(c.criterion_id) + '\', this)">? Why does this matter?</button>' +
+        '<div class="fv-layer3" data-filled="0">' +
+            '<div class="fv-l3-row"><span class="fv-l3-label">The idea</span><span class="fv-l3-idea"></span></div>' +
+            '<div class="fv-l3-row"><span class="fv-l3-label">Next time</span><span class="fv-l3-next"></span></div>' +
+        '</div>' +
+    '</div>';
+}
+
+function fvToggleGroup(card) { card.classList.toggle('expanded'); }
+
+function fvActivateView(which) {
+    var toggle = document.getElementById('fvViewToggle');
+    if (!toggle) return;
+    var btnM = document.getElementById('fvToggleMistake');
+    var btnQ = document.getElementById('fvToggleQuestion');
+    var grouped = document.getElementById('fvGrouped');
+    var layer2 = document.getElementById('fvLayer2');
+    var corr = document.getElementById('fvCorrections');
+    var showBtn = document.getElementById('fvShowBreakdownBtn');
+
+    if (which === 'mistake') {
+        btnM.classList.add('active'); btnM.setAttribute('aria-selected', 'true');
+        btnQ.classList.remove('active'); btnQ.setAttribute('aria-selected', 'false');
+        grouped.classList.remove('hidden');
+        // The by-question "Show breakdown" button stays hidden in grouped
+        // view to avoid duplicate/competing controls.
+        if (showBtn) showBtn.style.display = 'none';
+        layer2.classList.add('hidden');
+        if (corr) corr.classList.remove('hidden');
+    } else {
+        btnQ.classList.add('active'); btnQ.setAttribute('aria-selected', 'true');
+        btnM.classList.remove('active'); btnM.setAttribute('aria-selected', 'false');
+        grouped.classList.add('hidden');
+        if (showBtn) showBtn.style.display = '';
+        // Leave layer2/corrections hidden by default; the "Show breakdown"
+        // button governs those (existing behaviour — no changes).
+    }
+    // Swap each correction card's visible prompt: themed in grouped mode (if
+    // available), generic in by-question mode. Submit still uses the same
+    // endpoint; we tag the attempt with theme_key when grouped.
+    document.querySelectorAll('.fv-correction-card').forEach(function (card) {
+        var p = card.querySelector('.fv-correction-prompt');
+        if (!p) return;
+        var themed = card.getAttribute('data-themed-prompt') || '';
+        var generic = card.getAttribute('data-generic-prompt') || '';
+        p.textContent = (which === 'mistake' && themed) ? themed : generic;
+    });
+    try { localStorage.setItem(FV_VIEW_STORAGE_KEY, which); } catch (e) {}
+}
+
+function fvShowToggleIfReady(payload) {
+    var toggle = document.getElementById('fvViewToggle');
+    if (!toggle) return;
+    if (!payload || !(payload.groups || []).length) {
+        toggle.classList.remove('visible');
+        return;
+    }
+    toggle.classList.add('visible');
+    var stored = null;
+    try { stored = localStorage.getItem(FV_VIEW_STORAGE_KEY); } catch (e) {}
+    var initial = stored === 'question' ? 'question' : 'mistake';
+    fvActivateView(initial);
+}
+
+document.getElementById('fvToggleMistake').addEventListener('click', function () { fvActivateView('mistake'); });
+document.getElementById('fvToggleQuestion').addEventListener('click', function () { fvActivateView('question'); });
+
+// Initial state from the server-rendered payload (if categorisation was
+// already 'done' at page load).
+if (FV_INITIAL_GROUPING && (FV_INITIAL_GROUPING.groups || []).length) {
+    fvBuildGroupedView(FV_INITIAL_GROUPING);
+    fvShowToggleIfReady(FV_INITIAL_GROUPING);
+}
+
+// Polling — only if the server said 'pending' when the page first rendered.
+(function fvPollIfPending() {
+    var root = document.querySelector('.fv-root');
+    if (!root) return;
+    var state = root.getAttribute('data-grouping-status');
+    if (state !== 'pending') return; // 'done' already rendered above; 'failed' → silent no-op
+    var attempts = 0;
+    var timer = setInterval(function () {
+        attempts++;
+        if (attempts > 20) { clearInterval(timer); return; }
+        fetch('/feedback/grouping-status/' + FV_SUBMISSION_ID)
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data || data.status === 'pending') return;
+                clearInterval(timer);
+                if (data.status !== 'done') return;  // 'failed' → silent
+                fvBuildGroupedView(data);
+                fvShowToggleIfReady(data);
+            })
+            .catch(function () { /* silent */ });
+    }, 3000);
+})();
 </script>
 {% endblock %}

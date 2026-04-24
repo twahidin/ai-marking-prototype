@@ -79,6 +79,10 @@ def _migrate_add_columns(app):
                 db.session.execute(text('ALTER TABLE submissions ADD COLUMN correction_submitted_at TIMESTAMP'))
                 db.session.commit()
                 logger.info('Added correction_submitted_at column to submissions table')
+            if 'categorisation_status' not in columns:
+                db.session.execute(text("ALTER TABLE submissions ADD COLUMN categorisation_status VARCHAR(20) DEFAULT 'pending'"))
+                db.session.commit()
+                logger.info('Added categorisation_status column to submissions table')
         if 'students' in inspector.get_table_names():
             columns = [c['name'] for c in inspector.get_columns('students')]
             if 'class_id' not in columns:
@@ -150,6 +154,10 @@ def _migrate_add_columns(app):
                 db.session.execute(text('ALTER TABLE assignments ADD COLUMN exemplar_analyzed_at TIMESTAMP'))
                 db.session.commit()
                 logger.info('Added exemplar_analyzed_at column to assignments table')
+            if 'subject_family' not in columns:
+                db.session.execute(text('ALTER TABLE assignments ADD COLUMN subject_family VARCHAR(40)'))
+                db.session.commit()
+                logger.info('Added subject_family column to assignments table')
 
 
 def init_db(app):
@@ -209,6 +217,11 @@ class Assignment(db.Model):
     classroom_code = db.Column(db.String(10), unique=True, nullable=False, index=True)
     title = db.Column(db.String(300), default='')
     subject = db.Column(db.String(200), default='')
+    # Resolved once at creation time by a lightweight AI classify call — one of
+    # the keys in SUBJECT_FAMILIES (science / humanities_seq / humanities_sbq /
+    # literature / mother_tongue_comprehension / _composition / _translation).
+    # Null for assignments that pre-date this feature.
+    subject_family = db.Column(db.String(40), nullable=True)
     assign_type = db.Column(db.String(20), default='short_answer')
     scoring_mode = db.Column(db.String(20), default='marks')
     total_marks = db.Column(db.String(20), default='')
@@ -328,6 +341,10 @@ class Submission(db.Model):
     marked_at = db.Column(db.DateTime)
     feedback_opened_at = db.Column(db.DateTime)  # first time the student opened the tiered feedback page
     correction_submitted_at = db.Column(db.DateTime)  # first time the student submitted a "Now You Try" correction
+    # Async "Group by Mistake Type" categorisation — pending on kick-off,
+    # done once the background thread writes categorisation + group_habits
+    # into result_json, failed if the AI call errored.
+    categorisation_status = db.Column(db.String(20), default='pending')
 
     assignment = db.relationship('Assignment', backref=db.backref('submissions', cascade='all, delete-orphan'))
 

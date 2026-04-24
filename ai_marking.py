@@ -1065,3 +1065,235 @@ def evaluate_correction(provider, model, session_keys, subject, criterion_name,
     if verdict == 'not_quite' and not message.lower().startswith('not quite'):
         message = 'Not quite — ' + message
     return {'verdict': verdict, 'message': message}
+
+
+# ---------------------------------------------------------------------------
+# Subject family classification (run ONCE at assignment creation) +
+# mistake categorisation (run ONCE per submission after marking, async).
+# ---------------------------------------------------------------------------
+
+SUBJECT_FAMILIES = [
+    'science',
+    'humanities_seq',       # essay-type humanities (rubric)
+    'humanities_sbq',       # source-based questions humanities (answer key)
+    'literature',
+    'mother_tongue_comprehension',
+    'mother_tongue_composition',
+    'mother_tongue_translation',
+]
+
+
+def classify_subject_family(provider, model, session_keys, subject, assign_type,
+                             has_rubric=False, has_answer_key=False):
+    """One-shot classification of a freeform subject string into one of
+    SUBJECT_FAMILIES. Uses the marking format as a strong signal:
+
+        rubric     → essay-type          → *_seq / composition / literature
+        answer key → short-answer / SBQ  → *_sbq / comprehension / science
+
+    Returns a key string. Falls back to the closest family on any error or
+    low-confidence response so the caller never has to handle None.
+    """
+    # A couple of cheap shortcuts — save an API call when the subject is
+    # obvious. Anything ambiguous still goes to the AI.
+    s = (subject or '').strip().lower()
+    if s:
+        if any(w in s for w in ['biology', 'chemistry', 'physics', 'science', 'combined science', 'bio', 'chem', 'phy']):
+            return 'science'
+        if 'literature' in s or 'lit ' in s or s.endswith(' lit'):
+            return 'literature'
+
+    format_hint = 'rubric (essay)' if has_rubric else ('answer key' if has_answer_key else assign_type or 'unknown')
+
+    system_prompt = (
+        "You classify a subject string for a Singapore secondary school assignment "
+        "into exactly one of these family keys:\n\n"
+        "  science                      - any science subject (biology, chemistry, physics, combined)\n"
+        "  humanities_seq               - humanities essay-type question (marked by rubric). "
+        "Subjects: history, geography, social studies, economics — when the marking format is a rubric.\n"
+        "  humanities_sbq               - humanities source-based question (marked against an answer key). "
+        "Same subjects as above but when the marking format is an answer key / mark scheme.\n"
+        "  literature                   - English Literature or any literature-in-a-language course\n"
+        "  mother_tongue_comprehension  - Chinese / Malay / Tamil comprehension papers\n"
+        "  mother_tongue_composition    - Chinese / Malay / Tamil composition / essay (rubric)\n"
+        "  mother_tongue_translation    - Chinese / Malay / Tamil translation exercises\n\n"
+        "Marking format is an important disambiguator: rubric implies essay-type; answer key "
+        "implies SBQ or comprehension.\n\n"
+        "Return JSON ONLY in this shape: {\"family\": \"<one key>\"}. If genuinely ambiguous, "
+        "choose the most semantically similar family — never leave it blank."
+    )
+    user_prompt = (
+        f"Subject string: {subject!r}\n"
+        f"Marking format: {format_hint}\n"
+        f"Assignment type flag: {assign_type or 'unknown'}\n\n"
+        "Return the JSON now."
+    )
+
+    try:
+        parsed = _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=60)
+        key = (parsed.get('family') or '').strip().lower()
+        if key in SUBJECT_FAMILIES:
+            return key
+    except Exception as e:
+        logger.warning(f"classify_subject_family failed for {subject!r}: {e}")
+
+    # Heuristic fallback when the AI fails or returns an unknown key.
+    if has_rubric:
+        return 'humanities_seq'
+    return 'humanities_sbq'
+
+
+def categorise_mistakes(provider, model, session_keys, subject_family, themes, questions_data):
+    """Async-friendly combined call: for each criterion-with-marks-lost,
+    assign a theme_key + specific_label + (optional) low_confidence +
+    a themed_correction_prompt. Also generate one group_habit per theme
+    that has ≥ 2 criteria assigned (excluding never_group themes).
+
+    `themes` is the THEMES dict from config/mistake_themes.py — passed in
+    so this file stays free of hardcoded theme data. `questions_data` is
+    a list of dicts with keys: criterion_id, criterion_name, student_answer,
+    feedback, marks_awarded, marks_total (or marks_lost).
+
+    Returns a dict: {
+        "categorisation": [ {criterion_id, theme_key, specific_label,
+                             low_confidence, themed_correction_prompt}, ... ],
+        "group_habits":    [ {theme_key, habit}, ... ]
+    }
+
+    Raises on API/parse failure — caller marks the submission "failed".
+    """
+    if not questions_data:
+        return {'categorisation': [], 'group_habits': []}
+
+    # Render the themes dict for the prompt — description only, plus the key.
+    theme_lines = []
+    for key, cfg in themes.items():
+        theme_lines.append(
+            f"  {key}: {cfg.get('label', key)} — {cfg.get('description', '')}"
+            + ("  (never_group)" if cfg.get('never_group') else '')
+        )
+    theme_block = '\n'.join(theme_lines)
+    theme_keys_csv = ', '.join(themes.keys())
+
+    # Render the criteria for the prompt.
+    crit_lines = []
+    for q in questions_data:
+        cid = q.get('criterion_id') or ''
+        cname = q.get('criterion_name') or cid
+        ans = (q.get('student_answer') or '').strip().replace('\n', ' ')
+        fb = (q.get('feedback') or '').strip().replace('\n', ' ')
+        if len(ans) > 400:
+            ans = ans[:400] + '…'
+        if len(fb) > 400:
+            fb = fb[:400] + '…'
+        marks_lost = q.get('marks_lost')
+        if marks_lost is None:
+            ma = q.get('marks_awarded') or 0
+            mt = q.get('marks_total') or 0
+            marks_lost = max(0, (mt - ma)) if mt else 0
+        crit_lines.append(
+            f"- criterion_id: {cid}\n"
+            f"  criterion_name: {cname}\n"
+            f"  marks_lost: {marks_lost}\n"
+            f"  student_answer: {ans}\n"
+            f"  feedback: {fb}"
+        )
+    crits_block = '\n'.join(crit_lines)
+
+    subject_family_str = subject_family or 'unknown'
+
+    system_prompt = f"""You categorise a student's lost-mark criteria on a Singapore secondary school assignment.
+
+Subject family: {subject_family_str}
+
+The available parent themes (use EXACTLY one of these keys — no others):
+{theme_block}
+
+Allowed theme_keys: {theme_keys_csv}
+
+For EACH criterion below, do all of the following:
+
+1. Assign it to exactly one theme_key from the list above. Never leave a criterion unassigned.
+2. Generate a specific_label — a 2–4 word phrase from the student's perspective describing THIS particular mistake, not the category. Examples: "consequence not stated", "source not quoted", "informal word choice", "steps in wrong order". The specific_label MUST be distinct from the theme's own label — it describes the instance, not the family.
+3. If genuinely torn between two themes, pick the one that leads to the more actionable advice for the student. Set low_confidence: true in that case.
+4. Generate a themed_correction_prompt: a single-line prompt framed THROUGH the theme's lens (not generic), telling the student to retry this criterion in their own words. Format:
+       "[Criterion]: You [specific thing that was missing]. In your own words, explain what you should have written and why."
+   Scope the wording to the chosen theme — e.g. for reasoning_gap, ask them to make the missing link explicit; for evidence_handling, ask them to quote and interpret.
+
+Then, once every criterion is assigned:
+
+5. For each theme that ends up with 2 OR MORE criteria assigned — and that is NOT a never_group theme — produce a SINGLE group_habit sentence that applies to the WHOLE group, not any one question. It must start with "Next time:" and be at most 20 words. Concrete, actionable. One per qualifying group. Omit groups with <2 criteria and groups whose theme has never_group=true.
+
+Respond ONLY with valid JSON in this exact shape (no prose, no markdown):
+
+{{
+  "categorisation": [
+    {{
+      "criterion_id": "<copied>",
+      "theme_key": "<one of the allowed keys>",
+      "specific_label": "<2-4 words>",
+      "low_confidence": false,
+      "themed_correction_prompt": "<one line>"
+    }}
+  ],
+  "group_habits": [
+    {{
+      "theme_key": "<one of the allowed keys>",
+      "habit": "Next time: ..."
+    }}
+  ]
+}}"""
+
+    user_prompt = f"Criteria to categorise:\n{crits_block}\n\nReturn the JSON now."
+
+    parsed = _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=2000)
+
+    cats_in = parsed.get('categorisation') or []
+    habs_in = parsed.get('group_habits') or []
+    valid_keys = set(themes.keys())
+
+    cats_out = []
+    known_ids = {q.get('criterion_id') for q in questions_data}
+    seen_ids = set()
+    for c in cats_in:
+        if not isinstance(c, dict):
+            continue
+        cid = c.get('criterion_id')
+        if cid is None or cid not in known_ids or cid in seen_ids:
+            continue
+        seen_ids.add(cid)
+        tk = c.get('theme_key')
+        if tk not in valid_keys:
+            # Coerce into a sensible default so the render layer can still run.
+            tk = 'content_gap'
+        spec = (c.get('specific_label') or '').strip()
+        if not spec:
+            spec = (themes.get(tk) or {}).get('label', 'Area for review')
+        prompt = (c.get('themed_correction_prompt') or '').strip()
+        cats_out.append({
+            'criterion_id': cid,
+            'theme_key': tk,
+            'specific_label': spec,
+            'low_confidence': bool(c.get('low_confidence')),
+            'themed_correction_prompt': prompt,
+        })
+
+    habs_out = []
+    seen_theme = set()
+    for h in habs_in:
+        if not isinstance(h, dict):
+            continue
+        tk = h.get('theme_key')
+        if tk not in valid_keys or (themes.get(tk) or {}).get('never_group'):
+            continue
+        if tk in seen_theme:
+            continue
+        habit = (h.get('habit') or '').strip()
+        if not habit:
+            continue
+        if not habit.lower().startswith('next time'):
+            habit = 'Next time: ' + habit
+        seen_theme.add(tk)
+        habs_out.append({'theme_key': tk, 'habit': habit})
+
+    return {'categorisation': cats_out, 'group_habits': habs_out}

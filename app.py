@@ -3399,6 +3399,127 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
             db.session.rollback()
             logger.error(f"Failed to auto-clear needs_remark for assignment {assignment_id}: {flag_err}")
 
+        # Kick off the "Group by Mistake Type" categorisation in a background
+        # thread. Only if the mark actually succeeded and there is at least
+        # one lost-mark criterion to categorise. The thread opens its own
+        # app context and does not rely on this request/worker's session.
+        try:
+            sub_fresh = Submission.query.get(submission_id)
+            if sub_fresh and sub_fresh.status == 'done':
+                result = sub_fresh.get_result() or {}
+                has_lost = any(
+                    ((q.get('marks_total') or 0) > 0 and (q.get('marks_awarded') or 0) < (q.get('marks_total') or 0))
+                    or (q.get('status') and q.get('status') != 'correct')
+                    for q in (result.get('questions') or [])
+                )
+                if has_lost:
+                    sub_fresh.categorisation_status = 'pending'
+                    db.session.commit()
+                    threading.Thread(
+                        target=_run_categorisation_worker,
+                        args=(app, submission_id),
+                        daemon=True,
+                    ).start()
+                else:
+                    sub_fresh.categorisation_status = 'done'  # nothing to group; render shows no toggle
+                    db.session.commit()
+        except Exception as cat_err:
+            db.session.rollback()
+            logger.warning(f"Could not kick off categorisation for submission {submission_id}: {cat_err}")
+
+
+def _run_categorisation_worker(app_obj, submission_id):
+    """Background thread: run the "Group by Mistake Type" AI categorisation and
+    write results back into result_json. Opens its own app context so the
+    original request/session is free to close.
+    """
+    with app_obj.app_context():
+        try:
+            sub = Submission.query.get(submission_id)
+            if not sub or sub.status != 'done':
+                return
+            asn = Assignment.query.get(sub.assignment_id)
+            if not asn:
+                return
+            result = sub.get_result() or {}
+            questions = result.get('questions') or []
+
+            # Build per-criterion payload: only criteria where marks were lost.
+            payload = []
+            for q in questions:
+                ma = q.get('marks_awarded')
+                mt = q.get('marks_total')
+                lost_by_marks = (mt and ma is not None and mt > 0 and ma < mt)
+                lost_by_status = (not lost_by_marks and q.get('status') and q.get('status') != 'correct')
+                if not (lost_by_marks or lost_by_status):
+                    continue
+                cid = q.get('question_num')
+                if cid is None:
+                    continue
+                payload.append({
+                    'criterion_id': str(cid),
+                    'criterion_name': q.get('criterion_name') or f"Question {cid}",
+                    'student_answer': q.get('student_answer') or '',
+                    'feedback': q.get('feedback') or '',
+                    'marks_awarded': ma,
+                    'marks_total': mt,
+                    'marks_lost': max(0, (mt or 0) - (ma or 0)) if (mt and ma is not None) else None,
+                })
+            if not payload:
+                sub.categorisation_status = 'done'
+                db.session.commit()
+                return
+
+            from config.mistake_themes import THEMES
+            from ai_marking import categorise_mistakes
+            parsed = categorise_mistakes(
+                provider=asn.provider,
+                model=asn.model,
+                session_keys=_resolve_api_keys(asn),
+                subject_family=asn.subject_family or '',
+                themes=THEMES,
+                questions_data=payload,
+            )
+
+            # Merge the per-criterion fields into result_json.questions, keyed
+            # by criterion_id (question_num). Store group habits in the tiered
+            # namespace so the existing teacher PATCH merge stays compatible.
+            cats_by_id = {c['criterion_id']: c for c in (parsed.get('categorisation') or [])}
+            for q in questions:
+                cid = str(q.get('question_num')) if q.get('question_num') is not None else None
+                c = cats_by_id.get(cid) if cid else None
+                if not c:
+                    continue
+                q['theme_key'] = c['theme_key']
+                q['specific_label'] = c['specific_label']
+                q['low_confidence'] = bool(c.get('low_confidence'))
+                if c.get('themed_correction_prompt'):
+                    pmap = q.get('correction_prompts_by_theme') or {}
+                    pmap[c['theme_key']] = c['themed_correction_prompt']
+                    q['correction_prompts_by_theme'] = pmap
+
+            tiered = result.get('_tiered') or {}
+            if not isinstance(tiered, dict):
+                tiered = {}
+            tiered['group_habits'] = parsed.get('group_habits') or []
+            result['_tiered'] = tiered
+            result['questions'] = questions
+
+            sub.set_result(result)
+            sub.categorisation_status = 'done'
+            db.session.commit()
+            logger.info(f"Categorisation done for submission {submission_id}: "
+                        f"{len(cats_by_id)} criteria, {len(tiered['group_habits'])} group habits")
+        except Exception as e:
+            logger.error(f"Categorisation failed for submission {submission_id}: {e}")
+            try:
+                sub = Submission.query.get(submission_id)
+                if sub:
+                    sub.categorisation_status = 'failed'
+                    db.session.commit()
+            except Exception:
+                db.session.rollback()
+
 
 @app.route('/teacher')
 def teacher_page():
@@ -3512,6 +3633,24 @@ def teacher_create():
         if val:
             user_keys[prov] = val
     asn.set_api_keys(user_keys)
+
+    # Classify the freeform subject into a subject_family (used by the
+    # "Group by Mistake Type" feature). Fires ONCE at creation time only —
+    # never per student, never repeated per marking. Non-fatal on failure.
+    try:
+        from ai_marking import classify_subject_family
+        asn.subject_family = classify_subject_family(
+            provider=asn.provider,
+            model=asn.model,
+            session_keys=_resolve_api_keys(asn),
+            subject=asn.subject or '',
+            assign_type=asn.assign_type,
+            has_rubric=bool(asn.rubrics),
+            has_answer_key=bool(asn.answer_key),
+        )
+    except Exception as _sf_err:
+        logger.warning(f"classify_subject_family failed on create for {asn.id}: {_sf_err}")
+
     db.session.add(asn)
 
     # Optionally add to bank
@@ -3641,6 +3780,24 @@ def teacher_edit(assignment_id):
     asn.last_edited_at = datetime.now(timezone.utc)
     if major_change:
         asn.needs_remark = True
+
+    # If the inputs that drive subject_family changed, re-classify so the
+    # Group by Mistake Type feature stays sensible. Non-fatal on failure.
+    if (new_subject != (asn.subject or '') or ak_changed or rub_changed
+            or asn.subject_family in (None, '')):
+        try:
+            from ai_marking import classify_subject_family
+            asn.subject_family = classify_subject_family(
+                provider=asn.provider,
+                model=asn.model,
+                session_keys=_resolve_api_keys(asn),
+                subject=asn.subject or '',
+                assign_type=asn.assign_type,
+                has_rubric=bool(asn.rubrics),
+                has_answer_key=bool(asn.answer_key),
+            )
+        except Exception as _sf_err:
+            logger.warning(f"classify_subject_family failed on edit for {asn.id}: {_sf_err}")
 
     try:
         db.session.commit()
@@ -4506,6 +4663,18 @@ def student_feedback_page(assignment_id, submission_id):
         correct = sum(1 for q in questions if q.get('status') == 'correct')
         score_pill = f"{correct} / {len(questions)}"
 
+    from config.mistake_themes import THEMES
+    # Serialisable theme metadata for the template + JS (never hardcoded).
+    theme_meta = {
+        k: {
+            'label': v.get('label', k),
+            'description': v.get('description', ''),
+            'never_group': bool(v.get('never_group')),
+        } for k, v in THEMES.items()
+    }
+
+    grouping_data = _compute_grouping_payload(sub, result, THEMES)
+
     return render_template(
         'feedback_view.html',
         assignment=asn,
@@ -4514,7 +4683,77 @@ def student_feedback_page(assignment_id, submission_id):
         result=result,
         score_pill=score_pill,
         download_url=url_for('download_submission_pdf', assignment_id=assignment_id, submission_id=submission_id),
+        themes=theme_meta,
+        categorisation_status=sub.categorisation_status or 'pending',
+        grouping_data=grouping_data,
     )
+
+
+def _compute_grouping_payload(sub, result, themes):
+    """Build the student-facing "By Mistake Type" payload from stored values.
+
+    The same shape is returned by the polling endpoint — the template renders
+    from this server-side copy on initial page load when categorisation is
+    already 'done', and the client patches in the fresh copy if it was still
+    'pending' when the page first rendered.
+    """
+    if not sub or sub.categorisation_status != 'done':
+        return None
+
+    questions = result.get('questions') or []
+    tiered = result.get('_tiered') or {}
+    habits_by_theme = {h.get('theme_key'): h.get('habit') for h in (tiered.get('group_habits') or []) if h.get('theme_key')}
+
+    # Collect per-theme criteria (only those with marks lost AND a theme_key).
+    by_theme = {}
+    standalone = []
+    for q in questions:
+        ma = q.get('marks_awarded')
+        mt = q.get('marks_total')
+        lost_by_marks = (mt and ma is not None and mt > 0 and ma < mt)
+        lost_by_status = (not lost_by_marks and q.get('status') and q.get('status') != 'correct')
+        if not (lost_by_marks or lost_by_status):
+            continue
+        tk = q.get('theme_key')
+        if not tk or tk not in themes:
+            continue  # uncategorised (rare) — do not show in grouped view
+        marks_lost = max(0, (mt or 0) - (ma or 0)) if (mt and ma is not None) else 0
+        entry = {
+            'criterion_id': str(q.get('question_num')),
+            'criterion_name': q.get('criterion_name') or f"Question {q.get('question_num')}",
+            'specific_label': q.get('specific_label') or themes[tk].get('label', tk),
+            'marks_lost': marks_lost,
+            'low_confidence': bool(q.get('low_confidence')),
+            'theme_key': tk,
+        }
+        if themes[tk].get('never_group'):
+            standalone.append(entry)
+            continue
+        by_theme.setdefault(tk, []).append(entry)
+
+    groups = []
+    # A theme forms a group only if it has ≥ 2 criteria; otherwise its one
+    # criterion renders standalone.
+    for tk, crits in by_theme.items():
+        if len(crits) >= 2:
+            crits_sorted = sorted(crits, key=lambda e: e.get('marks_lost') or 0, reverse=True)
+            total = sum((e.get('marks_lost') or 0) for e in crits_sorted)
+            groups.append({
+                'theme_key': tk,
+                'theme_label': themes[tk].get('label', tk),
+                'specific_labels': [e['specific_label'] for e in crits_sorted],
+                'habit': habits_by_theme.get(tk, ''),
+                'total_marks_lost': total,
+                'criteria': crits_sorted,
+            })
+        else:
+            standalone.extend(crits)
+
+    groups.sort(key=lambda g: g['total_marks_lost'], reverse=True)
+    # Standalone: content_gap (never_group) plus orphan single-criterion themes.
+    standalone_sorted = sorted(standalone, key=lambda e: e.get('marks_lost') or 0, reverse=True)
+
+    return {'groups': groups, 'standalone': standalone_sorted}
 
 
 @app.route('/feedback/<assignment_id>/<int:submission_id>/explain', methods=['POST'])
@@ -4614,6 +4853,7 @@ def student_feedback_correction(assignment_id, submission_id):
         'text': attempt_text,
         'verdict': verdict['verdict'],
         'message': verdict['message'],
+        'theme_key': (payload.get('theme_key') or None),
         'submitted_at': datetime.now(timezone.utc).isoformat(),
     })
     sub.set_result(result)
@@ -4627,6 +4867,34 @@ def student_feedback_correction(assignment_id, submission_id):
         logger.warning(f"Could not persist correction for sub {submission_id}: {e}")
 
     return jsonify({'success': True, **verdict})
+
+
+@app.route('/feedback/grouping-status/<int:submission_id>')
+def student_feedback_grouping_status(submission_id):
+    """Poll endpoint for the "Group by Mistake Type" async categorisation.
+
+    Returns one of:
+      {"status": "pending"}
+      {"status": "failed"}
+      {"status": "done", "groups": [...], "standalone": [...]}
+
+    Auth: same as the other /feedback/... routes — requires a student
+    session for THIS assignment (or a teacher login for preview).
+    """
+    sub = Submission.query.get_or_404(submission_id)
+    asn, sub, err = _student_feedback_auth(sub.assignment_id, submission_id)
+    if err:
+        return err
+
+    state = sub.categorisation_status or 'pending'
+    if state != 'done':
+        return jsonify({'status': state})
+
+    from config.mistake_themes import THEMES
+    payload = _compute_grouping_payload(sub, sub.get_result() or {}, THEMES)
+    if not payload:
+        return jsonify({'status': 'pending'})  # defensive — don't flip UI yet
+    return jsonify({'status': 'done', **payload})
 
 
 @app.route('/submit/<assignment_id>/upload', methods=['POST'])
