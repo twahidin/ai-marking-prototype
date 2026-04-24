@@ -4703,6 +4703,9 @@ def _compute_grouping_payload(sub, result, themes):
     questions = result.get('questions') or []
     tiered = result.get('_tiered') or {}
     habits_by_theme = {h.get('theme_key'): h.get('habit') for h in (tiered.get('group_habits') or []) if h.get('theme_key')}
+    reviewed_keys = set(tiered.get('reviewed_theme_keys') or [])
+    correction_attempts = tiered.get('corrections') or []
+    correction_question_nums = {str(a.get('question_num')) for a in correction_attempts if a.get('question_num') is not None}
 
     # Collect per-theme criteria (only those with marks lost AND a theme_key).
     by_theme = {}
@@ -4753,7 +4756,25 @@ def _compute_grouping_payload(sub, result, themes):
     # Standalone: content_gap (never_group) plus orphan single-criterion themes.
     standalone_sorted = sorted(standalone, key=lambda e: e.get('marks_lost') or 0, reverse=True)
 
-    return {'groups': groups, 'standalone': standalone_sorted}
+    # Annotate reviewed state + pick the first unreviewed group (the one the
+    # student "left off" at) so the client can render a Done badge / dim and
+    # a "You left off here" label + auto-scroll.
+    marked_first = False
+    for g in groups:
+        g['reviewed'] = g['theme_key'] in reviewed_keys
+        g['left_off_here'] = False
+        if not g['reviewed'] and not marked_first:
+            g['left_off_here'] = True
+            marked_first = True
+
+    return {
+        'groups': groups,
+        'standalone': standalone_sorted,
+        'reviewed_theme_keys': sorted(reviewed_keys),
+        'total_groups': len(groups),
+        'reviewed_count': sum(1 for g in groups if g['reviewed']),
+        'correction_count': len(correction_question_nums),
+    }
 
 
 @app.route('/feedback/<assignment_id>/<int:submission_id>/explain', methods=['POST'])
@@ -4867,6 +4888,34 @@ def student_feedback_correction(assignment_id, submission_id):
         logger.warning(f"Could not persist correction for sub {submission_id}: {e}")
 
     return jsonify({'success': True, **verdict})
+
+
+@app.route('/feedback/<assignment_id>/<int:submission_id>/mark-reviewed', methods=['POST'])
+def student_feedback_mark_reviewed(assignment_id, submission_id):
+    """Record that the student has expanded a group — powers the "Where was I?"
+    return-visit landing. Idempotent: calling twice for the same theme_key is
+    a no-op."""
+    asn, sub, err = _student_feedback_auth(assignment_id, submission_id)
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    tk = (data.get('theme_key') or '').strip()
+    if not tk:
+        return jsonify({'success': False, 'error': 'theme_key required'}), 400
+    result = sub.get_result() or {}
+    tiered = _tiered_bucket(result)
+    reviewed = list(tiered.get('reviewed_theme_keys') or [])
+    if tk not in reviewed:
+        reviewed.append(tk)
+    tiered['reviewed_theme_keys'] = reviewed
+    sub.set_result(result)
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.warning(f"mark_reviewed failed for sub {submission_id}: {e}")
+        return jsonify({'success': False, 'error': 'Could not save'}), 500
+    return jsonify({'success': True, 'reviewed_theme_keys': reviewed})
 
 
 @app.route('/feedback/grouping-status/<int:submission_id>')

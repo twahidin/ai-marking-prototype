@@ -158,6 +158,32 @@
     .fv-standalone-section { margin-top: 26px; }
     .fv-standalone-title { font-size: 13px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 10px; }
 
+    /* Progress statement + bar at the top of the grouped view */
+    .fv-progress { margin: 4px 0 16px; }
+    .fv-progress-line { font-size: 13px; color: #555; font-weight: 600; margin-bottom: 6px; }
+    .fv-progress-line .fv-progress-sep { color: #bbb; margin: 0 6px; }
+    .fv-progress-track { height: 5px; background: #eef1ff; border-radius: 999px; overflow: hidden; }
+    .fv-progress-fill { height: 100%; background: #667eea; transition: width 0.25s ease-out; }
+
+    /* "Done" badge + dim for reviewed groups */
+    .fv-group-done-badge {
+        display: inline-block; font-size: 10.5px; font-weight: 700;
+        color: #1e7a36; background: #e7f3eb; border-radius: 999px;
+        padding: 2px 8px; margin-left: 8px; letter-spacing: 0.3px;
+        text-transform: uppercase;
+    }
+    .fv-group-card.reviewed { opacity: 0.55; }
+    .fv-group-card.reviewed:hover { opacity: 0.8; }
+
+    /* "You left off here" label — anchored on the card */
+    .fv-left-off-label {
+        display: block; font-size: 12px; font-weight: 600; color: #6c4bd3;
+        margin: 0 0 6px 2px; letter-spacing: 0.1px;
+    }
+    .fv-left-off-label::before {
+        content: "\21B3"; display: inline-block; margin-right: 6px; color: #a798e7;
+    }
+
     @media (max-width: 600px) {
         .fv-root { padding: 16px 12px 60px; }
         .fv-student-name { font-size: 19px; }
@@ -415,6 +441,7 @@ async function fvSubmitCorrection(btn, qnum) {
         resBox.textContent = data.message || '';
         btn.disabled = false;
         btn.textContent = orig;
+        fvRefreshCorrectionCount();
     } catch (err) {
         resBox.className = 'fv-correction-result error';
         resBox.style.display = 'block';
@@ -442,16 +469,39 @@ function fvBuildGroupedView(payload) {
     var standalone = payload.standalone || [];
     if (!groups.length && !standalone.length) { container.innerHTML = ''; return; }
 
-    var html = '';
+    // "Where was I?" progress statement (only meaningful when groups exist).
+    var totalGroups = (payload.total_groups != null ? payload.total_groups : groups.length);
+    var reviewedCount = (payload.reviewed_count != null ? payload.reviewed_count :
+                         groups.filter(function (g) { return g.reviewed; }).length);
+    var corrCount = payload.correction_count || 0;
+    var fillPct = totalGroups > 0 ? Math.round((reviewedCount / totalGroups) * 100) : 0;
+    var progressHtml = '';
+    if (totalGroups > 0) {
+        progressHtml =
+            '<div class="fv-progress" id="fvProgress">' +
+                '<div class="fv-progress-line">' +
+                    '<span id="fvProgressGroups">' + reviewedCount + ' of ' + totalGroups + ' group' + (totalGroups === 1 ? '' : 's') + '</span>' +
+                    '<span class="fv-progress-sep">·</span>' +
+                    '<span id="fvProgressCorr">' + corrCount + ' correction' + (corrCount === 1 ? '' : 's') + ' submitted</span>' +
+                '</div>' +
+                '<div class="fv-progress-track"><div class="fv-progress-fill" id="fvProgressFill" style="width:' + fillPct + '%"></div></div>' +
+            '</div>';
+    }
+
+    var html = progressHtml;
     groups.forEach(function (g, gi) {
         var themeLabel = fvEscHtml(g.theme_label || (FV_THEMES[g.theme_key] && FV_THEMES[g.theme_key].label) || g.theme_key);
         var tagHtml = (g.specific_labels || []).map(function (lbl) {
             return '<span class="fv-group-tag">' + fvEscHtml(lbl) + '</span>';
         }).join('');
-        html += '<div class="fv-group-card" data-group-idx="' + gi + '">' +
-            '<div class="fv-group-head" onclick="fvToggleGroup(this.parentElement)">' +
+        var reviewedCls = g.reviewed ? ' reviewed' : '';
+        var doneBadge = g.reviewed ? '<span class="fv-group-done-badge">Done</span>' : '';
+        var leftOff = g.left_off_here ? '<span class="fv-left-off-label">You left off here.</span>' : '';
+        html += leftOff +
+            '<div class="fv-group-card' + reviewedCls + '" data-group-idx="' + gi + '" data-theme-key="' + fvEscHtml(g.theme_key) + '" data-reviewed="' + (g.reviewed ? '1' : '0') + '">' +
+            '<div class="fv-group-head" onclick="fvHandleGroupClick(this.parentElement)">' +
                 '<div class="fv-group-top">' +
-                    '<span class="fv-group-label">' + themeLabel + '</span>' +
+                    '<span class="fv-group-label">' + themeLabel + doneBadge + '</span>' +
                     '<span class="fv-group-marks">' + fvEscHtml(String(g.total_marks_lost || 0)) + ' marks lost</span>' +
                     '<span class="fv-group-chev">&#9662;</span>' +
                 '</div>' +
@@ -516,6 +566,99 @@ function fvCriterionBodyHtml(c, themeKey) {
 
 function fvToggleGroup(card) { card.classList.toggle('expanded'); }
 
+function fvHandleGroupClick(card) {
+    card.classList.toggle('expanded');
+    // Only mark reviewed on first expand (idempotent server-side regardless).
+    if (card.classList.contains('expanded') && card.dataset.reviewed !== '1') {
+        card.dataset.reviewed = '1';
+        fvMarkReviewed(card);
+    }
+}
+
+async function fvMarkReviewed(card) {
+    var themeKey = card.getAttribute('data-theme-key') || '';
+    if (!themeKey) return;
+    // Optimistic UI: dim card, add Done badge, advance "You left off here" label.
+    card.classList.add('reviewed');
+    var label = card.querySelector('.fv-group-label');
+    if (label && !label.querySelector('.fv-group-done-badge')) {
+        var badge = document.createElement('span');
+        badge.className = 'fv-group-done-badge';
+        badge.textContent = 'Done';
+        label.appendChild(badge);
+    }
+    // Remove the "You left off here" label that was on this card (if any)
+    // and re-attach to the next unreviewed group (if any).
+    var container = document.getElementById('fvGrouped');
+    if (container) {
+        container.querySelectorAll('.fv-left-off-label').forEach(function (el) { el.remove(); });
+        var nextCard = container.querySelector('.fv-group-card:not(.reviewed)');
+        if (nextCard) {
+            var lbl = document.createElement('span');
+            lbl.className = 'fv-left-off-label';
+            lbl.textContent = 'You left off here.';
+            nextCard.parentNode.insertBefore(lbl, nextCard);
+        }
+    }
+    fvRefreshProgress();
+    try {
+        await fetch('/feedback/' + FV_ASSIGNMENT_ID + '/' + FV_SUBMISSION_ID + '/mark-reviewed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ theme_key: themeKey }),
+        });
+    } catch (err) { /* silent */ }
+}
+
+function fvRefreshProgress() {
+    var container = document.getElementById('fvGrouped');
+    if (!container) return;
+    var cards = container.querySelectorAll('.fv-group-card');
+    var total = cards.length;
+    if (!total) return;
+    var reviewed = container.querySelectorAll('.fv-group-card.reviewed').length;
+    var groupsEl = document.getElementById('fvProgressGroups');
+    var fillEl = document.getElementById('fvProgressFill');
+    if (groupsEl) groupsEl.textContent = reviewed + ' of ' + total + ' group' + (total === 1 ? '' : 's');
+    if (fillEl) fillEl.style.width = Math.round((reviewed / total) * 100) + '%';
+}
+
+function fvRefreshCorrectionCount() {
+    // Called after a correction has been successfully submitted so the progress
+    // statement reflects the new total without a page reload.
+    var container = document.getElementById('fvGrouped');
+    if (!container) return;
+    var corrCountEl = document.getElementById('fvProgressCorr');
+    if (!corrCountEl) return;
+    var submitted = new Set();
+    document.querySelectorAll('.fv-correction-card').forEach(function (card) {
+        var resBox = card.querySelector('.fv-correction-result');
+        if (resBox && resBox.style.display !== 'none' && resBox.textContent.trim()) {
+            var qn = card.getAttribute('data-qnum');
+            if (qn) submitted.add(qn);
+        }
+    });
+    var n = submitted.size;
+    corrCountEl.textContent = n + ' correction' + (n === 1 ? '' : 's') + ' submitted';
+}
+
+function fvMaybeAutoScroll() {
+    // Scroll to the first unreviewed group ~600ms after the grouped view
+    // becomes visible, so the page feels like it's "settling" rather than
+    // jumping. Only runs when the grouped view is the active view.
+    var container = document.getElementById('fvGrouped');
+    if (!container || container.classList.contains('hidden')) return;
+    var target = container.querySelector('.fv-group-card:not(.reviewed)');
+    if (!target) return;
+    setTimeout(function () {
+        try {
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } catch (e) {
+            target.scrollIntoView();
+        }
+    }, 600);
+}
+
 function fvActivateView(which) {
     var toggle = document.getElementById('fvViewToggle');
     if (!toggle) return;
@@ -568,6 +711,9 @@ function fvShowToggleIfReady(payload) {
     try { stored = localStorage.getItem(FV_VIEW_STORAGE_KEY); } catch (e) {}
     var initial = stored === 'question' ? 'question' : 'mistake';
     fvActivateView(initial);
+    // Only auto-scroll when the student lands in the grouped view on this
+    // visit — never hijack the page when they explicitly chose by-question.
+    if (initial === 'mistake') fvMaybeAutoScroll();
 }
 
 document.getElementById('fvToggleMistake').addEventListener('click', function () { fvActivateView('mistake'); });
