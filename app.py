@@ -4784,9 +4784,14 @@ def student_submission_status(assignment_id, submission_id):
 
 @app.route('/submit/<assignment_id>/download/<int:submission_id>')
 def download_submission_pdf(assignment_id, submission_id):
-    """Download a PDF report for a specific submission."""
-    if not _is_authenticated():
+    """Download a PDF report for a specific submission. Teachers always; students
+    only when they have a classroom-code session for this assignment AND the
+    assignment has show_results enabled (same model as the tiered feedback page)."""
+    is_teacher = _is_authenticated()
+    is_student = session.get(f'student_auth_{assignment_id}')
+    if not is_teacher and not is_student:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
     sub = Submission.query.get_or_404(submission_id)
     if sub.assignment_id != assignment_id:
         return jsonify({'success': False, 'error': 'Not found'}), 404
@@ -4794,6 +4799,9 @@ def download_submission_pdf(assignment_id, submission_id):
         return jsonify({'success': False, 'error': 'No results available'}), 404
 
     asn = Assignment.query.get(assignment_id)
+    if not is_teacher and (not asn or not asn.show_results):
+        return jsonify({'success': False, 'error': 'Results are not available for this assignment'}), 403
+
     result = sub.get_result()
     subject = asn.subject if asn else ''
     pdf_bytes = generate_report_pdf(result, subject=subject, app_title=get_app_title())
