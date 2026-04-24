@@ -4094,6 +4094,12 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                         target[field] = float(v) if isinstance(v, float) or (isinstance(v, str) and '.' in v) else int(v)
                     except (TypeError, ValueError):
                         return jsonify({'success': False, 'error': f'{field} must be a number'}), 400
+            if 'status' in edit:
+                v = edit['status']
+                if v in ('correct', 'partially_correct', 'incorrect'):
+                    target['status'] = v
+                elif v is not None:
+                    return jsonify({'success': False, 'error': 'status must be correct | partially_correct | incorrect'}), 400
 
         # Recompute per-question status from marks if both are present
         for q in questions:

@@ -64,8 +64,17 @@
         injectStylesOnce();
         options = options || {};
         var prefix = options.idPrefix || 'fb';
+
+        var questions = (result.questions || []).map(function (q) { return Object.assign({}, q); });
+        // Mode: explicit scoringMode option wins; otherwise infer from data —
+        // any question with marks set implies marks mode.
+        var isMarksMode;
+        if (options.scoringMode === 'marks') isMarksMode = true;
+        else if (options.scoringMode === 'status') isMarksMode = false;
+        else isMarksMode = questions.some(function (q) { return q.marks_awarded != null || q.marks_total != null; });
+
         var state = {
-            questions: (result.questions || []).map(function (q) { return Object.assign({}, q); }),
+            questions: questions,
             errors: result.errors || [],
             assignType: result.assign_type || 'short_answer',
             recommended: result.recommended_actions || [],
@@ -77,6 +86,7 @@
             assignmentId: options.assignmentId || null,
             submissionId: options.submissionId || null,
             onSave: options.onSave || null,
+            isMarksMode: isMarksMode,
         };
         if (state.editable && (!state.assignmentId || !state.submissionId)) {
             state.editable = false;
@@ -238,7 +248,7 @@
         var bandInfo = (isRubrics && q.band) ? ' <span style="font-size:12px;color:#667eea;font-weight:600;">(' + esc(q.band) + ')</span>' : '';
 
         var statusCls = q.status || 'incorrect';
-        var badge = questionBadgeHtml(q, statusCls, state.editable);
+        var badge = questionBadgeHtml(q, statusCls, state.editable, state.isMarksMode);
 
         var fbBlock, impBlock;
         if (state.editable) {
@@ -290,16 +300,25 @@
         }
     }
 
-    function questionBadgeHtml(q, statusCls, editable) {
+    function questionBadgeHtml(q, statusCls, editable, isMarksMode) {
         var label = STATUS_LABELS[statusCls] || statusCls;
-        var editableAttr = editable ? ' class="fb-status-badge ' + esc(statusCls) + ' fb-editable" data-field="marks" title="Click to edit marks"' : ' class="fb-status-badge ' + esc(statusCls) + '"';
-        if (q.marks_awarded != null && q.marks_total != null) {
-            return '<span' + editableAttr + '>' + esc(String(q.marks_awarded)) + '/' + esc(String(q.marks_total)) + (editable ? '<span class="edit-hint" style="color:inherit;opacity:0.7;"> ✎</span>' : '') + '</span>';
+
+        if (isMarksMode) {
+            var maStr = q.marks_awarded != null ? String(q.marks_awarded) : '—';
+            var mtStr = q.marks_total != null ? String(q.marks_total) : '—';
+            var cls = 'fb-status-badge ' + esc(statusCls);
+            if (editable) cls += ' fb-editable';
+            var attr = editable ? ' data-field="marks" title="Click to edit marks"' : '';
+            var hint = editable ? '<span class="edit-hint" style="color:inherit;opacity:0.7;"> ✎</span>' : '';
+            return '<span class="' + cls + '"' + attr + '>' + esc(maStr) + '/' + esc(mtStr) + hint + '</span>';
         }
-        if (editable) {
-            return '<span' + editableAttr + '>' + esc(label) + '<span class="edit-hint" style="color:inherit;opacity:0.7;"> ✎ set marks</span></span>';
-        }
-        return '<span class="fb-status-badge ' + esc(statusCls) + '">' + esc(label) + '</span>';
+
+        // Status mode: label + cycle affordance.
+        var cls2 = 'fb-status-badge ' + esc(statusCls);
+        if (editable) cls2 += ' fb-editable';
+        var attr2 = editable ? ' data-field="status" title="Click to cycle status"' : '';
+        var hint2 = editable ? '<span class="edit-hint" style="color:inherit;opacity:0.7;"> ↻</span>' : '';
+        return '<span class="' + cls2 + '"' + attr2 + '>' + esc(label) + hint2 + '</span>';
     }
 
     // ---- Click-to-edit handlers ----
@@ -316,6 +335,10 @@
         var marksBadge = card.querySelector('[data-field="marks"]');
         if (marksBadge) {
             marksBadge.addEventListener('click', function () { beginMarksEdit(state, marksBadge); });
+        }
+        var statusBadge = card.querySelector('[data-field="status"]');
+        if (statusBadge) {
+            statusBadge.addEventListener('click', function () { cycleStatus(state, statusBadge); });
         }
         card.querySelectorAll('[data-field="feedback"], [data-field="improvement"]').forEach(function (el) {
             el.addEventListener('click', function (e) {
@@ -500,6 +523,58 @@
             if (state.onSave) { try { state.onSave(merged); } catch (e) {} }
         } catch (err) {
             renderQuestion(state);
+            showToast('error', err.message || 'Save failed');
+        }
+    }
+
+    // Click-to-cycle for status-mode assignments:
+    // correct → incorrect → partially_correct → correct → …
+    var STATUS_NEXT = {
+        correct: 'incorrect',
+        incorrect: 'partially_correct',
+        partially_correct: 'correct',
+    };
+
+    async function cycleStatus(state, el) {
+        var q = state.questions[state.currentQ];
+        var current = q.status || 'incorrect';
+        var next = STATUS_NEXT[current] || 'correct';
+
+        // Optimistic update — feels instant.
+        q.status = next;
+        var card = document.getElementById(state.prefix + 'QCard');
+        if (card) {
+            card.classList.remove('status-correct', 'status-partially_correct', 'status-incorrect');
+            card.classList.add('status-' + next);
+        }
+        var badgeWrap = document.getElementById(state.prefix + 'StatusBadgeWrap');
+        if (badgeWrap) {
+            badgeWrap.innerHTML = questionBadgeHtml(q, next, state.editable, state.isMarksMode);
+            var newBadge = badgeWrap.querySelector('[data-field="status"]');
+            if (newBadge) newBadge.addEventListener('click', function () { cycleStatus(state, newBadge); });
+        }
+        refreshDots(state);
+        refreshSummary(state);
+
+        var payload = {
+            questions: [{
+                question_num: q.question_num != null ? q.question_num : (state.currentQ + 1),
+                status: next,
+            }],
+        };
+        try {
+            var merged = await patchResult(state, payload);
+            mergeResult(state, merged);
+            renderQuestion(state);
+            refreshSummary(state);
+            refreshDots(state);
+            if (state.onSave) { try { state.onSave(merged); } catch (e) {} }
+        } catch (err) {
+            // Revert on failure.
+            q.status = current;
+            renderQuestion(state);
+            refreshSummary(state);
+            refreshDots(state);
             showToast('error', err.message || 'Save failed');
         }
     }

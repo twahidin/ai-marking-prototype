@@ -1086,6 +1086,7 @@ async function openFeedbackModal(submissionId, studentName) {
             editable: true,
             assignmentId: FB_ASSIGNMENT_ID,
             submissionId: submissionId,
+            scoringMode: {{ assignment.scoring_mode|tojson }},
         });
     } catch (err) {
         document.getElementById('fbModalBody').innerHTML = '<p style="color:red;">Failed to load feedback.</p>';
