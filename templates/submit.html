@@ -407,17 +407,9 @@ function renderDraftsPanel(student, maxDrafts, showResults) {
 
 function reviewSubmission(subId) {
     if (!subId) return;
-    fetch('/submit/' + ASSIGNMENT_ID + '/review/' + subId)
-        .then(function(res) { return res.json(); })
-        .then(function(data) {
-            if (data.success && data.result) {
-                renderResults(data.result);
-                showSection('resultsSection');
-            } else {
-                alert(data.error || 'Could not load results.');
-            }
-        })
-        .catch(function() { alert('Connection error.'); });
+    // Tiered feedback lives on its own page — navigate there instead of
+    // rendering the legacy inline view.
+    window.location.href = '/feedback/' + ASSIGNMENT_ID + '/' + subId;
 }
 
 function selectStudent(sid) {
@@ -433,20 +425,11 @@ function selectStudent(sid) {
     }
 }
 
-async function reviewPrevious() {
+function reviewPrevious() {
     var banner = document.getElementById('reviewBanner');
     var subId = banner.dataset.submissionId;
     if (!subId) return;
-    try {
-        var res = await fetch('/submit/' + ASSIGNMENT_ID + '/review/' + subId);
-        var data = await res.json();
-        if (data.success && data.result) {
-            renderResults(data.result);
-            showSection('resultsSection');
-        } else {
-            alert(data.error || 'Could not load results.');
-        }
-    } catch (e) { alert('Connection error.'); }
+    window.location.href = '/feedback/' + ASSIGNMENT_ID + '/' + subId;
 }
 
 /* --- State 2: Upload & submit --- */
@@ -709,8 +692,12 @@ async function pollMarking() {
             showSection('errorSection');
             return;
         }
-        if (showResults && data.result && !data.result.error) { renderResults(data.result); showSection('resultsSection'); }
-        else { showSection('confirmSection'); }
+        if (showResults && data.result && !data.result.error && submissionId) {
+            // Redirect to the tiered "Unpack My Feedback" page instead of the old inline view.
+            window.location.href = '/feedback/' + ASSIGNMENT_ID + '/' + submissionId;
+            return;
+        }
+        showSection('confirmSection');
     } catch (err) { setTimeout(pollMarking, 3000); }
 }
 

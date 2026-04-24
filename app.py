@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for, Response, abort, make_response
 import io
 
-from ai_marking import mark_script, get_available_providers, PROVIDERS, generate_exemplar_analysis
+from ai_marking import mark_script, get_available_providers, PROVIDERS, generate_exemplar_analysis, explain_criterion, evaluate_correction
 from pdf_generator import generate_report_pdf, generate_overview_pdf
 from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig
 
@@ -3682,6 +3682,17 @@ def teacher_assignment_detail(assignment_id):
                 correct = sum(1 for q in questions if q.get('status') == 'correct')
                 score = f"{correct}/{len(questions)}"
 
+        # Tiered-feedback engagement status (student has three visible states):
+        #   not_opened      — no submission yet, or student hasn't opened their feedback page
+        #   opened          — student has opened the feedback page at least once
+        #   corrections_done — student has also submitted at least one "Now You Try" correction
+        if sub and sub.correction_submitted_at:
+            feedback_status = 'corrections_done'
+        elif sub and sub.feedback_opened_at:
+            feedback_status = 'opened'
+        else:
+            feedback_status = 'not_opened'
+
         student_data.append({
             'student_id': s.id,
             'index': s.index_number,
@@ -3691,6 +3702,9 @@ def teacher_assignment_detail(assignment_id):
             'submitted_at': sub.submitted_at.strftime('%d %b %H:%M') if sub and sub.submitted_at else None,
             'student_amended': sub.student_amended if sub else False,
             'submission_id': sub.id if sub else None,
+            'feedback_status': feedback_status,
+            'feedback_opened_at': sub.feedback_opened_at.strftime('%d %b %H:%M') if sub and sub.feedback_opened_at else None,
+            'correction_submitted_at': sub.correction_submitted_at.strftime('%d %b %H:%M') if sub and sub.correction_submitted_at else None,
         })
 
     # Compute which providers have a usable key for this assignment (assignment → dept → env).
@@ -4427,6 +4441,192 @@ def student_review_submission(assignment_id, submission_id):
 
     result = sub.get_result()
     return jsonify({'success': True, 'result': result})
+
+
+# ---------------------------------------------------------------------------
+# Tiered feedback ("Unpack My Feedback" + "Now You Try") — student-facing
+# ---------------------------------------------------------------------------
+
+def _student_feedback_auth(assignment_id, submission_id):
+    """Shared auth guard for student-facing feedback routes.
+
+    Returns (assignment, submission, None) on success, or (None, None, error_response).
+    Accepts either the student's classroom-code session OR a logged-in teacher
+    (so teachers can preview and debug). Requires asn.show_results.
+    """
+    is_student = session.get(f'student_auth_{assignment_id}')
+    is_teacher = _is_authenticated()
+    if not is_student and not is_teacher:
+        return None, None, (jsonify({'success': False, 'error': 'Not authenticated'}), 401)
+    asn = Assignment.query.get_or_404(assignment_id)
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id or sub.status != 'done':
+        return None, None, (jsonify({'success': False, 'error': 'Not found'}), 404)
+    if not asn.show_results and not is_teacher:
+        return None, None, (jsonify({'success': False, 'error': 'Results are not available for this assignment'}), 403)
+    return asn, sub, None
+
+
+def _tiered_bucket(result):
+    """Ensure result['_tiered'] exists and return it (mutating result)."""
+    if '_tiered' not in result or not isinstance(result.get('_tiered'), dict):
+        result['_tiered'] = {}
+    return result['_tiered']
+
+
+@app.route('/feedback/<assignment_id>/<int:submission_id>')
+def student_feedback_page(assignment_id, submission_id):
+    """Student-facing tiered feedback page ("Unpack My Feedback")."""
+    asn, sub, err = _student_feedback_auth(assignment_id, submission_id)
+    if err:
+        return err
+
+    is_teacher = _is_authenticated()
+
+    # First-open stamp — only for genuine student visits, not teacher previews.
+    if sub.feedback_opened_at is None and not is_teacher:
+        try:
+            sub.feedback_opened_at = datetime.now(timezone.utc)
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f"Could not stamp feedback_opened_at on submission {submission_id}: {e}")
+
+    student = Student.query.get(sub.student_id)
+    result = sub.get_result() or {}
+
+    # Score summary (marks if present, correct-count otherwise).
+    questions = result.get('questions') or []
+    has_marks = any(q.get('marks_awarded') is not None for q in questions)
+    if has_marks:
+        ta = sum((q.get('marks_awarded') or 0) for q in questions)
+        tp = sum((q.get('marks_total') or 0) for q in questions)
+        score_pill = f"{ta} / {tp}"
+    else:
+        correct = sum(1 for q in questions if q.get('status') == 'correct')
+        score_pill = f"{correct} / {len(questions)}"
+
+    return render_template(
+        'feedback_view.html',
+        assignment=asn,
+        submission=sub,
+        student=student,
+        result=result,
+        score_pill=score_pill,
+        download_url=url_for('download_submission_pdf', assignment_id=assignment_id, submission_id=submission_id),
+    )
+
+
+@app.route('/feedback/<assignment_id>/<int:submission_id>/explain', methods=['POST'])
+def student_feedback_explain(assignment_id, submission_id):
+    """Layer 3 on-demand: "The idea" + "Next time" for one criterion. Cached on result_json."""
+    asn, sub, err = _student_feedback_auth(assignment_id, submission_id)
+    if err:
+        return err
+
+    payload = request.get_json(silent=True) or {}
+    qnum = payload.get('question_num')
+    if qnum is None:
+        return jsonify({'success': False, 'error': 'question_num required'}), 400
+    qkey = str(qnum)
+
+    result = sub.get_result() or {}
+    tiered = _tiered_bucket(result)
+    cache = tiered.setdefault('layer3_cache', {})
+
+    if qkey in cache and isinstance(cache[qkey], dict):
+        return jsonify({'success': True, 'cached': True, **cache[qkey]})
+
+    # Find the target question.
+    q = next((x for x in (result.get('questions') or []) if str(x.get('question_num')) == qkey), None)
+    if not q:
+        return jsonify({'success': False, 'error': 'Question not found'}), 404
+
+    criterion_name = q.get('criterion_name') or f"Question {q.get('question_num') or qkey}"
+    try:
+        explanation = explain_criterion(
+            provider=asn.provider,
+            model=asn.model,
+            session_keys=_resolve_api_keys(asn),
+            subject=asn.subject or '',
+            criterion_name=criterion_name,
+            student_answer=q.get('student_answer') or '',
+            expected_answer=q.get('correct_answer') or '',
+            feedback_sentence=q.get('feedback') or '',
+        )
+    except Exception as e:
+        logger.error(f"Layer 3 explain failed for sub {submission_id} q {qkey}: {e}")
+        return jsonify({'success': False, 'error': f'Could not generate explanation: {e}'}), 502
+
+    cache[qkey] = explanation
+    sub.set_result(result)
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.warning(f"Could not cache layer3 for sub {submission_id}: {e}")
+
+    return jsonify({'success': True, 'cached': False, **explanation})
+
+
+@app.route('/feedback/<assignment_id>/<int:submission_id>/correction', methods=['POST'])
+def student_feedback_correction(assignment_id, submission_id):
+    """Evaluate a "Now You Try" correction attempt. Stores the attempt."""
+    asn, sub, err = _student_feedback_auth(assignment_id, submission_id)
+    if err:
+        return err
+
+    payload = request.get_json(silent=True) or {}
+    qnum = payload.get('question_num')
+    attempt_text = (payload.get('text') or '').strip()
+    if qnum is None or not attempt_text:
+        return jsonify({'success': False, 'error': 'question_num and text required'}), 400
+    qkey = str(qnum)
+    if len(attempt_text) > 2000:
+        attempt_text = attempt_text[:2000]
+
+    result = sub.get_result() or {}
+    q = next((x for x in (result.get('questions') or []) if str(x.get('question_num')) == qkey), None)
+    if not q:
+        return jsonify({'success': False, 'error': 'Question not found'}), 404
+
+    criterion_name = q.get('criterion_name') or f"Question {q.get('question_num') or qkey}"
+    try:
+        verdict = evaluate_correction(
+            provider=asn.provider,
+            model=asn.model,
+            session_keys=_resolve_api_keys(asn),
+            subject=asn.subject or '',
+            criterion_name=criterion_name,
+            expected_answer=q.get('correct_answer') or '',
+            feedback_sentence=q.get('feedback') or '',
+            attempt_text=attempt_text,
+        )
+    except Exception as e:
+        logger.error(f"Correction eval failed for sub {submission_id} q {qkey}: {e}")
+        return jsonify({'success': False, 'error': f'Could not evaluate: {e}'}), 502
+
+    # Store the attempt on the submission's tiered bucket.
+    tiered = _tiered_bucket(result)
+    attempts = tiered.setdefault('corrections', [])
+    attempts.append({
+        'question_num': qkey,
+        'text': attempt_text,
+        'verdict': verdict['verdict'],
+        'message': verdict['message'],
+        'submitted_at': datetime.now(timezone.utc).isoformat(),
+    })
+    sub.set_result(result)
+    # Stamp completion timestamp on first successful attempt.
+    if sub.correction_submitted_at is None:
+        sub.correction_submitted_at = datetime.now(timezone.utc)
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.warning(f"Could not persist correction for sub {submission_id}: {e}")
+
+    return jsonify({'success': True, **verdict})
 
 
 @app.route('/submit/<assignment_id>/upload', methods=['POST'])

@@ -462,8 +462,17 @@ HANDWRITING RULES:
 FORMATTING:
 - Use LaTeX in $ delimiters for math: $x^2 + 3x = 0$
 
+TIERED FEEDBACK FOR THE STUDENT — mandatory.
+
+- "well_done" (top level): one sentence naming ONE specific thing done well. No generic phrases like "good effort".
+- "main_gap" (top level): one sentence (≤30 words) naming the single most important gap.
+- For each criterion, the "feedback" field is diagnostic, MAX 2 sentences. First sentence: what was present/correct. Second sentence: what was missing/wrong and why marks were lost. Never use "well done", "good attempt", "you demonstrated", "it is important to note", "however", "overall".
+- For any criterion where marks_awarded < marks_total, include "correction_prompt": "[Criterion name]: You ... . In your own words, explain what you should have written and why." Concrete, not generic. Omit on full-marks criteria.
+
 Respond ONLY with valid JSON:
 {{
+    "well_done": "one specific thing done correctly (one sentence)",
+    "main_gap": "the single most important gap (one sentence, ≤30 words)",
     "questions": [
         {{
             "question_num": 1,
@@ -474,8 +483,9 @@ Respond ONLY with valid JSON:
             "status": "correct | partially_correct | incorrect",
             "marks_awarded": number,
             "marks_total": number,
-            "feedback": "detailed feedback referencing the specific rubric band",
-            "improvement": "specific actions to reach the next band"
+            "feedback": "diagnostic feedback — 1-2 sentences, no filler",
+            "improvement": "specific actions to reach the next band",
+            "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise: '[Criterion name]: You ... . In your own words, explain what you should have written and why.'"
         }}
     ],
     "errors": [
@@ -518,6 +528,30 @@ def _build_short_answer_prompt(subject, rubrics_pages, answer_key_pages, questio
     if rubrics_pages:
         rubrics_section = "\nGRADING RUBRICS have been provided — use them to evaluate subjective answers."
 
+    tiered_feedback_instructions = """
+
+TIERED FEEDBACK FOR THE STUDENT — mandatory, not optional.
+
+You MUST produce, in addition to the per-question fields below, a two-row "verdict" at the top of the JSON:
+
+  "well_done": one sentence naming ONE specific thing the student got right. No generic phrases like "good effort" or "you showed understanding". Point at the actual answer.
+  "main_gap": one sentence (≤ 30 words) naming the SINGLE most important gap, specific enough that the student knows exactly what to fix.
+
+For EACH question's "feedback" field, use this discipline:
+  - Maximum 2 sentences.
+  - First sentence: what was present or correct (if anything).
+  - Second sentence: what was missing or wrong and why marks were lost.
+  - No filler. No restating the criterion name.
+  - Never use: "well done", "good attempt", "you demonstrated", "it is important to note", "however", "overall".
+
+For any question where marks_awarded < marks_total, also include:
+  "correction_prompt": a one-line prompt in the form "[Question label]: You [specific thing that was missing]. In your own words, explain what you should have written and why."
+  Make the "[specific thing that was missing]" concrete — not generic.
+  Omit this field on questions that got full marks.
+
+Do not include "The idea" / "Next time" explanations here — those are generated on demand.
+"""
+
     if scoring_mode == 'marks':
         total_marks_str = total_marks or '100'
         scoring_instructions = f"""SCORING (numerical): Award marks for every question and sub-part.
@@ -555,8 +589,9 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "status": "correct | partially_correct | incorrect",
             "marks_awarded": number,
             "marks_total": number,
-            "feedback": "specific constructive feedback",
-            "improvement": "recommended action for improvement"
+            "feedback": "diagnostic feedback — 1 to 2 sentences, no filler",
+            "improvement": "recommended action for improvement",
+            "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise: '[Question label]: You ... . In your own words, explain what you should have written and why.'"
         }}"""
     else:
         scoring_instructions = """SCORING: For each question, assign one of these statuses:
@@ -569,8 +604,9 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "student_answer": "transcribed answer from the script",
             "correct_answer": "answer from the answer key",
             "status": "correct | partially_correct | incorrect",
-            "feedback": "specific constructive feedback",
-            "improvement": "recommended action for improvement"
+            "feedback": "diagnostic feedback — 1 to 2 sentences, no filler",
+            "improvement": "recommended action for improvement",
+            "correction_prompt": "OMIT if status == 'correct'; otherwise: '[Question label]: You ... . In your own words, explain what you should have written and why.'"
         }}"""
 
     system_prompt = f"""You are an experienced teacher marking a student's assignment script.
@@ -587,7 +623,7 @@ Your task:
 4. If RUBRICS are provided, use them for evaluation criteria
 
 {scoring_instructions}
-
+{tiered_feedback_instructions}
 HANDWRITING RULES:
 - IGNORE crossed-out or struck-through text — treat as deleted
 - A caret (^) or insertion mark means the student wants to INSERT text at that point
@@ -599,6 +635,8 @@ FORMATTING:
 
 Respond ONLY with valid JSON:
 {{
+    "well_done": "one specific thing done correctly (one sentence)",
+    "main_gap": "the single most important gap (one sentence, ≤30 words)",
     "questions": [
         {question_schema}
     ],
@@ -901,3 +939,125 @@ def generate_exemplar_analysis(provider, model, session_keys, subject, submissio
     if 'areas' not in parsed or not isinstance(parsed['areas'], list):
         raise ValueError("AI response missing 'areas' list")
     return parsed
+
+
+# ---------------------------------------------------------------------------
+# Tiered feedback helpers (student-facing)
+# ---------------------------------------------------------------------------
+
+def _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=400):
+    """Shared single-shot JSON-returning call used by Layer 3 explain and correction evaluation."""
+    import json as _json
+    if provider not in PROVIDERS:
+        raise ValueError(f"Unknown provider: {provider}")
+    api_key = _resolve_api_key(provider, session_keys)
+    if not api_key:
+        raise ValueError(f"No API key configured for provider: {provider}")
+
+    if provider == 'anthropic':
+        client = Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=[{'role': 'user', 'content': user_prompt}],
+        )
+        text = resp.content[0].text
+    else:
+        if not OPENAI_AVAILABLE:
+            raise RuntimeError("OpenAI SDK not installed")
+        if provider == 'qwen':
+            client = OpenAI(api_key=api_key, base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+        else:
+            client = OpenAI(api_key=api_key)
+        kwargs = {
+            'model': model,
+            'messages': [
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt},
+            ],
+        }
+        if provider == 'openai':
+            kwargs['max_completion_tokens'] = max_tokens
+        else:
+            kwargs['max_tokens'] = max_tokens
+        resp = client.chat.completions.create(**kwargs)
+        text = resp.choices[0].message.content
+
+    match = re.search(r'\{[\s\S]*\}', text)
+    if not match:
+        raise ValueError("AI response contained no JSON object")
+    return _json.loads(match.group())
+
+
+def explain_criterion(provider, model, session_keys, subject, criterion_name,
+                      student_answer, expected_answer, feedback_sentence=''):
+    """Generate Layer 3 'The idea' + 'Next time' for one criterion.
+
+    Returns: {"idea": str, "next_time": str}
+    """
+    system_prompt = (
+        "You help a student understand WHY an assessment criterion matters.\n\n"
+        "Return JSON with exactly two fields — and nothing else:\n"
+        '  "idea": ONE sentence. Explain the underlying concept or the examiner expectation '
+        'behind this criterion. Do NOT restate the mark scheme or the criterion name.\n'
+        '  "next_time": ONE sentence. A concrete self-check the student can use independently '
+        'next time. MUST start with "Next time:" and end with a specific action.\n\n'
+        "The two sentences combined must be ≤ 40 words. No fluff, no encouragement phrases, "
+        "no repetition of the criterion name."
+    )
+    user_prompt = (
+        f"Subject: {subject or 'General'}\n"
+        f"Criterion: {criterion_name}\n"
+        f"Student's answer (excerpt): {(student_answer or '')[:600]}\n"
+        f"Expected answer / band descriptor (excerpt): {(expected_answer or '')[:600]}\n"
+        f"Teacher's feedback on this criterion: {(feedback_sentence or '')[:400]}\n\n"
+        "Return the JSON now."
+    )
+    parsed = _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=300)
+    idea = (parsed.get('idea') or '').strip()
+    nxt = (parsed.get('next_time') or '').strip()
+    # Enforce "Next time:" prefix if AI forgot.
+    if nxt and not nxt.lower().startswith('next time'):
+        nxt = 'Next time: ' + nxt
+    return {'idea': idea, 'next_time': nxt}
+
+
+def evaluate_correction(provider, model, session_keys, subject, criterion_name,
+                        expected_answer, feedback_sentence, attempt_text):
+    """Evaluate a student's "Now You Try" correction attempt.
+
+    Returns: {"verdict": "good" | "not_quite", "message": "≤20-word comment"}
+    """
+    system_prompt = (
+        "You are evaluating a student's second attempt at answering a question they got wrong.\n\n"
+        "Return JSON with exactly two fields and nothing else:\n"
+        '  "verdict": "good" if the attempt captures the key idea they previously missed, '
+        'otherwise "not_quite".\n'
+        '  "message": A single sentence, ≤ 20 words.\n'
+        '    - If verdict is "good": start with "Good — that\'s the right idea." then one '
+        "sentence on what they got right.\n"
+        '    - If verdict is "not_quite": start with "Not quite — " then a one-sentence '
+        "redirect.\n\n"
+        "Be generous about phrasing; judge the underlying idea, not the wording. Never use "
+        '"however", "overall", or filler praise.'
+    )
+    user_prompt = (
+        f"Subject: {subject or 'General'}\n"
+        f"Criterion: {criterion_name}\n"
+        f"Expected answer / key point (excerpt): {(expected_answer or '')[:600]}\n"
+        f"Original teacher feedback on the student's first attempt: {(feedback_sentence or '')[:400]}\n"
+        f"Student's new attempt: {(attempt_text or '')[:800]}\n\n"
+        "Return the JSON now."
+    )
+    parsed = _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=200)
+    verdict = (parsed.get('verdict') or '').strip().lower()
+    message = (parsed.get('message') or '').strip()
+    if verdict not in ('good', 'not_quite'):
+        verdict = 'not_quite'
+    # Enforce the expected openings.
+    if verdict == 'good' and not message.lower().startswith('good'):
+        message = "Good — that's the right idea. " + message
+    if verdict == 'not_quite' and not message.lower().startswith('not quite'):
+        message = 'Not quite — ' + message
+    return {'verdict': verdict, 'message': message}

@@ -409,7 +409,7 @@
             <div class="table-wrap">
                 <table class="results-table">
                     <thead>
-                        <tr><th>Index</th><th>Name</th><th>Status</th><th>Score</th><th>Submitted</th><th>Actions</th></tr>
+                        <tr><th>Index</th><th>Name</th><th>Status</th><th>Score</th><th>Submitted</th><th title="Tiered feedback engagement">Feedback</th><th>Actions</th></tr>
                     </thead>
                     <tbody>
                         {% for s in students %}
@@ -428,6 +428,15 @@
                             </td>
                             <td>{{ s.score if s.score else '-' }}</td>
                             <td style="color:#888; font-size:13px;">{{ s.submitted_at if s.submitted_at else '-' }}</td>
+                            <td>
+                                {% if s.feedback_status == 'corrections_done' %}
+                                    <span class="badge badge-green" title="Opened {{ s.feedback_opened_at }} · First correction {{ s.correction_submitted_at }}">Corrections done</span>
+                                {% elif s.feedback_status == 'opened' %}
+                                    <span class="badge badge-blue" title="Opened {{ s.feedback_opened_at }}">Opened</span>
+                                {% else %}
+                                    <span class="badge badge-gray">Not opened</span>
+                                {% endif %}
+                            </td>
                             <td>
                                 {% if s.status == 'done' and s.submission_id %}
                                 <button class="upload-btn" type="button" onclick='openFeedbackModal({{ s.submission_id|tojson }}, {{ s.name|tojson }})'>View Feedback</button>

@@ -1,0 +1,363 @@
+{% extends "base.html" %}
+{% block title %}Your Feedback — {{ assignment.title or assignment.subject or 'Assignment' }} — {{ app_title }}{% endblock %}
+
+{% block head %}
+<style>
+    body { background: #f6f7fb; margin: 0; }
+    .fv-root { max-width: 820px; margin: 0 auto; padding: 24px 16px 80px; }
+
+    .fv-header { margin-bottom: 20px; }
+    .fv-student-name { font-size: 22px; font-weight: 700; color: #2D2D2D; margin-bottom: 4px; }
+    .fv-subject { font-size: 13px; color: #888; }
+    .fv-score-row { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+    .fv-score-pill {
+        display: inline-flex; align-items: center; padding: 10px 18px; border-radius: 999px;
+        background: #28a745; color: white; font-weight: 700; font-size: 16px; box-shadow: 0 2px 8px rgba(40,167,69,0.25);
+    }
+    .fv-score-label { font-size: 13px; color: #666; font-weight: 500; }
+
+    /* Layer 1 — verdict box */
+    .fv-verdict {
+        background: #f2f2f5; border-radius: 14px; padding: 18px 20px;
+        display: flex; flex-direction: column; gap: 12px; margin: 20px 0 10px;
+    }
+    .fv-verdict-row { display: flex; align-items: flex-start; gap: 12px; font-size: 15px; line-height: 1.55; color: #2D2D2D; }
+    .fv-verdict-icon {
+        flex: 0 0 26px; width: 26px; height: 26px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        font-weight: 700; font-size: 14px; line-height: 1; color: white; margin-top: 1px;
+    }
+    .fv-verdict-icon.good { background: #28a745; }
+    .fv-verdict-icon.gap { background: #dc3545; }
+
+    .fv-download-line { margin-top: 10px; margin-bottom: 26px; }
+    .fv-download-link { font-size: 12px; color: #888; text-decoration: underline; }
+    .fv-download-link:hover { color: #667eea; }
+
+    .fv-show-breakdown {
+        display: inline-flex; align-items: center; gap: 8px; padding: 12px 22px;
+        background: #667eea; color: white; border: none; border-radius: 10px;
+        font-size: 15px; font-weight: 600; cursor: pointer; box-shadow: 0 2px 8px rgba(102,126,234,0.3);
+    }
+    .fv-show-breakdown:hover { background: #5a6fd6; }
+    .fv-show-breakdown .chev { transition: transform 0.2s; display: inline-block; }
+    .fv-show-breakdown.open .chev { transform: rotate(180deg); }
+
+    /* Layer 2 — criterion cards */
+    .fv-layer2 { margin-top: 20px; }
+    .fv-layer2.hidden { display: none; }
+    .fv-crit-card {
+        background: white; border: 1px solid #e4e6ee; border-radius: 12px;
+        margin-bottom: 10px; overflow: hidden; transition: border-color 0.15s;
+    }
+    .fv-crit-card.expanded { border-color: #c5cbe8; }
+    .fv-crit-head {
+        padding: 14px 16px; display: flex; align-items: center; gap: 12px;
+        cursor: pointer; user-select: none;
+    }
+    .fv-crit-head:hover { background: #fafbff; }
+    .fv-crit-name { font-size: 15px; font-weight: 600; color: #2D2D2D; flex: 1; }
+    .fv-crit-score { font-size: 13px; color: #555; font-weight: 600; white-space: nowrap; }
+    .fv-crit-badge {
+        font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px;
+        text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap;
+    }
+    .fv-crit-badge.full { background: #e7f5ec; color: #1e7a36; }
+    .fv-crit-badge.partial { background: #fff4d6; color: #a36a00; }
+    .fv-crit-badge.needs { background: #fce6e8; color: #9e1f2a; }
+    .fv-crit-chev { color: #9aa0b3; font-size: 14px; transition: transform 0.2s; }
+    .fv-crit-card.expanded .fv-crit-chev { transform: rotate(180deg); }
+
+    .fv-crit-body { display: none; padding: 0 16px 14px 16px; }
+    .fv-crit-card.expanded .fv-crit-body { display: block; }
+    .fv-crit-feedback { font-size: 14px; line-height: 1.55; color: #333; margin: 4px 0 12px; white-space: pre-wrap; }
+
+    .fv-why-btn {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 6px 12px; background: white; color: #6c4bd3;
+        border: 1px solid #d8ccfa; border-radius: 8px; font-size: 12px;
+        font-weight: 600; cursor: pointer;
+    }
+    .fv-why-btn:hover { background: #f5efff; }
+    .fv-why-btn:disabled { opacity: 0.6; cursor: wait; }
+
+    /* Layer 3 — left purple stripe */
+    .fv-layer3 { display: none; margin-top: 12px; padding: 10px 14px; border-left: 2px solid #6c4bd3; background: transparent; }
+    .fv-layer3.visible { display: block; }
+    .fv-l3-row { font-size: 13.5px; line-height: 1.55; color: #333; margin: 2px 0; }
+    .fv-l3-label { font-weight: 700; color: #6c4bd3; margin-right: 6px; }
+
+    /* "Now You Try" corrections section */
+    .fv-corrections { margin-top: 30px; }
+    .fv-corrections-title {
+        font-size: 16px; font-weight: 700; color: #2D2D2D; margin-bottom: 4px;
+    }
+    .fv-corrections-sub { font-size: 13px; color: #888; margin-bottom: 16px; }
+    .fv-corrections.hidden { display: none; }
+
+    .fv-correction-card {
+        background: white; border: 1px solid #e4e6ee; border-radius: 12px;
+        padding: 14px 16px; margin-bottom: 12px;
+    }
+    .fv-correction-prompt { font-size: 14px; color: #333; line-height: 1.5; margin-bottom: 10px; }
+    .fv-correction-textarea {
+        width: 100%; min-height: 88px; padding: 10px 12px; font-size: 14px;
+        font-family: inherit; border: 1px solid #d0d0d0; border-radius: 8px;
+        resize: vertical; box-sizing: border-box;
+    }
+    .fv-correction-textarea:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 2px rgba(102,126,234,0.2); }
+    .fv-correction-submit {
+        margin-top: 10px; padding: 8px 16px; background: #667eea; color: white;
+        border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .fv-correction-submit:hover { background: #5a6fd6; }
+    .fv-correction-submit:disabled { background: #bbb; cursor: not-allowed; }
+
+    .fv-correction-result {
+        margin-top: 12px; padding: 10px 12px; border-radius: 8px; font-size: 13.5px;
+        line-height: 1.5;
+    }
+    .fv-correction-result.good { background: #e7f5ec; color: #1e7a36; border: 1px solid #b5dcc3; }
+    .fv-correction-result.not_quite { background: #fff4d6; color: #a36a00; border: 1px solid #ecd28c; }
+    .fv-correction-result.error { background: #fce6e8; color: #9e1f2a; border: 1px solid #e8b5b8; }
+
+    @media (max-width: 600px) {
+        .fv-root { padding: 16px 12px 60px; }
+        .fv-student-name { font-size: 19px; }
+        .fv-crit-head { padding: 12px 14px; gap: 8px; }
+        .fv-crit-badge { font-size: 10px; padding: 3px 8px; }
+    }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="fv-root">
+    <div class="fv-header">
+        <div class="fv-student-name">{{ student.name if student else 'Student' }}</div>
+        <div class="fv-subject">{{ assignment.title or assignment.subject or 'Assignment' }}{% if assignment.subject and assignment.title %} · {{ assignment.subject }}{% endif %}</div>
+        <div class="fv-score-row">
+            <span class="fv-score-pill">{{ score_pill }}</span>
+            <span class="fv-score-label">Your score</span>
+        </div>
+    </div>
+
+    {% set well_done = result.get('well_done') %}
+    {% set main_gap = result.get('main_gap') %}
+    {% if well_done or main_gap %}
+    <div class="fv-verdict">
+        {% if well_done %}
+        <div class="fv-verdict-row">
+            <span class="fv-verdict-icon good">&#10003;</span>
+            <div>{{ well_done }}</div>
+        </div>
+        {% endif %}
+        {% if main_gap %}
+        <div class="fv-verdict-row">
+            <span class="fv-verdict-icon gap">&#8593;</span>
+            <div>{{ main_gap }}</div>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="fv-download-line">
+        <a href="{{ download_url }}" class="fv-download-link" target="_blank" rel="noopener">Download full PDF</a>
+    </div>
+
+    <button type="button" class="fv-show-breakdown" id="fvShowBreakdownBtn">
+        <span id="fvShowBreakdownLabel">Show breakdown</span>
+        <span class="chev">&#9662;</span>
+    </button>
+
+    <div class="fv-layer2 hidden" id="fvLayer2">
+        {% for q in result.get('questions', []) %}
+        {% set qnum = q.get('question_num') %}
+        {% set cname = q.get('criterion_name') or ('Question ' ~ (qnum if qnum is not none else loop.index)) %}
+        {% set ma = q.get('marks_awarded') %}
+        {% set mt = q.get('marks_total') %}
+        {% set has_marks = ma is not none and mt is not none %}
+        {% if has_marks %}
+            {% if ma >= mt and mt > 0 %}
+                {% set badge_cls = 'full' %}
+                {% set badge_text = 'Full marks' %}
+            {% elif ma > 0 %}
+                {% set badge_cls = 'partial' %}
+                {% set badge_text = 'Partial' %}
+            {% else %}
+                {% set badge_cls = 'needs' %}
+                {% set badge_text = 'Needs work' %}
+            {% endif %}
+        {% else %}
+            {% set status = q.get('status') %}
+            {% if status == 'correct' %}
+                {% set badge_cls = 'full' %}
+                {% set badge_text = 'Correct' %}
+            {% elif status == 'partially_correct' %}
+                {% set badge_cls = 'partial' %}
+                {% set badge_text = 'Partial' %}
+            {% else %}
+                {% set badge_cls = 'needs' %}
+                {% set badge_text = 'Needs work' %}
+            {% endif %}
+        {% endif %}
+        <div class="fv-crit-card" data-qnum="{{ qnum }}" data-idx="{{ loop.index0 }}">
+            <div class="fv-crit-head" onclick="fvToggleCrit(this.parentElement)">
+                <span class="fv-crit-name">{{ cname }}</span>
+                {% if has_marks %}<span class="fv-crit-score">{{ ma }} / {{ mt }}</span>{% endif %}
+                <span class="fv-crit-badge {{ badge_cls }}">{{ badge_text }}</span>
+                <span class="fv-crit-chev">&#9662;</span>
+            </div>
+            <div class="fv-crit-body">
+                <div class="fv-crit-feedback">{{ q.get('feedback') or '' }}</div>
+                <button type="button" class="fv-why-btn" onclick="fvExplain(event, '{{ qnum }}', this)">? Why does this matter?</button>
+                <div class="fv-layer3" id="fvL3-{{ loop.index0 }}" data-filled="0">
+                    <div class="fv-l3-row"><span class="fv-l3-label">The idea</span><span class="fv-l3-idea"></span></div>
+                    <div class="fv-l3-row"><span class="fv-l3-label">Next time</span><span class="fv-l3-next"></span></div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="fv-corrections hidden" id="fvCorrections">
+        <div class="fv-corrections-title">Work on your corrections</div>
+        <div class="fv-corrections-sub">For the criteria where you didn't get full marks, try explaining it in your own words.</div>
+        {% set tiered = result.get('_tiered') or {} %}
+        {% set prior_attempts = tiered.get('corrections') or [] %}
+        {% for q in result.get('questions', []) %}
+            {% set qnum = q.get('question_num') %}
+            {% set cname = q.get('criterion_name') or ('Question ' ~ (qnum if qnum is not none else loop.index)) %}
+            {% set ma = q.get('marks_awarded') %}
+            {% set mt = q.get('marks_total') %}
+            {% set needs_correction = (ma is not none and mt is not none and mt > 0 and ma < mt) or (q.get('status') and q.get('status') != 'correct') %}
+            {% if needs_correction %}
+                {% set cprompt = q.get('correction_prompt') or (cname ~ ': In your own words, explain what you should have written and why.') %}
+                {% set last_attempt = (prior_attempts | selectattr('question_num', 'equalto', qnum|string) | list | last) if prior_attempts else None %}
+                <div class="fv-correction-card" data-qnum="{{ qnum }}">
+                    <div class="fv-correction-prompt">{{ cprompt }}</div>
+                    <textarea class="fv-correction-textarea" placeholder="Type your correction here…">{{ last_attempt.text if last_attempt else '' }}</textarea>
+                    <button type="button" class="fv-correction-submit" onclick="fvSubmitCorrection(this, '{{ qnum }}')">Submit</button>
+                    <div class="fv-correction-result{% if last_attempt %} {{ last_attempt.verdict }}{% endif %}" style="{% if not last_attempt %}display:none;{% endif %}">{{ last_attempt.message if last_attempt else '' }}</div>
+                </div>
+            {% endif %}
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var FV_ASSIGNMENT_ID = {{ assignment.id | tojson }};
+var FV_SUBMISSION_ID = {{ submission.id | tojson }};
+
+function fvToggleCrit(card) {
+    card.classList.toggle('expanded');
+}
+
+function fvShowBreakdown() {
+    var btn = document.getElementById('fvShowBreakdownBtn');
+    var layer2 = document.getElementById('fvLayer2');
+    var corr = document.getElementById('fvCorrections');
+    var label = document.getElementById('fvShowBreakdownLabel');
+    var isOpen = !layer2.classList.contains('hidden');
+    if (isOpen) {
+        layer2.classList.add('hidden');
+        corr.classList.add('hidden');
+        btn.classList.remove('open');
+        label.textContent = 'Show breakdown';
+    } else {
+        layer2.classList.remove('hidden');
+        corr.classList.remove('hidden');
+        btn.classList.add('open');
+        label.textContent = 'Hide breakdown';
+    }
+}
+
+document.getElementById('fvShowBreakdownBtn').addEventListener('click', fvShowBreakdown);
+
+async function fvExplain(e, qnum, btn) {
+    e.stopPropagation();
+    var card = btn.closest('.fv-crit-card');
+    var idx = card ? card.dataset.idx : null;
+    var box = document.getElementById('fvL3-' + idx);
+    if (!box) return;
+    if (box.dataset.filled === '1') {
+        box.classList.toggle('visible');
+        return;
+    }
+    btn.disabled = true;
+    var originalText = btn.textContent;
+    btn.textContent = '…';
+    try {
+        var res = await fetch('/feedback/' + FV_ASSIGNMENT_ID + '/' + FV_SUBMISSION_ID + '/explain', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question_num: qnum }),
+        });
+        var data = await res.json();
+        if (!data.success) {
+            box.querySelector('.fv-l3-idea').textContent = '';
+            box.querySelector('.fv-l3-next').textContent = data.error || 'Could not load.';
+            box.classList.add('visible');
+            box.dataset.filled = '1';
+            btn.textContent = 'Try again';
+            btn.disabled = false;
+            return;
+        }
+        box.querySelector('.fv-l3-idea').textContent = data.idea || '';
+        box.querySelector('.fv-l3-next').textContent = data.next_time || '';
+        box.classList.add('visible');
+        box.dataset.filled = '1';
+        btn.textContent = originalText;
+        btn.disabled = false;
+    } catch (err) {
+        btn.textContent = 'Try again';
+        btn.disabled = false;
+    }
+}
+
+async function fvSubmitCorrection(btn, qnum) {
+    var card = btn.closest('.fv-correction-card');
+    if (!card) return;
+    var ta = card.querySelector('.fv-correction-textarea');
+    var resBox = card.querySelector('.fv-correction-result');
+    var text = (ta.value || '').trim();
+    if (!text) {
+        resBox.className = 'fv-correction-result error';
+        resBox.style.display = 'block';
+        resBox.textContent = 'Please write your correction first.';
+        return;
+    }
+    btn.disabled = true;
+    var orig = btn.textContent;
+    btn.textContent = 'Checking…';
+    try {
+        var res = await fetch('/feedback/' + FV_ASSIGNMENT_ID + '/' + FV_SUBMISSION_ID + '/correction', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question_num: qnum, text: text }),
+        });
+        var data = await res.json();
+        if (!data.success) {
+            resBox.className = 'fv-correction-result error';
+            resBox.style.display = 'block';
+            resBox.textContent = data.error || 'Could not evaluate.';
+            btn.disabled = false;
+            btn.textContent = orig;
+            return;
+        }
+        resBox.className = 'fv-correction-result ' + (data.verdict === 'good' ? 'good' : 'not_quite');
+        resBox.style.display = 'block';
+        resBox.textContent = data.message || '';
+        btn.disabled = false;
+        btn.textContent = orig;
+    } catch (err) {
+        resBox.className = 'fv-correction-result error';
+        resBox.style.display = 'block';
+        resBox.textContent = 'Network error. Please try again.';
+        btn.disabled = false;
+        btn.textContent = orig;
+    }
+}
+</script>
+{% endblock %}

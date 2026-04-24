@@ -71,6 +71,14 @@ def _migrate_add_columns(app):
                 db.session.execute(text('UPDATE submissions SET is_final = TRUE WHERE is_final IS NULL'))
                 db.session.commit()
                 logger.info('Added is_final column to submissions table and backfilled defaults')
+            if 'feedback_opened_at' not in columns:
+                db.session.execute(text('ALTER TABLE submissions ADD COLUMN feedback_opened_at TIMESTAMP'))
+                db.session.commit()
+                logger.info('Added feedback_opened_at column to submissions table')
+            if 'correction_submitted_at' not in columns:
+                db.session.execute(text('ALTER TABLE submissions ADD COLUMN correction_submitted_at TIMESTAMP'))
+                db.session.commit()
+                logger.info('Added correction_submitted_at column to submissions table')
         if 'students' in inspector.get_table_names():
             columns = [c['name'] for c in inspector.get_columns('students')]
             if 'class_id' not in columns:
@@ -318,6 +326,8 @@ class Submission(db.Model):
     is_final = db.Column(db.Boolean, default=True, nullable=False, index=True)
     submitted_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     marked_at = db.Column(db.DateTime)
+    feedback_opened_at = db.Column(db.DateTime)  # first time the student opened the tiered feedback page
+    correction_submitted_at = db.Column(db.DateTime)  # first time the student submitted a "Now You Try" correction
 
     assignment = db.relationship('Assignment', backref=db.backref('submissions', cascade='all, delete-orphan'))
 
