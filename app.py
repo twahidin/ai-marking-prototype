@@ -794,7 +794,7 @@ def _demo_mark():
         return jsonify({'success': False, 'error': 'Invalid model for demo mode'}), 400
 
     subject = request.form.get('subject', '')
-    scoring_mode = request.form.get('scoring_mode', 'status')
+    scoring_mode = request.form.get('scoring_mode', 'marks')
     total_marks = request.form.get('total_marks', '')
     review_instructions = request.form.get('review_instructions', '')
     marking_instructions = request.form.get('marking_instructions', '')
@@ -3489,7 +3489,7 @@ def teacher_create():
         title=request.form.get('title', ''),
         subject=request.form.get('subject', ''),
         assign_type=assign_type,
-        scoring_mode=request.form.get('scoring_mode', 'status'),
+        scoring_mode=request.form.get('scoring_mode', 'marks'),
         total_marks=request.form.get('total_marks', ''),
         provider=provider,
         model=request.form.get('model', ''),

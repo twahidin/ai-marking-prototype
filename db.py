@@ -210,7 +210,7 @@ class Assignment(db.Model):
     title = db.Column(db.String(300), default='')
     subject = db.Column(db.String(200), default='')
     assign_type = db.Column(db.String(20), default='short_answer')
-    scoring_mode = db.Column(db.String(20), default='status')
+    scoring_mode = db.Column(db.String(20), default='marks')
     total_marks = db.Column(db.String(20), default='')
     provider = db.Column(db.String(20), default='anthropic')
     model = db.Column(db.String(100), default='')
@@ -273,7 +273,7 @@ class AssignmentBank(db.Model):
     level = db.Column(db.String(20), default='')  # Sec 1, Sec 2, ... Sec 5
     tags = db.Column(db.Text, default='')  # comma-separated hashtags
     assign_type = db.Column(db.String(20), default='short_answer')
-    scoring_mode = db.Column(db.String(20), default='status')
+    scoring_mode = db.Column(db.String(20), default='marks')
     total_marks = db.Column(db.String(20), default='')
     review_instructions = db.Column(db.Text, default='')
     marking_instructions = db.Column(db.Text, default='')
