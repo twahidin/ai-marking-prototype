@@ -293,8 +293,8 @@ def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
     has_marks = any(q.get('marks_awarded') is not None for q in questions)
 
     if has_marks:
-        total_awarded = sum(q.get('marks_awarded', 0) for q in questions)
-        total_possible = sum(q.get('marks_total', 0) for q in questions)
+        total_awarded = sum((q.get('marks_awarded') or 0) for q in questions)
+        total_possible = sum((q.get('marks_total') or 0) for q in questions)
         pct = round(total_awarded / total_possible * 100) if total_possible > 0 else 0
 
         summary_data = [[
@@ -360,7 +360,8 @@ def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
         # Question header with status (and marks if available)
         marks_text = ''
         if q.get('marks_awarded') is not None:
-            marks_text = f" ({q['marks_awarded']}/{q.get('marks_total', '?')})"
+            mt_val = q.get('marks_total')
+            marks_text = f" ({q['marks_awarded']}/{mt_val if mt_val is not None else '?'})"
         # Use criterion_name if available (rubrics mode)
         criterion_name = q.get('criterion_name', '')
         band_info = q.get('band', '')
@@ -543,8 +544,8 @@ def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Sy
         questions = sr['result'].get('questions', [])
         if any(q.get('marks_awarded') is not None for q in questions):
             has_marks = True
-            ta = sum(q.get('marks_awarded', 0) for q in questions)
-            tp = sum(q.get('marks_total', 0) for q in questions)
+            ta = sum((q.get('marks_awarded') or 0) for q in questions)
+            tp = sum((q.get('marks_total') or 0) for q in questions)
             pct = round(ta / tp * 100, 1) if tp > 0 else 0
             scores.append({'name': sr.get('name', ''), 'index': sr.get('index', ''),
                            'awarded': ta, 'possible': tp, 'pct': pct})
@@ -653,8 +654,8 @@ def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Sy
             else:
                 qs['incorrect'] += 1
             if q.get('marks_awarded') is not None:
-                qs['marks_sum'] += q.get('marks_awarded', 0)
-                qs['marks_max'] = max(qs['marks_max'], q.get('marks_total', 0))
+                qs['marks_sum'] += (q.get('marks_awarded') or 0)
+                qs['marks_max'] = max(qs['marks_max'], (q.get('marks_total') or 0))
 
     if question_stats:
         # Sort by question number

@@ -1583,8 +1583,8 @@ def department_insights_data():
         has_marks = any(q.get('marks_awarded') is not None for q in questions)
 
         if has_marks:
-            total_a = sum(q.get('marks_awarded', 0) for q in questions)
-            total_p = sum(q.get('marks_total', 0) for q in questions)
+            total_a = sum((q.get('marks_awarded') or 0) for q in questions)
+            total_p = sum((q.get('marks_total') or 0) for q in questions)
             pct = (total_a / total_p * 100) if total_p > 0 else 0
         else:
             correct = sum(1 for q in questions if q.get('status') == 'correct')
@@ -1596,7 +1596,7 @@ def department_insights_data():
             qnum = str(q.get('question_number', i + 1))
             question_stats.setdefault(qnum, {'correct': 0, 'total': 0})
             question_stats[qnum]['total'] += 1
-            if q.get('status') == 'correct' or (has_marks and q.get('marks_awarded', 0) == q.get('marks_total', 1)):
+            if q.get('status') == 'correct' or (has_marks and (q.get('marks_awarded') or 0) == (q.get('marks_total') or 1)):
                 question_stats[qnum]['correct'] += 1
 
     comparison = {name: round(sum(scores) / len(scores), 1)
@@ -1660,7 +1660,7 @@ def department_item_analysis():
                 q_stats[qnum]['total'] += 1
                 has_marks = q.get('marks_awarded') is not None
                 if has_marks:
-                    if q.get('marks_awarded', 0) == q.get('marks_total', 1):
+                    if (q.get('marks_awarded') or 0) == (q.get('marks_total') or 1):
                         q_stats[qnum]['correct'] += 1
                 elif q.get('status') == 'correct':
                     q_stats[qnum]['correct'] += 1
@@ -1784,8 +1784,8 @@ def department_analyze():
         has_marks = any(q.get('marks_awarded') is not None for q in questions)
 
         if has_marks:
-            total_a = sum(q.get('marks_awarded', 0) for q in questions)
-            total_p = sum(q.get('marks_total', 0) for q in questions)
+            total_a = sum((q.get('marks_awarded') or 0) for q in questions)
+            total_p = sum((q.get('marks_total') or 0) for q in questions)
             pct = (total_a / total_p * 100) if total_p > 0 else 0
         else:
             correct = sum(1 for q in questions if q.get('status') == 'correct')
@@ -1798,7 +1798,7 @@ def department_analyze():
             qnum = str(q.get('question_number', i + 1))
             question_stats.setdefault(qnum, {'correct': 0, 'total': 0})
             question_stats[qnum]['total'] += 1
-            if q.get('status') == 'correct' or (has_marks and q.get('marks_awarded', 0) == q.get('marks_total', 1)):
+            if q.get('status') == 'correct' or (has_marks and (q.get('marks_awarded') or 0) == (q.get('marks_total') or 1)):
                 question_stats[qnum]['correct'] += 1
 
     if not student_scores:
@@ -1962,8 +1962,8 @@ def _build_class_performance_data(assignment_id):
         for i, q in enumerate(questions):
             qnum = str(q.get('question_number', q.get('question_num', i + 1)))
             if has_marks:
-                awarded = q.get('marks_awarded', 0)
-                possible = q.get('marks_total', 0)
+                awarded = (q.get('marks_awarded') or 0)
+                possible = (q.get('marks_total') or 0)
                 ratio = (awarded / possible) if possible > 0 else 0
                 total_awarded += awarded
                 total_possible += possible
@@ -2558,8 +2558,8 @@ def department_export_csv():
         has_marks = any(q.get('marks_awarded') is not None for q in questions)
 
         if has_marks:
-            ta = sum(q.get('marks_awarded', 0) for q in questions)
-            tp = sum(q.get('marks_total', 0) for q in questions)
+            ta = sum((q.get('marks_awarded') or 0) for q in questions)
+            tp = sum((q.get('marks_total') or 0) for q in questions)
             score = f"{ta}/{tp}"
             pct = round(ta / tp * 100, 1) if tp else 0
         else:
@@ -2730,8 +2730,8 @@ def teacher_dashboard():
                     if qs:
                         has_marks = any(q.get('marks_awarded') is not None for q in qs)
                         if has_marks:
-                            total_a = sum(q.get('marks_awarded', 0) for q in qs)
-                            total_p = sum(q.get('marks_total', 0) for q in qs)
+                            total_a = sum((q.get('marks_awarded') or 0) for q in qs)
+                            total_p = sum((q.get('marks_total') or 0) for q in qs)
                             scores.append(total_a / total_p * 100 if total_p else 0)
                         else:
                             correct = sum(1 for q in qs if q.get('status') == 'correct')
@@ -3619,8 +3619,8 @@ def teacher_assignment_detail(assignment_id):
         score = None
         if sub and sub.status == 'done' and not result.get('error'):
             if has_marks:
-                ta = sum(q.get('marks_awarded', 0) for q in questions)
-                tp = sum(q.get('marks_total', 0) for q in questions)
+                ta = sum((q.get('marks_awarded') or 0) for q in questions)
+                tp = sum((q.get('marks_total') or 0) for q in questions)
                 score = f"{ta}/{tp}"
             else:
                 correct = sum(1 for q in questions if q.get('status') == 'correct')
