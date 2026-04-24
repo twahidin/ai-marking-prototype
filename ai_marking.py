@@ -997,10 +997,14 @@ def explain_criterion(provider, model, session_keys, subject, criterion_name,
     Returns: {"idea": str, "next_time": str}
     """
     system_prompt = (
-        "You help a student understand WHY an assessment criterion matters.\n\n"
+        "You help a student understand WHY this criterion matters.\n\n"
         "Return JSON with exactly two fields — and nothing else:\n"
-        '  "idea": ONE sentence. Explain the underlying concept or the examiner expectation '
-        'behind this criterion. Do NOT restate the mark scheme or the criterion name.\n'
+        '  "idea": ONE sentence. Anchor it in what the question is actually asking for '
+        'or in the underlying concept being applied — how knowledge is being used here. '
+        'Do NOT frame it around examiners, markers, markschemes or what "examiners want". '
+        'Do NOT start with "Examiners want", "Markers look for", "This criterion tests", '
+        'or similar meta phrasing. Do NOT restate the criterion name. Speak as if explaining '
+        "to the student directly why this part of the answer matters for the question.\n"
         '  "next_time": ONE sentence. A concrete self-check the student can use independently '
         'next time. MUST start with "Next time:" and end with a specific action.\n\n'
         "The two sentences combined must be ≤ 40 words. No fluff, no encouragement phrases, "
