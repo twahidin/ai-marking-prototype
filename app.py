@@ -4034,6 +4034,87 @@ def teacher_submission_result(assignment_id, submission_id):
     })
 
 
+@app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/result', methods=['PATCH'])
+def teacher_submission_result_patch(assignment_id, submission_id):
+    """Teacher edits AI-generated feedback. Overwrites fields in sub.result_json.
+    Editable: overall_feedback + per-question marks_awarded/marks_total/feedback/improvement.
+    """
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+
+    payload = request.get_json(silent=True) or {}
+    result = sub.get_result() or {}
+    questions = result.get('questions') or []
+
+    if 'overall_feedback' in payload:
+        val = payload.get('overall_feedback')
+        if val is not None and not isinstance(val, str):
+            return jsonify({'success': False, 'error': 'overall_feedback must be a string'}), 400
+        result['overall_feedback'] = (val or '').strip()
+
+    incoming_qs = payload.get('questions')
+    if incoming_qs is not None:
+        if not isinstance(incoming_qs, list):
+            return jsonify({'success': False, 'error': 'questions must be a list'}), 400
+        # Build a lookup of existing questions by question_num so we can apply edits
+        # even if the client omits some. question_num in the stored result can be
+        # int, string, or a compound like "1a".
+        by_num = {}
+        for idx, q in enumerate(questions):
+            qn = q.get('question_num')
+            key = str(qn) if qn is not None else str(idx)
+            by_num[key] = q
+        for edit in incoming_qs:
+            if not isinstance(edit, dict):
+                continue
+            qn = edit.get('question_num')
+            if qn is None:
+                continue
+            target = by_num.get(str(qn))
+            if target is None:
+                continue
+            for field in ('feedback', 'improvement'):
+                if field in edit:
+                    v = edit[field]
+                    if v is not None and not isinstance(v, str):
+                        return jsonify({'success': False, 'error': f'{field} must be a string'}), 400
+                    target[field] = (v or '').strip()
+            for field in ('marks_awarded', 'marks_total'):
+                if field in edit:
+                    v = edit[field]
+                    if v is None or v == '':
+                        target[field] = None
+                        continue
+                    try:
+                        target[field] = float(v) if isinstance(v, float) or (isinstance(v, str) and '.' in v) else int(v)
+                    except (TypeError, ValueError):
+                        return jsonify({'success': False, 'error': f'{field} must be a number'}), 400
+
+        # Recompute per-question status from marks if both are present
+        for q in questions:
+            a = q.get('marks_awarded')
+            t = q.get('marks_total')
+            if a is not None and t is not None and t > 0:
+                ratio = (a or 0) / t
+                if ratio >= 0.99:
+                    q['status'] = 'correct'
+                elif ratio > 0:
+                    q['status'] = 'partially_correct'
+                else:
+                    q['status'] = 'incorrect'
+
+    sub.set_result(result)
+    db.session.commit()
+    logger.info(f"Teacher edited feedback for submission {submission_id} on assignment {assignment_id}")
+
+    return jsonify({'success': True, 'result': sub.get_result()})
+
+
 @app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/remark', methods=['POST'])
 def teacher_submission_remark(assignment_id, submission_id):
     asn = Assignment.query.get_or_404(assignment_id)

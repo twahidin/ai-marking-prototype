@@ -1081,7 +1081,12 @@ async function openFeedbackModal(submissionId, studentName) {
             dl.style.display = 'none';
             return;
         }
-        FeedbackRender.render(document.getElementById('fbModalBody'), data.result, { idPrefix: 'fb' });
+        FeedbackRender.render(document.getElementById('fbModalBody'), data.result, {
+            idPrefix: 'fb',
+            editable: true,
+            assignmentId: FB_ASSIGNMENT_ID,
+            submissionId: submissionId,
+        });
     } catch (err) {
         document.getElementById('fbModalBody').innerHTML = '<p style="color:red;">Failed to load feedback.</p>';
         dl.style.display = 'none';

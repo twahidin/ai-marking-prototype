@@ -252,7 +252,12 @@ async function renderRightFeedback(submissionId, label) {
             return;
         }
         body.innerHTML = '';
-        FeedbackRender.render(body, data.result, { idPrefix: 'rf' });
+        FeedbackRender.render(body, data.result, {
+            idPrefix: 'rf',
+            editable: true,
+            assignmentId: REVIEW_ASSIGNMENT_ID,
+            submissionId: submissionId,
+        });
         if (label) document.getElementById('rightInfo').textContent = label;
     } catch (err) {
         body.innerHTML = '<p style="color:red;">Failed to load feedback.</p>';
