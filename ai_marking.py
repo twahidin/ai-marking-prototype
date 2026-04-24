@@ -25,12 +25,16 @@ except ImportError:
     PDF2IMAGE_AVAILABLE = False
 
 # Register the HEIF opener so PIL can open HEIC files uploaded from iPhones/iPads.
+# Broad except: pillow-heif can raise RuntimeError on some containers that lack
+# libheif bindings. Treat any failure as "HEIF support unavailable" instead of
+# letting it crash app startup.
 try:
     from pillow_heif import register_heif_opener
     register_heif_opener()
     HEIF_AVAILABLE = True
-except ImportError:
+except Exception as _heif_err:
     HEIF_AVAILABLE = False
+    logger.warning(f"HEIF support unavailable: {_heif_err}")
 
 # Provider and model configuration
 PROVIDERS = {

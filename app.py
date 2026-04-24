@@ -204,6 +204,16 @@ def too_large(e):
     return jsonify({'success': False, 'error': 'Upload too large. Maximum 100MB total.'}), 413
 
 
+@app.errorhandler(500)
+def internal_error(e):
+    # Make the full traceback visible in Railway logs so 500s can be diagnosed.
+    import traceback
+    tb = traceback.format_exc()
+    logger.error(f"500 on {request.method} {request.path}:\n{tb}")
+    # Return a plain message — clients that expected JSON still get a readable error.
+    return ('Internal server error. Check server logs for details.', 500)
+
+
 _rate_limits = {}
 _rate_lock = threading.Lock()
 
