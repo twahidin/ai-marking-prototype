@@ -5,13 +5,15 @@
 // Call FeedbackRender.render(containerEl, result, options)
 //   options:
 //     idPrefix       — namespace for generated element IDs (default 'fb')
-//     editable       — when true, show an Edit Feedback button + modal
+//     editable       — when true, fields render inline as textareas / number inputs
+//                      with a Save button at the top. Saving PATCHes the result
+//                      endpoint and re-renders with the returned merged result.
 //     assignmentId   — required when editable
 //     submissionId   — required when editable
-//     onSave(result) — optional callback after a successful edit
+//     onSave(result) — optional callback after a successful save
 //
-// The module namespaces all generated element IDs with options.idPrefix so
-// multiple renderers can coexist on the same page.
+// Students and demo pages use their own render code paths and are not affected
+// by the editable option.
 
 (function (global) {
     var STATUS_LABELS = { correct: 'Correct', partially_correct: 'Partially Correct', incorrect: 'Incorrect' };
@@ -22,11 +24,49 @@
         return d.innerHTML;
     }
 
+    function deriveStatus(marksAwarded, marksTotal) {
+        if (marksAwarded == null || marksTotal == null || marksTotal <= 0) return null;
+        var ratio = marksAwarded / marksTotal;
+        if (ratio >= 0.99) return 'correct';
+        if (ratio > 0) return 'partially_correct';
+        return 'incorrect';
+    }
+
+    function injectStylesOnce() {
+        if (document.getElementById('fb-inline-edit-styles')) return;
+        var css = document.createElement('style');
+        css.id = 'fb-inline-edit-styles';
+        css.textContent =
+            '.fb-edit-toolbar { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-bottom: 10px; }' +
+            '.fb-save-btn { padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }' +
+            '.fb-save-btn:hover { background: #5a6fd6; }' +
+            '.fb-save-btn:disabled { background: #bbb; cursor: not-allowed; }' +
+            '.fb-save-status { font-size: 12px; color: #888; }' +
+            '.fb-save-status.error { color: #c0392b; }' +
+            '.fb-save-status.success { color: #28a745; }' +
+            '.fb-edit-textarea { width: 100%; min-height: 130px; padding: 10px 12px; font-size: 14px; line-height: 1.5; font-family: inherit; border: 1px solid #d0d0d0; border-radius: 8px; resize: vertical; box-sizing: border-box; background: white; }' +
+            '.fb-edit-textarea.overall { min-height: 110px; }' +
+            '.fb-edit-textarea:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 2px rgba(102,126,234,0.15); }' +
+            '.fb-edit-marks { display: inline-flex; align-items: center; gap: 4px; margin-left: 12px; font-size: 12px; color: #555; }' +
+            '.fb-edit-marks input { width: 68px; padding: 5px 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 6px; text-align: center; }' +
+            '.fb-edit-marks input:focus { outline: none; border-color: #667eea; }' +
+            '.fb-edit-marks .sep { color: #888; }' +
+            /* Status-tinted question cards */
+            '.fb-q-card.status-correct { background: #f2f9f4; border-color: #b5dcc3; }' +
+            '.fb-q-card.status-partially_correct { background: #fffbeb; border-color: #ecd28c; }' +
+            '.fb-q-card.status-incorrect { background: #fdf3f3; border-color: #e8b5b8; }' +
+            '.fb-q-card.status-correct .fb-q-card-header { background: #e7f3eb; }' +
+            '.fb-q-card.status-partially_correct .fb-q-card-header { background: #fff4d6; }' +
+            '.fb-q-card.status-incorrect .fb-q-card-header { background: #fbe3e3; }';
+        document.head.appendChild(css);
+    }
+
     function render(containerEl, result, options) {
+        injectStylesOnce();
         options = options || {};
         var prefix = options.idPrefix || 'fb';
         var state = {
-            questions: result.questions || [],
+            questions: (result.questions || []).map(function (q) { return Object.assign({}, q); }),
             errors: result.errors || [],
             assignType: result.assign_type || 'short_answer',
             recommended: result.recommended_actions || [],
@@ -39,23 +79,36 @@
             submissionId: options.submissionId || null,
             onSave: options.onSave || null,
             result: result,
+            dirty: false,
         };
-
-        var hasMarks = state.questions.some(function (q) { return q.marks_awarded != null; });
-        var summary = '';
-        if (hasMarks) {
-            var ta = 0, tp = 0;
-            state.questions.forEach(function (q) { ta += (q.marks_awarded || 0); tp += (q.marks_total || 0); });
-            var pct = tp > 0 ? Math.round(ta / tp * 100) : 0;
-            summary = '<div class="fb-summary-item fb-summary-marks">' + ta + ' / ' + tp + ' marks</div>' +
-                      '<div class="fb-summary-item fb-summary-marks">' + pct + '%</div>';
-        } else {
-            var c = { correct: 0, partially_correct: 0, incorrect: 0 };
-            state.questions.forEach(function (q) { if (c.hasOwnProperty(q.status)) c[q.status]++; });
-            summary = '<div class="fb-summary-item fb-summary-correct">' + c.correct + ' Correct</div>' +
-                      '<div class="fb-summary-item fb-summary-partial">' + c.partially_correct + ' Partial</div>' +
-                      '<div class="fb-summary-item fb-summary-incorrect">' + c.incorrect + ' Incorrect</div>';
+        if (state.editable && (!state.assignmentId || !state.submissionId)) {
+            state.editable = false;
         }
+
+        // Ensure a derived status exists on every question so the UI color-codes
+        // correctly even when the AI left status off and only set marks.
+        state.questions.forEach(function (q) {
+            var d = deriveStatus(q.marks_awarded, q.marks_total);
+            if (d) q.status = d;
+            if (!q.status) q.status = 'incorrect';
+        });
+
+        renderShell(state);
+    }
+
+    function renderShell(state) {
+        var prefix = state.prefix;
+
+        var toolbar = '';
+        if (state.editable) {
+            toolbar =
+                '<div class="fb-edit-toolbar">' +
+                    '<span class="fb-save-status" id="' + prefix + 'SaveStatus"></span>' +
+                    '<button type="button" class="fb-save-btn" id="' + prefix + 'SaveBtn" disabled>Save</button>' +
+                '</div>';
+        }
+
+        var summary = summaryBarHtml(state);
 
         var dots = '';
         state.questions.forEach(function (q, i) {
@@ -66,35 +119,38 @@
                     '" data-q="' + i + '">' + esc(String(label)) + '</div>';
         });
 
-        var overall = '';
-        if (state.overall) {
-            overall += '<div class="fb-overall-box"><h4>Overall Feedback</h4><p>' + esc(state.overall) + '</p></div>';
-        }
-        if (state.recommended.length) {
-            overall += '<div class="fb-overall-box"><h4>Recommended Actions</h4><ul>';
-            state.recommended.forEach(function (a) { overall += '<li>' + esc(a) + '</li>'; });
-            overall += '</ul></div>';
-        }
-        if (state.errors.length) {
-            overall += '<div class="fb-overall-box"><h4>Line-by-Line Errors (' + state.errors.length + ')</h4><div class="fb-errors-list">';
-            state.errors.forEach(function (e) {
-                overall += '<div class="fb-error-item"><strong>' + esc((e.type || 'error').toUpperCase()) + '</strong>';
-                if (e.location) overall += ' <span style="color:#999;">' + esc(e.location) + '</span>';
-                overall += '<div style="margin-top:4px;"><span style="text-decoration:line-through;color:#dc3545;">' + esc(e.original || '') + '</span> &rarr; <span style="color:#28a745;">' + esc(e.correction || '') + '</span></div></div>';
-            });
-            overall += '</div></div>';
+        var overallHtml = '';
+        if (state.editable) {
+            overallHtml =
+                '<div class="fb-overall-box">' +
+                    '<h4>Overall Feedback</h4>' +
+                    '<textarea class="fb-edit-textarea overall" id="' + prefix + 'OverallInput" placeholder="Overall feedback…">' +
+                        esc(state.overall) +
+                    '</textarea>' +
+                '</div>';
+        } else if (state.overall) {
+            overallHtml = '<div class="fb-overall-box"><h4>Overall Feedback</h4><p>' + esc(state.overall) + '</p></div>';
         }
 
-        var editBar = '';
-        if (state.editable && state.assignmentId && state.submissionId) {
-            editBar = '<div class="fb-edit-bar">' +
-                '<button type="button" id="' + prefix + 'EditBtn" class="fb-edit-btn">&#9998; Edit Feedback</button>' +
-                '</div>';
+        var extras = '';
+        if (state.recommended.length) {
+            extras += '<div class="fb-overall-box"><h4>Recommended Actions</h4><ul>';
+            state.recommended.forEach(function (a) { extras += '<li>' + esc(a) + '</li>'; });
+            extras += '</ul></div>';
+        }
+        if (state.errors.length) {
+            extras += '<div class="fb-overall-box"><h4>Line-by-Line Errors (' + state.errors.length + ')</h4><div class="fb-errors-list">';
+            state.errors.forEach(function (e) {
+                extras += '<div class="fb-error-item"><strong>' + esc((e.type || 'error').toUpperCase()) + '</strong>';
+                if (e.location) extras += ' <span style="color:#999;">' + esc(e.location) + '</span>';
+                extras += '<div style="margin-top:4px;"><span style="text-decoration:line-through;color:#dc3545;">' + esc(e.original || '') + '</span> &rarr; <span style="color:#28a745;">' + esc(e.correction || '') + '</span></div></div>';
+            });
+            extras += '</div></div>';
         }
 
         var html =
-            editBar +
-            '<div class="fb-summary-bar">' + summary + '</div>' +
+            toolbar +
+            '<div class="fb-summary-bar" id="' + prefix + 'SummaryBar">' + summary + '</div>' +
             (state.questions.length ? (
                 '<div class="fb-q-dots" id="' + prefix + 'QDots">' + dots + '</div>' +
                 '<div class="fb-q-nav">' +
@@ -104,23 +160,61 @@
                 '</div>' +
                 '<div id="' + prefix + 'QCardContainer"></div>'
             ) : '<p style="color:#888;font-style:italic;">No per-question feedback.</p>') +
-            overall;
+            overallHtml +
+            extras;
 
-        containerEl.innerHTML = html;
+        state.containerEl.innerHTML = html;
 
         if (state.questions.length) {
             bindNav(state);
             renderQuestion(state);
         }
 
-        if (state.editable && state.assignmentId && state.submissionId) {
-            var editBtn = document.getElementById(prefix + 'EditBtn');
-            if (editBtn) editBtn.addEventListener('click', function () { openEditModal(state); });
+        if (state.editable) {
+            var overallEl = document.getElementById(prefix + 'OverallInput');
+            if (overallEl) {
+                overallEl.addEventListener('input', function () {
+                    state.overall = overallEl.value;
+                    markDirty(state);
+                });
+            }
+            var saveBtn = document.getElementById(prefix + 'SaveBtn');
+            if (saveBtn) saveBtn.addEventListener('click', function () { save(state); });
         }
 
         if (window.MathJax && MathJax.typesetPromise) {
-            MathJax.typesetPromise([containerEl]).catch(function () {});
+            MathJax.typesetPromise([state.containerEl]).catch(function () {});
         }
+    }
+
+    function summaryBarHtml(state) {
+        var hasMarks = state.questions.some(function (q) { return q.marks_awarded != null; });
+        if (hasMarks) {
+            var ta = 0, tp = 0;
+            state.questions.forEach(function (q) { ta += (q.marks_awarded || 0); tp += (q.marks_total || 0); });
+            var pct = tp > 0 ? Math.round(ta / tp * 100) : 0;
+            return '<div class="fb-summary-item fb-summary-marks">' + ta + ' / ' + tp + ' marks</div>' +
+                   '<div class="fb-summary-item fb-summary-marks">' + pct + '%</div>';
+        }
+        var c = { correct: 0, partially_correct: 0, incorrect: 0 };
+        state.questions.forEach(function (q) { if (c.hasOwnProperty(q.status)) c[q.status]++; });
+        return '<div class="fb-summary-item fb-summary-correct">' + c.correct + ' Correct</div>' +
+               '<div class="fb-summary-item fb-summary-partial">' + c.partially_correct + ' Partial</div>' +
+               '<div class="fb-summary-item fb-summary-incorrect">' + c.incorrect + ' Incorrect</div>';
+    }
+
+    function refreshSummary(state) {
+        var bar = document.getElementById(state.prefix + 'SummaryBar');
+        if (bar) bar.innerHTML = summaryBarHtml(state);
+    }
+
+    function refreshDots(state) {
+        var dotEls = state.containerEl.querySelectorAll('.fb-q-dot');
+        dotEls.forEach(function (el, i) {
+            var q = state.questions[i];
+            ['correct', 'partially_correct', 'incorrect'].forEach(function (c) { el.classList.remove(c); });
+            if (q && q.status) el.classList.add(q.status);
+        });
     }
 
     function bindNav(state) {
@@ -146,12 +240,6 @@
     function renderQuestion(state) {
         var q = state.questions[state.currentQ];
         if (!q) return;
-        var s = q.status || 'incorrect';
-        var label = STATUS_LABELS[s] || s;
-        var hasMarks = q.marks_awarded != null;
-        var badge = hasMarks
-            ? '<span class="fb-status-badge ' + esc(s) + '">' + esc(String(q.marks_awarded)) + '/' + esc(String(q.marks_total || '?')) + '</span>'
-            : '<span class="fb-status-badge ' + esc(s) + '">' + esc(label) + '</span>';
 
         var isRubrics = state.assignType === 'rubrics';
         var headerLabel = isRubrics ? (q.criterion_name || 'Criterion ' + (q.question_num || state.currentQ + 1)) : 'Question ' + (q.question_num || state.currentQ + 1);
@@ -159,12 +247,44 @@
         var refLabel = isRubrics ? 'Band Descriptor' : 'Correct Answer';
         var bandInfo = (isRubrics && q.band) ? ' <span style="font-size:12px;color:#667eea;font-weight:600;">(' + esc(q.band) + ')</span>' : '';
 
-        var html = '<div class="fb-q-card"><div class="fb-q-card-header"><span class="fb-q-num">' + esc(headerLabel) + bandInfo + '</span>' + badge + '</div><div class="fb-q-card-body">' +
-            '<div class="fb-q-field"><div class="fb-q-field-label">' + ansLabel + '</div><div class="fb-q-field-value">' + esc(q.student_answer || 'N/A') + '</div></div>' +
-            '<div class="fb-q-field"><div class="fb-q-field-label">' + refLabel + '</div><div class="fb-q-field-value">' + esc(q.correct_answer || 'N/A') + '</div></div>';
-        if (q.feedback) html += '<div class="fb-q-field"><div class="fb-q-field-label">Feedback</div><div class="fb-q-field-value feedback">' + esc(q.feedback) + '</div></div>';
-        if (q.improvement) html += '<div class="fb-q-field"><div class="fb-q-field-label">Suggested Improvement</div><div class="fb-q-field-value improvement">' + esc(q.improvement) + '</div></div>';
-        html += '</div></div>';
+        var statusCls = q.status || 'incorrect';
+        var badge = questionBadgeHtml(q, statusCls);
+
+        var marksEdit = '';
+        if (state.editable) {
+            marksEdit =
+                '<span class="fb-edit-marks">' +
+                    'Marks: ' +
+                    '<input type="number" id="' + state.prefix + 'MA" step="0.5" min="0" value="' + esc(q.marks_awarded != null ? q.marks_awarded : '') + '">' +
+                    '<span class="sep">/</span>' +
+                    '<input type="number" id="' + state.prefix + 'MT" step="0.5" min="0" value="' + esc(q.marks_total != null ? q.marks_total : '') + '">' +
+                '</span>';
+        }
+
+        var fbBlock, impBlock;
+        if (state.editable) {
+            fbBlock = '<div class="fb-q-field"><div class="fb-q-field-label">Feedback</div>' +
+                '<textarea class="fb-edit-textarea" id="' + state.prefix + 'Feedback" placeholder="Feedback… (LaTeX in $...$ is rendered for students)">' + esc(q.feedback || '') + '</textarea></div>';
+            impBlock = '<div class="fb-q-field"><div class="fb-q-field-label">Suggested Improvement</div>' +
+                '<textarea class="fb-edit-textarea" id="' + state.prefix + 'Improvement" placeholder="Suggested improvement…">' + esc(q.improvement || '') + '</textarea></div>';
+        } else {
+            fbBlock = q.feedback ? '<div class="fb-q-field"><div class="fb-q-field-label">Feedback</div><div class="fb-q-field-value feedback">' + esc(q.feedback) + '</div></div>' : '';
+            impBlock = q.improvement ? '<div class="fb-q-field"><div class="fb-q-field-label">Suggested Improvement</div><div class="fb-q-field-value improvement">' + esc(q.improvement) + '</div></div>' : '';
+        }
+
+        var cardClass = 'fb-q-card status-' + statusCls;
+        var html = '<div class="' + cardClass + '" id="' + state.prefix + 'QCard">' +
+            '<div class="fb-q-card-header"><span class="fb-q-num">' + esc(headerLabel) + bandInfo + '</span>' +
+                '<span id="' + state.prefix + 'StatusBadgeWrap">' + badge + '</span>' +
+                marksEdit +
+            '</div>' +
+            '<div class="fb-q-card-body">' +
+                '<div class="fb-q-field"><div class="fb-q-field-label">' + ansLabel + '</div><div class="fb-q-field-value">' + esc(q.student_answer || 'N/A') + '</div></div>' +
+                '<div class="fb-q-field"><div class="fb-q-field-label">' + refLabel + '</div><div class="fb-q-field-value">' + esc(q.correct_answer || 'N/A') + '</div></div>' +
+                fbBlock +
+                impBlock +
+            '</div>' +
+        '</div>';
 
         var container = document.getElementById(state.prefix + 'QCardContainer');
         if (container) container.innerHTML = html;
@@ -179,157 +299,83 @@
             d.classList.toggle('active', i === state.currentQ);
         });
 
+        if (state.editable) {
+            wireQuestionEditors(state);
+        }
+
         if (window.MathJax && MathJax.typesetPromise && container) {
             MathJax.typesetPromise([container]).catch(function () {});
         }
     }
 
-    // ---- Edit modal (singleton attached to document.body on first use) ----
-
-    var editState = { open: false, current: null };
-
-    function ensureEditModal() {
-        if (document.getElementById('frEditModal')) return;
-
-        var css = document.createElement('style');
-        css.textContent =
-            '.fb-edit-bar { display: flex; justify-content: flex-end; margin-bottom: 8px; }' +
-            '.fb-edit-btn { padding: 6px 12px; font-size: 12px; border: 1px solid #d0d0d0; background: white; border-radius: 6px; cursor: pointer; color: #2D2D2D; }' +
-            '.fb-edit-btn:hover { background: #f0f0f0; }' +
-            '.fr-edit-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center; backdrop-filter: blur(4px); }' +
-            '.fr-edit-modal.active { display: flex; }' +
-            '.fr-edit-modal-box { background: white; border-radius: 16px; padding: 24px; width: 92%; max-width: 680px; max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }' +
-            '.fr-edit-modal-box h3 { font-size: 17px; font-weight: 700; color: #333; margin: 0 0 4px; }' +
-            '.fr-edit-modal-box .sub { font-size: 12px; color: #888; margin-bottom: 14px; }' +
-            '.fr-edit-section { margin-bottom: 14px; }' +
-            '.fr-edit-label { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px; }' +
-            '.fr-edit-section textarea { width: 100%; min-height: 70px; padding: 9px 11px; font-size: 13px; font-family: inherit; border: 1px solid #d0d0d0; border-radius: 8px; resize: vertical; box-sizing: border-box; }' +
-            '.fr-edit-q { border: 1px solid #eee; border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: #fafafa; }' +
-            '.fr-edit-q-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }' +
-            '.fr-edit-q-header strong { font-size: 13px; color: #2D2D2D; }' +
-            '.fr-edit-q-marks input { width: 64px; padding: 5px 7px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 6px; text-align: center; }' +
-            '.fr-edit-q-marks .sep { margin: 0 4px; color: #888; }' +
-            '.fr-edit-q-field { margin-top: 8px; }' +
-            '.fr-edit-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }' +
-            '.fr-edit-actions button { padding: 9px 18px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; }' +
-            '.fr-edit-cancel { background: #f0f0f0; color: #555; }' +
-            '.fr-edit-cancel:hover { background: #e0e0e0; }' +
-            '.fr-edit-save { background: #667eea; color: white; }' +
-            '.fr-edit-save:hover { background: #5a6fd6; }' +
-            '.fr-edit-save:disabled { background: #bbb; cursor: not-allowed; }' +
-            '.fr-edit-error { color: #c0392b; font-size: 12px; margin-top: 8px; min-height: 16px; }';
-        document.head.appendChild(css);
-
-        var modal = document.createElement('div');
-        modal.className = 'fr-edit-modal';
-        modal.id = 'frEditModal';
-        modal.innerHTML =
-            '<div class="fr-edit-modal-box" role="dialog" aria-modal="true">' +
-                '<h3>Edit Feedback</h3>' +
-                '<p class="sub">Overwrites the AI-generated feedback. Students and other teachers will see these edits.</p>' +
-                '<div id="frEditBody"></div>' +
-                '<div class="fr-edit-error" id="frEditError"></div>' +
-                '<div class="fr-edit-actions">' +
-                    '<button type="button" class="fr-edit-cancel" id="frEditCancel">Cancel</button>' +
-                    '<button type="button" class="fr-edit-save" id="frEditSave">Save</button>' +
-                '</div>' +
-            '</div>';
-        document.body.appendChild(modal);
-
-        modal.addEventListener('click', function (e) {
-            if (e.target === modal) closeEditModal();
-        });
-        document.addEventListener('keydown', function (e) {
-            if (e.key === 'Escape' && editState.open) closeEditModal();
-        });
-        document.getElementById('frEditCancel').addEventListener('click', closeEditModal);
-        document.getElementById('frEditSave').addEventListener('click', saveEdits);
+    function questionBadgeHtml(q, statusCls) {
+        var label = STATUS_LABELS[statusCls] || statusCls;
+        if (q.marks_awarded != null && q.marks_total != null) {
+            return '<span class="fb-status-badge ' + esc(statusCls) + '">' + esc(String(q.marks_awarded)) + '/' + esc(String(q.marks_total)) + '</span>';
+        }
+        return '<span class="fb-status-badge ' + esc(statusCls) + '">' + esc(label) + '</span>';
     }
 
-    function openEditModal(state) {
-        ensureEditModal();
-        editState.open = true;
-        editState.current = state;
+    function wireQuestionEditors(state) {
+        var q = state.questions[state.currentQ];
+        var ma = document.getElementById(state.prefix + 'MA');
+        var mt = document.getElementById(state.prefix + 'MT');
+        var fbEl = document.getElementById(state.prefix + 'Feedback');
+        var impEl = document.getElementById(state.prefix + 'Improvement');
 
-        var body = document.getElementById('frEditBody');
-        var overall = state.overall || '';
-        var html =
-            '<div class="fr-edit-section">' +
-                '<div class="fr-edit-label">Overall Feedback</div>' +
-                '<textarea id="frEditOverall">' + esc(overall) + '</textarea>' +
-            '</div>' +
-            '<div class="fr-edit-label" style="margin-top:6px;">Per-Question</div>';
-
-        state.questions.forEach(function (q, i) {
-            var isRubrics = state.assignType === 'rubrics';
-            var header = isRubrics ? (q.criterion_name || ('Criterion ' + (q.question_num || i + 1))) : ('Question ' + (q.question_num || i + 1));
-            var hasMarks = q.marks_awarded != null || q.marks_total != null;
-            var marksInput = '';
-            if (hasMarks) {
-                marksInput = '<span class="fr-edit-q-marks">' +
-                    'Marks: <input type="number" data-q="' + i + '" data-field="marks_awarded" value="' + esc(q.marks_awarded != null ? q.marks_awarded : '') + '" min="0" step="0.5">' +
-                    '<span class="sep">/</span>' +
-                    '<input type="number" data-q="' + i + '" data-field="marks_total" value="' + esc(q.marks_total != null ? q.marks_total : '') + '" min="0" step="0.5">' +
-                '</span>';
+        function onMarksChange() {
+            var vMa = ma.value === '' ? null : parseFloat(ma.value);
+            var vMt = mt.value === '' ? null : parseFloat(mt.value);
+            q.marks_awarded = (vMa != null && !isNaN(vMa)) ? vMa : null;
+            q.marks_total = (vMt != null && !isNaN(vMt)) ? vMt : null;
+            var derived = deriveStatus(q.marks_awarded, q.marks_total);
+            if (derived) q.status = derived;
+            // Refresh card class, badge, dots, summary
+            var card = document.getElementById(state.prefix + 'QCard');
+            if (card) {
+                card.classList.remove('status-correct', 'status-partially_correct', 'status-incorrect');
+                card.classList.add('status-' + (q.status || 'incorrect'));
             }
-            html +=
-                '<div class="fr-edit-q">' +
-                    '<div class="fr-edit-q-header">' +
-                        '<strong>' + esc(header) + '</strong>' + marksInput +
-                    '</div>' +
-                    '<div class="fr-edit-q-field">' +
-                        '<div class="fr-edit-label">Feedback</div>' +
-                        '<textarea data-q="' + i + '" data-field="feedback">' + esc(q.feedback || '') + '</textarea>' +
-                    '</div>' +
-                    '<div class="fr-edit-q-field">' +
-                        '<div class="fr-edit-label">Suggested Improvement</div>' +
-                        '<textarea data-q="' + i + '" data-field="improvement">' + esc(q.improvement || '') + '</textarea>' +
-                    '</div>' +
-                '</div>';
-        });
+            var badgeWrap = document.getElementById(state.prefix + 'StatusBadgeWrap');
+            if (badgeWrap) badgeWrap.innerHTML = questionBadgeHtml(q, q.status || 'incorrect');
+            refreshDots(state);
+            refreshSummary(state);
+            markDirty(state);
+        }
 
-        body.innerHTML = html;
-        document.getElementById('frEditError').textContent = '';
-        document.getElementById('frEditSave').disabled = false;
-        document.getElementById('frEditSave').textContent = 'Save';
-        document.getElementById('frEditModal').classList.add('active');
+        if (ma) ma.addEventListener('input', onMarksChange);
+        if (mt) mt.addEventListener('input', onMarksChange);
+        if (fbEl) fbEl.addEventListener('input', function () { q.feedback = fbEl.value; markDirty(state); });
+        if (impEl) impEl.addEventListener('input', function () { q.improvement = impEl.value; markDirty(state); });
     }
 
-    function closeEditModal() {
-        var modal = document.getElementById('frEditModal');
-        if (modal) modal.classList.remove('active');
-        editState.open = false;
-        editState.current = null;
+    function markDirty(state) {
+        state.dirty = true;
+        var btn = document.getElementById(state.prefix + 'SaveBtn');
+        if (btn) btn.disabled = false;
+        var st = document.getElementById(state.prefix + 'SaveStatus');
+        if (st) { st.textContent = 'Unsaved changes'; st.className = 'fb-save-status'; }
     }
 
-    async function saveEdits() {
-        var state = editState.current;
-        if (!state) return;
-        var saveBtn = document.getElementById('frEditSave');
-        var errEl = document.getElementById('frEditError');
-        errEl.textContent = '';
+    async function save(state) {
+        var btn = document.getElementById(state.prefix + 'SaveBtn');
+        var st = document.getElementById(state.prefix + 'SaveStatus');
+        if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+        if (st) { st.textContent = ''; st.className = 'fb-save-status'; }
 
-        var overallEl = document.getElementById('frEditOverall');
-        var body = document.getElementById('frEditBody');
+        var payload = {
+            overall_feedback: state.overall || '',
+            questions: state.questions.map(function (q, i) {
+                return {
+                    question_num: q.question_num != null ? q.question_num : (i + 1),
+                    marks_awarded: q.marks_awarded,
+                    marks_total: q.marks_total,
+                    feedback: q.feedback || '',
+                    improvement: q.improvement || '',
+                };
+            }),
+        };
 
-        var payload = { overall_feedback: overallEl ? overallEl.value : '' };
-        var editedQs = [];
-        state.questions.forEach(function (q, i) {
-            var qEdit = { question_num: q.question_num != null ? q.question_num : i + 1 };
-            body.querySelectorAll('[data-q="' + i + '"]').forEach(function (el) {
-                var field = el.getAttribute('data-field');
-                if (field === 'marks_awarded' || field === 'marks_total') {
-                    qEdit[field] = el.value === '' ? null : parseFloat(el.value);
-                } else {
-                    qEdit[field] = el.value;
-                }
-            });
-            editedQs.push(qEdit);
-        });
-        payload.questions = editedQs;
-
-        saveBtn.disabled = true;
-        saveBtn.textContent = 'Saving…';
         try {
             var url = '/teacher/assignment/' + state.assignmentId + '/submission/' + state.submissionId + '/result';
             var res = await fetch(url, {
@@ -339,28 +385,24 @@
             });
             var data = await res.json();
             if (!res.ok || !data.success) {
-                errEl.textContent = (data && data.error) || 'Save failed.';
-                saveBtn.disabled = false;
-                saveBtn.textContent = 'Save';
+                if (st) { st.textContent = (data && data.error) || 'Save failed.'; st.className = 'fb-save-status error'; }
+                if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
                 return;
             }
-            var newResult = data.result;
-            closeEditModal();
-            // Re-render with the saved result so all views reflect the edit.
-            render(state.containerEl, newResult, {
+            // Re-render with the merged result so the view reflects the authoritative state.
+            render(state.containerEl, data.result, {
                 idPrefix: state.prefix,
                 editable: true,
                 assignmentId: state.assignmentId,
                 submissionId: state.submissionId,
                 onSave: state.onSave,
             });
-            if (state.onSave) {
-                try { state.onSave(newResult); } catch (e) { /* ignore */ }
-            }
+            var newSt = document.getElementById(state.prefix + 'SaveStatus');
+            if (newSt) { newSt.textContent = 'Saved'; newSt.className = 'fb-save-status success'; }
+            if (state.onSave) { try { state.onSave(data.result); } catch (e) { /* ignore */ } }
         } catch (err) {
-            errEl.textContent = 'Network error. Please try again.';
-            saveBtn.disabled = false;
-            saveBtn.textContent = 'Save';
+            if (st) { st.textContent = 'Network error. Please try again.'; st.className = 'fb-save-status error'; }
+            if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
         }
     }
 
