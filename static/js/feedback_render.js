@@ -132,7 +132,9 @@
             overallHtml +
             extras;
 
-        state.containerEl.innerHTML = html;
+        if (!state.containerEl || !state.containerEl.isConnected) return;
+        try { state.containerEl.innerHTML = html; }
+        catch (e) { return; }
 
         if (state.questions.length) {
             bindNav(state);
@@ -279,7 +281,9 @@
         '</div>';
 
         var container = document.getElementById(state.prefix + 'QCardContainer');
-        if (container) container.innerHTML = html;
+        if (!container || !container.isConnected) return;
+        try { container.innerHTML = html; }
+        catch (e) { return; }
 
         var info = document.getElementById(state.prefix + 'QNavInfo');
         if (info) info.textContent = 'Q' + (state.currentQ + 1) + ' of ' + state.questions.length;
@@ -334,16 +338,22 @@
         if (!card) return;
         var marksBadge = card.querySelector('[data-field="marks"]');
         if (marksBadge) {
-            marksBadge.addEventListener('click', function () { beginMarksEdit(state, marksBadge); });
+            var marksClick = function (e) {
+                // If already editing, a bubbled click from inside the widget must
+                // not re-enter edit mode — that would detach the live inputs
+                // mid-edit and break the blur/save flow.
+                if (marksBadge.dataset.editing === '1') return;
+                beginMarksEdit(state, marksBadge);
+            };
+            marksBadge.addEventListener('click', marksClick);
         }
         var statusBadge = card.querySelector('[data-field="status"]');
         if (statusBadge) {
             statusBadge.addEventListener('click', function () { cycleStatus(state, statusBadge); });
         }
         card.querySelectorAll('[data-field="feedback"], [data-field="improvement"]').forEach(function (el) {
-            el.addEventListener('click', function (e) {
-                // Don't re-enter edit when clicking inside the live textarea
-                if (el.querySelector('textarea')) return;
+            el.addEventListener('click', function () {
+                if (el.dataset.editing === '1') return;
                 beginTextEdit(state, el, el.getAttribute('data-field'));
             });
         });
@@ -353,9 +363,16 @@
         var q = state.questions[state.currentQ];
         var currentValue = field === 'overall' ? (state.overall || '') : (q[field] || '');
 
+        el.dataset.editing = '1';
+
         var textarea = document.createElement('textarea');
         textarea.className = 'fb-edit-textarea' + (field === 'overall' ? ' overall' : '');
         textarea.value = currentValue;
+        // Stop click inside the live textarea from bubbling up to the wrapping
+        // element's click-to-edit handler (which would otherwise re-enter edit
+        // and detach this textarea mid-edit).
+        textarea.addEventListener('click', function (e) { e.stopPropagation(); });
+        textarea.addEventListener('mousedown', function (e) { e.stopPropagation(); });
 
         el.innerHTML = '';
         el.appendChild(textarea);
@@ -393,12 +410,22 @@
         var initMa = q.marks_awarded != null ? q.marks_awarded : '';
         var initMt = q.marks_total != null ? q.marks_total : '';
 
+        el.dataset.editing = '1';
         el.classList.remove('fb-editable');
         el.innerHTML = '<span class="fb-marks-edit">' +
             '<input type="number" id="' + state.prefix + 'EditMA" step="0.5" min="0" value="' + esc(initMa) + '" placeholder="awarded">' +
             '<span class="sep">/</span>' +
             '<input type="number" id="' + state.prefix + 'EditMT" step="0.5" min="0" value="' + esc(initMt) + '" placeholder="total">' +
         '</span>';
+
+        // Stop clicks inside the live edit widget from bubbling to the badge's
+        // click handler, which would otherwise re-run beginMarksEdit and detach
+        // the live inputs we're editing.
+        var editWidget = el.querySelector('.fb-marks-edit');
+        if (editWidget) {
+            editWidget.addEventListener('click', function (e) { e.stopPropagation(); });
+            editWidget.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+        }
 
         var ma = document.getElementById(state.prefix + 'EditMA');
         var mt = document.getElementById(state.prefix + 'EditMT');
