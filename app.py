@@ -3305,6 +3305,62 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
                 session_keys=_resolve_api_keys(asn),
             )
 
+            # Safety net: in marks mode, every question must have marks_total.
+            # If the AI missed a bracket and left it blank, fill the gaps by
+            # distributing whatever's unaccounted for in the assignment total
+            # across the questions missing a total. Clamp marks_awarded to
+            # [0, marks_total] so downstream math never goes negative.
+            if asn.scoring_mode == 'marks' and isinstance(result, dict) and not result.get('error'):
+                qs = result.get('questions') or []
+                try:
+                    asn_total = int(asn.total_marks) if asn.total_marks else 0
+                except (TypeError, ValueError):
+                    asn_total = 0
+                if qs:
+                    known_total = sum(int(q['marks_total']) for q in qs
+                                      if isinstance(q.get('marks_total'), (int, float)) and q.get('marks_total') is not None and q.get('marks_total') > 0)
+                    missing = [q for q in qs if not (isinstance(q.get('marks_total'), (int, float)) and q.get('marks_total') is not None and q.get('marks_total') > 0)]
+                    if missing:
+                        remaining = max(0, asn_total - known_total)
+                        if remaining <= 0 or asn_total <= 0:
+                            # Fallback when total isn't set: give every unassigned part 1 mark
+                            per_q = 1
+                        else:
+                            per_q = max(1, remaining // len(missing))
+                        for q in missing:
+                            q['marks_total'] = per_q
+                            if q.get('marks_awarded') is None:
+                                # Infer from status if present, otherwise 0
+                                status = (q.get('status') or '').lower()
+                                if status == 'correct':
+                                    q['marks_awarded'] = per_q
+                                elif status == 'partially_correct':
+                                    q['marks_awarded'] = per_q / 2
+                                else:
+                                    q['marks_awarded'] = 0
+                        logger.warning(
+                            f"Submission {submission_id}: AI left marks_total blank on "
+                            f"{len(missing)}/{len(qs)} questions; filled with {per_q} each"
+                        )
+                    # Clamp awarded to [0, total] for any question, and fill missing awarded.
+                    for q in qs:
+                        mt = q.get('marks_total')
+                        if isinstance(mt, (int, float)) and mt > 0:
+                            ma = q.get('marks_awarded')
+                            if ma is None:
+                                status = (q.get('status') or '').lower()
+                                if status == 'correct':
+                                    q['marks_awarded'] = mt
+                                elif status == 'partially_correct':
+                                    q['marks_awarded'] = mt / 2
+                                else:
+                                    q['marks_awarded'] = 0
+                            elif isinstance(ma, (int, float)):
+                                if ma < 0:
+                                    q['marks_awarded'] = 0
+                                elif ma > mt:
+                                    q['marks_awarded'] = mt
+
             sub.set_result(result)
             sub.status = 'error' if result.get('error') else 'done'
             sub.marked_at = datetime.now(timezone.utc)

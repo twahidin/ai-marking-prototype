@@ -520,18 +520,33 @@ def _build_short_answer_prompt(subject, rubrics_pages, answer_key_pages, questio
 
     if scoring_mode == 'marks':
         total_marks_str = total_marks or '100'
-        scoring_instructions = f"""SCORING: Award numerical marks for each question.
-Total Marks for this assessment: {total_marks_str}
+        scoring_instructions = f"""SCORING (numerical): Award marks for every question and sub-part.
 
-READING THE MARK ALLOCATION (critical):
-- Each question or sub-part in the QUESTION PAPER has its mark allocation written in square brackets, usually on the right-hand side of that part — e.g. "[2]", "[3]", "[5]". That number IS the marks_total for that part. Use it exactly; do not guess or redistribute.
-- Sub-parts each get their own entry in the JSON. If Q1 has parts (a)[2], (b)[3], (c)[5], output three entries with question_num "1a", "1b", "1c" and marks_total 2, 3, 5 respectively — not one combined entry for Q1.
-- If a question has NO bracketed mark, fall back to splitting the assignment's total marks ({total_marks_str}) evenly across the questions that don't specify one, and note this in the feedback.
-- The sum of marks_total across all output entries should match the total visible in the question paper's mark allocations (which should in turn match {total_marks_str}).
+The assignment's total is {total_marks_str} marks.
 
-- Award marks out of each part's total based on correctness and completeness
-- Also assign a status: "correct", "partially_correct", or "incorrect"
-- Include "marks_awarded" and "marks_total" for every question or sub-part"""
+★ HOW TO FIND THE MARK ALLOCATION — DO THIS FIRST, BEFORE ANYTHING ELSE ★
+
+Scan the QUESTION PAPER carefully for mark allocations. They are almost always next to or at the right of each question/sub-part, written in one of these forms:
+  • Square brackets: [2], [3], [5], [10]
+  • Parentheses near the end of the line: (2 marks), (3)
+  • Curly braces: {{2}}
+  • A number in the right margin aligned with the question
+
+Sub-parts are lettered or numbered. If you see "1(a) ... [2]", "1(b) ... [3]", "1(c) ... [5]", that is THREE separate sub-parts with three separate totals. Emit THREE JSON entries with question_num "1a", "1b", "1c" and marks_total 2, 3, 5 respectively — NEVER merge them into a single entry for Q1.
+
+Cross-check against the ANSWER KEY: the key typically shows how marks are broken down (e.g. "1 mark for method, 1 mark for answer"). Use the key to inform what earns each mark, but the BRACKETED NUMBER IN THE QUESTION PAPER is the authoritative total for that part.
+
+★ NEVER LEAVE marks_total BLANK OR ZERO ★
+
+Every question entry MUST have a positive integer marks_total. If a part has no bracketed number AND the answer key gives no clear allocation, fall back to distributing the remaining assignment total ({total_marks_str}) evenly across the parts that have no allocation. Say so in the feedback.
+
+★ SELF-CHECK BEFORE YOU RESPOND ★
+
+After drafting your JSON, add up every marks_total. The sum must equal {total_marks_str}. If it doesn't, re-read the question paper — you either missed a sub-part, merged sub-parts that should be separate, or misread a bracket.
+
+marks_awarded must be a non-negative number ≤ marks_total for that part. status is derived: equal → correct, 0 → incorrect, in between → partially_correct.
+
+Include marks_awarded, marks_total, and status on EVERY entry."""
 
         question_schema = """{{
             "question_num": 1,
