@@ -379,6 +379,13 @@
         textarea.focus();
         textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 
+        // LaTeX autocomplete: typing a backslash pops a keyboard-driven menu
+        // of common math commands (ArrowUp/Down to navigate, Tab/Enter to
+        // insert, Escape to dismiss). Attaches only when the module is loaded.
+        if (global.LatexAutocomplete && global.LatexAutocomplete.attach) {
+            global.LatexAutocomplete.attach(textarea);
+        }
+
         var submitted = false;
         function commit() {
             if (submitted) return;
