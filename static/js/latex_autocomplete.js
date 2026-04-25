@@ -222,6 +222,40 @@
         return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
+    // Walk the text from the start to the caret position and figure out
+    // whether the caret is currently inside an unclosed math region. Returns
+    // the *closing* delimiter the author still needs to type ("$" or "$$"),
+    // or null if balanced. Treats "\$" as an escaped dollar (not a delimiter)
+    // and prefers "$$" over "$" when the two characters appear together.
+    function detectOpenMathDelim(text, caret) {
+        var s = text.substring(0, caret);
+        var state = 'outside';   // 'outside' | 'inline' | 'display'
+        var i = 0;
+        while (i < s.length) {
+            var c = s.charCodeAt(i);
+            // Backslash escapes the next character — skip both.
+            if (c === 92 /* \ */ && i + 1 < s.length) { i += 2; continue; }
+            if (c === 36 /* $ */) {
+                if (s.charCodeAt(i + 1) === 36) {
+                    // "$$" toggles display mode (only when not inside inline).
+                    if (state === 'display') state = 'outside';
+                    else if (state === 'outside') state = 'display';
+                    i += 2;
+                    continue;
+                }
+                // single "$" toggles inline mode (only when not inside display).
+                if (state === 'inline') state = 'outside';
+                else if (state === 'outside') state = 'inline';
+                i += 1;
+                continue;
+            }
+            i += 1;
+        }
+        if (state === 'inline')  return '$';
+        if (state === 'display') return '$$';
+        return null;
+    }
+
     function attach(textarea) {
         if (!textarea || textarea.dataset.latexAcAttached === '1') return;
         textarea.dataset.latexAcAttached = '1';
@@ -234,6 +268,67 @@
         var triggerListener;
         var blurListener;
         var keydownListener;
+
+        // --- Ghost closing-delimiter hint (separate floating element) ---
+        // Lives at the caret position whenever the caret is inside an
+        // unclosed $...$ or $$...$$ region. Faint grey, non-interactive.
+        var ghostEl = null;
+
+        function ensureGhost() {
+            if (ghostEl) return ghostEl;
+            ghostEl = document.createElement('div');
+            ghostEl.className = 'latex-ac-ghost';
+            ghostEl.setAttribute('aria-hidden', 'true');
+            ghostEl.style.cssText = [
+                'position:fixed',
+                'z-index:9998',
+                'pointer-events:none',
+                'user-select:none',
+                'color:rgba(0,0,0,0.32)',
+                'font-weight:400',
+                'white-space:pre',
+                'padding:0',
+                'margin:0',
+            ].join(';');
+            document.body.appendChild(ghostEl);
+            return ghostEl;
+        }
+
+        function hideGhost() {
+            if (ghostEl) ghostEl.style.display = 'none';
+        }
+
+        function updateGhost() {
+            if (!textarea.isConnected) return hideGhost();
+            // Only show when the textarea is focused — we don't want stale
+            // ghosts following inputs the author isn't editing.
+            if (document.activeElement !== textarea) return hideGhost();
+            var pos = textarea.selectionStart;
+            var open = detectOpenMathDelim(textarea.value, pos);
+            if (!open) return hideGhost();
+            var el = ensureGhost();
+            // Match the textarea's typography so the ghost lines up at the
+            // exact x-height and baseline of what the author is typing.
+            var cs = window.getComputedStyle(textarea);
+            el.style.fontFamily = cs.fontFamily;
+            el.style.fontSize = cs.fontSize;
+            el.style.fontStyle = cs.fontStyle;
+            el.style.fontWeight = cs.fontWeight;
+            el.style.lineHeight = cs.lineHeight;
+            el.style.letterSpacing = cs.letterSpacing;
+            el.textContent = open;
+            var coords = getCaretCoords(textarea, pos);
+            var rect = textarea.getBoundingClientRect();
+            // Clip if caret has scrolled out of the textarea's visible area.
+            var visTop = coords.top - textarea.scrollTop;
+            var visLeft = coords.left - textarea.scrollLeft;
+            var inside = visTop >= -2 && visTop <= textarea.clientHeight + 2 &&
+                         visLeft >= -2 && visLeft <= textarea.clientWidth + 2;
+            if (!inside) return hideGhost();
+            el.style.top = (rect.top + visTop) + 'px';
+            el.style.left = (rect.left + visLeft) + 'px';
+            el.style.display = 'block';
+        }
 
         function ensurePopup() {
             if (popup) return popup;
@@ -347,8 +442,9 @@
         }
 
         triggerListener = function () {
-            // Defer so selectionStart is post-keystroke.
-            setTimeout(update, 0);
+            // Defer so selectionStart is post-keystroke. Refresh the autocomplete
+            // popup AND the ghost closing-delimiter hint each fire.
+            setTimeout(function () { update(); updateGhost(); }, 0);
         };
 
         keydownListener = function (e) {
@@ -374,21 +470,35 @@
         blurListener = function () {
             // Small delay so the popup's mousedown handler can run first.
             setTimeout(close, 150);
+            hideGhost();
         };
 
         textarea.addEventListener('input', triggerListener);
         textarea.addEventListener('click', triggerListener);
         textarea.addEventListener('keyup', function (e) {
             // Arrow keys move the caret; re-evaluate context so we close the
-            // popup if the user arrows out of the current command.
-            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') triggerListener();
+            // popup if the user arrows out of the current command, and
+            // re-position the ghost closing-delimiter hint.
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' ||
+                e.key === 'ArrowUp' || e.key === 'ArrowDown' ||
+                e.key === 'Home' || e.key === 'End') {
+                triggerListener();
+            }
         });
         textarea.addEventListener('keydown', keydownListener);
+        textarea.addEventListener('focus', function () { setTimeout(updateGhost, 0); });
+        textarea.addEventListener('scroll', function () { setTimeout(updateGhost, 0); });
         textarea.addEventListener('blur', blurListener);
 
-        // Reposition popup on scroll/resize while open.
-        window.addEventListener('scroll', function () { if (active) position(); }, true);
-        window.addEventListener('resize', function () { if (active) position(); });
+        // Reposition popup + ghost on scroll/resize while either is visible.
+        window.addEventListener('scroll', function () {
+            if (active) position();
+            updateGhost();
+        }, true);
+        window.addEventListener('resize', function () {
+            if (active) position();
+            updateGhost();
+        });
     }
 
     global.LatexAutocomplete = { attach: attach, SNIPPETS: SNIPPETS };

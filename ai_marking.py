@@ -412,6 +412,130 @@ def _append_pages(content, label, pages):
             content.append({"type": "text", "text": f"(Page {i + 1})"})
 
 
+# Shared block injected into every short-answer and rubrics marking prompt so
+# the two feedback fields ("Feedback" and "Suggested Improvement") follow the
+# same discipline regardless of marking format. Edit this constant to change
+# the rules everywhere at once.
+FEEDBACK_GENERATION_RULES = """FEEDBACK GENERATION RULES
+
+FIELD NAMES
+
+The two feedback fields are named:
+  Feedback
+  Suggested Improvement
+
+Use these exact headers when reasoning about what to write. Do not use "What
+Happened", "Next Time", or any other labels.
+
+
+WHEN THE STUDENT IS FAR FROM THE CORRECT ANSWER
+
+Before generating feedback for any criterion, assess the distance between the
+student's answer and what was required:
+
+  CLOSE   — Right idea, missed a detail or precise term. Most marks earned.
+  PARTIAL — Some relevant content but significant gaps. Roughly half marks
+            or fewer earned.
+  FAR     — Answer mostly incorrect, missing, or fundamentally misunderstood
+            the question. Very few or no marks earned.
+
+Apply these rules by distance:
+
+IF CLOSE:
+Generate Feedback and Suggested Improvement as normal. Name the specific gap
+precisely.
+
+IF PARTIAL:
+Focus BOTH lines on the single most important gap only — the one that accounts
+for the most marks lost. Do not list multiple things that were missing.
+
+IF FAR:
+Do not list everything that was wrong. Identify the ONE foundational thing the
+student would need to understand first before anything else makes sense. This
+is the entry point — not the most obvious gap, but the one most upstream in
+their reasoning.
+
+Generate only:
+  Feedback: One sentence naming that single foundational gap.
+  Suggested Improvement: One thing to do or ask themselves, aimed at that
+  gap only.
+
+
+EXAMPLES FOR FAR DISTANCE
+
+These examples show the difference between listing symptoms and naming the
+foundational gap. Study the RIGHT examples carefully — note how short and
+plain they are.
+
+Science — student described unrelated cell activity instead of the stages of
+mitosis:
+
+WRONG (lists symptoms, too long):
+Feedback: "Your answer described cell activity but wasn't structured around
+the stages of mitosis — that sequence is the framework the whole answer hangs
+on, and without it the other details have no place to sit."
+
+RIGHT:
+Feedback: "Your answer didn't follow the stages of mitosis — the question
+needed that structure."
+Suggested Improvement: "Write the stage names first, then build each point
+around them."
+
+Humanities SEQ — student wrote off-topic:
+
+WRONG (vague, still too long):
+Feedback: "Your answer didn't directly address what the question was asking
+— everything else follows from getting that focus right first."
+
+RIGHT:
+Feedback: "Your answer didn't address the question being asked."
+Suggested Improvement: "Underline the question's directive word before
+writing — that word tells you what your answer needs to do."
+
+
+WORD LIMITS
+
+Feedback: maximum 20 words.
+Suggested Improvement: maximum 20 words.
+
+These limits apply at all distance levels — CLOSE, PARTIAL, and FAR alike.
+The limit is absolute. One Feedback sentence. One Suggested Improvement
+sentence. No exceptions."""
+
+
+# Extra rules that apply ONLY to rubric / band-descriptor marking. The reference
+# point in this mode is a band descriptor, not a specific correct answer — so
+# the failure mode to defend against is the model paraphrasing the descriptor
+# back at the student instead of naming the concrete quality difference.
+# Injected into _build_rubrics_prompt() AFTER the shared rules above.
+RUBRIC_FEEDBACK_RULES = """RUBRIC-BASED FEEDBACK RULES (applies on top of FEEDBACK GENERATION RULES)
+
+The reference point is a band descriptor, not a specific correct answer.
+
+Do NOT paraphrase the band descriptor in your feedback.
+Do NOT tell the student which band they are in or which band they need to reach.
+
+Instead, name the specific quality difference between what they actually wrote
+and what a stronger response would do.
+
+WRONG (this is the band descriptor in different words):
+"Your response needs sustained analysis with integrated evidence to reach the
+higher band."
+
+WRONG (bands are for teacher reference, not student feedback):
+"You are currently at Band 2. Band 3 requires deeper analytical engagement."
+
+RIGHT:
+"Your points explained what happened but stopped short of saying why it
+mattered."
+
+RIGHT:
+"Your evidence was there but dropped in rather than woven into your argument."
+
+The student should be able to act on the feedback without ever seeing the
+rubric."""
+
+
 def _build_rubrics_prompt(subject, rubrics_pages, reference_pages, question_paper_pages,
                           script_pages, review_section, marking_section, total_marks):
     """Build system prompt and content for rubrics/essay marking."""
@@ -454,6 +578,10 @@ LINE-BY-LINE ERROR IDENTIFICATION:
 - Error types: grammar, spelling, punctuation, vocabulary, factual, logical, style
 - Quote the exact text from the essay
 
+{FEEDBACK_GENERATION_RULES}
+
+{RUBRIC_FEEDBACK_RULES}
+
 HANDWRITING RULES:
 - IGNORE crossed-out or struck-through text — treat as deleted
 - A caret (^) or insertion mark means the student wants to INSERT text at that point
@@ -483,8 +611,8 @@ Respond ONLY with valid JSON:
             "status": "correct | partially_correct | incorrect",
             "marks_awarded": number,
             "marks_total": number,
-            "feedback": "diagnostic feedback — 1-2 sentences, no filler",
-            "improvement": "specific actions to reach the next band",
+            "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
+            "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)",
             "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise: '[Criterion name]: You ... . In your own words, explain what you should have written and why.'"
         }}
     ],
@@ -537,12 +665,7 @@ You MUST produce, in addition to the per-question fields below, a two-row "verdi
   "well_done": one sentence naming ONE specific thing the student got right. No generic phrases like "good effort" or "you showed understanding". Point at the actual answer.
   "main_gap": one sentence (≤ 30 words) naming the SINGLE most important gap, specific enough that the student knows exactly what to fix.
 
-For EACH question's "feedback" field, use this discipline:
-  - Maximum 2 sentences.
-  - First sentence: what was present or correct (if anything).
-  - Second sentence: what was missing or wrong and why marks were lost.
-  - No filler. No restating the criterion name.
-  - Never use: "well done", "good attempt", "you demonstrated", "it is important to note", "however", "overall".
+The per-question "feedback" and "improvement" fields follow the FEEDBACK GENERATION RULES below verbatim — same word limits, same distance gating, same banned wording. Do not contradict those rules here.
 
 For any question where marks_awarded < marks_total, also include:
   "correction_prompt": a one-line prompt in the form "[Question label]: You [specific thing that was missing]. In your own words, explain what you should have written and why."
@@ -589,8 +712,8 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "status": "correct | partially_correct | incorrect",
             "marks_awarded": number,
             "marks_total": number,
-            "feedback": "diagnostic feedback — 1 to 2 sentences, no filler",
-            "improvement": "recommended action for improvement",
+            "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
+            "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)",
             "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise: '[Question label]: You ... . In your own words, explain what you should have written and why.'"
         }}"""
     else:
@@ -604,8 +727,8 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "student_answer": "transcribed answer from the script",
             "correct_answer": "answer from the answer key",
             "status": "correct | partially_correct | incorrect",
-            "feedback": "diagnostic feedback — 1 to 2 sentences, no filler",
-            "improvement": "recommended action for improvement",
+            "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
+            "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)",
             "correction_prompt": "OMIT if status == 'correct'; otherwise: '[Question label]: You ... . In your own words, explain what you should have written and why.'"
         }}"""
 
@@ -624,6 +747,9 @@ Your task:
 
 {scoring_instructions}
 {tiered_feedback_instructions}
+
+{FEEDBACK_GENERATION_RULES}
+
 HANDWRITING RULES:
 - IGNORE crossed-out or struck-through text — treat as deleted
 - A caret (^) or insertion mark means the student wants to INSERT text at that point
