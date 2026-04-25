@@ -3438,12 +3438,13 @@ def _log_ai_originals(submission_id):
     on (submission_id, criterion_id, field, version) — re-marks skip silently.
 
     Best-effort: failures are logged and swallowed so the student-facing flow
-    is never blocked.
+    is never blocked. Only logs for submissions that successfully marked
+    (status == 'done').
     """
     from db import FeedbackLog
     try:
         sub = Submission.query.get(submission_id)
-        if not sub:
+        if not sub or sub.status != 'done':
             return
         result = sub.get_result() or {}
         questions = result.get('questions') or []
