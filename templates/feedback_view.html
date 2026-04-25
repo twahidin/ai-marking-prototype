@@ -140,6 +140,21 @@
         background: #f7f8ff; border-left: 2px solid #b1b6cf; border-radius: 0 6px 6px 0;
     }
 
+    /* Pending status line — shown only while categorisation is running so the
+       student knows the toggle is on its way (rather than silently absent). */
+    .fv-grouping-status {
+        display: none; margin: 14px 0 4px;
+        font-size: 12.5px; color: #6c6f80; line-height: 1.4;
+    }
+    .fv-grouping-status.visible { display: block; }
+    .fv-grouping-status .fv-grouping-dots::after {
+        content: "…"; display: inline-block; animation: fv-grouping-dots 1.4s steps(4, end) infinite;
+        overflow: hidden; vertical-align: bottom;
+    }
+    @keyframes fv-grouping-dots {
+        0%, 20% { width: 0; } 40% { width: 0.4em; } 60% { width: 0.8em; } 80%, 100% { width: 1.2em; }
+    }
+
     /* Grouped view */
     .fv-grouped { margin-top: 18px; }
     .fv-grouped.hidden { display: none; }
@@ -242,6 +257,8 @@
         <button type="button" id="fvToggleQuestion" class="active" role="tab" aria-selected="true">By Question</button>
         <button type="button" id="fvToggleMistake" role="tab" aria-selected="false">By mistake type<span class="fv-mistake-marker">&#10038;</span></button>
     </div>
+
+    <div class="fv-grouping-status" id="fvGroupingStatus"><span class="fv-grouping-dots">Looking for patterns across your mistakes</span></div>
 
     <div class="fv-mistake-note" id="fvMistakeNote" hidden>Groups similar mistakes together to help you spot patterns — try it out.</div>
 
@@ -711,13 +728,21 @@ function fvActivateView(which) {
     try { localStorage.setItem(FV_VIEW_STORAGE_KEY, which); } catch (e) {}
 }
 
+function fvSetGroupingStatusVisible(visible) {
+    var s = document.getElementById('fvGroupingStatus');
+    if (!s) return;
+    if (visible) s.classList.add('visible'); else s.classList.remove('visible');
+}
+
 function fvShowToggleIfReady(payload) {
     var toggle = document.getElementById('fvViewToggle');
     if (!toggle) return;
     if (!payload || !(payload.groups || []).length) {
         toggle.classList.remove('visible');
+        fvSetGroupingStatusVisible(false);
         return;
     }
+    fvSetGroupingStatusVisible(false);
     toggle.classList.add('visible');
     var stored = null;
     try { stored = localStorage.getItem(FV_VIEW_STORAGE_KEY); } catch (e) {}
@@ -776,16 +801,17 @@ if (FV_INITIAL_GROUPING && (FV_INITIAL_GROUPING.groups || []).length) {
     if (!root) return;
     var state = root.getAttribute('data-grouping-status');
     if (state !== 'pending') return; // 'done' already rendered above; 'failed' → silent no-op
+    fvSetGroupingStatusVisible(true);
     var attempts = 0;
     var timer = setInterval(function () {
         attempts++;
-        if (attempts > 20) { clearInterval(timer); return; }
+        if (attempts > 20) { clearInterval(timer); fvSetGroupingStatusVisible(false); return; }
         fetch('/feedback/grouping-status/' + FV_SUBMISSION_ID)
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 if (!data || data.status === 'pending') return;
                 clearInterval(timer);
-                if (data.status !== 'done') return;  // 'failed' → silent
+                if (data.status !== 'done') { fvSetGroupingStatusVisible(false); return; }
                 fvBuildGroupedView(data);
                 fvShowToggleIfReady(data);
             })

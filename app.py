@@ -4675,6 +4675,49 @@ def student_feedback_page(assignment_id, submission_id):
 
     grouping_data = _compute_grouping_payload(sub, result, THEMES)
 
+    # Resilience: auto-relaunch categorisation for legacy submissions (NULL —
+    # marked before this feature shipped) and for submissions stuck in
+    # 'pending' for longer than the worker should ever need (worker died
+    # silently, e.g. dyno restart). Only kicks off if the submission has at
+    # least one lost-mark criterion to group.
+    cat_state = sub.categorisation_status
+    if cat_state in (None, 'pending'):
+        has_lost = any(
+            ((q.get('marks_total') or 0) > 0 and (q.get('marks_awarded') or 0) < (q.get('marks_total') or 0))
+            or (q.get('status') and q.get('status') != 'correct')
+            for q in questions
+        )
+        if has_lost:
+            stale = False
+            if cat_state is None:
+                stale = True
+            elif sub.marked_at:
+                marked_at = sub.marked_at
+                if marked_at.tzinfo is None:
+                    marked_at = marked_at.replace(tzinfo=timezone.utc)
+                if (datetime.now(timezone.utc) - marked_at).total_seconds() > 90:
+                    stale = True
+            if stale:
+                try:
+                    sub.categorisation_status = 'pending'
+                    db.session.commit()
+                    threading.Thread(
+                        target=_run_categorisation_worker,
+                        args=(app, sub.id),
+                        daemon=True,
+                    ).start()
+                    logger.info(f"Re-kicked categorisation for stale/legacy submission {sub.id}")
+                except Exception as relaunch_err:
+                    db.session.rollback()
+                    logger.warning(f"Could not relaunch categorisation for sub {sub.id}: {relaunch_err}")
+        elif cat_state is None:
+            # No lost marks → nothing to group; mark done so the page stops polling.
+            try:
+                sub.categorisation_status = 'done'
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+
     return render_template(
         'feedback_view.html',
         assignment=asn,
