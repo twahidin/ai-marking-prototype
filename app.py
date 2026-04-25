@@ -4333,10 +4333,14 @@ def _detect_mime(data):
     return 'application/octet-stream'
 
 
-def _build_text_edit_meta(submission_id):
+def _build_text_edit_meta(submission_id, teacher_id=None):
     """Per (criterion_id, field), the latest teacher version + whether an
     active feedback_edit row exists. Used by the GET handler so the page
     can render per-field tags on initial load without a second round-trip.
+
+    When `teacher_id` is provided, the `calibrated` flag reflects only that
+    teacher's active edits — important in department mode where several
+    teachers may calibrate the same submission.
 
     Shape: {criterion_id: {field: {'version': N, 'calibrated': bool}}}
     """
@@ -4354,10 +4358,13 @@ def _build_text_edit_meta(submission_id):
         FeedbackLog.criterion_id, FeedbackLog.field,
     ).all()
 
-    active_edits = FeedbackEdit.query.filter_by(
+    edit_q = FeedbackEdit.query.filter_by(
         submission_id=submission_id,
         active=True,
-    ).all()
+    )
+    if teacher_id:
+        edit_q = edit_q.filter_by(edited_by=teacher_id)
+    active_edits = edit_q.all()
     active_set = {(e.criterion_id, e.field) for e in active_edits}
 
     meta = {}
@@ -4384,7 +4391,7 @@ def teacher_submission_result(assignment_id, submission_id):
         'status': sub.status,
         'draft_number': sub.draft_number,
         'is_final': sub.is_final,
-        'text_edit_meta': _build_text_edit_meta(sub.id),
+        'text_edit_meta': _build_text_edit_meta(sub.id, teacher_id=(_current_teacher().id if _current_teacher() else None)),
     })
 
 
