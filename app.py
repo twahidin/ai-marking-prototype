@@ -4351,6 +4351,105 @@ def teacher_submission_result(assignment_id, submission_id):
     })
 
 
+def _process_text_edit(submission, criterion_id, field, edited_text,
+                      teacher_id, assignment, calibrate, current_text):
+    """Log a teacher edit to feedback_log; if `calibrate`, also (a) deactivate
+    any prior active feedback_edit row for (this teacher, assignment, criterion,
+    field) and (b) insert a new feedback_edit row.
+
+    Returns {'version': N, 'calibrated': bool} on a real change, or None when
+    edited_text equals current_text (no-op).
+
+    Caller is responsible for db.session.commit().
+    """
+    from db import FeedbackLog, FeedbackEdit
+    from sqlalchemy import func as _func
+
+    if (edited_text or '') == (current_text or ''):
+        return None  # no change → no log row, no edit row
+
+    max_v = db.session.query(_func.max(FeedbackLog.version)).filter(
+        FeedbackLog.submission_id == submission.id,
+        FeedbackLog.criterion_id == criterion_id,
+        FeedbackLog.field == field,
+    ).scalar() or 0
+    new_version = max_v + 1
+
+    db.session.add(FeedbackLog(
+        submission_id=submission.id,
+        criterion_id=criterion_id,
+        field=field,
+        version=new_version,
+        feedback_text=edited_text or '',
+        author_type='teacher',
+        author_id=teacher_id,
+    ))
+
+    calibrated = False
+    if calibrate:
+        # Read or back-fill the v1 (AI original) row. Legacy submissions
+        # marked before Task 2 was deployed may lack one; back-fill from
+        # current_text (the best AI-original we still have visible).
+        v1 = FeedbackLog.query.filter_by(
+            submission_id=submission.id,
+            criterion_id=criterion_id,
+            field=field,
+            version=1,
+        ).first()
+        if not v1:
+            v1 = FeedbackLog(
+                submission_id=submission.id,
+                criterion_id=criterion_id,
+                field=field,
+                version=1,
+                feedback_text=current_text or '',
+                author_type='ai',
+                author_id=None,
+            )
+            db.session.add(v1)
+            db.session.flush()  # so v1.feedback_text is queryable below
+        original_text = v1.feedback_text or (current_text or '')
+
+        # One active bank row per (teacher, assignment, criterion, field).
+        FeedbackEdit.query.filter_by(
+            edited_by=teacher_id,
+            assignment_id=assignment.id,
+            criterion_id=criterion_id,
+            field=field,
+            active=True,
+        ).update({'active': False})
+
+        # Look up the current criterion's theme_key from result_json (may be
+        # NULL if categorisation hasn't run for this submission).
+        theme_key = None
+        result_for_theme = submission.get_result() or {}
+        for q in (result_for_theme.get('questions') or []):
+            if str(q.get('question_num')) == criterion_id:
+                theme_key = q.get('theme_key')
+                break
+
+        from ai_marking import _rubric_version_hash
+        db.session.add(FeedbackEdit(
+            submission_id=submission.id,
+            criterion_id=criterion_id,
+            field=field,
+            original_text=original_text,
+            edited_text=edited_text or '',
+            edited_by=teacher_id,
+            subject_family=getattr(assignment, 'subject_family', None),
+            theme_key=theme_key,
+            assignment_id=assignment.id,
+            rubric_version=_rubric_version_hash(assignment),
+            scope='individual',  # FUTURE: department-level promotion logic goes here
+            promoted_by=None,
+            promoted_at=None,
+            active=True,
+        ))
+        calibrated = True
+
+    return {'version': new_version, 'calibrated': calibrated}
+
+
 @app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/result', methods=['PATCH'])
 def teacher_submission_result_patch(assignment_id, submission_id):
     """Teacher edits AI-generated feedback. Overwrites fields in sub.result_json.
@@ -4364,7 +4463,14 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     if sub.assignment_id != assignment_id:
         return jsonify({'success': False, 'error': 'Invalid submission'}), 400
 
+    # The authoring teacher for log/edit rows. _current_teacher() returns the
+    # logged-in Teacher in dept mode; in legacy single-teacher mode it may
+    # return None — fall back to the assignment's owning teacher_id.
+    _editor = _current_teacher()
+    editor_id = (_editor.id if _editor else asn.teacher_id)
+
     payload = request.get_json(silent=True) or {}
+    edit_meta = {}
     result = sub.get_result() or {}
     questions = result.get('questions') or []
 
@@ -4395,6 +4501,20 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             target = by_num.get(str(qn))
             if target is None:
                 continue
+
+            # Capture old values so the edit-log helper can detect actual changes.
+            old_text_by_field = {
+                'feedback': (target.get('feedback') or ''),
+                'improvement': (target.get('improvement') or ''),
+            }
+
+            # Validate text length before applying in-place updates.
+            for _field in ('feedback', 'improvement'):
+                if _field in edit:
+                    _val = edit.get(_field) or ''
+                    if len(_val) > 2000:
+                        return jsonify({'success': False, 'error': f'{_field} too long (max 2000 chars)'}), 400
+
             for field in ('feedback', 'improvement'):
                 if field in edit:
                     v = edit[field]
@@ -4418,6 +4538,32 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                 elif v is not None:
                     return jsonify({'success': False, 'error': 'status must be correct | partially_correct | incorrect'}), 400
 
+            # Edit-log integration — only acts on feedback/improvement text changes.
+            cal_flag = bool(edit.get('calibrate'))
+            for _field in ('feedback', 'improvement'):
+                if _field not in edit:
+                    continue
+                new_text = edit.get(_field) or ''
+                old_text = old_text_by_field.get(_field, '')
+                try:
+                    meta = _process_text_edit(
+                        submission=sub,
+                        criterion_id=str(qn),
+                        field=_field,
+                        edited_text=new_text,
+                        teacher_id=editor_id,
+                        assignment=asn,
+                        calibrate=cal_flag,
+                        current_text=old_text,
+                    )
+                    if meta:
+                        edit_meta.setdefault(str(qn), {})[_field] = meta
+                except Exception as log_err:
+                    # Best-effort: log/edit failures must not block the user-facing PATCH.
+                    logger.warning(f"feedback log/edit write failed (sub={sub.id}, crit={qn}, field={_field}): {log_err}")
+                    db.session.rollback()  # roll back failed log/edit writes; in-memory result_json change is re-applied below
+                    target[_field] = new_text  # re-apply in-place (rollback discarded the SQLAlchemy session's view of result_json too)
+
         # Recompute per-question status from marks if both are present
         for q in questions:
             a = q.get('marks_awarded')
@@ -4435,7 +4581,10 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     db.session.commit()
     logger.info(f"Teacher edited feedback for submission {submission_id} on assignment {assignment_id}")
 
-    return jsonify({'success': True, 'result': sub.get_result()})
+    response = {'success': True, 'result': sub.get_result()}
+    if edit_meta:
+        response['edit_meta'] = edit_meta
+    return jsonify(response)
 
 
 @app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/remark', methods=['POST'])
