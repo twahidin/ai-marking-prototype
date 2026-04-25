@@ -418,13 +418,12 @@
             // toggles the checkbox normally — only the focus shift is blocked.
             wrap.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
             cb.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
-            // Manually toggle the checkbox on click, since preventDefault on
-            // mousedown also suppresses the implicit toggle on the wrap label.
+            // Manually toggle on every click (direct-on-box AND label-text both
+            // bubble to wrap). preventDefault suppresses the label's implicit
+            // re-toggle that would otherwise double-flip when clicking the box.
             wrap.addEventListener('click', function (ev) {
-                if (ev.target !== cb) {
-                    ev.preventDefault();
-                    cb.checked = !cb.checked;
-                }
+                ev.preventDefault();
+                cb.checked = !cb.checked;
             });
         }
 
