@@ -4,6 +4,7 @@ import base64
 import json
 import re
 import io
+import hashlib
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -1734,3 +1735,18 @@ Return JSON ONLY (a list — no surrounding object, no prose):
         })
 
     return {'categorisation': cats_out, 'group_habits': habits_out}
+
+
+def _rubric_version_hash(asn):
+    """MD5 hex over the assignment's raw rubric or answer_key bytes.
+
+    rubrics and answer_key are LargeBinary blobs (uploaded files), not
+    text. Hash the raw bytes — the spec's `.encode()` formulation
+    doesn't apply to the actual columns. Empty/missing blobs hash the
+    empty bytes string consistently, which is fine: such an
+    assignment will only ever match other empty-blob assignments.
+    """
+    blob = (getattr(asn, 'rubrics', None) or getattr(asn, 'answer_key', None) or b'')
+    if isinstance(blob, str):  # defensive — should be bytes from LargeBinary, but stay safe
+        blob = blob.encode('utf-8')
+    return hashlib.md5(blob).hexdigest()

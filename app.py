@@ -3399,6 +3399,10 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
             db.session.rollback()
             logger.error(f"Failed to auto-clear needs_remark for assignment {assignment_id}: {flag_err}")
 
+        # Log the AI-generated originals to feedback_log (v1 rows). Synchronous
+        # but best-effort: any error is logged and swallowed.
+        _log_ai_originals(submission_id)
+
         # Kick off the "Group by Mistake Type" categorisation in a background
         # thread. Only if the mark actually succeeded and there is at least
         # one lost-mark criterion to categorise. The thread opens its own
@@ -3426,6 +3430,57 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
         except Exception as cat_err:
             db.session.rollback()
             logger.warning(f"Could not kick off categorisation for submission {submission_id}: {cat_err}")
+
+
+def _log_ai_originals(submission_id):
+    """Write feedback_log v1 rows for the AI-generated feedback and improvement
+    of every criterion in this submission. Idempotent via the unique constraint
+    on (submission_id, criterion_id, field, version) — re-marks skip silently.
+
+    Best-effort: failures are logged and swallowed so the student-facing flow
+    is never blocked.
+    """
+    from db import FeedbackLog
+    try:
+        sub = Submission.query.get(submission_id)
+        if not sub:
+            return
+        result = sub.get_result() or {}
+        questions = result.get('questions') or []
+        added = 0
+        for q in questions:
+            qn = q.get('question_num')
+            if qn is None:
+                continue
+            cid = str(qn)
+            for field in ('feedback', 'improvement'):
+                text_val = q.get(field) or ''
+                if not text_val:
+                    continue
+                exists = FeedbackLog.query.filter_by(
+                    submission_id=sub.id,
+                    criterion_id=cid,
+                    field=field,
+                    version=1,
+                ).first()
+                if exists:
+                    continue
+                db.session.add(FeedbackLog(
+                    submission_id=sub.id,
+                    criterion_id=cid,
+                    field=field,
+                    version=1,
+                    feedback_text=text_val,
+                    author_type='ai',
+                    author_id=None,
+                ))
+                added += 1
+        if added:
+            db.session.commit()
+            logger.info(f"Logged {added} AI-original feedback rows for submission {submission_id}")
+    except Exception as e:
+        db.session.rollback()
+        logger.warning(f"Could not log AI originals for submission {submission_id}: {e}")
 
 
 def _run_categorisation_worker(app_obj, submission_id):
