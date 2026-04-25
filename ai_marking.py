@@ -503,6 +503,39 @@ The limit is absolute. One Feedback sentence. One Suggested Improvement
 sentence. No exceptions."""
 
 
+# Extra rules that apply ONLY to rubric / band-descriptor marking. The reference
+# point in this mode is a band descriptor, not a specific correct answer — so
+# the failure mode to defend against is the model paraphrasing the descriptor
+# back at the student instead of naming the concrete quality difference.
+# Injected into _build_rubrics_prompt() AFTER the shared rules above.
+RUBRIC_FEEDBACK_RULES = """RUBRIC-BASED FEEDBACK RULES (applies on top of FEEDBACK GENERATION RULES)
+
+The reference point is a band descriptor, not a specific correct answer.
+
+Do NOT paraphrase the band descriptor in your feedback.
+Do NOT tell the student which band they are in or which band they need to reach.
+
+Instead, name the specific quality difference between what they actually wrote
+and what a stronger response would do.
+
+WRONG (this is the band descriptor in different words):
+"Your response needs sustained analysis with integrated evidence to reach the
+higher band."
+
+WRONG (bands are for teacher reference, not student feedback):
+"You are currently at Band 2. Band 3 requires deeper analytical engagement."
+
+RIGHT:
+"Your points explained what happened but stopped short of saying why it
+mattered."
+
+RIGHT:
+"Your evidence was there but dropped in rather than woven into your argument."
+
+The student should be able to act on the feedback without ever seeing the
+rubric."""
+
+
 def _build_rubrics_prompt(subject, rubrics_pages, reference_pages, question_paper_pages,
                           script_pages, review_section, marking_section, total_marks):
     """Build system prompt and content for rubrics/essay marking."""
@@ -546,6 +579,8 @@ LINE-BY-LINE ERROR IDENTIFICATION:
 - Quote the exact text from the essay
 
 {FEEDBACK_GENERATION_RULES}
+
+{RUBRIC_FEEDBACK_RULES}
 
 HANDWRITING RULES:
 - IGNORE crossed-out or struck-through text — treat as deleted
