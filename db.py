@@ -387,3 +387,47 @@ class Submission(db.Model):
 
     def set_student_text(self, answers_list):
         self.student_text_json = json.dumps(answers_list)
+
+
+class FeedbackLog(db.Model):
+    __tablename__ = 'feedback_log'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    submission_id = db.Column(db.Integer, db.ForeignKey('submissions.id'), nullable=False, index=True)
+    criterion_id = db.Column(db.String(64), nullable=False)
+    field = db.Column(db.String(20), nullable=False)  # 'feedback' | 'improvement'
+    version = db.Column(db.Integer, nullable=False)   # 1 = AI original, 2+ = teacher edits
+    feedback_text = db.Column(db.Text, nullable=False, default='')
+    author_type = db.Column(db.String(10), nullable=False)  # 'ai' | 'teacher'
+    author_id = db.Column(db.String(36), nullable=True)     # NULL for AI; teacher.id otherwise
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.UniqueConstraint('submission_id', 'criterion_id', 'field', 'version',
+                            name='uq_feedback_log_sub_crit_field_ver'),
+    )
+
+
+class FeedbackEdit(db.Model):
+    __tablename__ = 'feedback_edit'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    submission_id = db.Column(db.Integer, db.ForeignKey('submissions.id'), nullable=False, index=True)
+    criterion_id = db.Column(db.String(64), nullable=False)
+    field = db.Column(db.String(20), nullable=False)  # 'feedback' | 'improvement'
+    original_text = db.Column(db.Text, nullable=False, default='')
+    edited_text = db.Column(db.Text, nullable=False, default='')
+    edited_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=False, index=True)
+    subject_family = db.Column(db.String(40), nullable=True)
+    theme_key = db.Column(db.String(40), nullable=True)
+    assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)
+    rubric_version = db.Column(db.String(64), nullable=False, default='')
+    # FUTURE: department-level promotion logic goes here.
+    scope = db.Column(db.String(20), nullable=False, default='individual')
+    promoted_by = db.Column(db.String(36), nullable=True)
+    promoted_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    active = db.Column(db.Boolean, nullable=False, default=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.Index('ix_feedback_edit_lookup', 'edited_by', 'active', 'subject_family', 'theme_key'),
+        db.Index('ix_feedback_edit_assignment', 'assignment_id', 'rubric_version'),
+    )
