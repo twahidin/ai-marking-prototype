@@ -4504,8 +4504,8 @@ def teacher_submission_result_patch(assignment_id, submission_id):
 
             # Capture old values so the edit-log helper can detect actual changes.
             old_text_by_field = {
-                'feedback': (target.get('feedback') or ''),
-                'improvement': (target.get('improvement') or ''),
+                'feedback': (target.get('feedback') or '').strip(),
+                'improvement': (target.get('improvement') or '').strip(),
             }
 
             # Validate text length before applying in-place updates.
@@ -4543,8 +4543,9 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             for _field in ('feedback', 'improvement'):
                 if _field not in edit:
                     continue
-                new_text = edit.get(_field) or ''
+                new_text = (edit.get(_field) or '').strip()
                 old_text = old_text_by_field.get(_field, '')
+                sp = db.session.begin_nested()
                 try:
                     meta = _process_text_edit(
                         submission=sub,
@@ -4556,13 +4557,16 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                         calibrate=cal_flag,
                         current_text=old_text,
                     )
+                    sp.commit()
                     if meta:
                         edit_meta.setdefault(str(qn), {})[_field] = meta
                 except Exception as log_err:
-                    # Best-effort: log/edit failures must not block the user-facing PATCH.
+                    sp.rollback()
                     logger.warning(f"feedback log/edit write failed (sub={sub.id}, crit={qn}, field={_field}): {log_err}")
-                    db.session.rollback()  # roll back failed log/edit writes; in-memory result_json change is re-applied below
-                    target[_field] = new_text  # re-apply in-place (rollback discarded the SQLAlchemy session's view of result_json too)
+                    # in-place result_json change for this field already applied;
+                    # ensure it stays applied even though the savepoint rolled back
+                    # any FeedbackLog rows the helper queued.
+                    target[_field] = new_text
 
         # Recompute per-question status from marks if both are present
         for q in questions:
