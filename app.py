@@ -5361,6 +5361,7 @@ def feedback_edit_history(assignment_id, submission_id, criterion_id):
             'version': r.version,
             'author_type': r.author_type,
             'author_name': _author_name(r),
+            'author_id': r.author_id,
             'feedback_text': r.feedback_text,
             'created_at': _fmt_date(r.created_at),
             'edit_id': edit.id if edit else None,

@@ -779,7 +779,9 @@
                 body.textContent = v.feedback_text || '';
                 block.appendChild(body);
                 // Retire link only for active teacher edits.
-                if (v.edit_id && v.active === true && v.author_type === 'teacher') {
+                if (v.edit_id && v.active === true && v.author_type === 'teacher' &&
+                    v.author_id && state.currentTeacherId &&
+                    v.author_id === state.currentTeacherId) {
                     var ret = document.createElement('a');
                     ret.href = '#';
                     ret.className = 'fb-retire-link';
