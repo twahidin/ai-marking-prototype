@@ -412,10 +412,20 @@
             wrap.appendChild(cb);
             wrap.appendChild(labelTxt);
             el.appendChild(wrap);
-            // Stop blur-save from firing when the user clicks the checkbox.
-            wrap.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
-            cb.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
-            cb.addEventListener('click', function (ev) { ev.stopPropagation(); });
+            // preventDefault on mousedown stops focus transfer to the checkbox, so
+            // the textarea keeps focus and doesn't blur (which would save before
+            // the checkbox state could be captured). The click still fires and
+            // toggles the checkbox normally — only the focus shift is blocked.
+            wrap.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+            cb.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+            // Manually toggle the checkbox on click, since preventDefault on
+            // mousedown also suppresses the implicit toggle on the wrap label.
+            wrap.addEventListener('click', function (ev) {
+                if (ev.target !== cb) {
+                    ev.preventDefault();
+                    cb.checked = !cb.checked;
+                }
+            });
         }
 
         var submitted = false;
