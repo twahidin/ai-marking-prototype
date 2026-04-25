@@ -3293,14 +3293,12 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
             calibration_block = ''
             try:
                 from ai_marking import fetch_calibration_examples, format_calibration_block
-                sub_for_themes = Submission.query.get(submission_id)
-                theme_keys = []
-                if sub_for_themes:
-                    prior = sub_for_themes.get_result() or {}
-                    for q in (prior.get('questions') or []):
-                        tk = q.get('theme_key')
-                        if tk:
-                            theme_keys.append(tk)
+                prior = sub.get_result() or {}
+                theme_keys = list({
+                    q.get('theme_key')
+                    for q in (prior.get('questions') or [])
+                    if q.get('theme_key')
+                })
                 calibration_examples = fetch_calibration_examples(
                     teacher_id=asn.teacher_id,
                     assignment=asn,
