@@ -536,6 +536,41 @@ The student should be able to act on the feedback without ever seeing the
 rubric."""
 
 
+# Shared rules for the per-question "correction_prompt" string. Replaces the
+# old fixed boilerplate ("In your own words, explain what you should have
+# written and why") with a typology-driven prompt that varies by mistake type
+# so the student isn't asked the same generic question on every gap.
+CORRECTION_PROMPT_RULES = """CORRECTION PROMPT RULES (for the "correction_prompt" field)
+
+The correction prompt is a one-line task the student does on the spot — a
+short do-this-now exercise, not a reflection question. Vary it to match the
+mistake type. Pick exactly ONE form per criterion based on what went wrong:
+
+- Procedural / careless slip (computation error, wrong unit, missed step):
+  "Re-do the [specific step] using [the correct method or value]."
+
+- Reasoning gap (link not made, cause→effect missing, comparison flat):
+  "Explain the link between [X] and [Y]."
+
+- Evidence / source handling (quotation missing, source not unpacked):
+  "Pick one quote from [Source A] and explain what it suggests about [Z]."
+
+- Content / concept gap (term defined wrongly, idea misunderstood):
+  "In your own words, define [the concept] and explain how it applies here."
+
+- Language / expression (clarity, register, sentence structure):
+  "Rewrite the sentence so it [specific quality the student needs]."
+
+CONSTRAINTS:
+- ≤ 25 words. One imperative sentence.
+- Reference the specific content of THIS criterion — never a generic stem.
+- Across all correction_prompt fields in the SAME response, no two prompts
+  may end with the same words. Vary the verb and the focus.
+- Do NOT use "In your own words, explain what you should have written and
+  why" — that's the old boilerplate and is banned.
+- OMIT this field entirely on full-marks (or "correct") criteria."""
+
+
 def _build_rubrics_prompt(subject, rubrics_pages, reference_pages, question_paper_pages,
                           script_pages, review_section, marking_section, total_marks):
     """Build system prompt and content for rubrics/essay marking."""
@@ -582,6 +617,8 @@ LINE-BY-LINE ERROR IDENTIFICATION:
 
 {RUBRIC_FEEDBACK_RULES}
 
+{CORRECTION_PROMPT_RULES}
+
 HANDWRITING RULES:
 - IGNORE crossed-out or struck-through text — treat as deleted
 - A caret (^) or insertion mark means the student wants to INSERT text at that point
@@ -595,7 +632,7 @@ TIERED FEEDBACK FOR THE STUDENT — mandatory.
 - "well_done" (top level): one sentence naming ONE specific thing done well. No generic phrases like "good effort".
 - "main_gap" (top level): one sentence (≤30 words) naming the single most important gap.
 - For each criterion, the "feedback" field is diagnostic, MAX 2 sentences. First sentence: what was present/correct. Second sentence: what was missing/wrong and why marks were lost. Never use "well done", "good attempt", "you demonstrated", "it is important to note", "however", "overall".
-- For any criterion where marks_awarded < marks_total, include "correction_prompt": "[Criterion name]: You ... . In your own words, explain what you should have written and why." Concrete, not generic. Omit on full-marks criteria.
+- For any criterion where marks_awarded < marks_total, include "correction_prompt" — see CORRECTION PROMPT RULES above for the typology and constraints. Omit on full-marks criteria.
 
 Respond ONLY with valid JSON:
 {{
@@ -613,7 +650,7 @@ Respond ONLY with valid JSON:
             "marks_total": number,
             "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
             "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)",
-            "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise: '[Criterion name]: You ... . In your own words, explain what you should have written and why.'"
+            "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise one short do-this-now task following CORRECTION PROMPT RULES — pick the form that matches this criterion's mistake type (procedural / reasoning / evidence / concept / language). ≤ 25 words. Must not duplicate another criterion's wording."
         }}
     ],
     "errors": [
@@ -668,8 +705,10 @@ You MUST produce, in addition to the per-question fields below, a two-row "verdi
 The per-question "feedback" and "improvement" fields follow the FEEDBACK GENERATION RULES below verbatim — same word limits, same distance gating, same banned wording. Do not contradict those rules here.
 
 For any question where marks_awarded < marks_total, also include:
-  "correction_prompt": a one-line prompt in the form "[Question label]: You [specific thing that was missing]. In your own words, explain what you should have written and why."
-  Make the "[specific thing that was missing]" concrete — not generic.
+  "correction_prompt": a one-line do-this-now task following the CORRECTION
+  PROMPT RULES section below. Pick the form that matches this question's
+  mistake type (procedural / reasoning / evidence / concept / language).
+  ≤ 25 words. No two correction_prompts in the response may end identically.
   Omit this field on questions that got full marks.
 
 Do not include "The idea" / "Next time" explanations here — those are generated on demand.
@@ -714,7 +753,7 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "marks_total": number,
             "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
             "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)",
-            "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise: '[Question label]: You ... . In your own words, explain what you should have written and why.'"
+            "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise one short do-this-now task following CORRECTION PROMPT RULES — pick the form matching this question's mistake type (procedural / reasoning / evidence / concept / language). ≤ 25 words. Must not duplicate another question's wording."
         }}"""
     else:
         scoring_instructions = """SCORING: For each question, assign one of these statuses:
@@ -729,7 +768,7 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "status": "correct | partially_correct | incorrect",
             "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
             "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)",
-            "correction_prompt": "OMIT if status == 'correct'; otherwise: '[Question label]: You ... . In your own words, explain what you should have written and why.'"
+            "correction_prompt": "OMIT if status == 'correct'; otherwise one short do-this-now task following CORRECTION PROMPT RULES — pick the form matching this question's mistake type (procedural / reasoning / evidence / concept / language). ≤ 25 words. Must not duplicate another question's wording."
         }}"""
 
     system_prompt = f"""You are an experienced teacher marking a student's assignment script.
@@ -749,6 +788,8 @@ Your task:
 {tiered_feedback_instructions}
 
 {FEEDBACK_GENERATION_RULES}
+
+{CORRECTION_PROMPT_RULES}
 
 HANDWRITING RULES:
 - IGNORE crossed-out or struck-through text — treat as deleted
@@ -1158,23 +1199,24 @@ def _run_feedback_helper(provider, model, session_keys, system_prompt, user_prom
 
 def explain_criterion(provider, model, session_keys, subject, criterion_name,
                       student_answer, expected_answer, feedback_sentence=''):
-    """Generate Layer 3 'The idea' + 'Next time' for one criterion.
+    """Generate Layer 3 'The idea' for one criterion.
 
-    Returns: {"idea": str, "next_time": str}
+    Returns: {"idea": str}
+
+    Layer 3's "Next time" line is populated client-side from the criterion's
+    existing `improvement` field (the same Suggested Improvement shown on the
+    PDF). No separate AI call — keeps the two surfaces in lockstep.
     """
     system_prompt = (
         "You help a student understand WHY this criterion matters.\n\n"
-        "Return JSON with exactly two fields — and nothing else:\n"
+        "Return JSON with exactly one field — and nothing else:\n"
         '  "idea": ONE sentence. Anchor it in what the question is actually asking for '
         'or in the underlying concept being applied — how knowledge is being used here. '
         'Do NOT frame it around examiners, markers, markschemes or what "examiners want". '
         'Do NOT start with "Examiners want", "Markers look for", "This criterion tests", '
         'or similar meta phrasing. Do NOT restate the criterion name. Speak as if explaining '
-        "to the student directly why this part of the answer matters for the question.\n"
-        '  "next_time": ONE sentence. A concrete self-check the student can use independently '
-        'next time. MUST start with "Next time:" and end with a specific action.\n\n'
-        "The two sentences combined must be ≤ 40 words. No fluff, no encouragement phrases, "
-        "no repetition of the criterion name."
+        "to the student directly why this part of the answer matters for the question.\n\n"
+        "≤ 25 words. No fluff, no encouragement phrases, no repetition of the criterion name."
     )
     user_prompt = (
         f"Subject: {subject or 'General'}\n"
@@ -1184,13 +1226,9 @@ def explain_criterion(provider, model, session_keys, subject, criterion_name,
         f"Teacher's feedback on this criterion: {(feedback_sentence or '')[:400]}\n\n"
         "Return the JSON now."
     )
-    parsed = _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=300)
+    parsed = _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=200)
     idea = (parsed.get('idea') or '').strip()
-    nxt = (parsed.get('next_time') or '').strip()
-    # Enforce "Next time:" prefix if AI forgot.
-    if nxt and not nxt.lower().startswith('next time'):
-        nxt = 'Next time: ' + nxt
-    return {'idea': idea, 'next_time': nxt}
+    return {'idea': idea}
 
 
 def evaluate_correction(provider, model, session_keys, subject, criterion_name,

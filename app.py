@@ -4822,7 +4822,11 @@ def _compute_grouping_payload(sub, result, themes):
 
 @app.route('/feedback/<assignment_id>/<int:submission_id>/explain', methods=['POST'])
 def student_feedback_explain(assignment_id, submission_id):
-    """Layer 3 on-demand: "The idea" + "Next time" for one criterion. Cached on result_json."""
+    """Layer 3 on-demand: "The idea" for one criterion. Cached on result_json.
+
+    "Next time" is populated client-side from the criterion's improvement
+    field, so this route only needs to return the AI-generated idea.
+    """
     asn, sub, err = _student_feedback_auth(assignment_id, submission_id)
     if err:
         return err
@@ -4838,7 +4842,9 @@ def student_feedback_explain(assignment_id, submission_id):
     cache = tiered.setdefault('layer3_cache', {})
 
     if qkey in cache and isinstance(cache[qkey], dict):
-        return jsonify({'success': True, 'cached': True, **cache[qkey]})
+        # Older cache entries may carry next_time too — strip on the way out
+        # so the response shape stays clean.
+        return jsonify({'success': True, 'cached': True, 'idea': cache[qkey].get('idea', '')})
 
     # Find the target question.
     q = next((x for x in (result.get('questions') or []) if str(x.get('question_num')) == qkey), None)

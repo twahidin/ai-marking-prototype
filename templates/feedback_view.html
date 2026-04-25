@@ -300,7 +300,7 @@
                 {% set badge_text = 'Needs work' %}
             {% endif %}
         {% endif %}
-        <div class="fv-crit-card" data-qnum="{{ qnum }}" data-idx="{{ loop.index0 }}">
+        <div class="fv-crit-card" data-qnum="{{ qnum }}" data-idx="{{ loop.index0 }}" data-improvement="{{ q.get('improvement') or '' }}">
             <div class="fv-crit-head" onclick="fvToggleCrit(this.parentElement)">
                 <span class="fv-crit-name">{{ cname }}</span>
                 {% if has_marks %}<span class="fv-crit-score">{{ ma }} / {{ mt }}</span>{% endif %}
@@ -312,7 +312,7 @@
                 <button type="button" class="fv-why-btn" onclick="fvExplain(event, '{{ qnum }}', this)">? Why does this matter?</button>
                 <div class="fv-layer3" id="fvL3-{{ loop.index0 }}" data-filled="0">
                     <div class="fv-l3-row"><span class="fv-l3-label">The idea</span><span class="fv-l3-idea"></span></div>
-                    <div class="fv-l3-row"><span class="fv-l3-label">Next time</span><span class="fv-l3-next"></span></div>
+                    {% if q.get('improvement') %}<div class="fv-l3-row"><span class="fv-l3-label">Next time</span><span class="fv-l3-next">{{ q.get('improvement') }}</span></div>{% endif %}
                 </div>
             </div>
         </div>
@@ -409,9 +409,10 @@ async function fvExplain(e, qnum, btn) {
             body: JSON.stringify({ question_num: qnum }),
         });
         var data = await res.json();
+        // "Next time" is rendered server-side from the criterion's existing
+        // improvement field — no JS population needed.
         if (!data.success) {
-            box.querySelector('.fv-l3-idea').textContent = '';
-            box.querySelector('.fv-l3-next').textContent = data.error || 'Could not load.';
+            box.querySelector('.fv-l3-idea').textContent = data.error || 'Could not load.';
             box.classList.add('visible');
             box.dataset.filled = '1';
             btn.textContent = 'Try again';
@@ -419,7 +420,6 @@ async function fvExplain(e, qnum, btn) {
             return;
         }
         box.querySelector('.fv-l3-idea').textContent = data.idea || '';
-        box.querySelector('.fv-l3-next').textContent = data.next_time || '';
         box.classList.add('visible');
         box.dataset.filled = '1';
         btn.textContent = originalText;
@@ -579,16 +579,21 @@ function fvCriterionMiniCard(c, themeKey) {
 }
 
 function fvCriterionBodyHtml(c, themeKey) {
-    // Pull the corresponding by-question card's feedback text so we never
-    // drift — the fb text stored server-side is the single source.
+    // Pull the corresponding by-question card's feedback text and improvement
+    // string so we never drift — the by-question card carries the canonical
+    // server-rendered values; "Next time" comes from the criterion's
+    // existing improvement field, never from a separate AI call.
     var srcCard = document.querySelector('#fvLayer2 .fv-crit-card[data-qnum="' + CSS.escape(c.criterion_id) + '"]');
     var fb = srcCard ? (srcCard.querySelector('.fv-crit-feedback') || {}).innerHTML || '' : '';
+    var improvement = srcCard ? (srcCard.getAttribute('data-improvement') || '') : '';
+    var nextRow = improvement ?
+        '<div class="fv-l3-row"><span class="fv-l3-label">Next time</span><span class="fv-l3-next">' + fvEscHtml(improvement) + '</span></div>' : '';
     return '<div class="fv-crit-body">' +
         '<div class="fv-crit-feedback">' + fb + '</div>' +
         '<button type="button" class="fv-why-btn" onclick="fvExplain(event, \'' + fvEscHtml(c.criterion_id) + '\', this)">? Why does this matter?</button>' +
         '<div class="fv-layer3" data-filled="0">' +
             '<div class="fv-l3-row"><span class="fv-l3-label">The idea</span><span class="fv-l3-idea"></span></div>' +
-            '<div class="fv-l3-row"><span class="fv-l3-label">Next time</span><span class="fv-l3-next"></span></div>' +
+            nextRow +
         '</div>' +
     '</div>';
 }
