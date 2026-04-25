@@ -3288,6 +3288,31 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
             ref = [asn.reference] if asn.reference else []
             script = sub.get_script_pages()
 
+            # Calibration: pull this teacher's prior relevant edits and prepend
+            # them to the system prompt. Best-effort — never blocks marking.
+            calibration_block = ''
+            try:
+                from ai_marking import fetch_calibration_examples, format_calibration_block
+                sub_for_themes = Submission.query.get(submission_id)
+                theme_keys = []
+                if sub_for_themes:
+                    prior = sub_for_themes.get_result() or {}
+                    for q in (prior.get('questions') or []):
+                        tk = q.get('theme_key')
+                        if tk:
+                            theme_keys.append(tk)
+                calibration_examples = fetch_calibration_examples(
+                    teacher_id=asn.teacher_id,
+                    assignment=asn,
+                    theme_keys=theme_keys,
+                )
+                calibration_block = format_calibration_block(calibration_examples)
+                if calibration_examples:
+                    logger.info(f"Marking sub {submission_id}: prepending {len(calibration_examples)} calibration examples")
+            except Exception as cal_err:
+                logger.warning(f"Calibration lookup failed for sub {submission_id}, marking with no calibration: {cal_err}")
+                calibration_block = ''
+
             result = mark_script(
                 provider=asn.provider,
                 question_paper_pages=qp,
@@ -3303,6 +3328,7 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
                 scoring_mode=asn.scoring_mode,
                 total_marks=asn.total_marks,
                 session_keys=_resolve_api_keys(asn),
+                calibration_block=calibration_block,
             )
 
             # Safety net: in marks mode, every question must have marks_total.
