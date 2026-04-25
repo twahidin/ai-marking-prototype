@@ -945,6 +945,46 @@ def generate_exemplar_analysis(provider, model, session_keys, subject, submissio
 # Tiered feedback helpers (student-facing)
 # ---------------------------------------------------------------------------
 
+def _run_text_completion(provider, model, session_keys, system_prompt, user_prompt, max_tokens=400):
+    """Run a single chat completion and return the RAW response text (no JSON
+    parsing). Use this when the response is mixed reasoning + a tagged JSON
+    block (the "Group by Mistake Type" Pass 1 prompt does this)."""
+    if provider not in PROVIDERS:
+        raise ValueError(f"Unknown provider: {provider}")
+    api_key = _resolve_api_key(provider, session_keys)
+    if not api_key:
+        raise ValueError(f"No API key configured for provider: {provider}")
+
+    if provider == 'anthropic':
+        client = Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=[{'role': 'user', 'content': user_prompt}],
+        )
+        return resp.content[0].text
+    if not OPENAI_AVAILABLE:
+        raise RuntimeError("OpenAI SDK not installed")
+    if provider == 'qwen':
+        client = OpenAI(api_key=api_key, base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+    else:
+        client = OpenAI(api_key=api_key)
+    kwargs = {
+        'model': model,
+        'messages': [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_prompt},
+        ],
+    }
+    if provider == 'openai':
+        kwargs['max_completion_tokens'] = max_tokens
+    else:
+        kwargs['max_tokens'] = max_tokens
+    resp = client.chat.completions.create(**kwargs)
+    return resp.choices[0].message.content
+
+
 def _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=400):
     """Shared single-shot JSON-returning call used by Layer 3 explain and correction evaluation."""
     import json as _json
@@ -1143,29 +1183,112 @@ def classify_subject_family(provider, model, session_keys, subject, assign_type,
     return 'humanities_sbq'
 
 
+def _extract_step1_diagnoses(text, criteria):
+    """Pull per-criterion Step 1 diagnoses out of a Pass 1 reasoning trace.
+
+    Returns a dict mapping criterion_id → diagnosis sentence (best effort).
+    Used to feed Pass 2's verifier and Pass 3's habit generator with the
+    underlying error analysis without re-asking the model.
+    """
+    import json as _json  # noqa: F401
+    diag_by_id = {}
+    if not text:
+        return diag_by_id
+
+    # Take the slice between STEP 1 and STEP 2 (or end of text if Step 2 is missing).
+    m = re.search(r'STEP\s*1[^\n]*\n([\s\S]*?)(?:STEP\s*2|FINAL_JSON|\Z)', text, re.IGNORECASE)
+    section = m.group(1) if m else text
+
+    pairs = re.findall(
+        r'Criterion\s*[:\-]\s*([^\n]+)\s*\n\s*Diagnosis\s*[:\-]\s*([^\n]+)',
+        section,
+        re.IGNORECASE,
+    )
+    if not pairs:
+        return diag_by_id
+
+    by_name = {}
+    by_id = {}
+    for c in criteria:
+        cid = str(c.get('criterion_id') or '')
+        cname = (c.get('criterion_name') or '').strip().lower()
+        if cid:
+            by_id[cid.lower()] = cid
+        if cname:
+            by_name[cname] = cid
+
+    for raw_crit, raw_diag in pairs:
+        crit = raw_crit.strip().lower().rstrip('.,;:')
+        diag = raw_diag.strip()
+        cid = by_name.get(crit)
+        if not cid:
+            cid = by_id.get(crit)
+        if not cid:
+            # Fallback: substring match (e.g. "Q2 — Use of evidence" against criterion_name "Use of evidence").
+            for cname, mapped_cid in by_name.items():
+                if cname and cname in crit:
+                    cid = mapped_cid
+                    break
+        if cid:
+            diag_by_id[cid] = diag
+
+    return diag_by_id
+
+
+def _extract_final_json(text, marker='FINAL_JSON'):
+    """Find the JSON object that follows a labelled marker like FINAL_JSON:.
+
+    The Pass 1 prompt asks the model to write reasoning before its JSON, so we
+    cannot just regex the first ``{...}`` (the model often shows examples
+    earlier in its trace). The marker disambiguates.
+    """
+    import json as _json
+    m = re.search(rf'{re.escape(marker)}\s*[:\-]?\s*(\{{[\s\S]*\}})\s*$', text)
+    if not m:
+        m = re.search(rf'{re.escape(marker)}\s*[:\-]?\s*(\{{[\s\S]*?\}})', text)
+    if not m:
+        # Last resort: grab the LAST complete-looking JSON object in the text.
+        objs = re.findall(r'(\{[\s\S]*?\})', text)
+        if not objs:
+            raise ValueError(f"No JSON object found after {marker}")
+        return _json.loads(objs[-1])
+    return _json.loads(m.group(1))
+
+
 def categorise_mistakes(provider, model, session_keys, subject_family, themes, questions_data):
-    """Async-friendly combined call: for each criterion-with-marks-lost,
-    assign a theme_key + specific_label + (optional) low_confidence +
-    a themed_correction_prompt. Also generate one group_habit per theme
-    that has ≥ 2 criteria assigned (excluding never_group themes).
+    """Three-pass categorisation pipeline:
 
-    `themes` is the THEMES dict from config/mistake_themes.py — passed in
-    so this file stays free of hardcoded theme data. `questions_data` is
-    a list of dicts with keys: criterion_id, criterion_name, student_answer,
-    feedback, marks_awarded, marks_total (or marks_lost).
+      Pass 1 — generation. Asks the model to reason in four steps (diagnose →
+        find shared causes → label → assign) and emit a FINAL_JSON block.
+      Pass 2 — verification. Reviews each specific_label and rewrites any
+        that are advice rather than diagnoses, or that are too generic.
+        Falls back to Pass 1 on parse failure.
+      Pass 3 — group habits. Generates one "Next time:" habit per group
+        that survived Pass 2.
 
-    Returns a dict: {
+    `themes` is the THEMES dict from config/mistake_themes.py — passed in so
+    this module never hardcodes theme data. `questions_data` is a list of
+    dicts with criterion_id, criterion_name, student_answer, feedback,
+    marks_awarded, marks_total (or marks_lost).
+
+    Returns: {
         "categorisation": [ {criterion_id, theme_key, specific_label,
-                             low_confidence, themed_correction_prompt}, ... ],
+                             low_confidence, themed_correction_prompt: ""}, ... ],
         "group_habits":    [ {theme_key, habit}, ... ]
     }
 
-    Raises on API/parse failure — caller marks the submission "failed".
+    Raises on Pass 1 failure (caller marks the submission "failed"). Pass 2
+    failure is logged and degraded; Pass 3 failure is logged and yields no
+    habits.
     """
+    import json as _json
     if not questions_data:
         return {'categorisation': [], 'group_habits': []}
 
-    # Render the themes dict for the prompt — description only, plus the key.
+    valid_keys = list(themes.keys())
+    valid_keys_set = set(valid_keys)
+
+    # ---- Render shared blocks for the prompts ----
     theme_lines = []
     for key, cfg in themes.items():
         theme_lines.append(
@@ -1173,12 +1296,11 @@ def categorise_mistakes(provider, model, session_keys, subject_family, themes, q
             + ("  (never_group)" if cfg.get('never_group') else '')
         )
     theme_block = '\n'.join(theme_lines)
-    theme_keys_csv = ', '.join(themes.keys())
+    theme_keys_csv = ', '.join(valid_keys)
 
-    # Render the criteria for the prompt.
     crit_lines = []
     for q in questions_data:
-        cid = q.get('criterion_id') or ''
+        cid = str(q.get('criterion_id') or '')
         cname = q.get('criterion_name') or cid
         ans = (q.get('student_answer') or '').strip().replace('\n', ' ')
         fb = (q.get('feedback') or '').strip().replace('\n', ' ')
@@ -1202,98 +1324,249 @@ def categorise_mistakes(provider, model, session_keys, subject_family, themes, q
 
     subject_family_str = subject_family or 'unknown'
 
-    system_prompt = f"""You categorise a student's lost-mark criteria on a Singapore secondary school assignment.
+    # ---------------------------------------------------------------
+    # PASS 1 — generation with explicit four-step reasoning
+    # ---------------------------------------------------------------
+    pass1_system = f"""You are analysing a student's mistakes across an assignment to identify patterns. You will work through this in four explicit steps. Show your reasoning for each step before moving to the next.
 
 Subject family: {subject_family_str}
 
-The available parent themes (use EXACTLY one of these keys — no others):
+Allowed parent themes (use EXACTLY one of these keys — no others):
 {theme_block}
 
 Allowed theme_keys: {theme_keys_csv}
 
-For EACH criterion below, do all of the following:
+STEP 1 — DIAGNOSE EACH MISTAKE
+For each criterion where the student lost marks, write one sentence describing what the student actually did wrong. Write from a diagnostic perspective — describe the error, not what the student should do differently.
 
-1. Assign it to exactly one theme_key from the list above. Never leave a criterion unassigned.
-2. Generate a specific_label — a 2–4 word phrase from the student's perspective describing THIS particular mistake, not the category. Examples: "consequence not stated", "source not quoted", "informal word choice", "steps in wrong order". The specific_label MUST be distinct from the theme's own label — it describes the instance, not the family.
-3. If genuinely torn between two themes, pick the one that leads to the more actionable advice for the student. Set low_confidence: true in that case.
-4. Generate a themed_correction_prompt: a single-line prompt framed THROUGH the theme's lens (not generic), telling the student to retry this criterion in their own words. Format:
-       "[Criterion]: You [specific thing that was missing]. In your own words, explain what you should have written and why."
-   Scope the wording to the chosen theme — e.g. for reasoning_gap, ask them to make the missing link explicit; for evidence_handling, ask them to quote and interpret.
+Format (use exactly this format, one block per criterion):
+Criterion: <criterion_name OR criterion_id>
+Diagnosis: <one sentence describing the error>
 
-Then, once every criterion is assigned:
+STEP 2 — FIND SHARED CAUSES
+Look across all your Step 1 diagnoses. Group criteria that share the same underlying CAUSE — not the same topic or subject area, but the same type of error at its root.
 
-5. For each theme that ends up with 2 OR MORE criteria assigned — and that is NOT a never_group theme — produce a SINGLE group_habit sentence that applies to the WHOLE group, not any one question. It must start with "Next time:" and be at most 20 words. Concrete, actionable. One per qualifying group. Omit groups with <2 criteria and groups whose theme has never_group=true.
+A shared cause means: if a student fixed this one thing about how they think or work, it would address all the mistakes in this group.
 
-Respond ONLY with valid JSON in this exact shape (no prose, no markdown):
+List each candidate group and the criteria that belong to it. A group must have at least 2 criteria. Criteria that do not share a cause with any other should be marked as standalone.
 
+STEP 3 — LABEL EACH GROUP
+For each group from Step 2, generate a specific_label — a 2 to 4 word phrase that names the error TYPE as a diagnosis.
+
+A diagnostic label names what went wrong. It does NOT tell the student what to do.
+
+WRONG (these are advice, not diagnoses):
+  "check conversions before moving on"
+  "read the question more carefully"
+  "show working clearly"
+  "always state units"
+
+RIGHT (these are diagnoses):
+  "unit conversion error"
+  "question requirement misread"
+  "working not shown"
+  "units omitted"
+
+The label must be specific enough that two different error types would get two different labels. Generic labels that could apply to any subject or any mistake are not acceptable.
+
+Also assign each group to exactly ONE theme_key from the five provided themes. If you are uncertain between two themes, choose the one that is more actionable for the student.
+
+STEP 4 — ASSIGN AND OUTPUT
+Assign each criterion to exactly one group, or mark it standalone. Then produce your final JSON output.
+
+Return this EXACT structure and nothing else after your reasoning. Tag the JSON with the literal token FINAL_JSON: on its own line so it can be located unambiguously.
+
+FINAL_JSON:
 {{
   "categorisation": [
     {{
       "criterion_id": "<copied>",
-      "theme_key": "<one of the allowed keys>",
-      "specific_label": "<2-4 words>",
-      "low_confidence": false,
-      "themed_correction_prompt": "<one line>"
+      "theme_key": "<one of {theme_keys_csv}>",
+      "specific_label": "<2-4 words, diagnostic>",
+      "low_confidence": false
     }}
   ],
-  "group_habits": [
+  "groups": [
     {{
-      "theme_key": "<one of the allowed keys>",
-      "habit": "Next time: ..."
+      "theme_key": "<one of {theme_keys_csv}>",
+      "specific_label": "<2-4 words, diagnostic>",
+      "criteria_ids": ["<criterion_id>", "<criterion_id>"]
     }}
   ]
-}}"""
+}}
 
-    user_prompt = f"Criteria to categorise:\n{crits_block}\n\nReturn the JSON now."
+Rules for the JSON:
+- Every criterion with marks lost must appear in categorisation exactly once.
+- low_confidence: true ONLY if you were genuinely uncertain between two themes after Step 3.
+- A group appears in groups ONLY if it has 2 or more criteria.
+- Standalone criteria still appear in categorisation with their theme_key and specific_label, but do not appear in groups.
+- Never leave a criterion unassigned."""
 
-    parsed = _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=2000)
+    pass1_user = f"Criteria with marks lost:\n{crits_block}\n\nWork through Steps 1–4 then return FINAL_JSON."
 
-    cats_in = parsed.get('categorisation') or []
-    habs_in = parsed.get('group_habits') or []
-    valid_keys = set(themes.keys())
+    pass1_text = _run_text_completion(provider, model, session_keys, pass1_system, pass1_user, max_tokens=3500)
 
+    try:
+        pass1_json = _extract_final_json(pass1_text)
+    except Exception as e:
+        raise ValueError(f"Pass 1 FINAL_JSON could not be parsed: {e}")
+
+    diagnoses = _extract_step1_diagnoses(pass1_text, questions_data)
+
+    # ---------------------------------------------------------------
+    # PASS 2 — verification (rewrite advice → diagnosis, fix generic labels)
+    # ---------------------------------------------------------------
+    pass2_input = _json.dumps({
+        'categorisation': pass1_json.get('categorisation') or [],
+        'groups': pass1_json.get('groups') or [],
+    }, ensure_ascii=False)
+
+    diag_block_lines = []
+    for cid, diag in diagnoses.items():
+        diag_block_lines.append(f"- {cid}: {diag}")
+    diag_block = '\n'.join(diag_block_lines) if diag_block_lines else '(no diagnoses extracted)'
+
+    pass2_system = """You are reviewing category labels generated for a student's assignment mistakes. Your job is to flag and fix any labels that are advice rather than diagnoses.
+
+A diagnostic label names what went wrong.
+An advice label tells the student what to do.
+
+For each specific_label in the provided JSON, answer:
+1. Is this label a diagnosis or advice?
+2. If advice — rewrite it as a diagnosis in 2 to 4 words.
+3. Is this label specific enough? A label is too generic if it could apply to any mistake in any subject. If too generic — rewrite it to be more specific based on the diagnosis provided.
+
+Common advice patterns to catch and fix:
+- Starts with a verb: "check...", "show...", "remember...", "always...", "read..."
+- Contains "before", "next time", "make sure"
+- Could appear on a generic study skills poster
+
+After reviewing all labels, return the corrected JSON in the SAME structure as the input. Only change specific_label values — do not change any other fields. If a label is already correct, return it unchanged.
+
+Return ONLY the corrected JSON. No explanation. No prose."""
+
+    pass2_user = (
+        "Criterion diagnoses (from Step 1):\n"
+        f"{diag_block}\n\n"
+        "Labels to verify (Pass 1 output):\n"
+        f"{pass2_input}\n\n"
+        "Return the corrected JSON now."
+    )
+
+    verified = pass1_json
+    try:
+        pass2_text = _run_text_completion(provider, model, session_keys, pass2_system, pass2_user, max_tokens=2500)
+        m = re.search(r'\{[\s\S]*\}', pass2_text)
+        if not m:
+            raise ValueError("Pass 2 returned no JSON object")
+        candidate = _json.loads(m.group(0))
+        # Sanity: must have categorisation + groups keys.
+        if isinstance(candidate, dict) and 'categorisation' in candidate and 'groups' in candidate:
+            verified = candidate
+        else:
+            logger.warning("Pass 2 JSON missing expected keys; falling back to Pass 1")
+    except Exception as e:
+        logger.warning(f"Pass 2 parse failed, falling back to Pass 1: {e}")
+
+    # ---------------------------------------------------------------
+    # PASS 3 — group habits (one "Next time:" sentence per group)
+    # ---------------------------------------------------------------
+    verified_groups = verified.get('groups') or []
+    # Drop never_group themes from habit generation (they should never bundle).
+    eligible_groups = []
+    for g in verified_groups:
+        tk = g.get('theme_key')
+        if tk not in valid_keys_set:
+            continue
+        if (themes.get(tk) or {}).get('never_group'):
+            continue
+        cids = [str(c) for c in (g.get('criteria_ids') or [])]
+        if len(cids) < 2:
+            continue
+        eligible_groups.append({
+            'theme_key': tk,
+            'specific_label': (g.get('specific_label') or '').strip(),
+            'criteria_ids': cids,
+            'criterion_diagnoses': [diagnoses.get(cid, '') for cid in cids if diagnoses.get(cid)],
+        })
+
+    habits_out = []
+    if eligible_groups:
+        pass3_system = """For each group provided, generate a single "Next time:" sentence — one actionable habit the student can apply independently in future.
+
+Rules:
+- Must start with "Next time:"
+- Maximum 20 words total INCLUDING "Next time:"
+- Must name a concrete self-check action, not a vague reminder
+- Must be specific to this group's error pattern, not generic study advice
+
+WRONG: "Next time: check your work before submitting."
+WRONG: "Next time: be more careful with your answers."
+RIGHT: "Next time: after writing any quantity, ask yourself — have I stated the unit?"
+RIGHT: "Next time: after describing a process, ask — what breaks if this step fails?"
+
+Return JSON ONLY (a list — no surrounding object, no prose):
+[
+  {"theme_key": "...", "specific_label": "...", "habit": "Next time: ..."}
+]"""
+
+        pass3_user = (
+            "Groups (each with the diagnoses from Step 1 of Pass 1):\n"
+            f"{_json.dumps(eligible_groups, ensure_ascii=False)}\n\n"
+            "Return the JSON list now."
+        )
+        try:
+            pass3_text = _run_text_completion(provider, model, session_keys, pass3_system, pass3_user, max_tokens=600)
+            m = re.search(r'\[[\s\S]*\]', pass3_text)
+            if m:
+                habs_in = _json.loads(m.group(0))
+                seen_theme = set()
+                for h in habs_in or []:
+                    if not isinstance(h, dict):
+                        continue
+                    tk = h.get('theme_key')
+                    if tk not in valid_keys_set or tk in seen_theme:
+                        continue
+                    if (themes.get(tk) or {}).get('never_group'):
+                        continue
+                    habit = (h.get('habit') or '').strip()
+                    if not habit:
+                        continue
+                    if not habit.lower().startswith('next time'):
+                        habit = 'Next time: ' + habit
+                    seen_theme.add(tk)
+                    habits_out.append({'theme_key': tk, 'habit': habit})
+        except Exception as e:
+            logger.warning(f"Pass 3 (group habits) failed: {e}")
+
+    # ---------------------------------------------------------------
+    # Sanitise the verified categorisation into the existing storage shape
+    # ---------------------------------------------------------------
+    cats_in = verified.get('categorisation') or []
     cats_out = []
-    known_ids = {q.get('criterion_id') for q in questions_data}
+    known_ids = {str(q.get('criterion_id')) for q in questions_data}
     seen_ids = set()
     for c in cats_in:
         if not isinstance(c, dict):
             continue
-        cid = c.get('criterion_id')
-        if cid is None or cid not in known_ids or cid in seen_ids:
+        cid = str(c.get('criterion_id') or '')
+        if not cid or cid not in known_ids or cid in seen_ids:
             continue
         seen_ids.add(cid)
         tk = c.get('theme_key')
-        if tk not in valid_keys:
-            # Coerce into a sensible default so the render layer can still run.
+        if tk not in valid_keys_set:
             tk = 'content_gap'
         spec = (c.get('specific_label') or '').strip()
         if not spec:
             spec = (themes.get(tk) or {}).get('label', 'Area for review')
-        prompt = (c.get('themed_correction_prompt') or '').strip()
         cats_out.append({
             'criterion_id': cid,
             'theme_key': tk,
             'specific_label': spec,
             'low_confidence': bool(c.get('low_confidence')),
-            'themed_correction_prompt': prompt,
+            # No themed correction prompt under the new pipeline; stays empty so
+            # the existing UI swap is a no-op (generic prompt is shown instead).
+            'themed_correction_prompt': '',
         })
 
-    habs_out = []
-    seen_theme = set()
-    for h in habs_in:
-        if not isinstance(h, dict):
-            continue
-        tk = h.get('theme_key')
-        if tk not in valid_keys or (themes.get(tk) or {}).get('never_group'):
-            continue
-        if tk in seen_theme:
-            continue
-        habit = (h.get('habit') or '').strip()
-        if not habit:
-            continue
-        if not habit.lower().startswith('next time'):
-            habit = 'Next time: ' + habit
-        seen_theme.add(tk)
-        habs_out.append({'theme_key': tk, 'habit': habit})
-
-    return {'categorisation': cats_out, 'group_habits': habs_out}
+    return {'categorisation': cats_out, 'group_habits': habits_out}

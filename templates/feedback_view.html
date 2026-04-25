@@ -130,6 +130,15 @@
     }
     .fv-view-toggle button.active { background: white; color: #2D2D2D; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
     .fv-view-toggle button:not(.active):hover { color: #2D2D2D; }
+    .fv-mistake-marker { display: inline-block; margin-left: 6px; font-size: 11px; color: #b1b6cf; transform: translateY(-1px); }
+
+    /* One-time inline note under the toggle — shown the first time a student
+       switches to By mistake type, dismissed on any interaction. */
+    .fv-mistake-note {
+        margin: -2px 0 12px; padding: 8px 12px;
+        font-size: 12.5px; color: #555; line-height: 1.45;
+        background: #f7f8ff; border-left: 2px solid #b1b6cf; border-radius: 0 6px 6px 0;
+    }
 
     /* Grouped view */
     .fv-grouped { margin-top: 18px; }
@@ -230,9 +239,11 @@
     </div>
 
     <div class="fv-view-toggle" id="fvViewToggle" role="tablist" aria-label="Choose feedback layout">
-        <button type="button" id="fvToggleMistake" class="active" role="tab" aria-selected="true">By Mistake Type</button>
-        <button type="button" id="fvToggleQuestion" role="tab" aria-selected="false">By Question</button>
+        <button type="button" id="fvToggleQuestion" class="active" role="tab" aria-selected="true">By Question</button>
+        <button type="button" id="fvToggleMistake" role="tab" aria-selected="false">By mistake type<span class="fv-mistake-marker">&#10038;</span></button>
     </div>
+
+    <div class="fv-mistake-note" id="fvMistakeNote" hidden>Groups similar mistakes together to help you spot patterns — try it out.</div>
 
     <div id="fvGrouped" class="fv-grouped hidden"></div>
 
@@ -334,6 +345,7 @@ var FV_THEMES = {{ (themes or {}) | tojson }};
 var FV_INITIAL_GROUPING = {{ (grouping_data or None) | tojson }};
 var FV_STUDENT_ID = document.querySelector('.fv-root').getAttribute('data-student-id') || '';
 var FV_VIEW_STORAGE_KEY = 'feedback_view_' + FV_ASSIGNMENT_ID + '_' + FV_STUDENT_ID;
+var FV_NOTE_STORAGE_KEY = 'feedback_view_note_dismissed_' + FV_ASSIGNMENT_ID + '_' + FV_STUDENT_ID;
 
 function fvToggleCrit(card) {
     card.classList.toggle('expanded');
@@ -709,15 +721,47 @@ function fvShowToggleIfReady(payload) {
     toggle.classList.add('visible');
     var stored = null;
     try { stored = localStorage.getItem(FV_VIEW_STORAGE_KEY); } catch (e) {}
-    var initial = stored === 'question' ? 'question' : 'mistake';
+    // Default state on every page load is "By Question". Only return visits
+    // where the student previously chose "By mistake type" land in the
+    // grouped view automatically.
+    var initial = stored === 'mistake' ? 'mistake' : 'question';
     fvActivateView(initial);
     // Only auto-scroll when the student lands in the grouped view on this
-    // visit — never hijack the page when they explicitly chose by-question.
+    // visit — never hijack the page when they're in the by-question view.
     if (initial === 'mistake') fvMaybeAutoScroll();
 }
 
-document.getElementById('fvToggleMistake').addEventListener('click', function () { fvActivateView('mistake'); });
-document.getElementById('fvToggleQuestion').addEventListener('click', function () { fvActivateView('question'); });
+function fvShowMistakeNoteIfFirstSwitch() {
+    var note = document.getElementById('fvMistakeNote');
+    if (!note) return;
+    var dismissed = false;
+    try { dismissed = localStorage.getItem(FV_NOTE_STORAGE_KEY) === '1'; } catch (e) {}
+    if (dismissed) return;
+    note.hidden = false;
+    // Mark it as dismissed on any interaction with the page (click, keypress,
+    // scroll past it). Single-shot listener — auto-removes itself after fire.
+    var dismiss = function () {
+        try { localStorage.setItem(FV_NOTE_STORAGE_KEY, '1'); } catch (e) {}
+        note.hidden = true;
+        document.removeEventListener('click', dismiss, true);
+        document.removeEventListener('keydown', dismiss, true);
+    };
+    // Defer attaching so the click that just opened the note doesn't close it.
+    setTimeout(function () {
+        document.addEventListener('click', dismiss, true);
+        document.addEventListener('keydown', dismiss, true);
+    }, 0);
+}
+
+document.getElementById('fvToggleMistake').addEventListener('click', function () {
+    fvActivateView('mistake');
+    fvShowMistakeNoteIfFirstSwitch();
+});
+document.getElementById('fvToggleQuestion').addEventListener('click', function () {
+    fvActivateView('question');
+    var note = document.getElementById('fvMistakeNote');
+    if (note) note.hidden = true;
+});
 
 // Initial state from the server-rendered payload (if categorisation was
 // already 'done' at page load).
