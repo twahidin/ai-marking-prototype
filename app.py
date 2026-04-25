@@ -4333,6 +4333,42 @@ def _detect_mime(data):
     return 'application/octet-stream'
 
 
+def _build_text_edit_meta(submission_id):
+    """Per (criterion_id, field), the latest teacher version + whether an
+    active feedback_edit row exists. Used by the GET handler so the page
+    can render per-field tags on initial load without a second round-trip.
+
+    Shape: {criterion_id: {field: {'version': N, 'calibrated': bool}}}
+    """
+    from db import FeedbackLog, FeedbackEdit
+    from sqlalchemy import func as _func
+
+    log_rows = db.session.query(
+        FeedbackLog.criterion_id,
+        FeedbackLog.field,
+        _func.max(FeedbackLog.version).label('latest_version'),
+    ).filter(
+        FeedbackLog.submission_id == submission_id,
+        FeedbackLog.author_type == 'teacher',
+    ).group_by(
+        FeedbackLog.criterion_id, FeedbackLog.field,
+    ).all()
+
+    active_edits = FeedbackEdit.query.filter_by(
+        submission_id=submission_id,
+        active=True,
+    ).all()
+    active_set = {(e.criterion_id, e.field) for e in active_edits}
+
+    meta = {}
+    for row in log_rows:
+        meta.setdefault(row.criterion_id, {})[row.field] = {
+            'version': int(row.latest_version),
+            'calibrated': (row.criterion_id, row.field) in active_set,
+        }
+    return meta
+
+
 @app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/result')
 def teacher_submission_result(assignment_id, submission_id):
     asn = Assignment.query.get_or_404(assignment_id)
@@ -4348,6 +4384,7 @@ def teacher_submission_result(assignment_id, submission_id):
         'status': sub.status,
         'draft_number': sub.draft_number,
         'is_final': sub.is_final,
+        'text_edit_meta': _build_text_edit_meta(sub.id),
     })
 
 
@@ -5226,6 +5263,100 @@ def student_feedback_grouping_status(submission_id):
     if not payload:
         return jsonify({'status': 'pending'})  # defensive — don't flip UI yet
     return jsonify({'status': 'done', **payload})
+
+
+@app.route('/feedback/deprecate-edit', methods=['POST'])
+def feedback_deprecate_edit():
+    """Soft-delete a feedback_edit row. Only the original editor may retire."""
+    from db import FeedbackEdit
+    if not _is_authenticated():
+        return jsonify({'status': 'error', 'message': 'Not authenticated'}), 401
+    teacher = _current_teacher()
+    teacher_id = teacher.id if teacher else None
+    if not teacher_id:
+        return jsonify({'status': 'error', 'message': 'Not authenticated'}), 401
+    data = request.get_json(silent=True) or {}
+    edit_id = data.get('edit_id')
+    if not isinstance(edit_id, int):
+        return jsonify({'status': 'error', 'message': 'edit_id (int) required'}), 400
+    edit = FeedbackEdit.query.get(edit_id)
+    if not edit:
+        return jsonify({'status': 'error', 'message': 'Edit not found'}), 404
+    if edit.edited_by != teacher_id:
+        return jsonify({'status': 'error', 'message': 'Forbidden'}), 403
+    if edit.active:
+        edit.active = False
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Could not retire edit {edit_id}: {e}")
+            return jsonify({'status': 'error', 'message': 'Could not save'}), 500
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/feedback/edit-history/<assignment_id>/<int:submission_id>/<criterion_id>')
+def feedback_edit_history(assignment_id, submission_id, criterion_id):
+    """Combined history of versions for both feedback and improvement
+    on one criterion. Auth: assignment owner (or HOD/lead in dept mode).
+    """
+    from db import FeedbackLog, FeedbackEdit, Teacher as _Teacher
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'error': 'submission does not belong to this assignment'}), 404
+
+    log_rows = FeedbackLog.query.filter_by(
+        submission_id=submission_id,
+        criterion_id=criterion_id,
+    ).order_by(FeedbackLog.field.asc(), FeedbackLog.version.asc()).all()
+
+    edit_rows = FeedbackEdit.query.filter_by(
+        submission_id=submission_id,
+        criterion_id=criterion_id,
+    ).all()
+    edits_by_key = {(e.field, e.edited_by, e.edited_text): e for e in edit_rows}
+
+    teacher_ids = {r.author_id for r in log_rows if r.author_id}
+    teachers = {}
+    if teacher_ids:
+        for tt in _Teacher.query.filter(_Teacher.id.in_(teacher_ids)).all():
+            teachers[tt.id] = tt
+
+    def _author_name(row):
+        if row.author_type == 'ai':
+            return 'AI'
+        tt = teachers.get(row.author_id)
+        if not tt:
+            return f'Teacher #{row.author_id}'
+        return getattr(tt, 'name', None) or f'Teacher #{row.author_id}'
+
+    def _fmt_date(dt):
+        if not dt:
+            return ''
+        try:
+            return f"{dt.day} {dt.strftime('%b %Y')}"
+        except Exception:
+            return dt.strftime('%d %b %Y')
+
+    out = {'feedback': [], 'improvement': []}
+    for r in log_rows:
+        if r.field not in out:
+            continue
+        edit = edits_by_key.get((r.field, r.author_id, r.feedback_text)) if r.author_type == 'teacher' else None
+        out[r.field].append({
+            'version': r.version,
+            'author_type': r.author_type,
+            'author_name': _author_name(r),
+            'feedback_text': r.feedback_text,
+            'created_at': _fmt_date(r.created_at),
+            'edit_id': edit.id if edit else None,
+            'active': edit.active if edit else None,
+        })
+    return jsonify(out)
 
 
 @app.route('/submit/<assignment_id>/upload', methods=['POST'])
