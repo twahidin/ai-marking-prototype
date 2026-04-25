@@ -259,6 +259,7 @@ async function renderRightFeedback(submissionId, label) {
             submissionId: submissionId,
             scoringMode: {{ assignment.scoring_mode|tojson }},
             textEditMeta: data.text_edit_meta || {},
+            currentTeacherId: data.current_teacher_id || null,
         });
         if (label) document.getElementById('rightInfo').textContent = label;
     } catch (err) {

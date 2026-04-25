@@ -85,6 +85,7 @@
             editable: !!options.editable,
             assignmentId: options.assignmentId || null,
             submissionId: options.submissionId || null,
+            currentTeacherId: options.currentTeacherId || null,
             onSave: options.onSave || null,
             isMarksMode: isMarksMode,
             textEditMeta: options.textEditMeta || {},
@@ -677,26 +678,148 @@
     // ---- Edit tag renderer ----
 
     function renderEditTag(state, idx, field, meta) {
-        // meta = {version, calibrated}.  Replace any existing tag for this
+        // meta = {version, calibrated}.  Replace any existing tag row for this
         // (idx, field). Insert as a sibling immediately after the field's
-        // visible element so the tag sits beneath it.
+        // visible element so the tag + history link sit beneath it.
         var prefix = state.prefix || 'fb';
         // renderQuestion only shows one card at a time, identified by prefix + 'QCard'.
         var qCard = document.getElementById(prefix + 'QCard');
         if (!qCard) return;
         var fieldEl = qCard.querySelector('[data-field="' + field + '"]');
         if (!fieldEl) return;
-        var tagId = prefix + 'Tag-' + idx + '-' + field;
-        var existing = document.getElementById(tagId);
+        var rowId = prefix + 'TagRow-' + idx + '-' + field;
+        var existing = document.getElementById(rowId);
         if (existing) existing.remove();
-        var tag = document.createElement('div');
-        tag.id = tagId;
+        var row = document.createElement('div');
+        row.id = rowId;
+        row.className = 'fb-edit-tag-row';
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:2px;font-size:11px;color:#7a7f8c;letter-spacing:0.2px;';
+        var tag = document.createElement('span');
         tag.className = 'fb-edit-tag' + (meta.calibrated ? ' fb-tag-cal' : ' fb-tag-wf');
-        tag.style.cssText = 'font-size:11px;color:#7a7f8c;margin-top:2px;letter-spacing:0.2px;';
         tag.textContent = meta.calibrated ? '· in calibration bank' : '· workflow note';
+        row.appendChild(tag);
+        var link = document.createElement('a');
+        link.href = '#';
+        link.className = 'fb-history-link';
+        link.style.cssText = 'color:#5a6fd6;text-decoration:none;';
+        link.textContent = 'View edit history';
+        link.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            toggleHistoryPanel(state, idx, field, row);
+        });
+        row.appendChild(link);
         if (fieldEl.parentNode) {
-            fieldEl.parentNode.insertBefore(tag, fieldEl.nextSibling);
+            fieldEl.parentNode.insertBefore(row, fieldEl.nextSibling);
         }
+    }
+
+    function toggleHistoryPanel(state, idx, field, anchorRow) {
+        var prefix = state.prefix || 'fb';
+        var panelId = prefix + 'HistPanel-' + idx + '-' + field;
+        var existing = document.getElementById(panelId);
+        if (existing) {
+            existing.remove();
+            return;
+        }
+        var panel = document.createElement('div');
+        panel.id = panelId;
+        panel.className = 'fb-history-panel';
+        panel.style.cssText = 'margin-top:8px;padding:10px 12px;background:#f7f8fb;border:1px solid #e3e6f0;border-radius:6px;font-size:12.5px;color:#333;line-height:1.5;';
+        panel.textContent = 'Loading…';
+        if (anchorRow.parentNode) {
+            anchorRow.parentNode.insertBefore(panel, anchorRow.nextSibling);
+        }
+        fetchAndRenderHistory(state, idx, panel);
+    }
+
+    function fetchAndRenderHistory(state, idx, panel) {
+        // Use the current question's question_num for the criterion_id segment.
+        var q = (state.questions || [])[idx];
+        if (!q) {
+            panel.textContent = 'Could not resolve criterion.';
+            return;
+        }
+        var critId = String(q.question_num != null ? q.question_num : (idx + 1));
+        var url = '/feedback/edit-history/' + encodeURIComponent(state.assignmentId) +
+                  '/' + encodeURIComponent(state.submissionId) +
+                  '/' + encodeURIComponent(critId);
+        fetch(url, { credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                renderHistoryPanel(state, idx, panel, data);
+            })
+            .catch(function () {
+                panel.textContent = 'Could not load history.';
+            });
+    }
+
+    function renderHistoryPanel(state, idx, panel, data) {
+        panel.innerHTML = '';
+        var fields = ['feedback', 'improvement'];
+        var anyShown = false;
+        fields.forEach(function (field) {
+            var versions = (data && data[field]) || [];
+            if (!versions.length) return;
+            anyShown = true;
+            var heading = document.createElement('div');
+            heading.style.cssText = 'font-weight:600;color:#444;margin-top:6px;margin-bottom:4px;';
+            heading.textContent = field === 'feedback' ? 'Feedback' : 'Suggested improvement';
+            panel.appendChild(heading);
+            versions.forEach(function (v) {
+                var block = document.createElement('div');
+                block.style.cssText = 'margin-bottom:8px;';
+                var meta = document.createElement('div');
+                meta.style.cssText = 'font-size:11.5px;color:#7a7f8c;';
+                var retiredMark = (v.edit_id && v.active === false) ? ' · retired' : '';
+                meta.textContent = 'Version ' + v.version + ' — ' + v.author_name + ' · ' + (v.created_at || '') + retiredMark;
+                block.appendChild(meta);
+                var body = document.createElement('div');
+                body.style.cssText = 'white-space:pre-wrap;color:#333;margin-top:2px;';
+                body.textContent = v.feedback_text || '';
+                block.appendChild(body);
+                // Retire link only for active teacher edits.
+                if (v.edit_id && v.active === true && v.author_type === 'teacher') {
+                    var ret = document.createElement('a');
+                    ret.href = '#';
+                    ret.className = 'fb-retire-link';
+                    ret.style.cssText = 'font-size:11.5px;color:#b94a48;text-decoration:none;margin-top:2px;display:inline-block;';
+                    ret.textContent = 'Retire this edit';
+                    (function (editId) {
+                        ret.addEventListener('click', function (ev) {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            retireEdit(state, idx, editId, panel);
+                        });
+                    }(v.edit_id));
+                    block.appendChild(ret);
+                }
+                panel.appendChild(block);
+            });
+        });
+        if (!anyShown) {
+            panel.textContent = 'No edit history.';
+        }
+    }
+
+    function retireEdit(state, idx, editId, panel) {
+        fetch('/feedback/deprecate-edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ edit_id: editId }),
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data && data.status === 'ok') {
+                    // Re-fetch the history so the version flips to retired.
+                    panel.textContent = 'Loading…';
+                    fetchAndRenderHistory(state, idx, panel);
+                } else {
+                    panel.textContent = 'Could not retire: ' + ((data && data.message) || 'unknown error');
+                }
+            })
+            .catch(function () { panel.textContent = 'Could not retire (network).'; });
     }
 
     global.FeedbackRender = { render: render };

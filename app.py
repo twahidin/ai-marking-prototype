@@ -4385,13 +4385,16 @@ def teacher_submission_result(assignment_id, submission_id):
     sub = Submission.query.get_or_404(submission_id)
     if sub.assignment_id != assignment_id:
         return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+    teacher = _current_teacher()
+    teacher_id = teacher.id if teacher else None
     return jsonify({
         'success': True,
         'result': sub.get_result(),
         'status': sub.status,
         'draft_number': sub.draft_number,
         'is_final': sub.is_final,
-        'text_edit_meta': _build_text_edit_meta(sub.id, teacher_id=(_current_teacher().id if _current_teacher() else None)),
+        'text_edit_meta': _build_text_edit_meta(sub.id, teacher_id=teacher_id),
+        'current_teacher_id': teacher_id,
     })
 
 
