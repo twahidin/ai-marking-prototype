@@ -85,8 +85,10 @@
             editable: !!options.editable,
             assignmentId: options.assignmentId || null,
             submissionId: options.submissionId || null,
+            currentTeacherId: options.currentTeacherId || null,
             onSave: options.onSave || null,
             isMarksMode: isMarksMode,
+            textEditMeta: options.textEditMeta || {},
         };
         if (state.editable && (!state.assignmentId || !state.submissionId)) {
             state.editable = false;
@@ -299,6 +301,17 @@
             attachQuestionEditHandlers(state);
         }
 
+        // Initial-load: render tags for criteria that already have edits.
+        if (state.textEditMeta) {
+            var q = state.questions[state.currentQ];
+            if (q) {
+                var qKey = String(q.question_num != null ? q.question_num : (state.currentQ + 1));
+                var qMeta = state.textEditMeta[qKey] || {};
+                if (qMeta.feedback)    renderEditTag(state, state.currentQ, 'feedback',    qMeta.feedback);
+                if (qMeta.improvement) renderEditTag(state, state.currentQ, 'improvement', qMeta.improvement);
+            }
+        }
+
         if (window.MathJax && MathJax.typesetPromise && container) {
             MathJax.typesetPromise([container]).catch(function () {});
         }
@@ -386,18 +399,48 @@
             global.LatexAutocomplete.attach(textarea);
         }
 
+        // Calibration checkbox — only for feedback/improvement text fields.
+        var cb = null;
+        if (field === 'feedback' || field === 'improvement') {
+            var wrap = document.createElement('label');
+            wrap.className = 'fb-cal-wrap';
+            wrap.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:#666;cursor:pointer;user-select:none;';
+            cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'fb-cal-cb';
+            cb.style.cssText = 'margin:0;cursor:pointer;';
+            var labelTxt = document.createTextNode('Save to calibration bank');
+            wrap.appendChild(cb);
+            wrap.appendChild(labelTxt);
+            el.appendChild(wrap);
+            // preventDefault on mousedown stops focus transfer to the checkbox, so
+            // the textarea keeps focus and doesn't blur (which would save before
+            // the checkbox state could be captured). The click still fires and
+            // toggles the checkbox normally — only the focus shift is blocked.
+            wrap.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+            cb.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+            // Manually toggle on every click (direct-on-box AND label-text both
+            // bubble to wrap). preventDefault suppresses the label's implicit
+            // re-toggle that would otherwise double-flip when clicking the box.
+            wrap.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                cb.checked = !cb.checked;
+            });
+        }
+
         var submitted = false;
         function commit() {
             if (submitted) return;
             submitted = true;
             var newVal = textarea.value;
+            var calibrate = !!(cb && cb.checked);
             if (newVal === currentValue) {
                 // No change → just revert display
                 if (field === 'overall') renderShell(state);
                 else renderQuestion(state);
                 return;
             }
-            saveTextField(state, field, newVal);
+            saveTextField(state, field, newVal, calibrate);
         }
         function cancel() {
             if (submitted) return;
@@ -501,7 +544,8 @@
         });
         var data = await res.json();
         if (!res.ok || !data.success) throw new Error((data && data.error) || 'Save failed');
-        return data.result;
+        // Return full response so callers can access edit_meta alongside result.
+        return data;
     }
 
     function mergeResult(state, newResult) {
@@ -516,22 +560,40 @@
         state.recommended = newResult.recommended_actions || [];
     }
 
-    async function saveTextField(state, field, newValue) {
+    async function saveTextField(state, field, newValue, calibrate) {
+        if (calibrate === undefined) calibrate = false;
         var payload;
+        var savedQNum = null;
         if (field === 'overall') {
             payload = { overall_feedback: newValue };
         } else {
             var q = state.questions[state.currentQ];
-            var qEdit = { question_num: q.question_num != null ? q.question_num : (state.currentQ + 1) };
+            savedQNum = q.question_num != null ? q.question_num : (state.currentQ + 1);
+            var qEdit = { question_num: savedQNum };
             qEdit[field] = newValue;
+            if (field === 'feedback' || field === 'improvement') {
+                qEdit.calibrate = !!calibrate;
+            }
             payload = { questions: [qEdit] };
         }
         try {
-            var merged = await patchResult(state, payload);
-            mergeResult(state, merged);
+            var data = await patchResult(state, payload);
+            mergeResult(state, data.result);
             if (field === 'overall') renderShell(state); else renderQuestion(state);
             showToast('success', 'Saved');
-            if (state.onSave) { try { state.onSave(merged); } catch (e) {} }
+            if (state.onSave) { try { state.onSave(data.result); } catch (e) {} }
+            // Render per-field tag from edit_meta if the server logged this edit.
+            if (data && data.edit_meta && savedQNum != null) {
+                var qKey = String(savedQNum);
+                var fieldMeta = (data.edit_meta[qKey] || {})[field];
+                if (fieldMeta) {
+                    // Store into textEditMeta so the tag survives re-renders.
+                    if (!state.textEditMeta) state.textEditMeta = {};
+                    if (!state.textEditMeta[qKey]) state.textEditMeta[qKey] = {};
+                    state.textEditMeta[qKey][field] = fieldMeta;
+                    renderEditTag(state, state.currentQ, field, fieldMeta);
+                }
+            }
         } catch (err) {
             if (field === 'overall') renderShell(state); else renderQuestion(state);
             showToast('error', err.message || 'Save failed');
@@ -548,13 +610,13 @@
             }],
         };
         try {
-            var merged = await patchResult(state, payload);
-            mergeResult(state, merged);
+            var data = await patchResult(state, payload);
+            mergeResult(state, data.result);
             renderQuestion(state);
             refreshSummary(state);
             refreshDots(state);
             showToast('success', 'Saved');
-            if (state.onSave) { try { state.onSave(merged); } catch (e) {} }
+            if (state.onSave) { try { state.onSave(data.result); } catch (e) {} }
         } catch (err) {
             renderQuestion(state);
             showToast('error', err.message || 'Save failed');
@@ -597,12 +659,12 @@
             }],
         };
         try {
-            var merged = await patchResult(state, payload);
-            mergeResult(state, merged);
+            var data = await patchResult(state, payload);
+            mergeResult(state, data.result);
             renderQuestion(state);
             refreshSummary(state);
             refreshDots(state);
-            if (state.onSave) { try { state.onSave(merged); } catch (e) {} }
+            if (state.onSave) { try { state.onSave(data.result); } catch (e) {} }
         } catch (err) {
             // Revert on failure.
             q.status = current;
@@ -611,6 +673,155 @@
             refreshDots(state);
             showToast('error', err.message || 'Save failed');
         }
+    }
+
+    // ---- Edit tag renderer ----
+
+    function renderEditTag(state, idx, field, meta) {
+        // meta = {version, calibrated}.  Replace any existing tag row for this
+        // (idx, field). Insert as a sibling immediately after the field's
+        // visible element so the tag + history link sit beneath it.
+        var prefix = state.prefix || 'fb';
+        // renderQuestion only shows one card at a time, identified by prefix + 'QCard'.
+        var qCard = document.getElementById(prefix + 'QCard');
+        if (!qCard) return;
+        var fieldEl = qCard.querySelector('[data-field="' + field + '"]');
+        if (!fieldEl) return;
+        var rowId = prefix + 'TagRow-' + idx + '-' + field;
+        var existing = document.getElementById(rowId);
+        if (existing) existing.remove();
+        var row = document.createElement('div');
+        row.id = rowId;
+        row.className = 'fb-edit-tag-row';
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:2px;font-size:11px;color:#7a7f8c;letter-spacing:0.2px;';
+        var tag = document.createElement('span');
+        tag.className = 'fb-edit-tag' + (meta.calibrated ? ' fb-tag-cal' : ' fb-tag-wf');
+        tag.textContent = meta.calibrated ? '· in calibration bank' : '· workflow note';
+        row.appendChild(tag);
+        var link = document.createElement('a');
+        link.href = '#';
+        link.className = 'fb-history-link';
+        link.style.cssText = 'color:#5a6fd6;text-decoration:none;';
+        link.textContent = 'View edit history';
+        link.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            toggleHistoryPanel(state, idx, field, row);
+        });
+        row.appendChild(link);
+        if (fieldEl.parentNode) {
+            fieldEl.parentNode.insertBefore(row, fieldEl.nextSibling);
+        }
+    }
+
+    function toggleHistoryPanel(state, idx, field, anchorRow) {
+        var prefix = state.prefix || 'fb';
+        var panelId = prefix + 'HistPanel-' + idx + '-' + field;
+        var existing = document.getElementById(panelId);
+        if (existing) {
+            existing.remove();
+            return;
+        }
+        var panel = document.createElement('div');
+        panel.id = panelId;
+        panel.className = 'fb-history-panel';
+        panel.style.cssText = 'margin-top:8px;padding:10px 12px;background:#f7f8fb;border:1px solid #e3e6f0;border-radius:6px;font-size:12.5px;color:#333;line-height:1.5;';
+        panel.textContent = 'Loading…';
+        if (anchorRow.parentNode) {
+            anchorRow.parentNode.insertBefore(panel, anchorRow.nextSibling);
+        }
+        fetchAndRenderHistory(state, idx, panel);
+    }
+
+    function fetchAndRenderHistory(state, idx, panel) {
+        // Use the current question's question_num for the criterion_id segment.
+        var q = (state.questions || [])[idx];
+        if (!q) {
+            panel.textContent = 'Could not resolve criterion.';
+            return;
+        }
+        var critId = String(q.question_num != null ? q.question_num : (idx + 1));
+        var url = '/feedback/edit-history/' + encodeURIComponent(state.assignmentId) +
+                  '/' + encodeURIComponent(state.submissionId) +
+                  '/' + encodeURIComponent(critId);
+        fetch(url, { credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                renderHistoryPanel(state, idx, panel, data);
+            })
+            .catch(function () {
+                panel.textContent = 'Could not load history.';
+            });
+    }
+
+    function renderHistoryPanel(state, idx, panel, data) {
+        panel.innerHTML = '';
+        var fields = ['feedback', 'improvement'];
+        var anyShown = false;
+        fields.forEach(function (field) {
+            var versions = (data && data[field]) || [];
+            if (!versions.length) return;
+            anyShown = true;
+            var heading = document.createElement('div');
+            heading.style.cssText = 'font-weight:600;color:#444;margin-top:6px;margin-bottom:4px;';
+            heading.textContent = field === 'feedback' ? 'Feedback' : 'Suggested improvement';
+            panel.appendChild(heading);
+            versions.forEach(function (v) {
+                var block = document.createElement('div');
+                block.style.cssText = 'margin-bottom:8px;';
+                var meta = document.createElement('div');
+                meta.style.cssText = 'font-size:11.5px;color:#7a7f8c;';
+                var retiredMark = (v.edit_id && v.active === false) ? ' · retired' : '';
+                meta.textContent = 'Version ' + v.version + ' — ' + v.author_name + ' · ' + (v.created_at || '') + retiredMark;
+                block.appendChild(meta);
+                var body = document.createElement('div');
+                body.style.cssText = 'white-space:pre-wrap;color:#333;margin-top:2px;';
+                body.textContent = v.feedback_text || '';
+                block.appendChild(body);
+                // Retire link only for active teacher edits.
+                if (v.edit_id && v.active === true && v.author_type === 'teacher' &&
+                    v.author_id && state.currentTeacherId &&
+                    v.author_id === state.currentTeacherId) {
+                    var ret = document.createElement('a');
+                    ret.href = '#';
+                    ret.className = 'fb-retire-link';
+                    ret.style.cssText = 'font-size:11.5px;color:#b94a48;text-decoration:none;margin-top:2px;display:inline-block;';
+                    ret.textContent = 'Retire this edit';
+                    (function (editId) {
+                        ret.addEventListener('click', function (ev) {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            retireEdit(state, idx, editId, panel);
+                        });
+                    }(v.edit_id));
+                    block.appendChild(ret);
+                }
+                panel.appendChild(block);
+            });
+        });
+        if (!anyShown) {
+            panel.textContent = 'No edit history.';
+        }
+    }
+
+    function retireEdit(state, idx, editId, panel) {
+        fetch('/feedback/deprecate-edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ edit_id: editId }),
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data && data.status === 'ok') {
+                    // Re-fetch the history so the version flips to retired.
+                    panel.textContent = 'Loading…';
+                    fetchAndRenderHistory(state, idx, panel);
+                } else {
+                    panel.textContent = 'Could not retire: ' + ((data && data.message) || 'unknown error');
+                }
+            })
+            .catch(function () { panel.textContent = 'Could not retire (network).'; });
     }
 
     global.FeedbackRender = { render: render };

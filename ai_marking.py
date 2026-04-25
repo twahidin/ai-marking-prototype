@@ -4,6 +4,7 @@ import base64
 import json
 import re
 import io
+import hashlib
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -572,13 +573,14 @@ CONSTRAINTS:
 
 
 def _build_rubrics_prompt(subject, rubrics_pages, reference_pages, question_paper_pages,
-                          script_pages, review_section, marking_section, total_marks):
+                          script_pages, review_section, marking_section, total_marks,
+                          calibration_block=''):
     """Build system prompt and content for rubrics/essay marking."""
     reference_section = ""
     if reference_pages:
         reference_section = "\nREFERENCE MATERIALS (sample works or other references) have been provided — use them to calibrate your expectations."
 
-    system_prompt = f"""You are an experienced teacher marking a student's essay/extended response using rubrics.
+    system_prompt = f"""{calibration_block}You are an experienced teacher marking a student's essay/extended response using rubrics.
 
 Subject: {subject or 'General'}
 {reference_section}
@@ -687,7 +689,8 @@ IMPORTANT:
 
 
 def _build_short_answer_prompt(subject, rubrics_pages, answer_key_pages, question_paper_pages,
-                               script_pages, review_section, marking_section, scoring_mode, total_marks):
+                               script_pages, review_section, marking_section, scoring_mode, total_marks,
+                               calibration_block=''):
     """Build system prompt and content for short answer marking."""
     rubrics_section = ""
     if rubrics_pages:
@@ -771,7 +774,7 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "correction_prompt": "OMIT if status == 'correct'; otherwise one short do-this-now task following CORRECTION PROMPT RULES — pick the form matching this question's mistake type (procedural / reasoning / evidence / concept / language). ≤ 25 words. Must not duplicate another question's wording."
         }}"""
 
-    system_prompt = f"""You are an experienced teacher marking a student's assignment script.
+    system_prompt = f"""{calibration_block}You are an experienced teacher marking a student's assignment script.
 
 Subject: {subject or 'General'}
 {rubrics_section}
@@ -922,7 +925,7 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
                 subject='', rubrics_pages=None, reference_pages=None,
                 review_instructions='', marking_instructions='',
                 model=None, assign_type='short_answer', scoring_mode='status', total_marks='',
-                session_keys=None):
+                session_keys=None, calibration_block=''):
     """
     Mark a student script using AI vision.
 
@@ -954,12 +957,14 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
     if assign_type == 'rubrics':
         system_prompt, content = _build_rubrics_prompt(
             subject, rubrics_pages, reference_pages, question_paper_pages, script_pages,
-            review_section, marking_section, total_marks
+            review_section, marking_section, total_marks,
+            calibration_block=calibration_block,
         )
     else:
         system_prompt, content = _build_short_answer_prompt(
             subject, rubrics_pages, answer_key_pages, question_paper_pages, script_pages,
-            review_section, marking_section, scoring_mode, total_marks
+            review_section, marking_section, scoring_mode, total_marks,
+            calibration_block=calibration_block,
         )
 
     try:
@@ -1734,3 +1739,167 @@ Return JSON ONLY (a list — no surrounding object, no prose):
         })
 
     return {'categorisation': cats_out, 'group_habits': habits_out}
+
+
+def _rubric_version_hash(asn):
+    """MD5 hex over the assignment's raw rubric or answer_key bytes.
+
+    rubrics and answer_key are LargeBinary blobs (uploaded files), not
+    text. Hash the raw bytes — the spec's `.encode()` formulation
+    doesn't apply to the actual columns. Empty/missing blobs hash the
+    empty bytes string consistently, which is fine: such an
+    assignment will only ever match other empty-blob assignments.
+    """
+    blob = (getattr(asn, 'rubrics', None) or getattr(asn, 'answer_key', None) or b'')
+    if isinstance(blob, str):  # defensive — should be bytes from LargeBinary, but stay safe
+        blob = blob.encode('utf-8')
+    return hashlib.md5(blob).hexdigest()
+
+
+def fetch_calibration_examples(teacher_id, assignment, theme_keys, limit=10):
+    """Return up to `limit` of this teacher's prior active edits relevant to
+    the current marking. Two tiers, merged then deduped:
+
+      Tier 0: same assignment + same rubric_version (no theme filter).
+      Tier 1: per theme_key — different assignment, same subject_family,
+              theme_key matches.
+
+    `theme_keys` is the iterable of theme_keys from the current submission's
+    lost-mark criteria. May be empty (first mark of a fresh submission, or
+    submission not yet categorised) — only Tier 0 returns rows in that case.
+
+    All queries use bound parameters via SQLAlchemy text(). Never f-string
+    interpolation.
+    """
+    from sqlalchemy import text as _sql_text
+    from db import db
+    if not teacher_id or not assignment:
+        return []
+
+    rubric_hash = _rubric_version_hash(assignment)
+    rows_by_id = {}
+
+    tier0_sql = _sql_text(
+        "SELECT id, original_text, edited_text, theme_key, assignment_id, "
+        "rubric_version, created_at, criterion_id, field, "
+        "0 AS match_tier "
+        "FROM feedback_edit "
+        "WHERE edited_by = :teacher_id "
+        "  AND active = true "
+        "  AND assignment_id = :aid "
+        "  AND rubric_version = :rubric_hash "
+        "ORDER BY created_at DESC"
+    )
+    for r in db.session.execute(tier0_sql, {
+        'teacher_id': teacher_id,
+        'aid': assignment.id,
+        'rubric_hash': rubric_hash,
+    }).mappings().all():
+        rows_by_id[r['id']] = dict(r)
+
+    sf = getattr(assignment, 'subject_family', None) or ''
+    if sf and theme_keys:
+        tier1_sql = _sql_text(
+            "SELECT id, original_text, edited_text, theme_key, assignment_id, "
+            "rubric_version, created_at, criterion_id, field, "
+            "1 AS match_tier "
+            "FROM feedback_edit "
+            "WHERE edited_by = :teacher_id "
+            "  AND active = true "
+            "  AND assignment_id != :aid "
+            "  AND subject_family = :sf "
+            "  AND theme_key IS NOT NULL "
+            "  AND theme_key = :tk "
+            "ORDER BY created_at DESC"
+        )
+        seen_themes = set()
+        for tk in theme_keys:
+            if not tk or tk in seen_themes:
+                continue
+            seen_themes.add(tk)
+            for r in db.session.execute(tier1_sql, {
+                'teacher_id': teacher_id,
+                'aid': assignment.id,
+                'sf': sf,
+                'tk': tk,
+            }).mappings().all():
+                # Tier 0 wins over Tier 1 for the same edit id.
+                if r['id'] not in rows_by_id:
+                    rows_by_id[r['id']] = dict(r)
+
+    # Sort: Tier 0 first, newest first within each tier.
+    def _ts(d):
+        ca = d.get('created_at')
+        if ca is None:
+            return 0
+        try:
+            return ca.timestamp()
+        except Exception:
+            return 0
+
+    sorted_rows = sorted(
+        rows_by_id.values(),
+        key=lambda d: (d['match_tier'], -_ts(d)),
+    )
+
+    # Collapse to most-recent per (criterion_id, field), then truncate.
+    seen_keys = set()
+    out = []
+    for d in sorted_rows:
+        key = (d['criterion_id'], d['field'])
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        out.append(d)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _truncate_at_word(s, max_chars=200):
+    """Truncate to <= max_chars at the nearest word boundary, append '...'."""
+    if not s:
+        return ''
+    s = s.replace('\n', ' ').replace('\r', ' ').strip()
+    if len(s) <= max_chars:
+        return s
+    cut = s[:max_chars]
+    last_space = cut.rfind(' ')
+    if last_space > max_chars * 0.5:
+        cut = cut[:last_space]
+    return cut.rstrip(' .,;:!?') + '...'
+
+
+def format_calibration_block(examples):
+    """Render `examples` (output of fetch_calibration_examples) as the
+    MARKING CALIBRATION block per spec Part 3. Returns '' when empty so the
+    caller can simply prepend without checking.
+    """
+    if not examples:
+        return ''
+    lines = [
+        '---',
+        'MARKING CALIBRATION',
+        '',
+        'This teacher has previously edited AI-generated feedback on '
+        'this or similar assignments. Use these examples only to '
+        'calibrate your tone, length, and marking standard. Do not '
+        'reference them in your output. Apply the same corrections '
+        'silently to any similar criteria in this submission.',
+        '',
+    ]
+    for ex in examples:
+        orig = _truncate_at_word(ex.get('original_text') or '', 200)
+        edited = _truncate_at_word(ex.get('edited_text') or '', 200)
+        lines.append(f'Original AI feedback: "{orig}"')
+        lines.append(f'Teacher changed it to: "{edited}"')
+        if ex.get('theme_key'):
+            lines.append(f"Mistake type: {ex['theme_key']}")
+        if ex.get('match_tier') == 0:
+            lines.append('Context: same assignment, same rubric')
+        else:
+            lines.append('Context: different assignment, same subject and mistake type')
+        lines.append('')
+    lines.append('---')
+    lines.append('')
+    return '\n'.join(lines)
