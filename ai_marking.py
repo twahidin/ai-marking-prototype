@@ -412,6 +412,97 @@ def _append_pages(content, label, pages):
             content.append({"type": "text", "text": f"(Page {i + 1})"})
 
 
+# Shared block injected into every short-answer and rubrics marking prompt so
+# the two feedback fields ("Feedback" and "Suggested Improvement") follow the
+# same discipline regardless of marking format. Edit this constant to change
+# the rules everywhere at once.
+FEEDBACK_GENERATION_RULES = """FEEDBACK GENERATION RULES
+
+FIELD NAMES
+
+The two feedback fields are named:
+  Feedback
+  Suggested Improvement
+
+Use these exact headers when reasoning about what to write. Do not use "What
+Happened", "Next Time", or any other labels.
+
+
+WHEN THE STUDENT IS FAR FROM THE CORRECT ANSWER
+
+Before generating feedback for any criterion, assess the distance between the
+student's answer and what was required:
+
+  CLOSE   — Right idea, missed a detail or precise term. Most marks earned.
+  PARTIAL — Some relevant content but significant gaps. Roughly half marks
+            or fewer earned.
+  FAR     — Answer mostly incorrect, missing, or fundamentally misunderstood
+            the question. Very few or no marks earned.
+
+Apply these rules by distance:
+
+IF CLOSE:
+Generate Feedback and Suggested Improvement as normal. Name the specific gap
+precisely.
+
+IF PARTIAL:
+Focus BOTH lines on the single most important gap only — the one that accounts
+for the most marks lost. Do not list multiple things that were missing.
+
+IF FAR:
+Do not list everything that was wrong. Identify the ONE foundational thing the
+student would need to understand first before anything else makes sense. This
+is the entry point — not the most obvious gap, but the one most upstream in
+their reasoning.
+
+Generate only:
+  Feedback: One sentence naming that single foundational gap.
+  Suggested Improvement: One thing to do or ask themselves, aimed at that
+  gap only.
+
+
+EXAMPLES FOR FAR DISTANCE
+
+These examples show the difference between listing symptoms and naming the
+foundational gap. Study the RIGHT examples carefully — note how short and
+plain they are.
+
+Science — student described unrelated cell activity instead of the stages of
+mitosis:
+
+WRONG (lists symptoms, too long):
+Feedback: "Your answer described cell activity but wasn't structured around
+the stages of mitosis — that sequence is the framework the whole answer hangs
+on, and without it the other details have no place to sit."
+
+RIGHT:
+Feedback: "Your answer didn't follow the stages of mitosis — the question
+needed that structure."
+Suggested Improvement: "Write the stage names first, then build each point
+around them."
+
+Humanities SEQ — student wrote off-topic:
+
+WRONG (vague, still too long):
+Feedback: "Your answer didn't directly address what the question was asking
+— everything else follows from getting that focus right first."
+
+RIGHT:
+Feedback: "Your answer didn't address the question being asked."
+Suggested Improvement: "Underline the question's directive word before
+writing — that word tells you what your answer needs to do."
+
+
+WORD LIMITS
+
+Feedback: maximum 20 words.
+Suggested Improvement: maximum 20 words.
+
+These limits apply at all distance levels — CLOSE, PARTIAL, and FAR alike.
+The limit is absolute. One Feedback sentence. One Suggested Improvement
+sentence. No exceptions."""
+
+
 def _build_rubrics_prompt(subject, rubrics_pages, reference_pages, question_paper_pages,
                           script_pages, review_section, marking_section, total_marks):
     """Build system prompt and content for rubrics/essay marking."""
@@ -454,6 +545,8 @@ LINE-BY-LINE ERROR IDENTIFICATION:
 - Error types: grammar, spelling, punctuation, vocabulary, factual, logical, style
 - Quote the exact text from the essay
 
+{FEEDBACK_GENERATION_RULES}
+
 HANDWRITING RULES:
 - IGNORE crossed-out or struck-through text — treat as deleted
 - A caret (^) or insertion mark means the student wants to INSERT text at that point
@@ -474,8 +567,8 @@ Respond ONLY with valid JSON:
             "status": "correct | partially_correct | incorrect",
             "marks_awarded": number,
             "marks_total": number,
-            "feedback": "detailed feedback referencing the specific rubric band",
-            "improvement": "specific actions to reach the next band"
+            "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
+            "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)"
         }}
     ],
     "errors": [
@@ -555,8 +648,8 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "status": "correct | partially_correct | incorrect",
             "marks_awarded": number,
             "marks_total": number,
-            "feedback": "specific constructive feedback",
-            "improvement": "recommended action for improvement"
+            "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
+            "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)"
         }}"""
     else:
         scoring_instructions = """SCORING: For each question, assign one of these statuses:
@@ -569,8 +662,8 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "student_answer": "transcribed answer from the script",
             "correct_answer": "answer from the answer key",
             "status": "correct | partially_correct | incorrect",
-            "feedback": "specific constructive feedback",
-            "improvement": "recommended action for improvement"
+            "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
+            "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)"
         }}"""
 
     system_prompt = f"""You are an experienced teacher marking a student's assignment script.
@@ -587,6 +680,8 @@ Your task:
 4. If RUBRICS are provided, use them for evaluation criteria
 
 {scoring_instructions}
+
+{FEEDBACK_GENERATION_RULES}
 
 HANDWRITING RULES:
 - IGNORE crossed-out or struck-through text — treat as deleted
