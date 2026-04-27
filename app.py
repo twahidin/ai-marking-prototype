@@ -3428,19 +3428,19 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
         _log_ai_originals(submission_id)
 
         # Kick off the "Group by Mistake Type" categorisation in a background
-        # thread. Only if the mark actually succeeded and there is at least
-        # one lost-mark criterion to categorise. The thread opens its own
-        # app context and does not rely on this request/worker's session.
+        # thread. Only when the mark succeeded AND ≥ 2 criteria lost marks —
+        # a single criterion can't form a group, so the 3-pass AI cycle
+        # would just produce one standalone entry at AI-call cost.
         try:
             sub_fresh = Submission.query.get(submission_id)
             if sub_fresh and sub_fresh.status == 'done':
                 result = sub_fresh.get_result() or {}
-                has_lost = any(
-                    ((q.get('marks_total') or 0) > 0 and (q.get('marks_awarded') or 0) < (q.get('marks_total') or 0))
+                lost_count = sum(
+                    1 for q in (result.get('questions') or [])
+                    if ((q.get('marks_total') or 0) > 0 and (q.get('marks_awarded') or 0) < (q.get('marks_total') or 0))
                     or (q.get('status') and q.get('status') != 'correct')
-                    for q in (result.get('questions') or [])
                 )
-                if has_lost:
+                if lost_count >= 2:
                     sub_fresh.categorisation_status = 'pending'
                     db.session.commit()
                     threading.Thread(
@@ -4958,16 +4958,16 @@ def student_feedback_page(assignment_id, submission_id):
     # Resilience: auto-relaunch categorisation for legacy submissions (NULL —
     # marked before this feature shipped) and for submissions stuck in
     # 'pending' for longer than the worker should ever need (worker died
-    # silently, e.g. dyno restart). Only kicks off if the submission has at
-    # least one lost-mark criterion to group.
+    # silently, e.g. dyno restart). Mirrors the >= 2 lost-criteria gate used
+    # at marking time — a single criterion can't form a group anyway.
     cat_state = sub.categorisation_status
     if cat_state in (None, 'pending'):
-        has_lost = any(
-            ((q.get('marks_total') or 0) > 0 and (q.get('marks_awarded') or 0) < (q.get('marks_total') or 0))
+        lost_count = sum(
+            1 for q in questions
+            if ((q.get('marks_total') or 0) > 0 and (q.get('marks_awarded') or 0) < (q.get('marks_total') or 0))
             or (q.get('status') and q.get('status') != 'correct')
-            for q in questions
         )
-        if has_lost:
+        if lost_count >= 2:
             stale = False
             if cat_state is None:
                 stale = True
@@ -4991,7 +4991,7 @@ def student_feedback_page(assignment_id, submission_id):
                     db.session.rollback()
                     logger.warning(f"Could not relaunch categorisation for sub {sub.id}: {relaunch_err}")
         elif cat_state is None:
-            # No lost marks → nothing to group; mark done so the page stops polling.
+            # Fewer than 2 lost criteria → nothing to group; mark done so the page stops polling.
             try:
                 sub.categorisation_status = 'done'
                 db.session.commit()
