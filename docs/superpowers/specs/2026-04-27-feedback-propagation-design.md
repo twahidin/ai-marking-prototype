@@ -12,10 +12,16 @@ same assignment who made the same kind of mistake on the same
 criterion and offers a one-click "apply this standard to all".
 Propagation refreshes only the two text fields (`feedback`,
 `improvement`) on the affected criterion via a cheap text-only AI
-call — never re-runs `mark_script()`. As the teacher's bank
-grows beyond a threshold, raw-example calibration injection at
-mark time is replaced by a regenerable markdown principles file
-that compresses the bank into a token-efficient prompt prefix.
+call — never re-runs `mark_script()`.
+
+As the calibration bank grows across all teachers in a subject,
+raw-example calibration injection at mark time is replaced by a
+shared markdown **subject-level** principles file that aggregates
+every contributing teacher's standards into a single token-efficient
+prompt prefix. When teachers' standards diverge in the same theme,
+the regeneration LLM picks the dominant pattern and flags the row;
+the teacher hub then shows a quiet nudge to review the patterns
+page.
 
 ## Non-goals
 
@@ -42,12 +48,14 @@ that compresses the bank into a token-efficient prompt prefix.
 | 3 | Propagation does NOT write `feedback_log` rows. Provenance is per-criterion: `feedback_source = 'propagated'` and `propagated_from_edit = <feedback_edit.id>`. |
 | 4 | All AI calls in this feature use the cheap-tier model via the existing `HELPER_MODELS` map. Reserved: `mark_script()` continues to use the assignment's main model. |
 | 5 | All background threads open their own app context (existing `_run_categorisation_worker` pattern). Sequential propagation per edit; never parallel — avoids DB contention and keeps Railway memory predictable. |
-| 6 | `marking_principles_cache.teacher_id` is `VARCHAR(36)` to match `teachers.id`. Spec said "integer FK"; the existing UUID convention overrides. |
+| 6 | `marking_principles_cache` is keyed by `subject_family` ALONE — one shared row per subject across the whole department. Drops the original spec's `(teacher_id, subject_family)` keying. Raw calibration examples (`fetch_calibration_examples`) stay teacher-scoped because they carry verbatim contextual wording; the summarised principles file is the cross-teacher consistency mechanism. |
 | 7 | New columns added to `feedback_edit` via the existing auto-migration block in `db.py`, not Alembic (the project doesn't use Alembic). |
 | 8 | Propagation candidate detection runs synchronously inside the PATCH handler so the client gets `candidate_count` alongside `edit_meta` in the same response — no second round-trip just to know whether to show the banner. |
 | 9 | Insight extraction (mistake_pattern, correction_principle, transferability) runs in a background thread, never blocks the teacher's save. Same pattern as categorisation kickoff. |
-| 10 | Calibration injection at mark time is now tiered: < 8 active edits in this teacher+subject → raw examples (existing path); >= 8 edits → markdown principles file. |
+| 10 | Calibration injection at mark time is now tiered: < 8 active edits in the subject across ALL teachers → raw examples (existing teacher-scoped path); >= 8 edits → shared markdown principles file. |
 | 11 | The principles file is regenerated lazily: marked stale at edit time, regenerated on next mark-time read when stale + threshold met (or every 30 days). Saves never wait on regeneration. |
+| 12 | Conflict handling: regeneration LLM is instructed to take the dominant pattern when corrections in the same theme conflict, and to set `has_conflicts: true` on the cache row when it had to suppress a contradicting principle. The teacher hub shows a soft nudge (not a badge) when any subject the teacher contributes to has `has_conflicts = true`. No in-page conflict resolution UI; resolution is teachers refining their own bank. |
+| 13 | Propagation candidates, retire flow, and the original feedback_edit log all stay teacher-scoped. Only the principles file is cross-teacher. |
 
 ## Scope of implementation
 
@@ -55,7 +63,7 @@ This spec covers Parts 1–9 of the user-supplied build prompt. Small
 deliberate divergences from the prompt's wording, all confirmed
 during brainstorming:
 
-- `marking_principles_cache.teacher_id` is `VARCHAR(36)` not integer (existing UUID convention).
+- `marking_principles_cache` is keyed by `subject_family` alone — one shared row per subject across the dept. The original spec's `teacher_id` column is dropped because we want consistency across teachers in the same subject, not per-teacher principles.
 - Cross-submission matching uses `str(question_num)` against the edit's existing `criterion_id` field (the spec's literal "criterion_name" misses that the edit row already carries question_num; matching on it works for both rubrics and short-answer with no fallback needed).
 - New per-criterion fields live in `result_json.questions[]`, not in a new criterion table (matches existing pattern).
 - Propagation does NOT write `feedback_log` rows.
@@ -74,17 +82,18 @@ changes go into `templates/teacher_detail.html`,
 
 ```
 id                  INTEGER PRIMARY KEY (autoincrement)
-teacher_id          VARCHAR(36) FK → teachers.id   (indexed)
-subject_family      VARCHAR(40)                    (indexed)
+subject_family      VARCHAR(40) UNIQUE NOT NULL   (one shared row per subject)
 markdown_text       TEXT NOT NULL DEFAULT ''
 generated_at        TIMESTAMP WITH TIME ZONE
 is_stale            BOOLEAN DEFAULT FALSE
 edit_count_at_gen   INTEGER DEFAULT 0
-UNIQUE (teacher_id, subject_family)
+has_conflicts       BOOLEAN DEFAULT FALSE
 ```
 
 Created via SQLAlchemy `db.create_all()` — same pattern as the
-feedback_log/feedback_edit tables added in the prior feature.
+feedback_log/feedback_edit tables added in the prior feature. The
+`UNIQUE` on `subject_family` prevents accidental duplicates and acts
+as the upsert key during regeneration.
 
 #### New columns on `feedback_edit`
 
@@ -152,32 +161,48 @@ Returns `{feedback, improvement}` parsed from JSON. No image
 content. No images, ever — the original-marking pipeline already
 processed them.
 
-#### `count_active_calibration_edits(teacher_id, subject_family) -> int`
+#### `count_active_calibration_edits(subject_family) -> int`
 
 Single SELECT COUNT against `feedback_edit` filtered to
-`edited_by, subject_family, active=true`. Used by the calibration
-injection threshold gate.
+`subject_family, active=true` — counts ALL teachers' active edits
+in the subject. Used by the calibration injection threshold gate.
 
-#### `get_marking_principles(provider, model, session_keys, teacher_id, subject_family) -> str`
+#### `get_marking_principles(provider, model, session_keys, subject_family) -> str`
 
-Returns the cached markdown file. Regenerates when:
+Returns the shared cached markdown file for the subject. Regenerates
+when:
 1. Cache row missing, OR
 2. `is_stale == true` AND `count_active_calibration_edits >= 8`, OR
 3. `generated_at` is older than 30 days.
 
-Below 8 active edits, returns `''` always — caller falls back to
-raw examples.
+Below 8 active edits across all teachers, returns `''` always —
+caller falls back to raw examples.
 
-Regeneration calls cheap-tier model, max_tokens=600. System prompt
-verbatim from spec Part 6. User prompt: a structured summary of all
-active edits for the teacher+subject_family, grouped by `theme_key`,
-listing `correction_principle` (truncated to 150 chars per edit) +
-per-theme edit count. Markdown returned as-is. On regeneration:
-`markdown_text`, `generated_at = now()`, `is_stale = false`,
-`edit_count_at_gen = current_count`.
+Regeneration calls cheap-tier model, max_tokens=700. System prompt
+verbatim from spec Part 6 with one addition: instructs the LLM to
+take the dominant pattern when corrections in the same theme
+conflict, and to emit `has_conflicts: true | false` alongside the
+markdown.
+
+Output JSON shape:
+```json
+{
+  "markdown": "...principles file content...",
+  "has_conflicts": true | false
+}
+```
+
+User prompt: a structured summary of all active edits across all
+teachers for this subject_family, grouped by `theme_key`, listing
+`correction_principle` (truncated to 150 chars per edit) +
+per-theme edit count.
+
+On regeneration: `markdown_text`, `generated_at = now()`,
+`is_stale = false`, `edit_count_at_gen = current_count`,
+`has_conflicts = parsed value`.
 
 Failure during regeneration → log + return existing `markdown_text`
-if any, else `''`.
+if any, else `''`. `has_conflicts` left untouched on failure.
 
 #### `build_calibration_block(teacher_id, asn, subject_family, theme_keys, provider, model, session_keys) -> str`
 
@@ -185,15 +210,20 @@ Replaces direct `format_calibration_block(fetch_calibration_examples(...))`
 calls in `_run_submission_marking`. Tiered logic:
 
 ```
-edit_count = count_active_calibration_edits(teacher_id, subject_family)
+edit_count = count_active_calibration_edits(subject_family)
 if edit_count < 8:
+    # Below shared-threshold — fall back to teacher-scoped raw examples.
     return format_calibration_block(fetch_calibration_examples(teacher_id, asn, theme_keys, limit=10))
 else:
-    principles = get_marking_principles(provider, model, session_keys, teacher_id, subject_family)
+    principles = get_marking_principles(provider, model, session_keys, subject_family)
     if not principles:
         return format_calibration_block(fetch_calibration_examples(teacher_id, asn, theme_keys, limit=5))
-    return "---\nMARKING PRINCIPLES (this teacher's established standard)\n\n" + principles + "\n---\n\n"
+    return "---\nMARKING PRINCIPLES (this subject's established standard)\n\n" + principles + "\n---\n\n"
 ```
+
+Note the wrapper now says "this subject's" not "this teacher's" —
+the principles are shared across the subject and the marking model
+should know the calibration is collective, not personal.
 
 ### Server hooks (`app.py`)
 
@@ -205,7 +235,7 @@ taken (`feedback_edit` row was just inserted):
 1. `target_q['feedback_source'] = 'teacher_edit'` on the question
    dict in `result_json` (in-memory; the existing `sub.set_result`
    persists it in the same commit).
-2. `UPDATE marking_principles_cache SET is_stale=true WHERE teacher_id=:t AND subject_family=:sf` — same transaction.
+2. `UPDATE marking_principles_cache SET is_stale=true WHERE subject_family=:sf` — same transaction. (Subject-keyed; ANY teacher's bank save invalidates the shared cache for that subject.)
 3. Spawn `threading.Thread(target=_run_insight_extraction_worker, args=(app, edit_id), daemon=True).start()` — non-blocking, opens its own app context.
 4. Synchronously: call `_find_propagation_candidates(edit, asn)` and
    include `{candidate_count, edit_id, criterion_name}` in the PATCH
@@ -351,24 +381,64 @@ view function that already renders the assignment results table.
 
 New route + new template `templates/marking_patterns.html`.
 
-Server: query `feedback_edit` grouped by `subject_family` for the
-current teacher, count active rows per family. For each family with
-`>= 8` edits, fetch the cache row's `markdown_text`. For families
-`< 8`, just show the count.
+Server:
+- Query `feedback_edit` grouped by `subject_family` for ALL teachers,
+  filtered to `active = true`. Counts the shared subject pool.
+- For each `subject_family` the current teacher has contributed at
+  least one edit to: fetch the shared cache row.
+- For each family with `>= 8` edits across the dept: render the
+  cache row's `markdown_text`.
+- For families `< 8`: render a count + "Add N more calibration
+  edits across this subject to unlock the shared marking principles."
+- Per family, also render the current teacher's contribution count:
+  "You've contributed N of M total edits in this subject."
 
 Template:
-- One section per subject_family the teacher has edits in.
-- Section heading: human-readable subject family label + edit count.
-- Body: for `>= 8` edits: render the markdown content (server-side
-  conversion via the existing markdown→HTML pipeline if available;
-  else `<pre>` block). For `< 8`: a one-line message ("Add N more
-  calibration edits to unlock your marking principles summary for
-  this subject.").
+- One section per subject_family the teacher has contributed to.
+- Section heading: human-readable subject family label + total
+  active edit count + the teacher's contribution count.
+- Body: principles markdown (server-side conversion via existing
+  pipeline if any, else `<pre>`). One-line nudge if
+  `has_conflicts = true`: "Some standards in this subject look
+  mixed across teachers. The summary above takes the dominant
+  pattern; review your own bank if you'd like to refine your
+  contribution."
 - No AI calls. No progress indicators. Pure read.
 
 #### Header link
 
 `templates/base.html` line 34, after the Bank link: a new `<a href="/teacher/marking-patterns">My marking patterns</a>` for any logged-in teacher.
+
+### Soft conflict nudge on the teacher hub
+
+When a teacher lands on the post-login hub (`templates/hub.html` —
+the existing card grid), render a small one-line notice at the top
+when ANY subject they contribute to has `has_conflicts = true`.
+
+Server: a single tiny query at hub render —
+
+```sql
+SELECT 1
+FROM marking_principles_cache c
+WHERE c.has_conflicts = true
+  AND c.subject_family IN (
+      SELECT DISTINCT subject_family
+      FROM feedback_edit
+      WHERE edited_by = :teacher_id
+        AND active = true
+        AND subject_family IS NOT NULL
+  )
+LIMIT 1
+```
+
+If the result set is non-empty, render:
+
+> Some standards in your subjects look mixed across teachers. [Review your marking patterns →]
+
+The link target is `/teacher/marking-patterns`. No badge, no count,
+no per-subject breakdown, no in-page conflict resolution UI.
+Resolution is teachers refining their own bank and the next
+regeneration settling on a single dominant pattern.
 
 ## Data flow
 
@@ -394,14 +464,22 @@ Teacher clicks "Apply same standard to all"
   → final: propagation_status='complete'|'partial', propagated_at=now()
   → client receives 'complete'/'partial', shows summary, auto-dismisses
 
-Next assignment marked by same teacher
+Next assignment marked by ANY teacher in the same subject
   → _run_submission_marking calls build_calibration_block
-  → < 8 active edits: raw examples (existing path)
-  → >= 8: get_marking_principles
-        → cache row stale? → regenerate via cheap-tier model, write back
+  → count_active_calibration_edits(subject_family) — counts ALL teachers' active edits in the subject
+  → < 8 across the subject: raw examples (teacher-scoped, existing path)
+  → >= 8: get_marking_principles(subject_family) — shared file
+        → cache row stale? → regenerate via cheap-tier model
+            → LLM emits {markdown, has_conflicts}
+            → write back markdown_text, has_conflicts, generated_at, edit_count_at_gen, is_stale=false
         → return cached markdown
-        → wrap in MARKING PRINCIPLES delimiter block
+        → wrap in "MARKING PRINCIPLES (this subject's established standard)" delimiter block
   → block prepended to system prompt as before
+
+Teacher lands on hub
+  → small COUNT query: any subject I contribute to with has_conflicts = true?
+  → if yes: render one-line nudge linking to /teacher/marking-patterns
+  → no badge, no count, no in-page resolution UI
 ```
 
 ## Error handling
@@ -411,6 +489,7 @@ Next assignment marked by same teacher
 - **Propagation worker per-candidate failure** — logged, recorded in `propagated_to[i].status='failed'` + error message, batch continues with the next candidate. Final status becomes `'partial'`.
 - **Refresh AI call failure** — same as above. Original feedback on the candidate stays untouched.
 - **Principles regen failure** — logged, falls back to existing markdown if any, else falls back to raw examples in the calibration block.
+- **Conflict detection failure** — the regen LLM may produce malformed JSON or omit `has_conflicts`. Default to `has_conflicts = false` if the field is missing or unparseable; the hub nudge stays quiet rather than firing on noise.
 - **Auth failures** — 401/403 from the existing helpers.
 - **Validation failures** — 400 with a JSON error body.
 
