@@ -3824,6 +3824,50 @@ def teacher_page():
     return redirect(url_for('class_page', _anchor='submissions'))
 
 
+@app.route('/teacher/marking-patterns')
+def teacher_marking_patterns():
+    if not _is_authenticated():
+        return redirect(url_for('hub'))
+    teacher = _current_teacher()
+    teacher_id = teacher.id if teacher else None
+    if not teacher_id:
+        return redirect(url_for('hub'))
+
+    from db import FeedbackEdit, MarkingPrinciplesCache
+    from sqlalchemy import func as _func
+
+    contributed_rows = (
+        db.session.query(FeedbackEdit.subject_family,
+                         _func.count(FeedbackEdit.id).label('my_count'))
+        .filter(FeedbackEdit.edited_by == teacher_id,
+                FeedbackEdit.active == True,  # noqa: E712
+                FeedbackEdit.subject_family.isnot(None))
+        .group_by(FeedbackEdit.subject_family)
+        .all()
+    )
+    if not contributed_rows:
+        return render_template('marking_patterns.html',
+                                sections=[], teacher=teacher)
+
+    sections = []
+    for sf, my_count in contributed_rows:
+        total = (db.session.query(_func.count(FeedbackEdit.id))
+                 .filter(FeedbackEdit.subject_family == sf,
+                         FeedbackEdit.active == True)  # noqa: E712
+                 .scalar()) or 0
+        cache = MarkingPrinciplesCache.query.filter_by(subject_family=sf).first()
+        sections.append({
+            'subject_family': sf,
+            'my_count': my_count,
+            'total_count': total,
+            'has_principles': bool(cache and cache.markdown_text and total >= 8),
+            'markdown': (cache.markdown_text if cache else '') or '',
+            'has_conflicts': bool(cache and cache.has_conflicts),
+            'remaining_to_threshold': max(0, 8 - total),
+        })
+    return render_template('marking_patterns.html', sections=sections, teacher=teacher)
+
+
 @app.route('/teacher/create', methods=['POST'])
 def teacher_create():
     if not _is_authenticated():
