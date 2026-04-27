@@ -269,12 +269,21 @@ def build_content_block(file_bytes):
 def make_ai_api_call(client, model_name, provider, system_prompt, messages_content, max_tokens=32000):
     """Unified API call across providers."""
     if provider == 'anthropic':
+        # Convert system_prompt to a cached block list. The system text is
+        # identical across every student of the same assignment, so caching
+        # it lets bulk marking pay full price only on the first student.
+        # Below the cache minimum (~1024 tokens), Anthropic silently skips
+        # caching, so this is safe even for tiny system prompts.
+        system_blocks = (
+            [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+            if system_prompt else None
+        )
         # Use streaming to avoid 10-minute timeout on large requests
         with client.messages.stream(
             model=model_name,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": messages_content}],
-            system=system_prompt
+            system=system_blocks
         ) as stream:
             return stream.get_final_text()
 
@@ -410,6 +419,21 @@ def _append_pages(content, label, pages):
         content.append(build_content_block(page_bytes))
         if len(pages) > 1:
             content.append({"type": "text", "text": f"(Page {i + 1})"})
+
+
+def _mark_anthropic_cache_breakpoint(content):
+    """Tag the last block of `content` so Anthropic caches everything up to
+    and including it. Safe to call regardless of provider — the OpenAI /
+    Qwen adapters in make_ai_api_call read only `type` / `text` / `source`
+    from each block and silently ignore cache_control.
+
+    Cache TTL is ~5 minutes, so within a bulk-marking burst (the common
+    teacher flow), the question paper + answer key + rubrics + system
+    prompt only get billed at full rate on the first student; subsequent
+    students read the cached prefix at 10% of the input-token cost.
+    """
+    if content:
+        content[-1] = {**content[-1], 'cache_control': {'type': 'ephemeral'}}
 
 
 # Shared block injected into every short-answer and rubrics marking prompt so
@@ -632,6 +656,11 @@ IMPORTANT:
     if rubrics_pages:
         _append_pages(content, "\nGRADING RUBRICS (use these as primary evaluation criteria):", rubrics_pages)
 
+    # Cache breakpoint — everything above is identical across all students of
+    # this assignment within the 5-minute cache window. Student script and
+    # final instruction stay outside the cached prefix.
+    _mark_anthropic_cache_breakpoint(content)
+
     _append_pages(content, "\nSTUDENT SCRIPT (evaluate this essay):", script_pages)
 
     content.append({"type": "text", "text": "\nEvaluate this essay against the rubrics and identify line-by-line errors. Provide JSON feedback:"})
@@ -742,6 +771,11 @@ Respond ONLY with valid JSON:
 
     if rubrics_pages:
         _append_pages(content, "\nGRADING RUBRICS:", rubrics_pages)
+
+    # Cache breakpoint — everything above is identical across all students of
+    # this assignment within the 5-minute cache window. Student script and
+    # final instruction stay outside the cached prefix.
+    _mark_anthropic_cache_breakpoint(content)
 
     _append_pages(content, "\nSTUDENT SCRIPT (evaluate this):", script_pages)
 
