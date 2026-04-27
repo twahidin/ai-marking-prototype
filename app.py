@@ -3549,8 +3549,8 @@ def _find_propagation_candidates(edit, asn):
                           and target_q.get('status') != 'correct')
         if not (lost_by_marks or lost_by_status):
             continue
-        source = target_q.get('feedback_source') or 'original_ai'
-        if source == 'teacher_edit':
+        source = target_q.get('feedback_source')
+        if source not in (None, 'original_ai', 'propagated'):
             continue
         out.append({
             'submission_id': sub.id,
