@@ -573,6 +573,32 @@ def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pa
         jobs[job_id]['status'] = 'error'
 
 
+def _has_conflicts_in_my_subjects(teacher_id):
+    """Return True if any subject the teacher contributes to has has_conflicts=True
+    on its marking_principles_cache row. Single tiny query — safe to call on every
+    hub render."""
+    if not teacher_id:
+        return False
+    try:
+        from db import FeedbackEdit, MarkingPrinciplesCache
+        my_subjects_q = (db.session.query(FeedbackEdit.subject_family)
+                         .filter(FeedbackEdit.edited_by == teacher_id,
+                                 FeedbackEdit.active == True,  # noqa: E712
+                                 FeedbackEdit.subject_family.isnot(None))
+                         .distinct())
+        my_subjects = [row[0] for row in my_subjects_q.all() if row[0]]
+        if not my_subjects:
+            return False
+        hit = (MarkingPrinciplesCache.query
+               .filter(MarkingPrinciplesCache.has_conflicts == True,  # noqa: E712
+                       MarkingPrinciplesCache.subject_family.in_(my_subjects))
+               .first())
+        return bool(hit)
+    except Exception as e:
+        logger.warning(f"hub conflict nudge query failed: {e}")
+        return False
+
+
 @app.route('/')
 def hub():
     if not _is_setup_complete():
@@ -588,7 +614,8 @@ def hub():
                                    authenticated=False,
                                    dept_mode=True,
                                    demo_mode=True,
-                                   teacher=None)
+                                   teacher=None,
+                                   has_conflicts_in_my_subjects=False)
         # Auto-login as demo HOD if not already logged in
         if not session.get('teacher_id'):
             hod = Teacher.query.filter_by(role='hod').first()
@@ -597,27 +624,42 @@ def hub():
                 session['teacher_role'] = hod.role
                 session['teacher_name'] = hod.name
         teacher = _current_teacher()
+        has_conflicts_in_my_subjects = False
+        try:
+            if teacher:
+                has_conflicts_in_my_subjects = _has_conflicts_in_my_subjects(teacher.id)
+        except Exception:
+            has_conflicts_in_my_subjects = False
         return render_template('hub.html',
                                authenticated=True,
                                dept_mode=True,
                                demo_mode=True,
-                               teacher=teacher)
+                               teacher=teacher,
+                               has_conflicts_in_my_subjects=has_conflicts_in_my_subjects)
     if _demo and not _dept:
         return render_template('hub.html',
                                authenticated=True,
                                dept_mode=False,
                                demo_mode=True,
-                               teacher=None)
+                               teacher=None,
+                               has_conflicts_in_my_subjects=False)
     if _dept:
         if not Teacher.query.filter_by(role='hod').first():
             return redirect(url_for('department_setup'))
     authenticated = _is_authenticated()
     teacher = _current_teacher()  # works for both dept and normal mode now
+    has_conflicts_in_my_subjects = False
+    try:
+        if teacher:
+            has_conflicts_in_my_subjects = _has_conflicts_in_my_subjects(teacher.id)
+    except Exception:
+        has_conflicts_in_my_subjects = False
     return render_template('hub.html',
                            authenticated=authenticated,
                            dept_mode=_dept,
                            demo_mode=_demo,
-                           teacher=teacher)
+                           teacher=teacher,
+                           has_conflicts_in_my_subjects=has_conflicts_in_my_subjects)
 
 
 @app.route('/logout')
