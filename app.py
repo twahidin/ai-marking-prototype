@@ -4236,6 +4236,22 @@ def teacher_assignment_detail(assignment_id):
         else:
             feedback_status = 'not_opened'
 
+        # Per-student feedback source rollup. Aggregates result_json.questions[*].feedback_source.
+        # Priority: any teacher_edit > any propagated > else original.
+        sources = [(q.get('feedback_source') or 'original_ai') for q in questions]
+        if not sub or sub.status != 'done':
+            source_icon = ''
+            source_label = 'No feedback yet'
+        elif any(src == 'teacher_edit' for src in sources):
+            source_icon = '✎'
+            source_label = 'Teacher edited directly'
+        elif any(src == 'propagated' for src in sources):
+            source_icon = '↻'
+            source_label = 'Propagated from another student'
+        else:
+            source_icon = '○'
+            source_label = 'Original AI feedback'
+
         student_data.append({
             'student_id': s.id,
             'index': s.index_number,
@@ -4248,6 +4264,8 @@ def teacher_assignment_detail(assignment_id):
             'feedback_status': feedback_status,
             'feedback_opened_at': sub.feedback_opened_at.strftime('%d %b %H:%M') if sub and sub.feedback_opened_at else None,
             'correction_submitted_at': sub.correction_submitted_at.strftime('%d %b %H:%M') if sub and sub.correction_submitted_at else None,
+            'source_icon': source_icon,
+            'source_label': source_label,
         })
 
     # Compute which providers have a usable key for this assignment (assignment → dept → env).
