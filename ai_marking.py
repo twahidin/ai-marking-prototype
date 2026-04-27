@@ -1283,6 +1283,65 @@ def _run_feedback_helper(provider, model, session_keys, system_prompt, user_prom
     return _json.loads(match.group())
 
 
+def extract_correction_insight(provider, model, session_keys,
+                                subject_family, theme_key,
+                                criterion_name, original_text, edited_text):
+    """Extract a reusable marking principle from a teacher's correction.
+
+    Returns {mistake_pattern, correction_principle, transferability} or None
+    on failure. Caller writes the three fields back to the originating
+    feedback_edit row. Cheap-tier model via HELPER_MODELS.
+    """
+    system_prompt = (
+        "You extract a reusable marking principle from a teacher's correction.\n\n"
+        "Return JSON only:\n"
+        "{\n"
+        '  "mistake_pattern": "2-4 word phrase naming the type of error in '
+        'the original feedback — diagnostic, not advice",\n'
+        '  "correction_principle": "one sentence describing what this '
+        "teacher's edit reveals about their marking standard — what they "
+        'always do, never do, or consistently prefer",\n'
+        '  "transferability": "high | medium | low"\n'
+        "}\n\n"
+        "transferability:\n"
+        "  high   = applies to any similar question in any assignment\n"
+        "  medium = applies within this subject family\n"
+        "  low    = specific to this question or assignment type only\n\n"
+        "The correction_principle must be written as a generalised rule, not "
+        "a description of this specific edit. It should read like something a "
+        "new teacher could follow without seeing the original scripts.\n\n"
+        'WRONG: "The teacher added a reference to genetic identity."\n'
+        'RIGHT: "Always name the specific missing consequence rather than '
+        'asking students to explain further."\n\n'
+        "Maximum 30 words for correction_principle."
+    )
+    user_prompt = (
+        f"Subject family: {subject_family or 'unknown'}\n"
+        f"Theme: {theme_key or 'unknown'}\n"
+        f"Criterion: {criterion_name}\n"
+        f"Original AI feedback: {(original_text or '')[:600]}\n"
+        f"Teacher's edited feedback: {(edited_text or '')[:600]}\n\n"
+        "Return the JSON now."
+    )
+    helper_model = _helper_model_for(provider, model)
+    try:
+        parsed = _run_feedback_helper(provider, helper_model, session_keys,
+                                       system_prompt, user_prompt, max_tokens=200)
+    except Exception as e:
+        logger.warning(f"extract_correction_insight failed: {e}")
+        return None
+    transferability = (parsed.get('transferability') or '').strip().lower()
+    if transferability not in ('high', 'medium', 'low'):
+        transferability = None
+    pattern = (parsed.get('mistake_pattern') or '').strip()[:80] or None
+    principle = (parsed.get('correction_principle') or '').strip()[:300] or None
+    return {
+        'mistake_pattern': pattern,
+        'correction_principle': principle,
+        'transferability': transferability,
+    }
+
+
 def explain_criterion(provider, model, session_keys, subject, criterion_name,
                       student_answer, expected_answer, feedback_sentence=''):
     """Generate Layer 3 'The idea' for one criterion.

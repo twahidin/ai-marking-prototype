@@ -3508,6 +3508,108 @@ def _log_ai_originals(submission_id):
         logger.warning(f"Could not log AI originals for submission {submission_id}: {e}")
 
 
+def _find_propagation_candidates(edit, asn):
+    """Synchronous lookup. Returns the list of submission_ids in the same
+    assignment where the same criterion lost marks AND feedback_source is
+    not yet 'teacher_edit'. Each entry includes student_name, marks, and
+    the current feedback / improvement text so the 'Review individually'
+    panel can render without a second fetch.
+    """
+    from db import Submission, Student
+    out = []
+    submissions = (
+        db.session.query(Submission, Student)
+        .outerjoin(Student, Submission.student_id == Student.id)
+        .filter(
+            Submission.assignment_id == asn.id,
+            Submission.id != edit.submission_id,
+            Submission.status == 'done',
+        )
+        .order_by(Submission.id)
+        .all()
+    )
+    for sub, student in submissions:
+        try:
+            result = sub.get_result() or {}
+        except Exception:
+            continue
+        questions = result.get('questions') or []
+        target_q = None
+        for q in questions:
+            if str(q.get('question_num')) == edit.criterion_id:
+                target_q = q
+                break
+        if not target_q:
+            continue
+        ma = target_q.get('marks_awarded')
+        mt = target_q.get('marks_total')
+        lost_by_marks = (mt and ma is not None and mt > 0 and ma < mt)
+        lost_by_status = (not lost_by_marks
+                          and target_q.get('status')
+                          and target_q.get('status') != 'correct')
+        if not (lost_by_marks or lost_by_status):
+            continue
+        source = target_q.get('feedback_source') or 'original_ai'
+        if source == 'teacher_edit':
+            continue
+        out.append({
+            'submission_id': sub.id,
+            'student_name': (student.name if student else f"Student #{sub.student_id}"),
+            'marks_awarded': ma,
+            'marks_total': mt,
+            'current_feedback': (target_q.get('feedback') or ''),
+            'current_improvement': (target_q.get('improvement') or ''),
+        })
+    return {
+        'edit_id': edit.id,
+        'criterion_name': edit.criterion_id,
+        'candidate_count': len(out),
+        'candidates': out,
+    }
+
+
+def _run_insight_extraction_worker(app_obj, edit_id):
+    """Background thread: extract a structured insight from a calibration
+    edit and write the three fields back. Best-effort; never blocks the
+    teacher's save flow.
+    """
+    from db import FeedbackEdit
+    with app_obj.app_context():
+        try:
+            edit = FeedbackEdit.query.get(edit_id)
+            if not edit:
+                return
+            asn = Assignment.query.get(edit.assignment_id)
+            if not asn:
+                return
+            from ai_marking import extract_correction_insight
+            insight = extract_correction_insight(
+                provider=asn.provider,
+                model=asn.model,
+                session_keys=_resolve_api_keys(asn),
+                subject_family=edit.subject_family,
+                theme_key=edit.theme_key,
+                criterion_name=edit.criterion_id,
+                original_text=edit.original_text,
+                edited_text=edit.edited_text,
+            )
+            if not insight:
+                return
+            edit.mistake_pattern = insight.get('mistake_pattern')
+            edit.correction_principle = insight.get('correction_principle')
+            edit.transferability = insight.get('transferability')
+            db.session.commit()
+            logger.info(f"Insight extracted for edit {edit_id}: "
+                        f"pattern={edit.mistake_pattern!r} "
+                        f"transferability={edit.transferability!r}")
+        except Exception as e:
+            logger.warning(f"Insight worker failed for edit {edit_id}: {e}")
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+
+
 def _run_categorisation_worker(app_obj, submission_id):
     """Background thread: run the "Group by Mistake Type" AI categorisation and
     write results back into result_json. Opens its own app context so the
@@ -4562,6 +4664,10 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                     if len(_val) > 2000:
                         return jsonify({'success': False, 'error': f'{_field} too long (max 2000 chars)'}), 400
 
+            # Mark this question as teacher-edited so propagation never overwrites it.
+            if 'feedback' in edit or 'improvement' in edit:
+                target['feedback_source'] = 'teacher_edit'
+
             for field in ('feedback', 'improvement'):
                 if field in edit:
                     v = edit[field]
@@ -4632,9 +4738,63 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     db.session.commit()
     logger.info(f"Teacher edited feedback for submission {submission_id} on assignment {assignment_id}")
 
-    response = {'success': True, 'result': sub.get_result()}
+    # Propagation hooks: fire when at least one calibrate=True text edit was
+    # just written for this submission. Detect via edit_meta — any field with
+    # calibrated=True implies a fresh feedback_edit row to wire up.
+    propagation_prompt = None
+    fresh_edits = []
+    for crit_id, fields in (edit_meta or {}).items():
+        for field_name, meta in (fields or {}).items():
+            if meta and meta.get('calibrated'):
+                from db import FeedbackEdit
+                fe = (FeedbackEdit.query
+                      .filter_by(submission_id=sub.id, criterion_id=crit_id,
+                                 field=field_name, edited_by=editor_id, active=True)
+                      .order_by(FeedbackEdit.id.desc())
+                      .first())
+                if fe:
+                    fresh_edits.append(fe)
+
+    if fresh_edits:
+        # Mark the shared subject cache stale (one row across the dept).
+        try:
+            from db import MarkingPrinciplesCache
+            sf = asn.subject_family
+            if sf:
+                MarkingPrinciplesCache.query.filter_by(subject_family=sf).update(
+                    {'is_stale': True}, synchronize_session=False
+                )
+                db.session.commit()
+        except Exception as stale_err:
+            logger.warning(f"Could not mark principles cache stale: {stale_err}")
+            try: db.session.rollback()
+            except Exception: pass
+
+        # Spawn one insight worker per fresh edit (background, never blocks).
+        for fe in fresh_edits:
+            try:
+                threading.Thread(
+                    target=_run_insight_extraction_worker,
+                    args=(app, fe.id),
+                    daemon=True,
+                ).start()
+            except Exception as worker_err:
+                logger.warning(f"Could not spawn insight worker for edit {fe.id}: {worker_err}")
+
+        # Synchronous candidate detection on the FIRST fresh edit (the most
+        # interesting one for the banner — typically there's only one).
+        try:
+            anchor = fresh_edits[0]
+            propagation_prompt = _find_propagation_candidates(anchor, asn)
+        except Exception as cand_err:
+            logger.warning(f"Propagation candidate lookup failed: {cand_err}")
+            propagation_prompt = None
+
+    response = {'success': True, 'result': result}
     if edit_meta:
         response['edit_meta'] = edit_meta
+    if propagation_prompt and propagation_prompt.get('candidate_count', 0) > 0:
+        response['propagation_prompt'] = propagation_prompt
     return jsonify(response)
 
 
