@@ -3856,13 +3856,15 @@ def teacher_marking_patterns():
                          FeedbackEdit.active == True)  # noqa: E712
                  .scalar()) or 0
         cache = MarkingPrinciplesCache.query.filter_by(subject_family=sf).first()
+        threshold_met = total >= 8
         sections.append({
             'subject_family': sf,
             'my_count': my_count,
             'total_count': total,
-            'has_principles': bool(cache and cache.markdown_text and total >= 8),
+            'has_principles': bool(cache and cache.markdown_text and threshold_met),
             'markdown': (cache.markdown_text if cache else '') or '',
             'has_conflicts': bool(cache and cache.has_conflicts),
+            'threshold_met': threshold_met,
             'remaining_to_threshold': max(0, 8 - total),
         })
     return render_template('marking_patterns.html', sections=sections, teacher=teacher)

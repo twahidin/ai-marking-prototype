@@ -33,9 +33,15 @@
             {% endif %}
             <pre style="white-space: pre-wrap; font-family: inherit; font-size: 13.5px; color: #2d2d2d; line-height: 1.55; margin: 0;">{{ s.markdown }}</pre>
         {% else %}
+            {% if s.threshold_met %}
+            <div style="font-size: 13px; color: #666;">
+                Principles are being generated for this subject. They'll appear here on the next marking run.
+            </div>
+            {% else %}
             <div style="font-size: 13px; color: #666;">
                 Add {{ s.remaining_to_threshold }} more calibration edits across this subject to unlock the shared marking principles.
             </div>
+            {% endif %}
         {% endif %}
     </div>
     {% endfor %}
