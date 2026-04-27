@@ -3610,6 +3610,119 @@ def _run_insight_extraction_worker(app_obj, edit_id):
                 pass
 
 
+def _run_propagation_worker(app_obj, edit_id, target_ids):
+    """Background thread: refresh feedback for each candidate submission in
+    sequence (never parallel — avoids DB contention). Updates result_json
+    in place per submission, logs failures, and stamps the originating
+    feedback_edit row with the final propagation_status + propagated_to.
+    """
+    from db import FeedbackEdit, Submission
+    import json as _json
+
+    with app_obj.app_context():
+        try:
+            edit = FeedbackEdit.query.get(edit_id)
+            if not edit:
+                logger.warning(f"propagation worker: edit {edit_id} not found")
+                return
+            asn = Assignment.query.get(edit.assignment_id)
+            if not asn:
+                logger.warning(f"propagation worker: assignment for edit {edit_id} not found")
+                return
+
+            # Seed propagated_to with pending entries so the progress poll
+            # has the full list visible from the very first poll.
+            seeded = [{'submission_id': int(sid), 'status': 'pending'} for sid in target_ids]
+            edit.propagated_to = _json.dumps(seeded)
+            edit.propagation_status = 'pending'
+            db.session.commit()
+
+            from ai_marking import refresh_criterion_feedback
+            results = []
+            for sid in target_ids:
+                entry = {'submission_id': int(sid), 'status': 'pending'}
+                try:
+                    sub = Submission.query.get(int(sid))
+                    if not sub:
+                        entry = {'submission_id': int(sid), 'status': 'failed', 'error': 'submission not found'}
+                        results.append(entry)
+                        continue
+                    result = sub.get_result() or {}
+                    target_q = None
+                    for q in (result.get('questions') or []):
+                        if str(q.get('question_num')) == edit.criterion_id:
+                            target_q = q
+                            break
+                    if not target_q:
+                        entry = {'submission_id': int(sid), 'status': 'failed', 'error': 'criterion not found on this submission'}
+                        results.append(entry)
+                        continue
+                    refreshed = refresh_criterion_feedback(
+                        provider=asn.provider,
+                        model=asn.model,
+                        session_keys=_resolve_api_keys(asn),
+                        subject=asn.subject or '',
+                        criterion_name=edit.criterion_id,
+                        student_answer=target_q.get('student_answer') or '',
+                        correct_answer=target_q.get('correct_answer') or '',
+                        marks_awarded=target_q.get('marks_awarded'),
+                        marks_total=target_q.get('marks_total'),
+                        calibration_edit=edit,
+                    )
+                    target_q['feedback'] = refreshed['feedback'] or target_q.get('feedback') or ''
+                    target_q['improvement'] = refreshed['improvement'] or target_q.get('improvement') or ''
+                    target_q['feedback_source'] = 'propagated'
+                    target_q['propagated_from_edit'] = edit.id
+                    sub.set_result(result)
+                    db.session.commit()
+                    entry = {'submission_id': int(sid), 'status': 'done'}
+                    results.append(entry)
+                except Exception as e:
+                    db.session.rollback()
+                    err = str(e)[:200]
+                    logger.warning(f"propagation refresh failed sub={sid} edit={edit_id}: {e}")
+                    entry = {'submission_id': int(sid), 'status': 'failed', 'error': err}
+                    results.append(entry)
+
+                # Persist running state after each iteration so the progress
+                # poll reflects partial progress.
+                try:
+                    edit_fresh = FeedbackEdit.query.get(edit_id)
+                    current = _json.loads(edit_fresh.propagated_to or '[]')
+                    for i, c in enumerate(current):
+                        if int(c.get('submission_id')) == int(sid):
+                            current[i] = entry
+                            break
+                    edit_fresh.propagated_to = _json.dumps(current)
+                    db.session.commit()
+                except Exception as persist_err:
+                    db.session.rollback()
+                    logger.warning(f"propagation progress persist failed: {persist_err}")
+
+            # Final state.
+            try:
+                failed_n = sum(1 for r in results if r.get('status') == 'failed')
+                final_status = 'complete' if failed_n == 0 else 'partial'
+                edit_final = FeedbackEdit.query.get(edit_id)
+                edit_final.propagation_status = final_status
+                edit_final.propagated_at = datetime.now(timezone.utc)
+                db.session.commit()
+                logger.info(f"propagation finished edit={edit_id} status={final_status} "
+                            f"done={len(results) - failed_n} failed={failed_n}")
+            except Exception as final_err:
+                db.session.rollback()
+                logger.error(f"propagation final-status persist failed: {final_err}")
+        except Exception as outer:
+            logger.error(f"propagation worker crashed for edit {edit_id}: {outer}")
+            try:
+                edit_err = FeedbackEdit.query.get(edit_id)
+                if edit_err and edit_err.propagation_status == 'pending':
+                    edit_err.propagation_status = 'partial'
+                    db.session.commit()
+            except Exception:
+                db.session.rollback()
+
+
 def _run_categorisation_worker(app_obj, submission_id):
     """Background thread: run the "Group by Mistake Type" AI categorisation and
     write results back into result_json. Opens its own app context so the
@@ -5536,6 +5649,124 @@ def feedback_edit_history(assignment_id, submission_id, criterion_id):
             'active': edit.active if edit else None,
         })
     return jsonify(out)
+
+
+def _check_edit_owner(edit_id):
+    """Helper: load FeedbackEdit + verify the current teacher is the
+    original editor. Returns (edit, None) on success or (None, error_response)."""
+    from db import FeedbackEdit
+    if not _is_authenticated():
+        return None, (jsonify({'status': 'error', 'message': 'Not authenticated'}), 401)
+    teacher = _current_teacher()
+    teacher_id = teacher.id if teacher else None
+    if not teacher_id:
+        return None, (jsonify({'status': 'error', 'message': 'Not authenticated'}), 401)
+    edit = FeedbackEdit.query.get(edit_id)
+    if not edit:
+        return None, (jsonify({'status': 'error', 'message': 'Edit not found'}), 404)
+    if edit.edited_by != teacher_id:
+        return None, (jsonify({'status': 'error', 'message': 'Forbidden'}), 403)
+    return edit, None
+
+
+@app.route('/feedback/propagation-candidates/<int:edit_id>')
+def feedback_propagation_candidates(edit_id):
+    edit, err = _check_edit_owner(edit_id)
+    if err:
+        return err
+    asn = Assignment.query.get(edit.assignment_id)
+    if not asn:
+        return jsonify({'status': 'error', 'message': 'Assignment not found'}), 404
+    return jsonify(_find_propagation_candidates(edit, asn))
+
+
+@app.route('/feedback/propagate', methods=['POST'])
+def feedback_propagate():
+    data = request.get_json(silent=True) or {}
+    edit_id = data.get('edit_id')
+    if not isinstance(edit_id, int):
+        return jsonify({'status': 'error', 'message': 'edit_id (int) required'}), 400
+    edit, err = _check_edit_owner(edit_id)
+    if err:
+        return err
+    asn = Assignment.query.get(edit.assignment_id)
+    if not asn:
+        return jsonify({'status': 'error', 'message': 'Assignment not found'}), 404
+
+    mode = (data.get('mode') or '').strip().lower()
+    if mode not in ('all', 'selected'):
+        return jsonify({'status': 'error', 'message': 'mode must be "all" or "selected"'}), 400
+
+    candidates = _find_propagation_candidates(edit, asn)
+    candidate_ids = [c['submission_id'] for c in candidates['candidates']]
+
+    if mode == 'all':
+        target_ids = candidate_ids
+    else:
+        provided = data.get('submission_ids') or []
+        if not isinstance(provided, list) or not all(isinstance(x, int) for x in provided):
+            return jsonify({'status': 'error', 'message': 'submission_ids must be a list of integers'}), 400
+        legit = set(candidate_ids)
+        invalid = [x for x in provided if x not in legit]
+        if invalid:
+            return jsonify({'status': 'error', 'message': f'invalid candidates: {invalid}'}), 400
+        target_ids = provided
+
+    if not target_ids:
+        return jsonify({'status': 'started', 'edit_id': edit_id, 'candidate_count': 0})
+
+    edit.propagation_status = 'pending'
+    db.session.commit()
+    threading.Thread(
+        target=_run_propagation_worker,
+        args=(app, edit_id, target_ids),
+        daemon=True,
+    ).start()
+    return jsonify({'status': 'started', 'edit_id': edit_id, 'candidate_count': len(target_ids)})
+
+
+@app.route('/feedback/propagate-skip', methods=['POST'])
+def feedback_propagate_skip():
+    data = request.get_json(silent=True) or {}
+    edit_id = data.get('edit_id')
+    if not isinstance(edit_id, int):
+        return jsonify({'status': 'error', 'message': 'edit_id (int) required'}), 400
+    edit, err = _check_edit_owner(edit_id)
+    if err:
+        return err
+    edit.propagation_status = 'skipped'
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'status': 'error', 'message': 'Could not save'}), 500
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/feedback/propagation-progress/<int:edit_id>')
+def feedback_propagation_progress(edit_id):
+    import json as _json
+    edit, err = _check_edit_owner(edit_id)
+    if err:
+        return err
+    propagated = []
+    try:
+        propagated = _json.loads(edit.propagated_to or '[]')
+        if not isinstance(propagated, list):
+            propagated = []
+    except Exception:
+        propagated = []
+    total = len(propagated)
+    done = sum(1 for r in propagated if r.get('status') == 'done')
+    failed = sum(1 for r in propagated if r.get('status') == 'failed')
+    return jsonify({
+        'edit_id': edit_id,
+        'propagation_status': edit.propagation_status or 'none',
+        'total': total,
+        'done': done,
+        'failed': failed,
+        'propagated_to': propagated,
+    })
 
 
 @app.route('/submit/<assignment_id>/upload', methods=['POST'])

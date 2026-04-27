@@ -1342,6 +1342,54 @@ def extract_correction_insight(provider, model, session_keys,
     }
 
 
+def refresh_criterion_feedback(provider, model, session_keys, subject,
+                                criterion_name, student_answer, correct_answer,
+                                marks_awarded, marks_total, calibration_edit):
+    """Regenerate feedback + improvement for one criterion on one student,
+    calibrated against a teacher's edit on another student. Text-only call —
+    no images, no full marking pipeline. Cheap-tier model via HELPER_MODELS.
+    Returns {feedback, improvement}.
+    """
+    helper_model = _helper_model_for(provider, model)
+    system_prompt = (
+        "You are regenerating feedback for one criterion on a student's "
+        "script. A teacher has shown you their marking standard by editing "
+        "another student's feedback on the same type of mistake.\n\n"
+        "Apply the same standard to this student's answer. Do not change "
+        "the marks. Do not re-evaluate correctness. Only rewrite the "
+        "Feedback and Suggested Improvement fields.\n\n"
+        f"{FEEDBACK_GENERATION_RULES}\n\n"
+        "Return JSON only:\n"
+        "{\n"
+        '  "feedback": "...",\n'
+        '  "improvement": "..."\n'
+        "}"
+    )
+    orig = (calibration_edit.original_text or '')[:200]
+    edited = (calibration_edit.edited_text or '')[:200]
+    principle_line = ''
+    cp = getattr(calibration_edit, 'correction_principle', None)
+    if cp:
+        principle_line = f"\nTeacher's principle: \"{cp}\""
+    user_prompt = (
+        "TEACHER'S CALIBRATION EDIT (apply this standard):\n"
+        f"Original AI feedback: \"{orig}\"\n"
+        f"Teacher changed it to: \"{edited}\"{principle_line}\n\n"
+        "NOW APPLY THE SAME STANDARD TO:\n"
+        f"Subject: {subject or 'General'}\n"
+        f"Criterion: {criterion_name}\n"
+        f"Student's answer: {(student_answer or '')[:600]}\n"
+        f"Expected answer: {(correct_answer or '')[:400]}\n"
+        f"Marks: {marks_awarded if marks_awarded is not None else '-'} / {marks_total if marks_total is not None else '-'}\n\n"
+        "Return the JSON now."
+    )
+    parsed = _run_feedback_helper(provider, helper_model, session_keys,
+                                   system_prompt, user_prompt, max_tokens=300)
+    feedback = (parsed.get('feedback') or '').strip()
+    improvement = (parsed.get('improvement') or '').strip()
+    return {'feedback': feedback, 'improvement': improvement}
+
+
 def explain_criterion(provider, model, session_keys, subject, criterion_name,
                       student_answer, expected_answer, feedback_sentence=''):
     """Generate Layer 3 'The idea' for one criterion.
