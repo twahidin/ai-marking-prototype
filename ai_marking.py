@@ -73,6 +73,23 @@ PROVIDER_KEY_MAP = {
 }
 
 
+# Cheap per-provider model used for the small JSON-classification tasks —
+# explain_criterion ("the idea" sentence) and evaluate_correction ("good"/
+# "not_quite" judgement). Both are short pattern-matching tasks where the
+# tier-2 model is plenty.
+HELPER_MODELS = {
+    'anthropic': 'claude-haiku-4-5-20251001',
+    'openai': 'gpt-5.4-mini',
+    'qwen': 'qwen3.5-plus-2026-02-15',
+}
+
+
+def _helper_model_for(provider, fallback):
+    """Return the cheap helper model for `provider`, or `fallback` if the
+    provider isn't in the cheap map (custom providers, future additions)."""
+    return HELPER_MODELS.get(provider) or fallback
+
+
 def _resolve_api_key(provider, session_keys=None):
     """Get API key from session keys → env vars → wizard-stored DB keys."""
     env_name = PROVIDER_KEY_MAP.get(provider)
@@ -1231,7 +1248,8 @@ def explain_criterion(provider, model, session_keys, subject, criterion_name,
         f"Teacher's feedback on this criterion: {(feedback_sentence or '')[:400]}\n\n"
         "Return the JSON now."
     )
-    parsed = _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=200)
+    helper_model = _helper_model_for(provider, model)
+    parsed = _run_feedback_helper(provider, helper_model, session_keys, system_prompt, user_prompt, max_tokens=200)
     idea = (parsed.get('idea') or '').strip()
     return {'idea': idea}
 
@@ -1263,7 +1281,8 @@ def evaluate_correction(provider, model, session_keys, subject, criterion_name,
         f"Student's new attempt: {(attempt_text or '')[:800]}\n\n"
         "Return the JSON now."
     )
-    parsed = _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=200)
+    helper_model = _helper_model_for(provider, model)
+    parsed = _run_feedback_helper(provider, helper_model, session_keys, system_prompt, user_prompt, max_tokens=200)
     verdict = (parsed.get('verdict') or '').strip().lower()
     message = (parsed.get('message') or '').strip()
     if verdict not in ('good', 'not_quite'):
