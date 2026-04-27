@@ -594,6 +594,9 @@
                     renderEditTag(state, state.currentQ, field, fieldMeta);
                 }
             }
+            if (data && data.propagation_prompt) {
+                try { fbShowPropagationBanner(state, data.propagation_prompt); } catch (e) { /* silent */ }
+            }
         } catch (err) {
             if (field === 'overall') renderShell(state); else renderQuestion(state);
             showToast('error', err.message || 'Save failed');
@@ -822,6 +825,198 @@
                 }
             })
             .catch(function () { panel.textContent = 'Could not retire (network).'; });
+    }
+
+    function fbShowPropagationBanner(state, prompt) {
+        var banner = document.getElementById('fbPropagationBanner');
+        if (!banner) return;
+        if (!prompt || !prompt.candidate_count || prompt.candidate_count <= 0) return;
+        var summary = document.getElementById('fbPropagationBannerSummary');
+        var review = document.getElementById('fbPropagationBannerReview');
+        var progress = document.getElementById('fbPropagationBannerProgress');
+        var text = document.getElementById('fbPropagationBannerText');
+        if (summary) summary.hidden = false;
+        if (review) { review.hidden = true; review.innerHTML = ''; }
+        if (progress) { progress.hidden = true; progress.textContent = ''; }
+        if (text) {
+            text.textContent =
+                '⟳ ' + prompt.candidate_count + ' other student' +
+                (prompt.candidate_count === 1 ? '' : 's') +
+                ' have similar mistakes on ' + (prompt.criterion_name || 'this criterion') + '.';
+        }
+        banner.dataset.editId = String(prompt.edit_id);
+        banner.hidden = false;
+        banner.scrollIntoView({behavior: 'smooth', block: 'center'});
+        fbAttachPropagationButtons(state);
+    }
+
+    function fbAttachPropagationButtons(state) {
+        var allBtn = document.getElementById('fbPropagateAllBtn');
+        var revBtn = document.getElementById('fbPropagateReviewBtn');
+        var skipBtn = document.getElementById('fbPropagateSkipBtn');
+        if (allBtn && !allBtn.dataset.bound) {
+            allBtn.dataset.bound = '1';
+            allBtn.addEventListener('click', fbPropagateAll);
+        }
+        if (revBtn && !revBtn.dataset.bound) {
+            revBtn.dataset.bound = '1';
+            revBtn.addEventListener('click', fbPropagateReview);
+        }
+        if (skipBtn && !skipBtn.dataset.bound) {
+            skipBtn.dataset.bound = '1';
+            skipBtn.addEventListener('click', fbPropagateSkip);
+        }
+    }
+
+    function fbBannerEditId() {
+        var b = document.getElementById('fbPropagationBanner');
+        return b ? parseInt(b.dataset.editId || '0', 10) : 0;
+    }
+
+    function fbPropagateAll() {
+        var editId = fbBannerEditId();
+        if (!editId) return;
+        fetch('/feedback/propagate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({edit_id: editId, mode: 'all'})
+        }).then(function(r){return r.json();}).then(function(data){
+            if (data && data.status === 'started') {
+                fbStartPropagationPolling(editId);
+            }
+        });
+    }
+
+    function fbPropagateReview() {
+        var editId = fbBannerEditId();
+        if (!editId) return;
+        var review = document.getElementById('fbPropagationBannerReview');
+        if (!review) return;
+        review.innerHTML = 'Loading…';
+        review.hidden = false;
+        fetch('/feedback/propagation-candidates/' + editId, {credentials: 'same-origin'})
+            .then(function(r){return r.json();})
+            .then(function(data){
+                if (!data || !data.candidates) {
+                    review.textContent = 'Could not load candidates.';
+                    return;
+                }
+                review.innerHTML = '';
+                (data.candidates || []).forEach(function(c){
+                    var row = document.createElement('div');
+                    row.style.cssText = 'padding: 8px 10px; margin-bottom: 6px; border: 1px solid #e3e6f0; border-radius: 6px;';
+                    var head = document.createElement('label');
+                    head.style.cssText = 'display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 12.5px; cursor: pointer;';
+                    var cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.checked = true;
+                    cb.dataset.sid = String(c.submission_id);
+                    head.appendChild(cb);
+                    var hd = document.createElement('span');
+                    hd.textContent = c.student_name + ' (' +
+                        (c.marks_awarded != null ? c.marks_awarded : '-') + ' / ' +
+                        (c.marks_total != null ? c.marks_total : '-') + ')';
+                    head.appendChild(hd);
+                    row.appendChild(head);
+                    var fb = document.createElement('div');
+                    fb.style.cssText = 'margin-top: 4px; padding-left: 24px; font-size: 12px; color: #555;';
+                    fb.textContent = c.current_feedback || '(no feedback)';
+                    row.appendChild(fb);
+                    review.appendChild(row);
+                });
+                var actions = document.createElement('div');
+                actions.style.cssText = 'margin-top: 10px; display: flex; gap: 8px;';
+                var confirm = document.createElement('button');
+                confirm.type = 'button';
+                confirm.className = 'upload-btn';
+                confirm.style.cssText = 'padding: 6px 12px; font-size: 12.5px;';
+                confirm.textContent = 'Apply to selected';
+                confirm.addEventListener('click', fbPropagateSelectedConfirm);
+                actions.appendChild(confirm);
+                var cancel = document.createElement('button');
+                cancel.type = 'button';
+                cancel.className = 'upload-btn';
+                cancel.style.cssText = 'padding: 6px 12px; font-size: 12.5px;';
+                cancel.textContent = 'Cancel';
+                cancel.addEventListener('click', function(){
+                    var rev = document.getElementById('fbPropagationBannerReview');
+                    if (rev) { rev.hidden = true; rev.innerHTML = ''; }
+                });
+                actions.appendChild(cancel);
+                review.appendChild(actions);
+            })
+            .catch(function(){ review.textContent = 'Could not load candidates.'; });
+    }
+
+    function fbPropagateSelectedConfirm() {
+        var editId = fbBannerEditId();
+        var review = document.getElementById('fbPropagationBannerReview');
+        if (!editId || !review) return;
+        var ids = [];
+        review.querySelectorAll('input[type="checkbox"]').forEach(function(cb){
+            if (cb.checked && cb.dataset.sid) ids.push(parseInt(cb.dataset.sid, 10));
+        });
+        if (!ids.length) return;
+        fetch('/feedback/propagate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({edit_id: editId, mode: 'selected', submission_ids: ids})
+        }).then(function(r){return r.json();}).then(function(data){
+            if (data && data.status === 'started') {
+                review.hidden = true;
+                review.innerHTML = '';
+                fbStartPropagationPolling(editId);
+            }
+        });
+    }
+
+    function fbPropagateSkip() {
+        var editId = fbBannerEditId();
+        if (!editId) return;
+        fetch('/feedback/propagate-skip', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({edit_id: editId})
+        }).then(function(){
+            var b = document.getElementById('fbPropagationBanner');
+            if (b) b.hidden = true;
+        });
+    }
+
+    function fbStartPropagationPolling(editId) {
+        var progress = document.getElementById('fbPropagationBannerProgress');
+        var summary = document.getElementById('fbPropagationBannerSummary');
+        if (!progress || !summary) return;
+        summary.hidden = true;
+        progress.hidden = false;
+        progress.textContent = 'Starting…';
+        var attempts = 0;
+        var timer = setInterval(function(){
+            attempts++;
+            if (attempts > 60) { clearInterval(timer); progress.textContent = 'Still running…'; return; }
+            fetch('/feedback/propagation-progress/' + editId, {credentials: 'same-origin'})
+                .then(function(r){return r.json();})
+                .then(function(data){
+                    if (!data) return;
+                    progress.textContent = 'Updating ' + (data.done || 0) + ' of ' + (data.total || 0) + ' students…';
+                    if (data.propagation_status === 'complete' || data.propagation_status === 'partial') {
+                        clearInterval(timer);
+                        var doneN = data.done || 0;
+                        var failN = data.failed || 0;
+                        progress.textContent = '✓ Feedback updated for ' + doneN + ' student' +
+                            (doneN === 1 ? '' : 's') +
+                            (failN ? ' · ' + failN + ' failed' : '') + '.';
+                        setTimeout(function(){
+                            var b = document.getElementById('fbPropagationBanner');
+                            if (b) b.hidden = true;
+                        }, 4000);
+                    }
+                })
+                .catch(function(){ /* silent */ });
+        }, 2000);
     }
 
     global.FeedbackRender = { render: render };

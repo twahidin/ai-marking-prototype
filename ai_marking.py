@@ -1283,6 +1283,113 @@ def _run_feedback_helper(provider, model, session_keys, system_prompt, user_prom
     return _json.loads(match.group())
 
 
+def extract_correction_insight(provider, model, session_keys,
+                                subject_family, theme_key,
+                                criterion_name, original_text, edited_text):
+    """Extract a reusable marking principle from a teacher's correction.
+
+    Returns {mistake_pattern, correction_principle, transferability} or None
+    on failure. Caller writes the three fields back to the originating
+    feedback_edit row. Cheap-tier model via HELPER_MODELS.
+    """
+    system_prompt = (
+        "You extract a reusable marking principle from a teacher's correction.\n\n"
+        "Return JSON only:\n"
+        "{\n"
+        '  "mistake_pattern": "2-4 word phrase naming the type of error in '
+        'the original feedback — diagnostic, not advice",\n'
+        '  "correction_principle": "one sentence describing what this '
+        "teacher's edit reveals about their marking standard — what they "
+        'always do, never do, or consistently prefer",\n'
+        '  "transferability": "high | medium | low"\n'
+        "}\n\n"
+        "transferability:\n"
+        "  high   = applies to any similar question in any assignment\n"
+        "  medium = applies within this subject family\n"
+        "  low    = specific to this question or assignment type only\n\n"
+        "The correction_principle must be written as a generalised rule, not "
+        "a description of this specific edit. It should read like something a "
+        "new teacher could follow without seeing the original scripts.\n\n"
+        'WRONG: "The teacher added a reference to genetic identity."\n'
+        'RIGHT: "Always name the specific missing consequence rather than '
+        'asking students to explain further."\n\n'
+        "Maximum 30 words for correction_principle."
+    )
+    user_prompt = (
+        f"Subject family: {subject_family or 'unknown'}\n"
+        f"Theme: {theme_key or 'unknown'}\n"
+        f"Criterion: {criterion_name}\n"
+        f"Original AI feedback: {(original_text or '')[:600]}\n"
+        f"Teacher's edited feedback: {(edited_text or '')[:600]}\n\n"
+        "Return the JSON now."
+    )
+    helper_model = _helper_model_for(provider, model)
+    try:
+        parsed = _run_feedback_helper(provider, helper_model, session_keys,
+                                       system_prompt, user_prompt, max_tokens=200)
+    except Exception as e:
+        logger.warning(f"extract_correction_insight failed: {e}")
+        return None
+    transferability = (parsed.get('transferability') or '').strip().lower()
+    if transferability not in ('high', 'medium', 'low'):
+        transferability = None
+    pattern = (parsed.get('mistake_pattern') or '').strip()[:80] or None
+    principle = (parsed.get('correction_principle') or '').strip()[:300] or None
+    return {
+        'mistake_pattern': pattern,
+        'correction_principle': principle,
+        'transferability': transferability,
+    }
+
+
+def refresh_criterion_feedback(provider, model, session_keys, subject,
+                                criterion_name, student_answer, correct_answer,
+                                marks_awarded, marks_total, calibration_edit):
+    """Regenerate feedback + improvement for one criterion on one student,
+    calibrated against a teacher's edit on another student. Text-only call —
+    no images, no full marking pipeline. Cheap-tier model via HELPER_MODELS.
+    Returns {feedback, improvement}.
+    """
+    helper_model = _helper_model_for(provider, model)
+    system_prompt = (
+        "You are regenerating feedback for one criterion on a student's "
+        "script. A teacher has shown you their marking standard by editing "
+        "another student's feedback on the same type of mistake.\n\n"
+        "Apply the same standard to this student's answer. Do not change "
+        "the marks. Do not re-evaluate correctness. Only rewrite the "
+        "Feedback and Suggested Improvement fields.\n\n"
+        f"{FEEDBACK_GENERATION_RULES}\n\n"
+        "Return JSON only:\n"
+        "{\n"
+        '  "feedback": "...",\n'
+        '  "improvement": "..."\n'
+        "}"
+    )
+    orig = (calibration_edit.original_text or '')[:200]
+    edited = (calibration_edit.edited_text or '')[:200]
+    principle_line = ''
+    cp = getattr(calibration_edit, 'correction_principle', None)
+    if cp:
+        principle_line = f"\nTeacher's principle: \"{cp}\""
+    user_prompt = (
+        "TEACHER'S CALIBRATION EDIT (apply this standard):\n"
+        f"Original AI feedback: \"{orig}\"\n"
+        f"Teacher changed it to: \"{edited}\"{principle_line}\n\n"
+        "NOW APPLY THE SAME STANDARD TO:\n"
+        f"Subject: {subject or 'General'}\n"
+        f"Criterion: {criterion_name}\n"
+        f"Student's answer: {(student_answer or '')[:600]}\n"
+        f"Expected answer: {(correct_answer or '')[:400]}\n"
+        f"Marks: {marks_awarded if marks_awarded is not None else '-'} / {marks_total if marks_total is not None else '-'}\n\n"
+        "Return the JSON now."
+    )
+    parsed = _run_feedback_helper(provider, helper_model, session_keys,
+                                   system_prompt, user_prompt, max_tokens=300)
+    feedback = (parsed.get('feedback') or '').strip()
+    improvement = (parsed.get('improvement') or '').strip()
+    return {'feedback': feedback, 'improvement': improvement}
+
+
 def explain_criterion(provider, model, session_keys, subject, criterion_name,
                       student_answer, expected_answer, feedback_sentence=''):
     """Generate Layer 3 'The idea' for one criterion.
@@ -1852,3 +1959,179 @@ def format_calibration_block(examples):
     lines.append('---')
     lines.append('')
     return '\n'.join(lines)
+
+
+def count_active_calibration_edits(subject_family):
+    """Count active calibration edits across ALL teachers for the given
+    subject_family. Used by the calibration-injection threshold gate."""
+    from db import db, FeedbackEdit
+    if not subject_family:
+        return 0
+    return db.session.query(FeedbackEdit).filter(
+        FeedbackEdit.subject_family == subject_family,
+        FeedbackEdit.active == True,  # noqa: E712 — SQLAlchemy comparison
+    ).count()
+
+
+def get_marking_principles(provider, model, session_keys, subject_family):
+    """Return the shared cached markdown principles file for the subject.
+
+    Regenerates when:
+      1. Cache row missing, OR
+      2. is_stale=True AND count_active_calibration_edits >= 8, OR
+      3. generated_at is older than 30 days.
+
+    Below 8 active edits across the whole subject, returns '' so the caller
+    falls back to teacher-scoped raw examples.
+    """
+    from db import db, MarkingPrinciplesCache, FeedbackEdit
+    import json as _json
+
+    THRESHOLD = 8
+    if not subject_family:
+        return ''
+    edit_count = count_active_calibration_edits(subject_family)
+    if edit_count < THRESHOLD:
+        return ''
+
+    cache = MarkingPrinciplesCache.query.filter_by(subject_family=subject_family).first()
+
+    needs_regen = False
+    if cache is None:
+        needs_regen = True
+    else:
+        if cache.is_stale:
+            needs_regen = True
+        elif cache.generated_at:
+            ga = cache.generated_at
+            if ga.tzinfo is None:
+                ga = ga.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - ga).total_seconds() > 30 * 86400:
+                needs_regen = True
+        else:
+            needs_regen = True
+
+    if not needs_regen:
+        return cache.markdown_text or ''
+
+    edits = (FeedbackEdit.query
+             .filter(FeedbackEdit.subject_family == subject_family,
+                     FeedbackEdit.active == True)  # noqa: E712
+             .all())
+    by_theme = {}
+    for e in edits:
+        tk = e.theme_key or 'unknown'
+        by_theme.setdefault(tk, []).append(e)
+
+    summary_lines = []
+    for tk, lst in by_theme.items():
+        summary_lines.append(f"\n[{tk}] ({len(lst)} edits)")
+        for e in lst:
+            principle = (e.correction_principle or '').strip()
+            if not principle:
+                continue
+            summary_lines.append(f"- {principle[:150]}")
+    summary_block = '\n'.join(summary_lines).strip() or '(no correction_principle text available)'
+
+    system_prompt = (
+        "You are summarising a teacher's marking corrections into a concise "
+        "principles file. This file will be read by an AI model before marking "
+        "new student scripts — write it for that audience, not for the teacher.\n\n"
+        "Structure the output as markdown with one section per theme that has "
+        "corrections. Each section: a short heading, then one to three bullet "
+        "points of principles — generalised rules, not descriptions of specific "
+        "edits.\n\n"
+        "Rules for writing principles:\n"
+        '- Write as imperatives: "Always...", "Never...", "When X, do Y"\n'
+        "- Must be specific enough to change marking behaviour\n"
+        "- Must not reference specific students, assignments, or dates\n"
+        "- Must not exceed 20 words per bullet point\n\n"
+        "Where corrections in the same theme conflict — different teachers' "
+        "principles pull in opposite directions — take the dominant pattern "
+        "(supported by the most edits) and write the principle reflecting it. "
+        "If you had to suppress a contradicting principle, set "
+        '"has_conflicts": true in your output. Otherwise "has_conflicts": false.\n\n'
+        "Maximum total markdown length: 400 words.\n\n"
+        "Return JSON only:\n"
+        "{\n"
+        '  "markdown": "...principles file content (markdown, no preamble)...",\n'
+        '  "has_conflicts": true | false\n'
+        "}"
+    )
+    user_prompt = (
+        f"Subject family: {subject_family}\n"
+        f"Total active calibration edits: {edit_count}\n\n"
+        "Edits grouped by theme (each line is one teacher's correction principle):\n"
+        f"{summary_block}\n\n"
+        "Return the JSON now."
+    )
+
+    helper_model = _helper_model_for(provider, model)
+    try:
+        parsed = _run_feedback_helper(provider, helper_model, session_keys,
+                                       system_prompt, user_prompt, max_tokens=700)
+    except Exception as e:
+        logger.warning(f"principles regen failed for {subject_family}: {e}")
+        return (cache.markdown_text if cache else '') or ''
+
+    new_md = (parsed.get('markdown') or '').strip()
+    has_conflicts = bool(parsed.get('has_conflicts'))
+    if not new_md:
+        return (cache.markdown_text if cache else '') or ''
+
+    try:
+        if cache is None:
+            cache = MarkingPrinciplesCache(
+                subject_family=subject_family,
+                markdown_text=new_md,
+                generated_at=datetime.now(timezone.utc),
+                is_stale=False,
+                edit_count_at_gen=edit_count,
+                has_conflicts=has_conflicts,
+            )
+            db.session.add(cache)
+        else:
+            cache.markdown_text = new_md
+            cache.generated_at = datetime.now(timezone.utc)
+            cache.is_stale = False
+            cache.edit_count_at_gen = edit_count
+            cache.has_conflicts = has_conflicts
+        db.session.commit()
+        logger.info(f"principles regenerated for {subject_family}: "
+                    f"{edit_count} edits, has_conflicts={has_conflicts}")
+    except Exception as commit_err:
+        db.session.rollback()
+        logger.warning(f"principles regen commit failed: {commit_err}")
+
+    return new_md
+
+
+def build_calibration_block(teacher_id, asn, subject_family, theme_keys,
+                             provider, model, session_keys):
+    """Tiered calibration injection.
+
+    < 8 active edits in the subject (across ALL teachers) → existing
+    teacher-scoped raw examples (format_calibration_block over
+    fetch_calibration_examples).
+
+    >= 8 → shared markdown principles file. On regeneration failure,
+    falls back to a smaller raw-example pull (limit=5).
+    """
+    THRESHOLD = 8
+    edit_count = count_active_calibration_edits(subject_family)
+    if edit_count < THRESHOLD:
+        return format_calibration_block(
+            fetch_calibration_examples(teacher_id, asn, theme_keys, limit=10)
+        )
+
+    principles = get_marking_principles(provider, model, session_keys, subject_family)
+    if not principles:
+        return format_calibration_block(
+            fetch_calibration_examples(teacher_id, asn, theme_keys, limit=5)
+        )
+    return (
+        "---\n"
+        "MARKING PRINCIPLES (this subject's established standard)\n\n"
+        f"{principles}\n"
+        "---\n\n"
+    )

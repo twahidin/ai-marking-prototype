@@ -158,6 +158,32 @@ def _migrate_add_columns(app):
                 db.session.execute(text('ALTER TABLE assignments ADD COLUMN subject_family VARCHAR(40)'))
                 db.session.commit()
                 logger.info('Added subject_family column to assignments table')
+        if 'feedback_edit' in inspector.get_table_names():
+            columns = [c['name'] for c in inspector.get_columns('feedback_edit')]
+            if 'propagation_status' not in columns:
+                db.session.execute(text("ALTER TABLE feedback_edit ADD COLUMN propagation_status VARCHAR(20) DEFAULT 'none'"))
+                db.session.commit()
+                logger.info('Added propagation_status column to feedback_edit table')
+            if 'propagated_to' not in columns:
+                db.session.execute(text("ALTER TABLE feedback_edit ADD COLUMN propagated_to TEXT DEFAULT '[]'"))
+                db.session.commit()
+                logger.info('Added propagated_to column to feedback_edit table')
+            if 'propagated_at' not in columns:
+                db.session.execute(text('ALTER TABLE feedback_edit ADD COLUMN propagated_at TIMESTAMP'))
+                db.session.commit()
+                logger.info('Added propagated_at column to feedback_edit table')
+            if 'mistake_pattern' not in columns:
+                db.session.execute(text('ALTER TABLE feedback_edit ADD COLUMN mistake_pattern VARCHAR(80)'))
+                db.session.commit()
+                logger.info('Added mistake_pattern column to feedback_edit table')
+            if 'correction_principle' not in columns:
+                db.session.execute(text('ALTER TABLE feedback_edit ADD COLUMN correction_principle VARCHAR(300)'))
+                db.session.commit()
+                logger.info('Added correction_principle column to feedback_edit table')
+            if 'transferability' not in columns:
+                db.session.execute(text('ALTER TABLE feedback_edit ADD COLUMN transferability VARCHAR(10)'))
+                db.session.commit()
+                logger.info('Added transferability column to feedback_edit table')
 
 
 def init_db(app):
@@ -426,8 +452,25 @@ class FeedbackEdit(db.Model):
     promoted_at = db.Column(db.DateTime(timezone=True), nullable=True)
     active = db.Column(db.Boolean, nullable=False, default=True)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    propagation_status = db.Column(db.String(20), nullable=False, default='none')
+    propagated_to = db.Column(db.Text, nullable=False, default='[]')
+    propagated_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    mistake_pattern = db.Column(db.String(80), nullable=True)
+    correction_principle = db.Column(db.String(300), nullable=True)
+    transferability = db.Column(db.String(10), nullable=True)
 
     __table_args__ = (
         db.Index('ix_feedback_edit_lookup', 'edited_by', 'active', 'subject_family', 'theme_key'),
         db.Index('ix_feedback_edit_assignment', 'assignment_id', 'rubric_version'),
     )
+
+
+class MarkingPrinciplesCache(db.Model):
+    __tablename__ = 'marking_principles_cache'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    subject_family = db.Column(db.String(40), nullable=False, unique=True)
+    markdown_text = db.Column(db.Text, nullable=False, default='')
+    generated_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    is_stale = db.Column(db.Boolean, nullable=False, default=False)
+    edit_count_at_gen = db.Column(db.Integer, nullable=False, default=0)
+    has_conflicts = db.Column(db.Boolean, nullable=False, default=False)

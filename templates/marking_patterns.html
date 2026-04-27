@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}My Marking Patterns{% endblock %}
+{% block body %}
+<div style="max-width: 900px; margin: 32px auto; padding: 0 24px;">
+    <h1 style="font-size: 22px; margin-bottom: 6px;">My Marking Patterns</h1>
+    <p style="color: #666; font-size: 13px; margin-bottom: 24px;">
+        Each section shows the calibration standards for one subject.
+        Below 8 total edits, the AI marker uses raw examples. From 8 onwards,
+        a shared principles file (regenerated lazily) replaces them.
+    </p>
+
+    {% if not sections %}
+    <div style="padding: 16px; background: #f7f8fb; border-radius: 8px; color: #555;">
+        No calibration edits yet. Save an edit to the calibration bank from
+        a feedback modal to start building your subject's marking pattern.
+    </div>
+    {% endif %}
+
+    {% for s in sections %}
+    <div style="margin-bottom: 28px; padding: 18px 20px; background: white; border: 1px solid #e3e6f0; border-radius: 10px;">
+        <div style="display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px;">
+            <h2 style="font-size: 17px; margin: 0;">{{ s.subject_family|replace('_', ' ')|title }}</h2>
+            <span style="font-size: 12px; color: #7a7f8c;">
+                You've contributed {{ s.my_count }} of {{ s.total_count }} active edits in this subject.
+            </span>
+        </div>
+
+        {% if s.has_principles %}
+            {% if s.has_conflicts %}
+            <div style="margin-bottom: 12px; padding: 8px 12px; background: #fff8ec; border-left: 3px solid #d59f00; font-size: 12.5px; color: #5a4400;">
+                Some standards in this subject look mixed across teachers. The summary below takes the dominant pattern; review your own bank if you'd like to refine your contribution.
+            </div>
+            {% endif %}
+            <pre style="white-space: pre-wrap; font-family: inherit; font-size: 13.5px; color: #2d2d2d; line-height: 1.55; margin: 0;">{{ s.markdown }}</pre>
+        {% else %}
+            {% if s.threshold_met %}
+            <div style="font-size: 13px; color: #666;">
+                Principles are being generated for this subject. They'll appear here on the next marking run.
+            </div>
+            {% else %}
+            <div style="font-size: 13px; color: #666;">
+                Add {{ s.remaining_to_threshold }} more calibration edits across this subject to unlock the shared marking principles.
+            </div>
+            {% endif %}
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

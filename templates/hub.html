@@ -37,6 +37,12 @@
 {% include '_gate.html' %}
 
 {% else %}
+{% if has_conflicts_in_my_subjects %}
+<div style="max-width: 1100px; margin: 16px auto 0; padding: 10px 14px; background: #fff8ec; border-left: 3px solid #d59f00; border-radius: 0 6px 6px 0; font-size: 13px; color: #5a4400;">
+    Some standards in your subjects look mixed across teachers.
+    <a href="/teacher/marking-patterns" style="color: #5a4400; font-weight: 600;">Review your marking patterns →</a>
+</div>
+{% endif %}
 <div class="hub">
     <div class="hub-container">
         {% if dept_mode and teacher %}
