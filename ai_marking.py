@@ -613,6 +613,29 @@ CONSTRAINTS:
 - OMIT this field entirely on full-marks (or "correct") criteria."""
 
 
+# Shared rules for the per-question "idea" string. Inlined into the marking
+# response (instead of a separate AI call when the student clicks "Why does
+# this matter?") so the explanation is ready the moment the page loads.
+IDEA_RULES = """LAYER 3 IDEA RULES (for the "idea" field)
+
+The idea is a one-sentence explanation of WHY this criterion matters,
+written for the student. It powers the "Why does this matter?" expander
+on the student feedback view.
+
+CONSTRAINTS:
+- ≤ 25 words. One sentence.
+- Anchor it in what the question is actually asking for or in the
+  underlying concept being applied — how knowledge is being used here.
+- Do NOT frame it around examiners, markers, markschemes, or what
+  "examiners want". Banned openers: "Examiners want", "Markers look
+  for", "This criterion tests", "The marker expects".
+- Do NOT restate the criterion name.
+- Speak directly to the student about why this part of the answer
+  matters for the question.
+- ALWAYS include the field, even on full-marks criteria — the student
+  may still expand the explainer to learn the concept."""
+
+
 def _build_rubrics_prompt(subject, rubrics_pages, reference_pages, question_paper_pages,
                           script_pages, review_section, marking_section, total_marks,
                           calibration_block=''):
@@ -662,6 +685,8 @@ LINE-BY-LINE ERROR IDENTIFICATION:
 
 {CORRECTION_PROMPT_RULES}
 
+{IDEA_RULES}
+
 HANDWRITING RULES:
 - IGNORE crossed-out or struck-through text — treat as deleted
 - A caret (^) or insertion mark means the student wants to INSERT text at that point
@@ -693,6 +718,7 @@ Respond ONLY with valid JSON:
             "marks_total": number,
             "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
             "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)",
+            "idea": "single sentence — see LAYER 3 IDEA RULES (≤25 words, why this criterion matters)",
             "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise one short do-this-now task following CORRECTION PROMPT RULES — pick the form that matches this criterion's mistake type (procedural / reasoning / evidence / concept / language). ≤ 25 words. Must not duplicate another criterion's wording."
         }}
     ],
@@ -802,6 +828,7 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "marks_total": number,
             "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
             "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)",
+            "idea": "single sentence — see LAYER 3 IDEA RULES (≤25 words, why this question matters)",
             "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise one short do-this-now task following CORRECTION PROMPT RULES — pick the form matching this question's mistake type (procedural / reasoning / evidence / concept / language). ≤ 25 words. Must not duplicate another question's wording."
         }}"""
     else:
@@ -817,6 +844,7 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "status": "correct | partially_correct | incorrect",
             "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
             "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)",
+            "idea": "single sentence — see LAYER 3 IDEA RULES (≤25 words, why this question matters)",
             "correction_prompt": "OMIT if status == 'correct'; otherwise one short do-this-now task following CORRECTION PROMPT RULES — pick the form matching this question's mistake type (procedural / reasoning / evidence / concept / language). ≤ 25 words. Must not duplicate another question's wording."
         }}"""
 
@@ -839,6 +867,8 @@ Your task:
 {FEEDBACK_GENERATION_RULES}
 
 {CORRECTION_PROMPT_RULES}
+
+{IDEA_RULES}
 
 HANDWRITING RULES:
 - IGNORE crossed-out or struck-through text — treat as deleted

@@ -5131,6 +5131,14 @@ def student_feedback_explain(assignment_id, submission_id):
     if not q:
         return jsonify({'success': False, 'error': 'Question not found'}), 404
 
+    # Inlined "idea" path: marking now produces idea per criterion in
+    # result_json (see ai_marking.IDEA_RULES). If present, return it
+    # directly — no AI round-trip. Falls through to a live AI call only for
+    # legacy submissions marked before this optimisation.
+    inlined_idea = (q.get('idea') or '').strip()
+    if inlined_idea:
+        return jsonify({'success': True, 'cached': True, 'idea': inlined_idea})
+
     criterion_name = q.get('criterion_name') or f"Question {q.get('question_num') or qkey}"
     try:
         explanation = explain_criterion(
