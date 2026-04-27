@@ -3288,25 +3288,28 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
             ref = [asn.reference] if asn.reference else []
             script = sub.get_script_pages()
 
-            # Calibration: pull this teacher's prior relevant edits and prepend
-            # them to the system prompt. Best-effort — never blocks marking.
+            # Calibration: tiered injection — raw examples below threshold,
+            # shared principles file at/above threshold. Best-effort — never blocks marking.
             calibration_block = ''
             try:
-                from ai_marking import fetch_calibration_examples, format_calibration_block
+                from ai_marking import build_calibration_block
                 prior = sub.get_result() or {}
                 theme_keys = list({
                     q.get('theme_key')
                     for q in (prior.get('questions') or [])
                     if q.get('theme_key')
                 })
-                calibration_examples = fetch_calibration_examples(
+                calibration_block = build_calibration_block(
                     teacher_id=asn.teacher_id,
-                    assignment=asn,
+                    asn=asn,
+                    subject_family=getattr(asn, 'subject_family', None) or '',
                     theme_keys=theme_keys,
+                    provider=asn.provider,
+                    model=asn.model,
+                    session_keys=_resolve_api_keys(asn),
                 )
-                calibration_block = format_calibration_block(calibration_examples)
-                if calibration_examples:
-                    logger.info(f"Marking sub {submission_id}: prepending {len(calibration_examples)} calibration examples")
+                if calibration_block:
+                    logger.info(f"Marking sub {submission_id}: prepended calibration block ({len(calibration_block)} chars)")
             except Exception as cal_err:
                 logger.warning(f"Calibration lookup failed for sub {submission_id}, marking with no calibration: {cal_err}")
                 calibration_block = ''
