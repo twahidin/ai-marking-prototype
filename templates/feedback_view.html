@@ -253,6 +253,7 @@
         <a href="{{ download_url }}" class="fv-download-link" target="_blank" rel="noopener">Download full PDF</a>
     </div>
 
+    {% if grouping_ui_enabled %}
     <div class="fv-view-toggle" id="fvViewToggle" role="tablist" aria-label="Choose feedback layout">
         <button type="button" id="fvToggleQuestion" class="active" role="tab" aria-selected="true">By Question</button>
         <button type="button" id="fvToggleMistake" role="tab" aria-selected="false">By mistake type<span class="fv-mistake-marker">&#10038;</span></button>
@@ -263,6 +264,7 @@
     <div class="fv-mistake-note" id="fvMistakeNote" hidden>Groups similar mistakes together to help you spot patterns — try it out.</div>
 
     <div id="fvGrouped" class="fv-grouped hidden"></div>
+    {% endif %}
 
     <button type="button" class="fv-show-breakdown" id="fvShowBreakdownBtn">
         <span id="fvShowBreakdownLabel">Show breakdown</span>

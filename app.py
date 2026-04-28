@@ -38,6 +38,13 @@ _ENV_DEMO_MODE = os.getenv('DEMO_MODE', 'FALSE').upper() == 'TRUE'
 _ENV_DEPT_MODE = os.getenv('DEPT_MODE', 'FALSE').upper() == 'TRUE'
 _ENV_APP_TITLE = os.getenv('APP_TITLE', 'AI Feedback Systems')
 
+# Hide the student-facing "By mistake type" toggle and grouped view until
+# the categorisation pipeline is judged robust enough. The pipeline still
+# runs (theme_key lands on result_json so calibration Tier 1 + propagation
+# continue to work) — only the student UI is suppressed. Set the env var
+# to "TRUE" to re-enable the student grouping view.
+_ENV_STUDENT_GROUPING_UI_ENABLED = os.getenv('STUDENT_GROUPING_UI_ENABLED', 'FALSE').upper() == 'TRUE'
+
 # Demo mode: restricted to 3 budget models only
 DEMO_MODELS = {
     'anthropic': {
@@ -5418,6 +5425,17 @@ def student_feedback_page(assignment_id, submission_id):
             except Exception:
                 db.session.rollback()
 
+    # Student-facing grouping UI is gated behind a feature flag — when off,
+    # the toggle, polling indicator, and grouped view are hidden completely
+    # (the pipeline still runs in the background; only the student surface
+    # is suppressed).
+    if _ENV_STUDENT_GROUPING_UI_ENABLED:
+        cat_status_for_view = sub.categorisation_status or 'pending'
+        grouping_data_for_view = grouping_data
+    else:
+        cat_status_for_view = 'disabled'  # never matches 'pending' so polling never starts
+        grouping_data_for_view = None
+
     return render_template(
         'feedback_view.html',
         assignment=asn,
@@ -5427,8 +5445,9 @@ def student_feedback_page(assignment_id, submission_id):
         score_pill=score_pill,
         download_url=url_for('download_submission_pdf', assignment_id=assignment_id, submission_id=submission_id),
         themes=theme_meta,
-        categorisation_status=sub.categorisation_status or 'pending',
-        grouping_data=grouping_data,
+        categorisation_status=cat_status_for_view,
+        grouping_data=grouping_data_for_view,
+        grouping_ui_enabled=_ENV_STUDENT_GROUPING_UI_ENABLED,
     )
 
 
