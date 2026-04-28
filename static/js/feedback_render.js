@@ -22,6 +22,74 @@
         return d.innerHTML;
     }
 
+    // Math preprocessor: AI feedback often writes math without $...$ delimiters
+    // ('t^3', 'ms^-2', 't_1', '[t^3-6t^2+9t]_0^3'), which MathJax then skips,
+    // leaving the carets and underscores as visual clutter. Wrap obvious bare
+    // math in $...$ so MathJax typesets it as proper symbols. Mirrors the
+    // server-side _preprocess_math_for_pdf logic.
+    var SUPER_TO_CHAR = {
+        '⁰':'0','¹':'1','²':'2','³':'3','⁴':'4','⁵':'5',
+        '⁶':'6','⁷':'7','⁸':'8','⁹':'9','⁺':'+','⁻':'-'
+    };
+    var SUB_TO_CHAR = {
+        '₀':'0','₁':'1','₂':'2','₃':'3','₄':'4',
+        '₅':'5','₆':'6','₇':'7','₈':'8','₉':'9'
+    };
+    var SUPER_CLASS = '[⁰¹²³⁴-⁹⁺⁻]';
+    var SUB_CLASS = '[₀-₉]';
+
+    function _convertRun(run, table) {
+        var out = '';
+        for (var i = 0; i < run.length; i++) out += (table[run[i]] || run[i]);
+        return out;
+    }
+
+    function preprocessMath(text) {
+        if (!text) return text;
+        text = String(text);
+        // word + supers: 'ms⁻²' → '$\mathrm{ms}^{-2}$'
+        text = text.replace(
+            new RegExp('([A-Za-z]+)(' + SUPER_CLASS + '+)', 'g'),
+            function (_, base, run) {
+                return '$\\mathrm{' + base + '}^{' + _convertRun(run, SUPER_TO_CHAR) + '}$';
+            }
+        );
+        // standalone superscript runs: '²' → '${}^{2}$'
+        text = text.replace(new RegExp(SUPER_CLASS + '+', 'g'), function (m) {
+            return '${}^{' + _convertRun(m, SUPER_TO_CHAR) + '}$';
+        });
+        // standalone subscript runs
+        text = text.replace(new RegExp(SUB_CLASS + '+', 'g'), function (m) {
+            return '${}_{' + _convertRun(m, SUB_TO_CHAR) + '}$';
+        });
+        // Bare math patterns. Outer expressions first so inner ones don't
+        // double-wrap. Re-split on $ between patterns to skip already-wrapped.
+        var patterns = [
+            /\\int\b[^$\n]*?\\,?d[a-zA-Z]+/g,                  // \int ... dx
+            /\[[^\]$\n]+\]_\S+(?:\^\S+)?/g,                    // [expr]_a^b
+            /\\(?:frac|sqrt|sum)\{[^}]*\}(?:\{[^}]*\})?/g,     // \frac{a}{b}, \sqrt{x}
+            /(?<![A-Za-z])[A-Za-z]+\^\{[^}]+\}/g,              // x^{2}
+            /(?<![A-Za-z])[A-Za-z]+\^[-+]?\d+/g,               // x^2, ms^-2, s^-1
+            /(?<![A-Za-z])[A-Za-z]+_\{[^}]+\}/g,               // x_{i}
+            /(?<![A-Za-z])[A-Za-z]+_[a-zA-Z0-9]/g,             // t_1, x_i
+        ];
+        for (var p = 0; p < patterns.length; p++) {
+            var pat = patterns[p];
+            var parts = text.split('$');
+            for (var i = 0; i < parts.length; i++) {
+                if (i % 2 === 1) continue;
+                parts[i] = parts[i].replace(pat, function (m) { return '$' + m + '$'; });
+            }
+            text = parts.join('$');
+        }
+        return text;
+    }
+
+    function escMath(s) {
+        if (s == null) return '';
+        return esc(preprocessMath(String(s)));
+    }
+
     function deriveStatus(marksAwarded, marksTotal) {
         if (marksAwarded == null || marksTotal == null || marksTotal <= 0) return null;
         var ratio = marksAwarded / marksTotal;
@@ -171,7 +239,7 @@
         var prefix = state.prefix;
         if (state.editable) {
             var content = state.overall
-                ? esc(state.overall)
+                ? escMath(state.overall)
                 : '<span class="fb-placeholder">Click to add overall feedback…</span>';
             return '<div class="fb-overall-box">' +
                 '<h4>Overall Feedback <small style="color:#bbb;font-weight:400;">(click to edit)</small></h4>' +
@@ -182,7 +250,7 @@
             '</div>';
         }
         if (state.overall) {
-            return '<div class="fb-overall-box"><h4>Overall Feedback</h4><p>' + esc(state.overall) + '</p></div>';
+            return '<div class="fb-overall-box"><h4>Overall Feedback</h4><p>' + escMath(state.overall) + '</p></div>';
         }
         return '';
     }
@@ -255,8 +323,8 @@
 
         var fbBlock, impBlock;
         if (state.editable) {
-            var fbContent = q.feedback ? esc(q.feedback) : '<span class="fb-placeholder">Click to add feedback…</span>';
-            var impContent = q.improvement ? esc(q.improvement) : '<span class="fb-placeholder">Click to add suggested improvement…</span>';
+            var fbContent = q.feedback ? escMath(q.feedback) : '<span class="fb-placeholder">Click to add feedback…</span>';
+            var impContent = q.improvement ? escMath(q.improvement) : '<span class="fb-placeholder">Click to add suggested improvement…</span>';
             fbBlock = '<div class="fb-q-field"><div class="fb-q-field-label">Feedback <small style="color:#bbb;font-weight:400;">(click to edit)</small></div>' +
                 '<div class="fb-q-field-value feedback fb-editable" data-field="feedback">' + fbContent +
                 '<span class="edit-hint">✎ edit</span></div></div>';
@@ -264,8 +332,8 @@
                 '<div class="fb-q-field-value improvement fb-editable" data-field="improvement">' + impContent +
                 '<span class="edit-hint">✎ edit</span></div></div>';
         } else {
-            fbBlock = q.feedback ? '<div class="fb-q-field"><div class="fb-q-field-label">Feedback</div><div class="fb-q-field-value feedback">' + esc(q.feedback) + '</div></div>' : '';
-            impBlock = q.improvement ? '<div class="fb-q-field"><div class="fb-q-field-label">Suggested Improvement</div><div class="fb-q-field-value improvement">' + esc(q.improvement) + '</div></div>' : '';
+            fbBlock = q.feedback ? '<div class="fb-q-field"><div class="fb-q-field-label">Feedback</div><div class="fb-q-field-value feedback">' + escMath(q.feedback) + '</div></div>' : '';
+            impBlock = q.improvement ? '<div class="fb-q-field"><div class="fb-q-field-label">Suggested Improvement</div><div class="fb-q-field-value improvement">' + escMath(q.improvement) + '</div></div>' : '';
         }
 
         var cardClass = 'fb-q-card status-' + statusCls;
@@ -274,8 +342,8 @@
                 '<span id="' + state.prefix + 'StatusBadgeWrap">' + badge + '</span>' +
             '</div>' +
             '<div class="fb-q-card-body">' +
-                '<div class="fb-q-field"><div class="fb-q-field-label">' + ansLabel + '</div><div class="fb-q-field-value">' + esc(q.student_answer || 'N/A') + '</div></div>' +
-                '<div class="fb-q-field"><div class="fb-q-field-label">' + refLabel + '</div><div class="fb-q-field-value">' + esc(q.correct_answer || 'N/A') + '</div></div>' +
+                '<div class="fb-q-field"><div class="fb-q-field-label">' + ansLabel + '</div><div class="fb-q-field-value">' + escMath(q.student_answer || 'N/A') + '</div></div>' +
+                '<div class="fb-q-field"><div class="fb-q-field-label">' + refLabel + '</div><div class="fb-q-field-value">' + escMath(q.correct_answer || 'N/A') + '</div></div>' +
                 fbBlock +
                 impBlock +
             '</div>' +
