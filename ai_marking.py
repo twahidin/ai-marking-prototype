@@ -650,7 +650,10 @@ HANDWRITING RULES:
 - Focus on the student's FINAL intended answer, not drafts or corrections
 
 FORMATTING:
-- Use LaTeX in $ delimiters for math: $x^2 + 3x = 0$
+- Wrap ALL math in $ delimiters so it renders as proper symbols/fractions in the report.
+- Use \frac for fractions: $\frac{1}{2}$ (NOT 1/2). Use ^{ } for powers: $x^{2}$.
+- Use \times for multiplication, \div for division, \leq / \geq for inequalities, \pi for pi, \sqrt{ } for square roots.
+- Examples: $\frac{3}{4}$, $x^{2} + 3x = 0$, $5 \times 3 = 15$, $\sqrt{16} = 4$.
 
 Respond ONLY with valid JSON:
 {{
@@ -792,8 +795,11 @@ HANDWRITING RULES:
 - Focus on the student's FINAL intended answer, not drafts or corrections
 
 FORMATTING:
-- Use LaTeX in $ delimiters for math: $x^2 + 3x = 0$
-- Use $$ for display equations: $$E = mc^2$$
+- Wrap ALL math in $ delimiters so it renders as proper symbols/fractions in the report.
+- Use \frac for fractions: $\frac{1}{2}$ (NOT 1/2). Use ^{ } for powers: $x^{2}$.
+- Use \times for multiplication, \div for division, \leq / \geq for inequalities, \pi for pi, \sqrt{ } for square roots.
+- Use $$ for centered display equations: $$E = mc^2$$.
+- Examples: $\frac{3}{4}$, $x^{2} + 3x = 0$, $5 \times 3 = 15$, $\sqrt{16} = 4$.
 
 Respond ONLY with valid JSON:
 {{
@@ -868,7 +874,10 @@ HANDWRITING RULES:
 - Focus on the student's FINAL intended answer, not drafts or corrections
 
 FORMATTING:
-- Use LaTeX in $ delimiters for math: $x^2 + 3x = 0$
+- Wrap ALL math in $ delimiters so it renders as proper symbols/fractions in the report.
+- Use \frac for fractions: $\frac{1}{2}$ (NOT 1/2). Use ^{ } for powers: $x^{2}$.
+- Use \times for multiplication, \div for division, \leq / \geq for inequalities, \pi for pi, \sqrt{ } for square roots.
+- Examples: $\frac{3}{4}$, $x^{2} + 3x = 0$, $5 \times 3 = 15$, $\sqrt{16} = 4$.
 
 Respond ONLY with valid JSON:
 {{

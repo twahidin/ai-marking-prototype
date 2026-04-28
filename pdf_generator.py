@@ -72,32 +72,29 @@ def _render_math_to_png(math_tex, fontsize=11):
 def _split_text_and_math(text):
     """Yield (kind, content) tuples where kind is 'text' or 'math'.
 
-    Handles both $...$ inline and $$...$$ display math. Unbalanced delimiters
-    fall through as text so bad input never crashes the PDF.
+    Handles $...$ and $$...$$ (TeX delimiters), plus \\(...\\) and \\[...\\]
+    (MathJax-style delimiters). Unbalanced delimiters fall through as text
+    so bad input never crashes the PDF.
     """
-    i, n = 0, len(text)
-    while i < n:
-        if text[i:i + 2] == '$$':
-            end = text.find('$$', i + 2)
-            if end == -1:
-                yield ('text', text[i:])
-                return
-            yield ('math', text[i + 2:end])
-            i = end + 2
-        elif text[i] == '$':
-            end = text.find('$', i + 1)
-            if end == -1:
-                yield ('text', text[i:])
-                return
-            yield ('math', text[i + 1:end])
-            i = end + 1
-        else:
-            nxt = text.find('$', i)
-            if nxt == -1:
-                yield ('text', text[i:])
-                return
-            yield ('text', text[i:nxt])
-            i = nxt
+    import re as _re
+    # Find every math span and its boundaries — process them in order.
+    pattern = _re.compile(
+        r'\$\$(.+?)\$\$'         # $$...$$
+        r'|\$(.+?)\$'            # $...$
+        r'|\\\((.+?)\\\)'        # \(...\)
+        r'|\\\[(.+?)\\\]',       # \[...\]
+        _re.DOTALL,
+    )
+    pos = 0
+    for m in pattern.finditer(text):
+        if m.start() > pos:
+            yield ('text', text[pos:m.start()])
+        # Whichever group matched holds the math body.
+        body = next(g for g in m.groups() if g is not None)
+        yield ('math', body)
+        pos = m.end()
+    if pos < len(text):
+        yield ('text', text[pos:])
 
 
 def render_latex_for_pdf(text, fontsize=11, img_height=14):
@@ -110,8 +107,8 @@ def render_latex_for_pdf(text, fontsize=11, img_height=14):
     if not text:
         return ''
     text = str(text)
-    # Fast path: no $ at all → defer to the Unicode-approximation helper.
-    if '$' not in text:
+    # Fast path: no math delimiters at all → defer to Unicode helper.
+    if '$' not in text and '\\(' not in text and '\\[' not in text:
         return clean_for_pdf(text)
     if not _matplotlib_available():
         return clean_for_pdf(text)
@@ -161,10 +158,13 @@ def clean_for_pdf(text):
         return ''
     text = str(text)
 
-    # Remove $$ and $ delimiters
-    text = text.replace('$$', '')
+    # Strip math delimiters — keep the body so the Unicode replacements
+    # below still get a chance to convert \frac, \times, etc.
+    text = re.sub(r'\$\$(.+?)\$\$', r'\1', text, flags=re.DOTALL)
     text = re.sub(r'\$([^$]+)\$', r'\1', text)
     text = text.replace('$', '')
+    text = re.sub(r'\\\((.+?)\\\)', r'\1', text, flags=re.DOTALL)
+    text = re.sub(r'\\\[(.+?)\\\]', r'\1', text, flags=re.DOTALL)
 
     # Common LaTeX -> Unicode
     replacements = {
