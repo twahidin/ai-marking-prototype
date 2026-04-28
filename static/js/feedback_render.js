@@ -873,9 +873,25 @@
                         (c.marks_total != null ? c.marks_total : '-') + ')';
                     head.appendChild(hd);
                     row.appendChild(head);
+                    // Student's extracted answer — so the teacher can confirm
+                    // the calibration applies to what the student actually wrote.
+                    if (c.student_answer) {
+                        var ans = document.createElement('div');
+                        ans.style.cssText = 'margin-top:6px;padding-left:24px;font-size:12px;color:#333;';
+                        var ansLbl = document.createElement('span');
+                        ansLbl.style.cssText = 'color:#888;font-weight:600;';
+                        ansLbl.textContent = "Student's answer: ";
+                        ans.appendChild(ansLbl);
+                        ans.appendChild(document.createTextNode(c.student_answer));
+                        row.appendChild(ans);
+                    }
                     var fb = document.createElement('div');
                     fb.style.cssText = 'margin-top:4px;padding-left:24px;font-size:12px;color:#555;';
-                    fb.textContent = c.current_feedback || '(no feedback)';
+                    var fbLbl = document.createElement('span');
+                    fbLbl.style.cssText = 'color:#888;font-weight:600;';
+                    fbLbl.textContent = 'Current feedback: ';
+                    fb.appendChild(fbLbl);
+                    fb.appendChild(document.createTextNode(c.current_feedback || '(no feedback)'));
                     row.appendChild(fb);
                     review.appendChild(row);
                 });

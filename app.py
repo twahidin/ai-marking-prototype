@@ -5579,6 +5579,7 @@ def _find_propagation_candidates(edit, asn):
             'student_name': (student.name if student else f"Student #{sub.student_id}"),
             'marks_awarded': ma,
             'marks_total': mt,
+            'student_answer': (target_q.get('student_answer') or ''),
             'current_feedback': (target_q.get('feedback') or ''),
             'current_improvement': (target_q.get('improvement') or ''),
         })
