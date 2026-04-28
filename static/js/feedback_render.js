@@ -592,12 +592,16 @@
             if (field === 'overall') renderShell(state); else renderQuestion(state);
             showToast('success', 'Saved');
             if (state.onSave) { try { state.onSave(data.result); } catch (e) {} }
-            // Render the per-field tag from edit_meta (calibration bank) when
-            // the server logged this edit, and stash it on state so it
-            // survives subsequent renders.
-            if (data && data.edit_meta && savedQNum != null) {
+            // Render the per-field tag for calibrated saves. Prefer the
+            // server's edit_meta (gives us the edit_id for the Retire link),
+            // but fall back to a synthetic meta if the user opted into
+            // calibration and the patch succeeded — that way the indicator
+            // always reflects what the teacher just chose, even if a server
+            // hiccup left edit_meta empty.
+            if (savedQNum != null && (field === 'feedback' || field === 'improvement')) {
                 var qKey = String(savedQNum);
-                var fieldMeta = (data.edit_meta[qKey] || {})[field];
+                var serverMeta = (data && data.edit_meta && data.edit_meta[qKey]) ? data.edit_meta[qKey][field] : null;
+                var fieldMeta = serverMeta || (calibrate ? { calibrated: true } : null);
                 if (fieldMeta) {
                     if (!state.textEditMeta) state.textEditMeta = {};
                     if (!state.textEditMeta[qKey]) state.textEditMeta[qKey] = {};

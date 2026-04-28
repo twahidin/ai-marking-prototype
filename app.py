@@ -179,21 +179,11 @@ if _ENV_DEMO_MODE and _ENV_DEPT_MODE:
 # ---------------------------------------------------------------------------
 
 def _compute_static_version():
-    """Max mtime across static/ JS+CSS so the templates can append a
-    cache-buster query string. Computed once at import — Railway redeploys
-    reset it."""
-    import os
-    base = os.path.join(os.path.dirname(__file__), 'static')
-    latest = 0
-    if os.path.isdir(base):
-        for root, _, files in os.walk(base):
-            for f in files:
-                if f.endswith('.js') or f.endswith('.css'):
-                    try:
-                        latest = max(latest, int(os.path.getmtime(os.path.join(root, f))))
-                    except OSError:
-                        pass
-    return str(latest) if latest else '1'
+    """Cache-buster for static assets. Uses process start time so every
+    Railway redeploy gets a fresh value, regardless of how the build tool
+    handles file mtimes."""
+    import time
+    return str(int(time.time()))
 
 
 _STATIC_VERSION = _compute_static_version()
