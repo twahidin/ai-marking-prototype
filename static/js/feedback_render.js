@@ -87,6 +87,7 @@
             submissionId: options.submissionId || null,
             onSave: options.onSave || null,
             isMarksMode: isMarksMode,
+            textEditMeta: options.textEditMeta || {},  // {qKey: {field: {edit_id, calibrated}}}
         };
         if (state.editable && (!state.assignmentId || !state.submissionId)) {
             state.editable = false;
@@ -299,6 +300,19 @@
             attachQuestionEditHandlers(state);
         }
 
+        // Initial-load: render any per-field tag for this question that
+        // already has an active calibration row (server populates state via
+        // text_edit_meta on the GET response).
+        if (state.textEditMeta) {
+            var qNow = state.questions[state.currentQ];
+            if (qNow) {
+                var qKey = String(qNow.question_num != null ? qNow.question_num : (state.currentQ + 1));
+                var qMeta = state.textEditMeta[qKey] || {};
+                if (qMeta.feedback)    renderEditTag(state, state.currentQ, 'feedback',    qMeta.feedback);
+                if (qMeta.improvement) renderEditTag(state, state.currentQ, 'improvement', qMeta.improvement);
+            }
+        }
+
         if (window.MathJax && MathJax.typesetPromise && container) {
             MathJax.typesetPromise([container]).catch(function () {});
         }
@@ -376,6 +390,33 @@
 
         el.innerHTML = '';
         el.appendChild(textarea);
+
+        // Calibration-bank checkbox — only on feedback / improvement text fields.
+        // Default unchecked: a deliberate opt-in to the bank, matches the
+        // "workflow note vs. calibration" framing from the spec.
+        var cb = null;
+        if (field === 'feedback' || field === 'improvement') {
+            var wrap = document.createElement('label');
+            wrap.className = 'fb-cal-wrap';
+            wrap.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:#666;cursor:pointer;user-select:none;';
+            cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'fb-cal-cb';
+            cb.style.cssText = 'margin:0;cursor:pointer;';
+            wrap.appendChild(cb);
+            wrap.appendChild(document.createTextNode('Save to calibration bank'));
+            el.appendChild(wrap);
+            // preventDefault on mousedown stops focus transfer to the checkbox
+            // so the textarea keeps focus and doesn't blur-save with stale
+            // checkbox state. Manual toggle on click handles the actual flip.
+            wrap.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+            cb.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+            wrap.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                cb.checked = !cb.checked;
+            });
+        }
+
         textarea.focus();
         textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 
@@ -391,13 +432,14 @@
             if (submitted) return;
             submitted = true;
             var newVal = textarea.value;
-            if (newVal === currentValue) {
-                // No change → just revert display
+            var calibrate = !!(cb && cb.checked);
+            if (newVal === currentValue && !calibrate) {
+                // No text change AND not opting into bank → just revert display
                 if (field === 'overall') renderShell(state);
                 else renderQuestion(state);
                 return;
             }
-            saveTextField(state, field, newVal);
+            saveTextField(state, field, newVal, calibrate);
         }
         function cancel() {
             if (submitted) return;
@@ -501,7 +543,9 @@
         });
         var data = await res.json();
         if (!res.ok || !data.success) throw new Error((data && data.error) || 'Save failed');
-        return data.result;
+        // Return the full response so callers can inspect edit_meta and
+        // propagation_prompt alongside the merged result_json.
+        return data;
     }
 
     function mergeResult(state, newResult) {
@@ -516,22 +560,44 @@
         state.recommended = newResult.recommended_actions || [];
     }
 
-    async function saveTextField(state, field, newValue) {
+    async function saveTextField(state, field, newValue, calibrate) {
+        if (calibrate === undefined) calibrate = false;
         var payload;
+        var savedQNum = null;
         if (field === 'overall') {
             payload = { overall_feedback: newValue };
         } else {
             var q = state.questions[state.currentQ];
-            var qEdit = { question_num: q.question_num != null ? q.question_num : (state.currentQ + 1) };
+            savedQNum = q.question_num != null ? q.question_num : (state.currentQ + 1);
+            var qEdit = { question_num: savedQNum };
             qEdit[field] = newValue;
+            if (field === 'feedback' || field === 'improvement') {
+                qEdit.calibrate = !!calibrate;
+            }
             payload = { questions: [qEdit] };
         }
         try {
-            var merged = await patchResult(state, payload);
-            mergeResult(state, merged);
+            var data = await patchResult(state, payload);
+            mergeResult(state, data.result);
             if (field === 'overall') renderShell(state); else renderQuestion(state);
             showToast('success', 'Saved');
-            if (state.onSave) { try { state.onSave(merged); } catch (e) {} }
+            if (state.onSave) { try { state.onSave(data.result); } catch (e) {} }
+            // Render the per-field tag from edit_meta (calibration bank) when
+            // the server logged this edit, and stash it on state so it
+            // survives subsequent renders.
+            if (data && data.edit_meta && savedQNum != null) {
+                var qKey = String(savedQNum);
+                var fieldMeta = (data.edit_meta[qKey] || {})[field];
+                if (fieldMeta) {
+                    if (!state.textEditMeta) state.textEditMeta = {};
+                    if (!state.textEditMeta[qKey]) state.textEditMeta[qKey] = {};
+                    state.textEditMeta[qKey][field] = fieldMeta;
+                    renderEditTag(state, state.currentQ, field, fieldMeta);
+                }
+            }
+            if (data && data.propagation_prompt) {
+                try { fbShowPropagationBanner(state, data.propagation_prompt); } catch (e) { /* silent */ }
+            }
         } catch (err) {
             if (field === 'overall') renderShell(state); else renderQuestion(state);
             showToast('error', err.message || 'Save failed');
@@ -548,13 +614,13 @@
             }],
         };
         try {
-            var merged = await patchResult(state, payload);
-            mergeResult(state, merged);
+            var data = await patchResult(state, payload);
+            mergeResult(state, data.result);
             renderQuestion(state);
             refreshSummary(state);
             refreshDots(state);
             showToast('success', 'Saved');
-            if (state.onSave) { try { state.onSave(merged); } catch (e) {} }
+            if (state.onSave) { try { state.onSave(data.result); } catch (e) {} }
         } catch (err) {
             renderQuestion(state);
             showToast('error', err.message || 'Save failed');
@@ -597,12 +663,12 @@
             }],
         };
         try {
-            var merged = await patchResult(state, payload);
-            mergeResult(state, merged);
+            var data = await patchResult(state, payload);
+            mergeResult(state, data.result);
             renderQuestion(state);
             refreshSummary(state);
             refreshDots(state);
-            if (state.onSave) { try { state.onSave(merged); } catch (e) {} }
+            if (state.onSave) { try { state.onSave(data.result); } catch (e) {} }
         } catch (err) {
             // Revert on failure.
             q.status = current;
@@ -611,6 +677,261 @@
             refreshDots(state);
             showToast('error', err.message || 'Save failed');
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Calibration bank: per-field tag + retire link
+    // -------------------------------------------------------------------
+
+    function renderEditTag(state, idx, field, meta) {
+        var prefix = state.prefix || 'fb';
+        var qCard = document.getElementById(prefix + 'QCard');
+        if (!qCard) return;
+        var fieldEl = qCard.querySelector('[data-field="' + field + '"]');
+        if (!fieldEl) return;
+        var rowId = prefix + 'TagRow-' + idx + '-' + field;
+        var existing = document.getElementById(rowId);
+        if (existing) existing.remove();
+        var row = document.createElement('div');
+        row.id = rowId;
+        row.className = 'fb-edit-tag-row';
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:2px;font-size:11px;color:#7a7f8c;letter-spacing:0.2px;';
+        var tag = document.createElement('span');
+        tag.className = 'fb-edit-tag' + (meta.calibrated ? ' fb-tag-cal' : ' fb-tag-wf');
+        tag.textContent = meta.calibrated ? '· in calibration bank' : '· workflow note';
+        row.appendChild(tag);
+        if (meta.calibrated && meta.edit_id) {
+            var retire = document.createElement('a');
+            retire.href = '#';
+            retire.className = 'fb-retire-link';
+            retire.style.cssText = 'color:#b94a48;text-decoration:none;';
+            retire.textContent = 'Retire';
+            retire.title = 'Remove this edit from your calibration bank — it will no longer influence future marking.';
+            retire.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                fbRetireEdit(state, idx, field, meta.edit_id);
+            });
+            row.appendChild(retire);
+        }
+        if (fieldEl.parentNode) {
+            fieldEl.parentNode.insertBefore(row, fieldEl.nextSibling);
+        }
+    }
+
+    function fbRetireEdit(state, idx, field, editId) {
+        fetch('/feedback/deprecate-edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ edit_id: editId }),
+        }).then(function (r) { return r.json(); }).then(function (data) {
+            if (data && data.status === 'ok') {
+                // Demote the tag in-state and re-render it as a workflow note.
+                var q = state.questions[idx];
+                var qKey = q ? String(q.question_num != null ? q.question_num : (idx + 1)) : null;
+                if (qKey && state.textEditMeta && state.textEditMeta[qKey] && state.textEditMeta[qKey][field]) {
+                    state.textEditMeta[qKey][field] = { calibrated: false };
+                    renderEditTag(state, idx, field, state.textEditMeta[qKey][field]);
+                }
+            }
+        }).catch(function () { /* silent */ });
+    }
+
+    // -------------------------------------------------------------------
+    // Propagation banner
+    // -------------------------------------------------------------------
+
+    function fbShowPropagationBanner(state, prompt) {
+        var banner = document.getElementById('fbPropagationBanner');
+        if (!banner) return;
+        if (!prompt || !prompt.candidate_count || prompt.candidate_count <= 0) return;
+        var summary = document.getElementById('fbPropagationBannerSummary');
+        var review = document.getElementById('fbPropagationBannerReview');
+        var progress = document.getElementById('fbPropagationBannerProgress');
+        var text = document.getElementById('fbPropagationBannerText');
+        if (summary) summary.hidden = false;
+        if (review) { review.hidden = true; review.innerHTML = ''; }
+        if (progress) { progress.hidden = true; progress.textContent = ''; }
+        if (text) {
+            var critLabel = prompt.criterion_id || 'this criterion';
+            text.textContent = '⟳ ' + prompt.candidate_count + ' other student' +
+                (prompt.candidate_count === 1 ? '' : 's') +
+                ' have similar mistakes on ' + critLabel + '.';
+        }
+        banner.dataset.editId = String(prompt.edit_id);
+        banner.hidden = false;
+        banner.scrollIntoView({behavior: 'smooth', block: 'center'});
+        fbAttachPropagationButtons(state);
+    }
+
+    function fbAttachPropagationButtons(state) {
+        var allBtn = document.getElementById('fbPropagateAllBtn');
+        var revBtn = document.getElementById('fbPropagateReviewBtn');
+        var skipBtn = document.getElementById('fbPropagateSkipBtn');
+        if (allBtn && !allBtn.dataset.bound) {
+            allBtn.dataset.bound = '1';
+            allBtn.addEventListener('click', fbPropagateAll);
+        }
+        if (revBtn && !revBtn.dataset.bound) {
+            revBtn.dataset.bound = '1';
+            revBtn.addEventListener('click', fbPropagateReview);
+        }
+        if (skipBtn && !skipBtn.dataset.bound) {
+            skipBtn.dataset.bound = '1';
+            skipBtn.addEventListener('click', fbPropagateSkip);
+        }
+    }
+
+    function fbBannerEditId() {
+        var b = document.getElementById('fbPropagationBanner');
+        return b ? parseInt(b.dataset.editId || '0', 10) : 0;
+    }
+
+    function fbPropagateAll() {
+        var editId = fbBannerEditId();
+        if (!editId) return;
+        fetch('/feedback/propagate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ edit_id: editId, mode: 'all' }),
+        }).then(function (r) { return r.json(); }).then(function (data) {
+            if (data && data.status === 'started') {
+                fbStartPropagationPolling(editId);
+            }
+        });
+    }
+
+    function fbPropagateReview() {
+        var editId = fbBannerEditId();
+        if (!editId) return;
+        var review = document.getElementById('fbPropagationBannerReview');
+        if (!review) return;
+        review.innerHTML = 'Loading…';
+        review.hidden = false;
+        fetch('/feedback/propagation-candidates/' + editId, { credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data || !data.candidates) {
+                    review.textContent = 'Could not load candidates.';
+                    return;
+                }
+                review.innerHTML = '';
+                (data.candidates || []).forEach(function (c) {
+                    var row = document.createElement('div');
+                    row.style.cssText = 'padding:8px 10px;margin-bottom:6px;border:1px solid #e3e6f0;border-radius:6px;';
+                    var head = document.createElement('label');
+                    head.style.cssText = 'display:flex;align-items:center;gap:8px;font-weight:600;font-size:12.5px;cursor:pointer;';
+                    var cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.checked = true;
+                    cb.dataset.sid = String(c.submission_id);
+                    head.appendChild(cb);
+                    var hd = document.createElement('span');
+                    hd.textContent = c.student_name + ' (' +
+                        (c.marks_awarded != null ? c.marks_awarded : '-') + ' / ' +
+                        (c.marks_total != null ? c.marks_total : '-') + ')';
+                    head.appendChild(hd);
+                    row.appendChild(head);
+                    var fb = document.createElement('div');
+                    fb.style.cssText = 'margin-top:4px;padding-left:24px;font-size:12px;color:#555;';
+                    fb.textContent = c.current_feedback || '(no feedback)';
+                    row.appendChild(fb);
+                    review.appendChild(row);
+                });
+                var actions = document.createElement('div');
+                actions.style.cssText = 'margin-top:10px;display:flex;gap:8px;';
+                var confirm = document.createElement('button');
+                confirm.type = 'button';
+                confirm.className = 'upload-btn';
+                confirm.style.cssText = 'padding:6px 12px;font-size:12.5px;';
+                confirm.textContent = 'Apply to selected';
+                confirm.addEventListener('click', fbPropagateSelectedConfirm);
+                actions.appendChild(confirm);
+                var cancel = document.createElement('button');
+                cancel.type = 'button';
+                cancel.className = 'upload-btn';
+                cancel.style.cssText = 'padding:6px 12px;font-size:12.5px;';
+                cancel.textContent = 'Cancel';
+                cancel.addEventListener('click', function () {
+                    var rev = document.getElementById('fbPropagationBannerReview');
+                    if (rev) { rev.hidden = true; rev.innerHTML = ''; }
+                });
+                actions.appendChild(cancel);
+                review.appendChild(actions);
+            })
+            .catch(function () { review.textContent = 'Could not load candidates.'; });
+    }
+
+    function fbPropagateSelectedConfirm() {
+        var editId = fbBannerEditId();
+        var review = document.getElementById('fbPropagationBannerReview');
+        if (!editId || !review) return;
+        var ids = [];
+        review.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
+            if (cb.checked && cb.dataset.sid) ids.push(parseInt(cb.dataset.sid, 10));
+        });
+        if (!ids.length) return;
+        fetch('/feedback/propagate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ edit_id: editId, mode: 'selected', submission_ids: ids }),
+        }).then(function (r) { return r.json(); }).then(function (data) {
+            if (data && data.status === 'started') {
+                review.hidden = true;
+                review.innerHTML = '';
+                fbStartPropagationPolling(editId);
+            }
+        });
+    }
+
+    function fbPropagateSkip() {
+        var editId = fbBannerEditId();
+        if (!editId) return;
+        fetch('/feedback/propagate-skip', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ edit_id: editId }),
+        }).then(function () {
+            var b = document.getElementById('fbPropagationBanner');
+            if (b) b.hidden = true;
+        });
+    }
+
+    function fbStartPropagationPolling(editId) {
+        var progress = document.getElementById('fbPropagationBannerProgress');
+        var summary = document.getElementById('fbPropagationBannerSummary');
+        if (!progress || !summary) return;
+        summary.hidden = true;
+        progress.hidden = false;
+        progress.textContent = 'Starting…';
+        var attempts = 0;
+        var timer = setInterval(function () {
+            attempts++;
+            if (attempts > 60) { clearInterval(timer); progress.textContent = 'Still running…'; return; }
+            fetch('/feedback/propagation-progress/' + editId, { credentials: 'same-origin' })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (!data) return;
+                    progress.textContent = 'Updating ' + (data.done || 0) + ' of ' + (data.total || 0) + ' students…';
+                    if (data.propagation_status === 'complete' || data.propagation_status === 'partial') {
+                        clearInterval(timer);
+                        var doneN = data.done || 0;
+                        var failN = data.failed || 0;
+                        progress.textContent = '✓ Feedback updated for ' + doneN + ' student' +
+                            (doneN === 1 ? '' : 's') +
+                            (failN ? ' · ' + failN + ' failed' : '') + '.';
+                        setTimeout(function () {
+                            var b = document.getElementById('fbPropagationBanner');
+                            if (b) b.hidden = true;
+                        }, 4000);
+                    }
+                })
+                .catch(function () { /* silent */ });
+        }, 2000);
     }
 
     global.FeedbackRender = { render: render };
