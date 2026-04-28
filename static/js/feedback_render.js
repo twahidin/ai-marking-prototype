@@ -280,6 +280,7 @@
             if (state.editable) {
                 catBlock = '<div class="fb-q-cat-row" style="margin-bottom:4px; font-size:12px; color:#7a7f8c; line-height:1.5;">' +
                     '<span class="fb-cat-line" data-field="category" contenteditable="true" spellcheck="false" ' +
+                        'title="Valid theme keys: reasoning_gap | evidence_handling | language_expression | procedural_error | content_gap" ' +
                         'style="outline:none; padding:1px 4px; border-radius:3px; cursor:text; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;">' +
                         '[' + esc(q.theme_key) + '] ' + labelTxt +
                     '</span>' +
