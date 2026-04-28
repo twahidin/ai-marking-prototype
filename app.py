@@ -4128,6 +4128,20 @@ def _detect_mime(data):
     return 'application/octet-stream'
 
 
+def _build_text_edit_meta(submission_id):
+    """Per (criterion_id, field), whether an active calibration-bank
+    feedback_edit row exists for this submission. Drives the initial-load
+    rendering of the "in calibration bank" / "workflow note" per-field tag
+    on the modal."""
+    from db import FeedbackEdit
+    out = {}
+    rows = FeedbackEdit.query.filter_by(submission_id=submission_id, active=True).all()
+    for r in rows:
+        cid = r.criterion_id
+        out.setdefault(cid, {})[r.field] = {'edit_id': r.id, 'calibrated': True}
+    return out
+
+
 @app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/result')
 def teacher_submission_result(assignment_id, submission_id):
     asn = Assignment.query.get_or_404(assignment_id)
@@ -4143,14 +4157,23 @@ def teacher_submission_result(assignment_id, submission_id):
         'status': sub.status,
         'draft_number': sub.draft_number,
         'is_final': sub.is_final,
+        'text_edit_meta': _build_text_edit_meta(sub.id),
     })
 
 
 @app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/result', methods=['PATCH'])
 def teacher_submission_result_patch(assignment_id, submission_id):
     """Teacher edits AI-generated feedback. Overwrites fields in sub.result_json.
-    Editable: overall_feedback + per-question marks_awarded/marks_total/feedback/improvement.
+    Editable: overall_feedback + per-question marks_awarded/marks_total/feedback/
+    improvement/status. Per-question entries may carry calibrate=true to also
+    write a feedback_edit row + trigger propagation candidate detection.
     """
+    from db import FeedbackEdit
+    from ai_marking import (
+        _rubric_version_hash,
+        bucket_subject,
+    )
+
     asn = Assignment.query.get_or_404(assignment_id)
     err = _check_assignment_ownership(asn)
     if err:
@@ -4158,6 +4181,9 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     sub = Submission.query.get_or_404(submission_id)
     if sub.assignment_id != assignment_id:
         return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+
+    teacher = _current_teacher()
+    editor_id = teacher.id if teacher else (asn.teacher_id or None)
 
     payload = request.get_json(silent=True) or {}
     result = sub.get_result() or {}
@@ -4169,13 +4195,13 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             return jsonify({'success': False, 'error': 'overall_feedback must be a string'}), 400
         result['overall_feedback'] = (val or '').strip()
 
+    edit_meta = {}            # per-criterion summary returned to the client
+    fresh_calibration_edits = []  # FeedbackEdit rows written this request
+
     incoming_qs = payload.get('questions')
     if incoming_qs is not None:
         if not isinstance(incoming_qs, list):
             return jsonify({'success': False, 'error': 'questions must be a list'}), 400
-        # Build a lookup of existing questions by question_num so we can apply edits
-        # even if the client omits some. question_num in the stored result can be
-        # int, string, or a compound like "1a".
         by_num = {}
         for idx, q in enumerate(questions):
             qn = q.get('question_num')
@@ -4190,6 +4216,24 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             target = by_num.get(str(qn))
             if target is None:
                 continue
+
+            # Snapshot pre-edit text + length validation BEFORE applying writes,
+            # so the calibration row can pin original_text correctly even if
+            # the same criterion is edited multiple times.
+            old_text_by_field = {
+                'feedback': (target.get('feedback') or '').strip(),
+                'improvement': (target.get('improvement') or '').strip(),
+            }
+            for _field in ('feedback', 'improvement'):
+                if _field in edit:
+                    _val = edit.get(_field) or ''
+                    if len(_val) > 2000:
+                        return jsonify({'success': False, 'error': f'{_field} too long (max 2000 chars)'}), 400
+
+            # Mark this question teacher_edited so propagation never overwrites it.
+            if 'feedback' in edit or 'improvement' in edit:
+                target['feedback_source'] = 'teacher_edit'
+
             for field in ('feedback', 'improvement'):
                 if field in edit:
                     v = edit[field]
@@ -4213,6 +4257,71 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                 elif v is not None:
                     return jsonify({'success': False, 'error': 'status must be correct | partially_correct | incorrect'}), 400
 
+            # Calibration bank write — only when the client passed calibrate=true
+            # AND a feedback or improvement text actually changed.
+            cal_flag = bool(edit.get('calibrate'))
+            if cal_flag and editor_id:
+                # Backfill subject_bucket on assignment if not set yet.
+                if not getattr(asn, 'subject_bucket', None):
+                    asn.subject_bucket = bucket_subject(asn.subject or '')
+                rubric_hash = _rubric_version_hash(asn)
+                for _field in ('feedback', 'improvement'):
+                    if _field not in edit:
+                        continue
+                    new_text = (edit.get(_field) or '').strip()
+                    old_text = old_text_by_field.get(_field, '')
+                    if new_text == old_text:
+                        continue  # no-op — don't write a calibration row
+                    # Replace any prior active row for the same target so we
+                    # only ever have one active calibration edit per
+                    # (teacher, assignment, criterion, field).
+                    sp = db.session.begin_nested()
+                    try:
+                        prior = (FeedbackEdit.query
+                                 .filter_by(edited_by=editor_id,
+                                            assignment_id=asn.id,
+                                            criterion_id=str(qn),
+                                            field=_field,
+                                            active=True)
+                                 .order_by(FeedbackEdit.id.desc())
+                                 .first())
+                        # Anchor original_text to the AI original. If a prior
+                        # bank row exists, reuse its original_text (which IS
+                        # the AI original). Otherwise use the pre-edit text
+                        # captured above.
+                        original_text = (prior.original_text if prior else old_text) or old_text
+                        if prior:
+                            prior.active = False
+                        new_edit = FeedbackEdit(
+                            submission_id=sub.id,
+                            criterion_id=str(qn),
+                            field=_field,
+                            original_text=original_text,
+                            edited_text=new_text,
+                            edited_by=editor_id,
+                            assignment_id=asn.id,
+                            rubric_version=rubric_hash,
+                            subject_bucket=asn.subject_bucket,
+                            scope='individual',
+                            active=True,
+                            propagation_status='none',
+                        )
+                        db.session.add(new_edit)
+                        db.session.flush()
+                        sp.commit()
+                        fresh_calibration_edits.append(new_edit)
+                        edit_meta.setdefault(str(qn), {})[_field] = {
+                            'edit_id': new_edit.id,
+                            'calibrated': True,
+                        }
+                    except Exception as _log_err:
+                        sp.rollback()
+                        logger.warning(
+                            f"feedback_edit write failed (sub={sub.id}, crit={qn}, "
+                            f"field={_field}): {_log_err}"
+                        )
+                        target[_field] = new_text  # ensure in-memory change survives the rollback
+
         # Recompute per-question status from marks if both are present
         for q in questions:
             a = q.get('marks_awarded')
@@ -4230,7 +4339,24 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     db.session.commit()
     logger.info(f"Teacher edited feedback for submission {submission_id} on assignment {assignment_id}")
 
-    return jsonify({'success': True, 'result': sub.get_result()})
+    # Propagation candidate detection — synchronous, only fires when a
+    # calibration row was written this request. Returns the most-recently
+    # written edit's candidates so the banner has something to anchor on.
+    propagation_prompt = None
+    if fresh_calibration_edits:
+        try:
+            anchor = fresh_calibration_edits[-1]
+            propagation_prompt = _find_propagation_candidates(anchor, asn)
+        except Exception as _cand_err:
+            logger.warning(f"Propagation candidate lookup failed: {_cand_err}")
+            propagation_prompt = None
+
+    response = {'success': True, 'result': sub.get_result()}
+    if edit_meta:
+        response['edit_meta'] = edit_meta
+    if propagation_prompt and propagation_prompt.get('candidate_count', 0) > 0:
+        response['propagation_prompt'] = propagation_prompt
+    return jsonify(response)
 
 
 @app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/remark', methods=['POST'])
@@ -5339,6 +5465,108 @@ def settings_go_live():
     session.clear()
 
     return jsonify({'success': True, 'message': 'Switched to live mode. All demo data has been removed.'})
+
+
+# ---------------------------------------------------------------------------
+# Calibration bank — propagation
+# ---------------------------------------------------------------------------
+
+def _find_propagation_candidates(edit, asn):
+    """Synchronous: list other students in the same assignment who have a
+    matching criterion with marks lost AND haven't already been teacher-
+    edited / propagated. Returns the shape consumed by the banner."""
+    from db import Submission, Student
+    out = []
+    rows = (
+        db.session.query(Submission, Student)
+        .outerjoin(Student, Submission.student_id == Student.id)
+        .filter(
+            Submission.assignment_id == asn.id,
+            Submission.id != edit.submission_id,
+            Submission.status == 'done',
+        )
+        .order_by(Submission.id)
+        .all()
+    )
+    for sub, student in rows:
+        try:
+            result = sub.get_result() or {}
+        except Exception:
+            continue
+        target_q = None
+        for q in (result.get('questions') or []):
+            if str(q.get('question_num')) == edit.criterion_id:
+                target_q = q
+                break
+        if not target_q:
+            continue
+        ma = target_q.get('marks_awarded')
+        mt = target_q.get('marks_total')
+        lost_by_marks = (mt and ma is not None and mt > 0 and ma < mt)
+        lost_by_status = (not lost_by_marks
+                          and target_q.get('status')
+                          and target_q.get('status') != 'correct')
+        if not (lost_by_marks or lost_by_status):
+            continue
+        source = target_q.get('feedback_source')
+        if source not in (None, 'original_ai', 'propagated'):
+            continue  # whitelist — never propagate over teacher_edit
+        out.append({
+            'submission_id': sub.id,
+            'student_name': (student.name if student else f"Student #{sub.student_id}"),
+            'marks_awarded': ma,
+            'marks_total': mt,
+            'current_feedback': (target_q.get('feedback') or ''),
+            'current_improvement': (target_q.get('improvement') or ''),
+        })
+    return {
+        'edit_id': edit.id,
+        'criterion_id': edit.criterion_id,
+        'field': edit.field,
+        'candidate_count': len(out),
+        'candidates': out,
+    }
+
+
+def _check_edit_owner(edit_id):
+    """Helper: load FeedbackEdit + verify the current teacher owns it.
+    Returns (edit, None) on success or (None, error_response_tuple)."""
+    from db import FeedbackEdit
+    if not _is_authenticated():
+        return None, (jsonify({'status': 'error', 'message': 'Not authenticated'}), 401)
+    teacher = _current_teacher()
+    teacher_id = teacher.id if teacher else None
+    if not teacher_id:
+        return None, (jsonify({'status': 'error', 'message': 'Not authenticated'}), 401)
+    edit = FeedbackEdit.query.get(edit_id)
+    if not edit:
+        return None, (jsonify({'status': 'error', 'message': 'Edit not found'}), 404)
+    if edit.edited_by != teacher_id:
+        return None, (jsonify({'status': 'error', 'message': 'Forbidden'}), 403)
+    return edit, None
+
+
+@app.route('/feedback/deprecate-edit', methods=['POST'])
+def feedback_deprecate_edit():
+    """Soft-delete a feedback_edit row. Only the original editor may retire.
+    Drops the row from future calibration_examples lookups via the active
+    flag — never physically deletes."""
+    data = request.get_json(silent=True) or {}
+    edit_id = data.get('edit_id')
+    if not isinstance(edit_id, int):
+        return jsonify({'status': 'error', 'message': 'edit_id (int) required'}), 400
+    edit, err = _check_edit_owner(edit_id)
+    if err:
+        return err
+    if edit.active:
+        edit.active = False
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Could not retire edit {edit_id}: {e}")
+            return jsonify({'status': 'error', 'message': 'Could not save'}), 500
+    return jsonify({'status': 'ok'})
 
 
 if __name__ == '__main__':
