@@ -157,6 +157,20 @@ def init_db(app):
     with app.app_context():
         db.create_all()
         _migrate_add_columns(app)
+        # Belt-and-suspenders: confirm feedback_edit table actually exists.
+        # If create_all silently failed for any reason, force-create it now
+        # so calibration writes don't go to /dev/null.
+        from sqlalchemy import inspect as _inspect
+        existing = set(_inspect(db.engine).get_table_names())
+        if 'feedback_edit' not in existing:
+            logger.error('feedback_edit table missing after create_all — forcing creation')
+            try:
+                FeedbackEdit.__table__.create(db.engine)
+                logger.error('feedback_edit table created via fallback')
+            except Exception as _ce:
+                logger.error(f'fallback feedback_edit create failed: {_ce}')
+        else:
+            logger.info('feedback_edit table present at boot')
 
 
 class Teacher(db.Model):

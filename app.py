@@ -4225,6 +4225,7 @@ def teacher_submission_result_patch(assignment_id, submission_id):
 
     edit_meta = {}            # per-criterion summary returned to the client
     fresh_calibration_edits = []  # FeedbackEdit rows written this request
+    calibration_write_errors = []  # surfaced to client so the toast can warn
 
     incoming_qs = payload.get('questions')
     if incoming_qs is not None:
@@ -4352,9 +4353,16 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                         }
                     except Exception as _log_err:
                         sp.rollback()
-                        logger.warning(
+                        # Log loudly — a silently-dropped calibration write
+                        # is exactly what makes the indicator + future-marking
+                        # boost disappear without a visible error.
+                        logger.error(
                             f"feedback_edit write failed (sub={sub.id}, crit={qn}, "
-                            f"field={_field}): {_log_err}"
+                            f"field={_field}): {type(_log_err).__name__}: {_log_err}",
+                            exc_info=True,
+                        )
+                        calibration_write_errors.append(
+                            f"{type(_log_err).__name__}: {_log_err}"
                         )
                         target[_field] = new_text  # ensure in-memory change survives the rollback
 
@@ -4392,6 +4400,11 @@ def teacher_submission_result_patch(assignment_id, submission_id):
         response['edit_meta'] = edit_meta
     if propagation_prompt and propagation_prompt.get('candidate_count', 0) > 0:
         response['propagation_prompt'] = propagation_prompt
+    if calibration_write_errors:
+        response['calibration_warning'] = (
+            f'Calibration save failed for {len(calibration_write_errors)} field(s). '
+            f'First error: {calibration_write_errors[0]}'
+        )
     return jsonify(response)
 
 
