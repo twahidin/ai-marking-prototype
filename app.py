@@ -3314,6 +3314,13 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
                 logger.warning(
                     f"Calibration lookup failed for sub {submission_id}: {_cal_err}"
                 )
+                # Roll back so a failed query (e.g. feedback_edit missing on
+                # prod) doesn't leave the session aborted — subsequent commits
+                # for the marking result must still succeed.
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
                 calibration_block = ''
 
             result = mark_script(
@@ -4133,10 +4140,18 @@ def _build_text_edit_meta(submission_id):
     """Per (criterion_id, field), whether an active calibration-bank
     feedback_edit row exists for this submission. Drives the initial-load
     rendering of the "in calibration bank" / "workflow note" per-field tag
-    on the modal."""
+    on the modal. Best-effort — never blocks feedback rendering."""
     from db import FeedbackEdit
     out = {}
-    rows = FeedbackEdit.query.filter_by(submission_id=submission_id, active=True).all()
+    try:
+        rows = FeedbackEdit.query.filter_by(submission_id=submission_id, active=True).all()
+    except Exception as _meta_err:
+        logger.warning(f"text_edit_meta lookup failed for sub {submission_id}: {_meta_err}")
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        return {}
     for r in rows:
         cid = r.criterion_id
         out.setdefault(cid, {})[r.field] = {'edit_id': r.id, 'calibrated': True}
