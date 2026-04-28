@@ -3290,8 +3290,7 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
 
             # Calibration block: prepend this teacher's prior calibration-bank
             # edits to the marking system prompt. Best-effort — never blocks
-            # marking.  Backfill subject_bucket on assignments created before
-            # the bucketing field landed.
+            # marking. Subject bucket derived from asn.subject on the fly.
             calibration_block = ''
             try:
                 from ai_marking import (
@@ -3299,9 +3298,6 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
                     fetch_calibration_examples,
                     format_calibration_block,
                 )
-                if not getattr(asn, 'subject_bucket', None):
-                    asn.subject_bucket = bucket_subject(asn.subject or '')
-                    db.session.commit()
                 examples = fetch_calibration_examples(
                     teacher_id=asn.teacher_id,
                     assignment=asn,
@@ -3312,7 +3308,7 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
                     logger.info(
                         f"Marking sub {submission_id}: prepending "
                         f"{len(examples)} calibration example(s) "
-                        f"(bucket={asn.subject_bucket!r})"
+                        f"(bucket={bucket_subject(asn.subject or '')!r})"
                     )
             except Exception as _cal_err:
                 logger.warning(
@@ -3545,13 +3541,6 @@ def teacher_create():
         if val:
             user_keys[prov] = val
     asn.set_api_keys(user_keys)
-    # Coarse subject category, computed once at creation by string-bucketing
-    # asn.subject. Drives cross-assignment calibration matching at marking time.
-    try:
-        from ai_marking import bucket_subject
-        asn.subject_bucket = bucket_subject(asn.subject)
-    except Exception as _bucket_err:
-        logger.warning(f"bucket_subject failed for {asn.subject!r}: {_bucket_err}")
     db.session.add(asn)
 
     # Optionally add to bank
@@ -3660,12 +3649,6 @@ def teacher_edit(assignment_id):
     # Apply updates
     asn.title = new_title
     asn.subject = new_subject
-    # Re-bucket if the subject text changed; cheap string op so always fine.
-    try:
-        from ai_marking import bucket_subject
-        asn.subject_bucket = bucket_subject(asn.subject)
-    except Exception as _bucket_err:
-        logger.warning(f"bucket_subject failed on edit for {asn.subject!r}: {_bucket_err}")
     asn.scoring_mode = new_scoring_mode
     asn.total_marks = new_total_marks
     asn.show_results = new_show_results
@@ -4279,9 +4262,7 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             # AND a feedback or improvement text actually changed.
             cal_flag = bool(edit.get('calibrate'))
             if cal_flag and editor_id:
-                # Backfill subject_bucket on assignment if not set yet.
-                if not getattr(asn, 'subject_bucket', None):
-                    asn.subject_bucket = bucket_subject(asn.subject or '')
+                snapshot_bucket = bucket_subject(asn.subject or '')
                 rubric_hash = _rubric_version_hash(asn)
                 for _field in ('feedback', 'improvement'):
                     if _field not in edit:
@@ -4319,7 +4300,7 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                             edited_by=editor_id,
                             assignment_id=asn.id,
                             rubric_version=rubric_hash,
-                            subject_bucket=asn.subject_bucket,
+                            subject_bucket=snapshot_bucket,
                             scope='individual',
                             active=True,
                             propagation_status='none',

@@ -142,10 +142,6 @@ def _migrate_add_columns(app):
                 db.session.execute(text('ALTER TABLE assignments ADD COLUMN exemplar_analyzed_at TIMESTAMP'))
                 db.session.commit()
                 logger.info('Added exemplar_analyzed_at column to assignments table')
-            if 'subject_bucket' not in columns:
-                db.session.execute(text('ALTER TABLE assignments ADD COLUMN subject_bucket VARCHAR(40)'))
-                db.session.commit()
-                logger.info('Added subject_bucket column to assignments table')
 
 
 def init_db(app):
@@ -234,12 +230,6 @@ class Assignment(db.Model):
     needs_remark = db.Column(db.Boolean, default=False, nullable=False)
     exemplar_analysis_json = db.Column(db.Text)
     exemplar_analyzed_at = db.Column(db.DateTime)
-    # Coarse subject category (math|physics|chemistry|biology|history|geography|
-    # literature|language|science|humanities|other) — derived from `subject` text
-    # at create/update time via ai_marking.bucket_subject(). Used for cross-
-    # assignment calibration matching when a teacher's edits should inform
-    # marking of OTHER assignments in the same subject.
-    subject_bucket = db.Column(db.String(40), nullable=True, index=True)
 
     students = db.relationship('Student', backref='assignment', lazy=True, cascade='all, delete-orphan')
 

@@ -1163,7 +1163,7 @@ def fetch_calibration_examples(teacher_id, assignment, limit=10):
     }).mappings().all():
         rows_by_id[r['id']] = dict(r)
 
-    sb = getattr(assignment, 'subject_bucket', None) or ''
+    sb = bucket_subject(getattr(assignment, 'subject', '') or '')
     if sb and sb != 'other':
         tier1_sql = _sql_text(
             "SELECT id, original_text, edited_text, assignment_id, rubric_version, "
