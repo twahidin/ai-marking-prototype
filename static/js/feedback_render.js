@@ -392,8 +392,8 @@
         el.appendChild(textarea);
 
         // Calibration-bank checkbox — only on feedback / improvement text fields.
-        // Default unchecked: a deliberate opt-in to the bank, matches the
-        // "workflow note vs. calibration" framing from the spec.
+        // Pre-checked when this field already has an active calibration row,
+        // so re-opening the editor reflects the saved state.
         var cb = null;
         if (field === 'feedback' || field === 'improvement') {
             var wrap = document.createElement('div');
@@ -407,6 +407,13 @@
             // Without this, native checkbox toggle + wrap manual toggle
             // cancelled each other out and the box appeared stuck.
             cb.style.cssText = 'margin:0;pointer-events:none;';
+            // Pre-check from textEditMeta so the box reflects the saved state.
+            var qNow = state.questions[state.currentQ];
+            var qKey = qNow ? String(qNow.question_num != null ? qNow.question_num : (state.currentQ + 1)) : null;
+            var existingMeta = (qKey && state.textEditMeta && state.textEditMeta[qKey] && state.textEditMeta[qKey][field]) || null;
+            if (existingMeta && existingMeta.calibrated) {
+                cb.checked = true;
+            }
             wrap.appendChild(cb);
             wrap.appendChild(document.createTextNode('Save to calibration bank'));
             el.appendChild(wrap);
@@ -701,7 +708,9 @@
         row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:2px;font-size:11px;color:#7a7f8c;letter-spacing:0.2px;';
         var tag = document.createElement('span');
         tag.className = 'fb-edit-tag' + (meta.calibrated ? ' fb-tag-cal' : ' fb-tag-wf');
-        tag.textContent = meta.calibrated ? '· in calibration bank' : '· workflow note';
+        tag.textContent = meta.calibrated
+            ? '✓ Saved to calibration bank — your edit will help calibrate similar answers'
+            : '· workflow note';
         row.appendChild(tag);
         if (meta.calibrated && meta.edit_id) {
             var retire = document.createElement('a');
