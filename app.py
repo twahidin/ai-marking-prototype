@@ -3912,6 +3912,44 @@ def teacher_marking_patterns():
     return render_template('marking_patterns.html', sections=sections, teacher=teacher)
 
 
+@app.route('/teacher/marking-patterns/dismiss-conflict', methods=['POST'])
+def teacher_marking_patterns_dismiss_conflict():
+    """Soft-suppress the has_conflicts flag for one subject. Re-fires on the
+    next regeneration if the LLM still detects a conflict — purely cosmetic
+    so a teacher can clear the yellow notice when they judge it's noise."""
+    if not _is_authenticated():
+        return redirect(url_for('hub'))
+    teacher = _current_teacher()
+    teacher_id = teacher.id if teacher else None
+    if not teacher_id:
+        return redirect(url_for('hub'))
+
+    sf = (request.form.get('subject_family') or '').strip()
+    if not sf:
+        return redirect(url_for('teacher_marking_patterns'))
+
+    # Auth: the teacher must contribute at least one active edit to this
+    # subject_family — i.e. they're part of the pool whose conflict was
+    # flagged.
+    from db import FeedbackEdit, MarkingPrinciplesCache
+    contributor = (FeedbackEdit.query
+                   .filter_by(edited_by=teacher_id, subject_family=sf, active=True)
+                   .first())
+    if not contributor:
+        return redirect(url_for('teacher_marking_patterns'))
+
+    cache = MarkingPrinciplesCache.query.filter_by(subject_family=sf).first()
+    if cache and cache.has_conflicts:
+        cache.has_conflicts = False
+        try:
+            db.session.commit()
+            logger.info(f"has_conflicts dismissed for {sf} by teacher {teacher_id}")
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f"dismiss-conflict commit failed for {sf}: {e}")
+    return redirect(url_for('teacher_marking_patterns'))
+
+
 @app.route('/teacher/create', methods=['POST'])
 def teacher_create():
     if not _is_authenticated():
