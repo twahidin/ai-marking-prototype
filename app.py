@@ -4958,6 +4958,49 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                 elif v is not None:
                     return jsonify({'success': False, 'error': 'status must be correct | partially_correct | incorrect'}), 400
 
+            # Categorisation correction — accept theme_key + specific_label from
+            # the inline editable category line above the feedback textarea.
+            # Validate theme_key against THEMES; on invalid, silently leave the
+            # existing values (client re-renders from response). On valid change,
+            # write a CategorisationCorrection audit row.
+            if 'theme_key' in edit or 'specific_label' in edit:
+                try:
+                    from config.mistake_themes import THEMES as _THEMES
+                    from db import CategorisationCorrection
+                    proposed_tk = (edit.get('theme_key') or '').strip() or None
+                    proposed_label_raw = edit.get('specific_label')
+                    proposed_label = (proposed_label_raw or '').strip() or None
+                    if proposed_label and len(proposed_label) > 80:
+                        proposed_label = proposed_label[:80]
+                    current_tk = target.get('theme_key')
+                    current_label = target.get('specific_label')
+                    if (proposed_tk
+                            and proposed_tk in _THEMES
+                            and (proposed_tk != current_tk
+                                 or (proposed_label or '') != (current_label or ''))):
+                        target['theme_key'] = proposed_tk
+                        target['specific_label'] = proposed_label or ''
+                        target['theme_key_corrected'] = True
+                        try:
+                            db.session.add(CategorisationCorrection(
+                                submission_id=sub.id,
+                                criterion_id=str(qn),
+                                field='theme_key',
+                                original_theme_key=current_tk,
+                                original_specific_label=current_label,
+                                corrected_theme_key=proposed_tk,
+                                corrected_specific_label=proposed_label,
+                                corrected_by=editor_id,
+                                assignment_id=asn.id,
+                                subject_family=getattr(asn, 'subject_family', None),
+                            ))
+                        except Exception as cat_err:
+                            logger.warning(
+                                f"CategorisationCorrection insert failed "
+                                f"(sub={sub.id}, crit={qn}): {cat_err}")
+                except Exception as outer_cat_err:
+                    logger.warning(f"categorisation correction handling failed: {outer_cat_err}")
+
             # Edit-log integration — only acts on feedback/improvement text changes.
             cal_flag = bool(edit.get('calibrate'))
             for _field in ('feedback', 'improvement'):

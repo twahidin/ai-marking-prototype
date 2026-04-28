@@ -474,3 +474,23 @@ class MarkingPrinciplesCache(db.Model):
     is_stale = db.Column(db.Boolean, nullable=False, default=False)
     edit_count_at_gen = db.Column(db.Integer, nullable=False, default=0)
     has_conflicts = db.Column(db.Boolean, nullable=False, default=False)
+
+
+class CategorisationCorrection(db.Model):
+    __tablename__ = 'categorisation_correction'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    submission_id = db.Column(db.Integer, db.ForeignKey('submissions.id'), nullable=False, index=True)
+    criterion_id = db.Column(db.String(64), nullable=False)
+    field = db.Column(db.String(20), nullable=False, default='theme_key')
+    original_theme_key = db.Column(db.String(40), nullable=True)
+    original_specific_label = db.Column(db.String(80), nullable=True)
+    corrected_theme_key = db.Column(db.String(40), nullable=False)
+    corrected_specific_label = db.Column(db.String(80), nullable=True)
+    corrected_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=False, index=True)
+    assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)
+    subject_family = db.Column(db.String(40), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.Index('ix_cat_corr_assignment_subject', 'assignment_id', 'subject_family'),
+    )

@@ -269,6 +269,32 @@
             impBlock = q.improvement ? '<div class="fb-q-field"><div class="fb-q-field-label">Suggested Improvement</div><div class="fb-q-field-value improvement">' + esc(q.improvement) + '</div></div>' : '';
         }
 
+        // Category line: muted, contenteditable annotation in the form
+        // [theme_key] specific_label. Hidden completely when categorisation
+        // hasn't run for this criterion (no theme_key set).
+        var catBlock = '';
+        if (q.theme_key) {
+            var corrMark = q.theme_key_corrected ?
+                '<span class="fb-cat-corrected" style="color:#8a8db2;margin-left:6px;font-style:normal;" title="Teacher-corrected">✎</span>' : '';
+            var labelTxt = q.specific_label ? esc(q.specific_label) : '';
+            if (state.editable) {
+                catBlock = '<div class="fb-q-cat-row" style="margin-bottom:4px; font-size:12px; color:#7a7f8c; line-height:1.5;">' +
+                    '<span class="fb-cat-line" data-field="category" contenteditable="true" spellcheck="false" ' +
+                        'style="outline:none; padding:1px 4px; border-radius:3px; cursor:text; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;">' +
+                        '[' + esc(q.theme_key) + '] ' + labelTxt +
+                    '</span>' +
+                    corrMark +
+                '</div>';
+            } else {
+                catBlock = '<div class="fb-q-cat-row" style="margin-bottom:4px; font-size:12px; color:#7a7f8c; line-height:1.5;">' +
+                    '<span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;">' +
+                        '[' + esc(q.theme_key) + '] ' + labelTxt +
+                    '</span>' +
+                    corrMark +
+                '</div>';
+            }
+        }
+
         var cardClass = 'fb-q-card status-' + statusCls;
         var html = '<div class="' + cardClass + '" id="' + state.prefix + 'QCard">' +
             '<div class="fb-q-card-header"><span class="fb-q-num">' + esc(headerLabel) + bandInfo + '</span>' +
@@ -277,6 +303,7 @@
             '<div class="fb-q-card-body">' +
                 '<div class="fb-q-field"><div class="fb-q-field-label">' + ansLabel + '</div><div class="fb-q-field-value">' + esc(q.student_answer || 'N/A') + '</div></div>' +
                 '<div class="fb-q-field"><div class="fb-q-field-label">' + refLabel + '</div><div class="fb-q-field-value">' + esc(q.correct_answer || 'N/A') + '</div></div>' +
+                catBlock +
                 fbBlock +
                 impBlock +
             '</div>' +
@@ -368,6 +395,90 @@
             el.addEventListener('click', function () {
                 if (el.dataset.editing === '1') return;
                 beginTextEdit(state, el, el.getAttribute('data-field'));
+            });
+        });
+        attachCategoryLineHandler(state, card);
+    }
+
+    function attachCategoryLineHandler(state, card) {
+        var span = card.querySelector('.fb-cat-line');
+        if (!span || span.dataset.bound === '1') return;
+        span.dataset.bound = '1';
+
+        var originalText = (span.textContent || '').trim();
+
+        // Single-line: Enter blurs instead of inserting a newline.
+        span.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter') {
+                ev.preventDefault();
+                span.blur();
+            } else if (ev.key === 'Escape') {
+                span.textContent = originalText;
+                span.blur();
+            }
+        });
+        // Strip rich text on paste.
+        span.addEventListener('paste', function (ev) {
+            ev.preventDefault();
+            var text = ((ev.clipboardData || window.clipboardData) || { getData: function () { return ''; } }).getData('text') || '';
+            text = text.replace(/[\r\n]+/g, ' ');
+            try { document.execCommand('insertText', false, text); } catch (e) { /* ignore */ }
+        });
+        span.addEventListener('blur', function () {
+            var current = (span.textContent || '').trim();
+            if (current === originalText) return;
+            // Parse [theme_key] specific_label
+            var m = current.match(/^\s*\[([^\]]*)\]\s*(.*)$/);
+            if (!m) {
+                span.textContent = originalText;  // malformed → silent revert
+                return;
+            }
+            var newTheme = (m[1] || '').trim();
+            var newLabel = (m[2] || '').trim();
+            var q = state.questions[state.currentQ];
+            if (!q) return;
+            var savedQNum = q.question_num != null ? q.question_num : (state.currentQ + 1);
+
+            patchResult(state, {
+                questions: [{
+                    question_num: savedQNum,
+                    theme_key: newTheme,
+                    specific_label: newLabel,
+                }]
+            }).then(function (data) {
+                if (!data || !data.success) {
+                    span.textContent = originalText;
+                    return;
+                }
+                var newQ = ((data.result && data.result.questions) || []).find(function (qq) {
+                    return String(qq.question_num) === String(savedQNum);
+                });
+                if (!newQ) {
+                    span.textContent = originalText;
+                    return;
+                }
+                var serverTk = newQ.theme_key || '';
+                var serverLabel = newQ.specific_label || '';
+                // Server may have silently reverted (invalid theme_key); reflect
+                // whatever the server returned, not what the user typed.
+                span.textContent = '[' + serverTk + '] ' + serverLabel;
+                originalText = span.textContent.trim();
+                state.questions[state.currentQ].theme_key = serverTk;
+                state.questions[state.currentQ].specific_label = serverLabel;
+                state.questions[state.currentQ].theme_key_corrected = !!newQ.theme_key_corrected;
+                if (newQ.theme_key_corrected) {
+                    var row = span.parentElement;
+                    if (row && !row.querySelector('.fb-cat-corrected')) {
+                        var mark = document.createElement('span');
+                        mark.className = 'fb-cat-corrected';
+                        mark.style.cssText = 'color:#8a8db2;margin-left:6px;';
+                        mark.title = 'Teacher-corrected';
+                        mark.textContent = '✎';
+                        row.appendChild(mark);
+                    }
+                }
+            }).catch(function () {
+                span.textContent = originalText;
             });
         });
     }
