@@ -396,23 +396,26 @@
         // "workflow note vs. calibration" framing from the spec.
         var cb = null;
         if (field === 'feedback' || field === 'improvement') {
-            var wrap = document.createElement('label');
+            var wrap = document.createElement('div');
             wrap.className = 'fb-cal-wrap';
             wrap.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:#666;cursor:pointer;user-select:none;';
             cb = document.createElement('input');
             cb.type = 'checkbox';
             cb.className = 'fb-cal-cb';
-            cb.style.cssText = 'margin:0;cursor:pointer;';
+            // pointer-events:none so the input never receives its own click —
+            // every click lands on the wrap, which is the single toggle path.
+            // Without this, native checkbox toggle + wrap manual toggle
+            // cancelled each other out and the box appeared stuck.
+            cb.style.cssText = 'margin:0;pointer-events:none;';
             wrap.appendChild(cb);
             wrap.appendChild(document.createTextNode('Save to calibration bank'));
             el.appendChild(wrap);
-            // preventDefault on mousedown stops focus transfer to the checkbox
-            // so the textarea keeps focus and doesn't blur-save with stale
-            // checkbox state. Manual toggle on click handles the actual flip.
+            // preventDefault on mousedown keeps focus on the textarea so the
+            // blur→commit handler doesn't fire mid-click with stale state.
             wrap.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
-            cb.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
             wrap.addEventListener('click', function (ev) {
                 ev.preventDefault();
+                ev.stopPropagation();
                 cb.checked = !cb.checked;
             });
         }
