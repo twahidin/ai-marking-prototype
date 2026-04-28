@@ -278,13 +278,19 @@
                 '<span class="fb-cat-corrected" style="color:#8a8db2;margin-left:6px;font-style:normal;" title="Teacher-corrected">✎</span>' : '';
             var labelTxt = q.specific_label ? esc(q.specific_label) : '';
             if (state.editable) {
-                catBlock = '<div class="fb-q-cat-row" style="margin-bottom:4px; font-size:12px; color:#7a7f8c; line-height:1.5;">' +
+                catBlock = '<div class="fb-q-cat-row" ' +
+                    'title="Valid theme keys: reasoning_gap | evidence_handling | language_expression | procedural_error | content_gap" ' +
+                    'style="margin-bottom:4px; font-size:12px; color:#7a7f8c; line-height:1.5;">' +
                     '<span class="fb-cat-line" data-field="category" contenteditable="true" spellcheck="false" ' +
-                        'title="Valid theme keys: reasoning_gap | evidence_handling | language_expression | procedural_error | content_gap" ' +
                         'style="outline:none; padding:1px 4px; border-radius:3px; cursor:text; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;">' +
                         '[' + esc(q.theme_key) + '] ' + labelTxt +
                     '</span>' +
                     corrMark +
+                    '<span class="fb-cat-help" tabindex="0" ' +
+                        'title="Valid theme keys: reasoning_gap | evidence_handling | language_expression | procedural_error | content_gap" ' +
+                        'style="margin-left:8px; padding:0 5px; border:1px solid #c5cbe8; border-radius:50%; font-size:10px; color:#7a7f8c; cursor:help; user-select:none;">' +
+                        'i' +
+                    '</span>' +
                 '</div>';
             } else {
                 catBlock = '<div class="fb-q-cat-row" style="margin-bottom:4px; font-size:12px; color:#7a7f8c; line-height:1.5;">' +
