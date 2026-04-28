@@ -619,12 +619,17 @@
                 }
             }
             // Auto-propagation: server kicked off the worker for all matching
-            // candidates. No banner — just a quick toast so the teacher knows
-            // their edit is being applied to similar answers in the background.
-            if (data && data.auto_propagation && data.auto_propagation.candidate_count > 0) {
-                var n = data.auto_propagation.candidate_count;
-                showToast('success',
-                    'Auto-applying to ' + n + ' similar answer' + (n === 1 ? '' : 's') + '…');
+            // candidates (or surfaced 0 candidates so we tell the teacher the
+            // calibration save was accepted but nothing else needs updating).
+            if (data && data.auto_propagation) {
+                var n = data.auto_propagation.candidate_count || 0;
+                if (n > 0) {
+                    showToast('success',
+                        'Auto-applying to ' + n + ' similar answer' + (n === 1 ? '' : 's') + '…');
+                } else {
+                    showToast('success',
+                        'Calibration saved. No other answers needed updating.');
+                }
             }
             if (data && data.calibration_warning) {
                 showToast('error', data.calibration_warning);

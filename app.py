@@ -4397,16 +4397,27 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     db.session.commit()
     logger.info(f"Teacher edited feedback for submission {submission_id} on assignment {assignment_id}")
 
-    # Auto-propagation: when a calibration row is written, immediately fire
-    # the propagation worker for every matching candidate without prompting
-    # the teacher. The Apply/Review/Skip banner UX is deferred until later;
-    # for now the same standard is applied across all similar answers.
+    # Auto-propagation: whenever a calibration row was just written for this
+    # request, immediately fire the propagation worker for every matching
+    # candidate. The Apply/Review/Skip banner is deferred — same standard
+    # applied across all similar answers automatically.
     auto_propagation = None
     if fresh_calibration_edits:
         try:
             anchor = fresh_calibration_edits[-1]
             cands = _find_propagation_candidates(anchor, asn)
             target_ids = [c['submission_id'] for c in cands.get('candidates') or []]
+            logger.info(
+                f"Auto-propagation: edit_id={anchor.id} crit={anchor.criterion_id} "
+                f"field={anchor.field} candidates={len(target_ids)}"
+            )
+            # Always echo the auto_propagation block to the client (even with
+            # 0 candidates) so the UI can show 'no similar answers' instead of
+            # silently showing nothing — the absence of feedback was confusing.
+            auto_propagation = {
+                'edit_id': anchor.id,
+                'candidate_count': len(target_ids),
+            }
             if target_ids:
                 anchor.propagation_status = 'pending'
                 db.session.commit()
@@ -4415,12 +4426,12 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                     args=(app, anchor.id, target_ids),
                     daemon=True,
                 ).start()
-                auto_propagation = {
-                    'edit_id': anchor.id,
-                    'candidate_count': len(target_ids),
-                }
+                logger.info(f"Auto-propagation worker started for edit_id={anchor.id}")
         except Exception as _cand_err:
-            logger.warning(f"Auto-propagation kickoff failed: {_cand_err}")
+            logger.error(
+                f"Auto-propagation kickoff failed: {type(_cand_err).__name__}: {_cand_err}",
+                exc_info=True,
+            )
             auto_propagation = None
 
     response = {'success': True, 'result': sub.get_result()}
