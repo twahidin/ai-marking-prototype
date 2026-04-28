@@ -142,6 +142,10 @@ def _migrate_add_columns(app):
                 db.session.execute(text('ALTER TABLE assignments ADD COLUMN exemplar_analyzed_at TIMESTAMP'))
                 db.session.commit()
                 logger.info('Added exemplar_analyzed_at column to assignments table')
+            if 'subject_bucket' not in columns:
+                db.session.execute(text('ALTER TABLE assignments ADD COLUMN subject_bucket VARCHAR(40)'))
+                db.session.commit()
+                logger.info('Added subject_bucket column to assignments table')
 
 
 def init_db(app):
@@ -230,6 +234,12 @@ class Assignment(db.Model):
     needs_remark = db.Column(db.Boolean, default=False, nullable=False)
     exemplar_analysis_json = db.Column(db.Text)
     exemplar_analyzed_at = db.Column(db.DateTime)
+    # Coarse subject category (math|physics|chemistry|biology|history|geography|
+    # literature|language|science|humanities|other) — derived from `subject` text
+    # at create/update time via ai_marking.bucket_subject(). Used for cross-
+    # assignment calibration matching when a teacher's edits should inform
+    # marking of OTHER assignments in the same subject.
+    subject_bucket = db.Column(db.String(40), nullable=True, index=True)
 
     students = db.relationship('Student', backref='assignment', lazy=True, cascade='all, delete-orphan')
 
@@ -360,3 +370,33 @@ class Submission(db.Model):
 
     def set_student_text(self, answers_list):
         self.student_text_json = json.dumps(answers_list)
+
+
+class FeedbackEdit(db.Model):
+    """Calibration bank — one row per teacher edit saved with the
+    \"Save to calibration bank\" checkbox. Drives the calibration block
+    prepended to future marking prompts and the propagation candidate
+    detection that fires after each save.
+    """
+    __tablename__ = 'feedback_edit'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    submission_id = db.Column(db.Integer, db.ForeignKey('submissions.id'), nullable=False, index=True)
+    criterion_id = db.Column(db.String(64), nullable=False)
+    field = db.Column(db.String(20), nullable=False)  # 'feedback' | 'improvement'
+    original_text = db.Column(db.Text, nullable=False, default='')
+    edited_text = db.Column(db.Text, nullable=False, default='')
+    edited_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=False, index=True)
+    assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)
+    rubric_version = db.Column(db.String(64), nullable=False, default='')
+    subject_bucket = db.Column(db.String(40), nullable=True, index=True)
+    scope = db.Column(db.String(20), nullable=False, default='individual')
+    active = db.Column(db.Boolean, nullable=False, default=True)
+    propagation_status = db.Column(db.String(20), nullable=False, default='none')
+    propagated_to = db.Column(db.Text, nullable=False, default='[]')
+    propagated_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.Index('ix_feedback_edit_lookup', 'edited_by', 'active', 'subject_bucket'),
+        db.Index('ix_feedback_edit_assignment', 'assignment_id', 'rubric_version'),
+    )
