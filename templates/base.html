@@ -5,7 +5,7 @@
     <meta name="viewport" content="{% block viewport %}width=device-width, initial-scale=1.0{% endblock %}">
     <title>{% block title %}{{ app_title }}{% endblock %}</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v={{ static_version }}">
     {% block head %}{% endblock %}
     <script>
     MathJax = {
@@ -14,7 +14,7 @@
     };
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
-    <script src="{{ url_for('static', filename='js/latex_autocomplete.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/latex_autocomplete.js') }}?v={{ static_version }}"></script>
 </head>
 <body>
 {% if current_teacher %}
@@ -47,7 +47,7 @@
 </nav>
 {% endif %}
 {% block body %}{% endblock %}
-<script src="{{ url_for('static', filename='common.js') }}"></script>
+<script src="{{ url_for('static', filename='common.js') }}?v={{ static_version }}"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

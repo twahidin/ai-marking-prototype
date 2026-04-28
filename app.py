@@ -178,6 +178,27 @@ if _ENV_DEMO_MODE and _ENV_DEPT_MODE:
 # Security: headers, rate limiting, error handlers
 # ---------------------------------------------------------------------------
 
+def _compute_static_version():
+    """Max mtime across static/ JS+CSS so the templates can append a
+    cache-buster query string. Computed once at import — Railway redeploys
+    reset it."""
+    import os
+    base = os.path.join(os.path.dirname(__file__), 'static')
+    latest = 0
+    if os.path.isdir(base):
+        for root, _, files in os.walk(base):
+            for f in files:
+                if f.endswith('.js') or f.endswith('.css'):
+                    try:
+                        latest = max(latest, int(os.path.getmtime(os.path.join(root, f))))
+                    except OSError:
+                        pass
+    return str(latest) if latest else '1'
+
+
+_STATIC_VERSION = _compute_static_version()
+
+
 @app.context_processor
 def inject_dept_context():
     """Make dept_mode, demo_mode, app_title and current teacher available in all templates."""
@@ -187,6 +208,7 @@ def inject_dept_context():
         'demo_mode': is_demo_mode(),
         'app_title': get_app_title(),
         'current_teacher': teacher,
+        'static_version': _STATIC_VERSION,
     }
 
 

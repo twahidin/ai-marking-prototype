@@ -698,7 +698,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/feedback_render.js') }}"></script>
+<script src="{{ url_for('static', filename='js/feedback_render.js') }}?v={{ static_version }}"></script>
 <script>
 function getFullUrl(path) { return window.location.origin + path; }
 document.getElementById('submitUrl').textContent = getFullUrl('/submit/{{ assignment.id }}');
