@@ -117,17 +117,9 @@ _SUB_TO_CHAR = {
 _SUPER_RE = re.compile('[' + ''.join(_SUPER_TO_CHAR.keys()) + ']+')
 _SUB_RE = re.compile('[' + ''.join(_SUB_TO_CHAR.keys()) + ']+')
 
-# Bare-math patterns. Conservative — these only match shapes that are
-# unambiguously mathematical, so wrapping won't capture prose accidentally.
-# Order matters: outer expressions (brackets, integrals) come first so the
-# inner caret-expressions inside them don't get wrapped twice.
-_BARE_MATH_PATTERNS = [
-    re.compile(r'\\int\b[^\$\n]*?\\,?d[a-zA-Z]+'),                # \int ... dx
-    re.compile(r'\[[^\]\$\n]+\]_\S+(?:\^\S+)?'),                  # [expr]_a^b
-    re.compile(r'\\(?:frac|sqrt|sum)\{[^}]*\}(?:\{[^}]*\})?'),    # \frac{a}{b}, \sqrt{x}
-    re.compile(r'(?<![a-zA-Z])[a-zA-Z]+\^\{[^}]+\}'),             # x^{2}, ms^{-2}
-    re.compile(r'(?<![a-zA-Z])[a-zA-Z]+\^[-+]?\d+'),              # x^2, ms^-2
-]
+# Patterns are defined inline in _wrap_bare_math so the caret/underscore
+# matchers can apply their brace-fixup transformer at match time. The outer
+# patterns (brackets, integrals, frac/sqrt) just wrap as-is.
 
 
 def _normalize_unicode_math(text):
@@ -151,18 +143,90 @@ def _normalize_unicode_math(text):
     return text
 
 
+def _normalize_caret_exponent(match):
+    """Wrap multi-character or signed exponents in braces so matplotlib
+    mathtext renders them as a single superscript. Bare 's^-2' confuses
+    mathtext (it treats '^-' as a single-char superscript and emits 's⁻2')
+    so we rewrite to 's^{-2}' inside the surrounding $...$."""
+    raw = match.group(0)
+    idx = raw.index('^')
+    base, exp = raw[:idx], raw[idx + 1:]
+    # Already-braced exponents come through this regex too — pass through.
+    if exp.startswith('{'):
+        return '$' + raw + '$'
+    if len(exp) == 1 and exp.isdigit():
+        return '$' + raw + '$'  # mathtext handles single-digit fine
+    return '$' + base + '^{' + exp + '}$'
+
+
+def _normalize_underscore_subscript(match):
+    """Same idea for subscripts: 't_1' is fine but 't_10' or 't_max' is not.
+    Brace multi-char subscripts so mathtext groups them correctly."""
+    raw = match.group(0)
+    idx = raw.index('_')
+    base, sub = raw[:idx], raw[idx + 1:]
+    if sub.startswith('{'):
+        return '$' + raw + '$'
+    if len(sub) == 1:
+        return '$' + raw + '$'
+    return '$' + base + '_{' + sub + '}$'
+
+
 def _wrap_bare_math(text):
     """Wrap bare-math substrings in $...$ so they route through matplotlib.
     Re-splits on $ between patterns so an outer wrap (e.g. [expr]_0^3)
-    protects its inner caret expressions from double-wrapping."""
-    for pat in _BARE_MATH_PATTERNS:
+    protects its inner caret expressions from double-wrapping. Caret/underscore
+    expressions get an exponent-braces fixup so mathtext groups multi-char
+    exponents correctly."""
+    # Special wrappers for caret and underscore expressions.
+    caret_with_exp_re = re.compile(r'(?<![a-zA-Z])[a-zA-Z]+\^(?:\{[^}]+\}|[-+]?\d+)')
+    under_with_sub_re = re.compile(r'(?<![a-zA-Z])[a-zA-Z]+_(?:\{[^}]+\}|[a-zA-Z0-9]+)')
+
+    # Outer expressions first (brackets, integrals, frac/sqrt) so inner
+    # carets inside them don't double-wrap.
+    outer_patterns = [
+        re.compile(r'\\int\b[^\$\n]*?\\,?d[a-zA-Z]+'),                # \int ... dx
+        re.compile(r'\[[^\]\$\n]+\]_\S+(?:\^\S+)?'),                  # [expr]_a^b
+        re.compile(r'\\(?:frac|sqrt|sum)\{[^}]*\}(?:\{[^}]*\})?'),    # \frac{a}{b}, \sqrt{x}
+    ]
+    for pat in outer_patterns:
         parts = text.split('$')
         for i, part in enumerate(parts):
             if i % 2 == 1:
-                continue  # already inside $...$
+                continue
             parts[i] = pat.sub(lambda m: '$' + m.group(0) + '$', part)
         text = '$'.join(parts)
+
+    # Caret/underscore expressions with the brace-fixup applied.
+    for pat, fixer in ((caret_with_exp_re, _normalize_caret_exponent),
+                       (under_with_sub_re, _normalize_underscore_subscript)):
+        parts = text.split('$')
+        for i, part in enumerate(parts):
+            if i % 2 == 1:
+                continue
+            parts[i] = pat.sub(fixer, part)
+        text = '$'.join(parts)
+
     return text
+
+
+def _strip_mathtext_incompatible(text):
+    """Remove or replace LaTeX commands that matplotlib mathtext doesn't
+    parse. Operates inside AND outside $...$ — outside, '\\,' shows as a
+    literal '\\, ' in the PDF; inside, it makes the whole expression fail
+    to render. Either way the right answer is to drop it."""
+    parts = text.split('$')
+    for i, part in enumerate(parts):
+        # \, \: \; \! and similar spacing commands → drop. Inside math,
+        # mathtext doesn't grok them; outside, they appear as literal
+        # backslash-punctuation in the rendered text.
+        part = re.sub(r'\\[,:;!]', '', part)
+        if i % 2 == 1:
+            # Inside $...$: also strip \text{...} wrapper (mathtext lacks
+            # \text; \mathrm and \mathbf are supported and pass through).
+            part = re.sub(r'\\text\{([^}]*)\}', r'\1', part)
+        parts[i] = part
+    return '$'.join(parts)
 
 
 def _preprocess_math_for_pdf(text):
@@ -172,6 +236,7 @@ def _preprocess_math_for_pdf(text):
         return text
     text = _normalize_unicode_math(text)
     text = _wrap_bare_math(text)
+    text = _strip_mathtext_incompatible(text)
     return text
 
 
