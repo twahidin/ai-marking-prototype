@@ -72,6 +72,43 @@ PROVIDER_KEY_MAP = {
 }
 
 
+# Coarse subject buckets derived from Assignment.subject (free-text). Used by
+# cross-assignment calibration lookup — a teacher's edits on Assignment A
+# inform marking of Assignment B when both share a subject_bucket.
+#
+# Order matters: more specific keywords come first. Each tuple is
+# (bucket_name, [substring keywords]). First substring match wins; subjects
+# with no match fall through to 'other' and only share calibration with
+# other 'other' assignments (i.e. effectively don't share — fine).
+SUBJECT_BUCKETS = [
+    ('math',       ['math', 'algebra', 'geometry', 'calculus', 'statistics', 'arithmetic']),
+    ('physics',    ['physics']),
+    ('chemistry',  ['chem']),
+    ('biology',    ['biology', 'biological']),
+    ('history',    ['hist']),
+    ('geography',  ['geograph']),
+    ('literature', ['literature', 'english lit']),
+    ('language',   ['english', 'language', 'mother tongue', 'grammar',
+                    'mandarin', 'chinese', 'malay', 'tamil']),
+    ('science',    ['science']),  # fallback for general science (after the four specifics)
+    ('humanities', ['humanit', 'social stud', 'civics', 'economics']),
+]
+
+
+def bucket_subject(subject_text):
+    """Map a free-text subject (e.g. 'A-Level Chemistry', 'Sec 2 History') to a
+    coarse bucket. Returns 'other' when nothing matches. No AI call —
+    pure string matching, runs in microseconds."""
+    if not subject_text:
+        return 'other'
+    s = str(subject_text).lower().strip()
+    for bucket, keywords in SUBJECT_BUCKETS:
+        for kw in keywords:
+            if kw in s:
+                return bucket
+    return 'other'
+
+
 def _resolve_api_key(provider, session_keys=None):
     """Get API key from session keys → env vars → wizard-stored DB keys."""
     env_name = PROVIDER_KEY_MAP.get(provider)

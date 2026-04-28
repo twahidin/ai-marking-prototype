@@ -3512,6 +3512,13 @@ def teacher_create():
         if val:
             user_keys[prov] = val
     asn.set_api_keys(user_keys)
+    # Coarse subject category, computed once at creation by string-bucketing
+    # asn.subject. Drives cross-assignment calibration matching at marking time.
+    try:
+        from ai_marking import bucket_subject
+        asn.subject_bucket = bucket_subject(asn.subject)
+    except Exception as _bucket_err:
+        logger.warning(f"bucket_subject failed for {asn.subject!r}: {_bucket_err}")
     db.session.add(asn)
 
     # Optionally add to bank
@@ -3620,6 +3627,12 @@ def teacher_edit(assignment_id):
     # Apply updates
     asn.title = new_title
     asn.subject = new_subject
+    # Re-bucket if the subject text changed; cheap string op so always fine.
+    try:
+        from ai_marking import bucket_subject
+        asn.subject_bucket = bucket_subject(asn.subject)
+    except Exception as _bucket_err:
+        logger.warning(f"bucket_subject failed on edit for {asn.subject!r}: {_bucket_err}")
     asn.scoring_mode = new_scoring_mode
     asn.total_marks = new_total_marks
     asn.show_results = new_show_results
