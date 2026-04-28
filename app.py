@@ -4397,23 +4397,37 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     db.session.commit()
     logger.info(f"Teacher edited feedback for submission {submission_id} on assignment {assignment_id}")
 
-    # Propagation candidate detection — synchronous, only fires when a
-    # calibration row was written this request. Returns the most-recently
-    # written edit's candidates so the banner has something to anchor on.
-    propagation_prompt = None
+    # Auto-propagation: when a calibration row is written, immediately fire
+    # the propagation worker for every matching candidate without prompting
+    # the teacher. The Apply/Review/Skip banner UX is deferred until later;
+    # for now the same standard is applied across all similar answers.
+    auto_propagation = None
     if fresh_calibration_edits:
         try:
             anchor = fresh_calibration_edits[-1]
-            propagation_prompt = _find_propagation_candidates(anchor, asn)
+            cands = _find_propagation_candidates(anchor, asn)
+            target_ids = [c['submission_id'] for c in cands.get('candidates') or []]
+            if target_ids:
+                anchor.propagation_status = 'pending'
+                db.session.commit()
+                threading.Thread(
+                    target=_run_propagation_worker,
+                    args=(app, anchor.id, target_ids),
+                    daemon=True,
+                ).start()
+                auto_propagation = {
+                    'edit_id': anchor.id,
+                    'candidate_count': len(target_ids),
+                }
         except Exception as _cand_err:
-            logger.warning(f"Propagation candidate lookup failed: {_cand_err}")
-            propagation_prompt = None
+            logger.warning(f"Auto-propagation kickoff failed: {_cand_err}")
+            auto_propagation = None
 
     response = {'success': True, 'result': sub.get_result()}
     if edit_meta:
         response['edit_meta'] = edit_meta
-    if propagation_prompt and propagation_prompt.get('candidate_count', 0) > 0:
-        response['propagation_prompt'] = propagation_prompt
+    if auto_propagation:
+        response['auto_propagation'] = auto_propagation
     if calibration_write_errors:
         response['calibration_warning'] = (
             f'Calibration save failed for {len(calibration_write_errors)} field(s). '
