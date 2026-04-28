@@ -395,6 +395,7 @@
         // Pre-checked when this field already has an active calibration row,
         // so re-opening the editor reflects the saved state.
         var cb = null;
+        var initialCalibrate = false;
         if (field === 'feedback' || field === 'improvement') {
             var wrap = document.createElement('div');
             wrap.className = 'fb-cal-wrap';
@@ -413,6 +414,7 @@
             var existingMeta = (qKey && state.textEditMeta && state.textEditMeta[qKey] && state.textEditMeta[qKey][field]) || null;
             if (existingMeta && existingMeta.calibrated) {
                 cb.checked = true;
+                initialCalibrate = true;
             }
             wrap.appendChild(cb);
             wrap.appendChild(document.createTextNode('Save to calibration bank'));
@@ -443,8 +445,11 @@
             submitted = true;
             var newVal = textarea.value;
             var calibrate = !!(cb && cb.checked);
-            if (newVal === currentValue && !calibrate) {
-                // No text change AND not opting into bank → just revert display
+            // Skip the round-trip only when nothing changed: same text AND
+            // same calibration state. If the teacher unchecked the box, we
+            // need to send calibrate=false so the server can deactivate the
+            // prior row.
+            if (newVal === currentValue && calibrate === initialCalibrate) {
                 if (field === 'overall') renderShell(state);
                 else renderQuestion(state);
                 return;
@@ -592,18 +597,25 @@
             if (field === 'overall') renderShell(state); else renderQuestion(state);
             showToast('success', 'Saved');
             if (state.onSave) { try { state.onSave(data.result); } catch (e) {} }
-            // Render the per-field tag from server-confirmed edit_meta only.
-            // If the server didn't return edit_meta (and didn't surface a
-            // calibration_warning either), the calibration save was a no-op
-            // and there's nothing to render.
+            // Reflect the server-confirmed calibration state. calibrated:true
+            // means a row was written/affirmed → render the indicator.
+            // calibrated:false means the prior row was deactivated (user
+            // unchecked the box) → drop the indicator and the cached meta.
             if (data && data.edit_meta && savedQNum != null && !data.calibration_warning) {
                 var qKey = String(savedQNum);
                 var fieldMeta = (data.edit_meta[qKey] || {})[field];
                 if (fieldMeta) {
-                    if (!state.textEditMeta) state.textEditMeta = {};
-                    if (!state.textEditMeta[qKey]) state.textEditMeta[qKey] = {};
-                    state.textEditMeta[qKey][field] = fieldMeta;
-                    renderEditTag(state, state.currentQ, field, fieldMeta);
+                    if (fieldMeta.calibrated === false) {
+                        if (state.textEditMeta && state.textEditMeta[qKey]) {
+                            delete state.textEditMeta[qKey][field];
+                        }
+                        removeEditTag(state, state.currentQ, field);
+                    } else {
+                        if (!state.textEditMeta) state.textEditMeta = {};
+                        if (!state.textEditMeta[qKey]) state.textEditMeta[qKey] = {};
+                        state.textEditMeta[qKey][field] = fieldMeta;
+                        renderEditTag(state, state.currentQ, field, fieldMeta);
+                    }
                 }
             }
             if (data && data.propagation_prompt) {
@@ -697,7 +709,20 @@
     // Calibration bank: per-field tag + retire link
     // -------------------------------------------------------------------
 
+    function removeEditTag(state, idx, field) {
+        var prefix = state.prefix || 'fb';
+        var rowId = prefix + 'TagRow-' + idx + '-' + field;
+        var existing = document.getElementById(rowId);
+        if (existing) existing.remove();
+    }
+
     function renderEditTag(state, idx, field, meta) {
+        // Only render for active calibration rows. Anything else (uncheck,
+        // retire, no meta) routes through removeEditTag.
+        if (!meta || !meta.calibrated) {
+            removeEditTag(state, idx, field);
+            return;
+        }
         var prefix = state.prefix || 'fb';
         var qCard = document.getElementById(prefix + 'QCard');
         if (!qCard) return;
@@ -711,10 +736,8 @@
         row.className = 'fb-edit-tag-row';
         row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:2px;font-size:11px;color:#7a7f8c;letter-spacing:0.2px;';
         var tag = document.createElement('span');
-        tag.className = 'fb-edit-tag' + (meta.calibrated ? ' fb-tag-cal' : ' fb-tag-wf');
-        tag.textContent = meta.calibrated
-            ? '✓ Saved to calibration bank — your edit will help calibrate similar answers'
-            : '· workflow note';
+        tag.className = 'fb-edit-tag fb-tag-cal';
+        tag.textContent = '✓ Saved to calibration bank — your edit will help calibrate similar answers';
         row.appendChild(tag);
         if (meta.calibrated && meta.edit_id) {
             var retire = document.createElement('a');
@@ -743,13 +766,13 @@
             body: JSON.stringify({ edit_id: editId }),
         }).then(function (r) { return r.json(); }).then(function (data) {
             if (data && data.status === 'ok') {
-                // Demote the tag in-state and re-render it as a workflow note.
+                // Remove from textEditMeta + drop the indicator entirely.
                 var q = state.questions[idx];
                 var qKey = q ? String(q.question_num != null ? q.question_num : (idx + 1)) : null;
-                if (qKey && state.textEditMeta && state.textEditMeta[qKey] && state.textEditMeta[qKey][field]) {
-                    state.textEditMeta[qKey][field] = { calibrated: false };
-                    renderEditTag(state, idx, field, state.textEditMeta[qKey][field]);
+                if (qKey && state.textEditMeta && state.textEditMeta[qKey]) {
+                    delete state.textEditMeta[qKey][field];
                 }
+                removeEditTag(state, idx, field);
             }
         }).catch(function () { /* silent */ });
     }

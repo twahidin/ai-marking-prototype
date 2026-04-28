@@ -4286,10 +4286,11 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                 elif v is not None:
                     return jsonify({'success': False, 'error': 'status must be correct | partially_correct | incorrect'}), 400
 
-            # Calibration bank write — only when the client passed calibrate=true
-            # AND a feedback or improvement text actually changed.
+            # Calibration bank: write/affirm on calibrate=true, deactivate
+            # the prior row on calibrate=false (so unchecking the box
+            # actually removes the contribution from the calibration bank).
             cal_flag = bool(edit.get('calibrate'))
-            if cal_flag and editor_id:
+            if editor_id and ('feedback' in edit or 'improvement' in edit):
                 snapshot_bucket = bucket_subject(asn.subject or '')
                 rubric_hash = _rubric_version_hash(asn)
                 for _field in ('feedback', 'improvement'):
@@ -4310,6 +4311,19 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                                             active=True)
                                  .order_by(FeedbackEdit.id.desc())
                                  .first())
+                        # Uncheck path: client asked us to drop the row.
+                        # Deactivate any prior so it stops feeding future
+                        # marking. If there's nothing to deactivate, this
+                        # is a no-op — just skip.
+                        if not cal_flag:
+                            if prior:
+                                prior.active = False
+                                db.session.flush()
+                                edit_meta.setdefault(str(qn), {})[_field] = {
+                                    'calibrated': False,
+                                }
+                            sp.commit()
+                            continue
                         # Idempotent re-affirm: text unchanged AND already
                         # in the bank with the same value. No new row, but
                         # still emit edit_meta so the client renders the
