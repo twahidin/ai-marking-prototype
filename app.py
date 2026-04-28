@@ -3818,7 +3818,34 @@ def _run_categorisation_worker(app_obj, submission_id):
                 return
 
             from config.mistake_themes import THEMES
-            from ai_marking import categorise_mistakes
+            from ai_marking import (
+                categorise_mistakes,
+                fetch_recent_categorisation_corrections,
+                format_categorisation_corrections_block,
+            )
+
+            # Few-shot teacher corrections: pull recent CategorisationCorrection
+            # rows for this subject_family and inject them into the existing
+            # categorisation prompt. NO additional AI call — same single-pass
+            # categorise_mistakes call now sees the corrections as in-prompt
+            # examples.
+            try:
+                _corr = fetch_recent_categorisation_corrections(
+                    subject_family=(asn.subject_family or ''), limit=5
+                )
+                corrections_block = format_categorisation_corrections_block(_corr)
+                if _corr:
+                    logger.info(
+                        f"Categorisation for sub {submission_id}: "
+                        f"injecting {len(_corr)} past teacher correction(s) for "
+                        f"subject {asn.subject_family!r}"
+                    )
+            except Exception as _corr_err:
+                logger.warning(
+                    f"Could not fetch categorisation corrections for sub {submission_id}: {_corr_err}"
+                )
+                corrections_block = ''
+
             parsed = categorise_mistakes(
                 provider=asn.provider,
                 model=asn.model,
@@ -3826,16 +3853,25 @@ def _run_categorisation_worker(app_obj, submission_id):
                 subject_family=asn.subject_family or '',
                 themes=THEMES,
                 questions_data=payload,
+                corrections_block=corrections_block,
             )
 
             # Merge the per-criterion fields into result_json.questions, keyed
             # by criterion_id (question_num). Store group habits in the tiered
             # namespace so the existing teacher PATCH merge stays compatible.
+            #
+            # Skip the overwrite for criteria the teacher has already corrected
+            # — preserve the human value instead of letting the AI undo it on
+            # the next categorisation run.
             cats_by_id = {c['criterion_id']: c for c in (parsed.get('categorisation') or [])}
             for q in questions:
                 cid = str(q.get('question_num')) if q.get('question_num') is not None else None
                 c = cats_by_id.get(cid) if cid else None
                 if not c:
+                    continue
+                if q.get('theme_key_corrected'):
+                    # Teacher has already chosen a theme_key for this criterion;
+                    # don't let the AI clobber it.
                     continue
                 q['theme_key'] = c['theme_key']
                 q['specific_label'] = c['specific_label']

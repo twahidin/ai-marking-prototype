@@ -1579,7 +1579,94 @@ def _extract_final_json(text, marker='FINAL_JSON'):
     return _json.loads(m.group(1))
 
 
-def categorise_mistakes(provider, model, session_keys, subject_family, themes, questions_data):
+def fetch_recent_categorisation_corrections(subject_family, limit=5):
+    """Pull up to `limit` most recent teacher corrections for the given
+    subject_family, joined with the original criterion content from the
+    source submission's result_json. Returns a list of dicts:
+      {criterion_text, original_theme_key, corrected_theme_key,
+       original_specific_label, corrected_specific_label}
+
+    Cheap: one indexed SELECT for the corrections + one bulk SELECT for
+    all referenced submissions. No AI calls. Returns [] when there's no
+    data (no extra work, no extra cost on the prompt side).
+    """
+    from db import db, CategorisationCorrection, Submission
+    if not subject_family:
+        return []
+    rows = (CategorisationCorrection.query
+            .filter(CategorisationCorrection.subject_family == subject_family)
+            .order_by(CategorisationCorrection.created_at.desc())
+            .limit(limit)
+            .all())
+    if not rows:
+        return []
+    sids = list({r.submission_id for r in rows if r.submission_id is not None})
+    subs_by_id = {}
+    if sids:
+        for s in Submission.query.filter(Submission.id.in_(sids)).all():
+            subs_by_id[s.id] = s
+
+    out = []
+    for r in rows:
+        try:
+            sub = subs_by_id.get(r.submission_id)
+            if not sub:
+                continue
+            result = sub.get_result() or {}
+            target_q = None
+            for q in (result.get('questions') or []):
+                if str(q.get('question_num')) == r.criterion_id:
+                    target_q = q
+                    break
+            if not target_q:
+                continue
+            criterion_name = (target_q.get('criterion_name') or f'Q{r.criterion_id}').strip()
+            feedback = (target_q.get('feedback') or '').strip().replace('\n', ' ')
+            student_answer = (target_q.get('student_answer') or '').strip().replace('\n', ' ')
+            text = criterion_name
+            if feedback:
+                text += f' — {feedback[:200]}'
+            if student_answer:
+                text += f' | student wrote: {student_answer[:160]}'
+            if len(text) > 400:
+                text = text[:400] + '…'
+            out.append({
+                'criterion_text': text,
+                'original_theme_key': r.original_theme_key,
+                'corrected_theme_key': r.corrected_theme_key,
+                'original_specific_label': r.original_specific_label,
+                'corrected_specific_label': r.corrected_specific_label,
+            })
+        except Exception:
+            continue
+    return out
+
+
+def format_categorisation_corrections_block(corrections):
+    """Render the few-shot teacher corrections as a prompt block to prepend
+    to the categorisation user prompt. Returns '' when empty so the caller
+    can splice unconditionally without size checks.
+    """
+    if not corrections:
+        return ''
+    lines = [
+        "PAST TEACHER CORRECTIONS (for this subject)",
+        "",
+        "The AI initially classified these criteria one way and teachers "
+        "corrected them. When you encounter criteria below that resemble "
+        "these examples, prefer the teacher's classification over the "
+        "AI's original judgement.",
+        "",
+    ]
+    for c in corrections:
+        lines.append(f"- Criterion: \"{c['criterion_text']}\"")
+        lines.append(f"  AI initially said: {c.get('original_theme_key') or '(none)'}")
+        lines.append(f"  Teacher corrected to: {c['corrected_theme_key']}")
+        lines.append("")
+    return '\n'.join(lines).strip() + '\n\n'
+
+
+def categorise_mistakes(provider, model, session_keys, subject_family, themes, questions_data, corrections_block=''):
     """Single-pass categorisation pipeline.
 
     One AI call produces:
@@ -1726,7 +1813,11 @@ Rules for the JSON:
 - Self-check before output: re-read each specific_label. Does it start with a verb like "check", "show", "remember", "always", "read"? If so, rewrite as a diagnosis (a noun phrase like "X error" or "X omitted").
 - Never leave a criterion unassigned."""
 
-    user_prompt = f"Criteria with marks lost:\n{crits_block}\n\nWork through the process then return FINAL_JSON."
+    user_prompt = (
+        (corrections_block or '') +
+        f"Criteria with marks lost:\n{crits_block}\n\n"
+        "Work through the process then return FINAL_JSON."
+    )
 
     raw_text = _run_text_completion(provider, model, session_keys, system_prompt, user_prompt, max_tokens=3500)
 
