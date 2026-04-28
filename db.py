@@ -143,6 +143,30 @@ def _migrate_add_columns(app):
                 db.session.commit()
                 logger.info('Added exemplar_analyzed_at column to assignments table')
 
+        # feedback_edit may be a leftover from earlier deploys (e.g.
+        # feed_forward_beta) that have a different column set. Make sure
+        # every column our current model SELECTs/INSERTs exists, so
+        # SQLAlchemy doesn't error with "column does not exist" mid-query.
+        if 'feedback_edit' in inspector.get_table_names():
+            fe_cols = {c['name'] for c in inspector.get_columns('feedback_edit')}
+            ensure = [
+                ('subject_bucket', 'VARCHAR(40)'),
+                ('propagation_status', "VARCHAR(20) DEFAULT 'none' NOT NULL"),
+                ('propagated_to', "TEXT DEFAULT '[]' NOT NULL"),
+                ('propagated_at', 'TIMESTAMP'),
+                ('rubric_version', "VARCHAR(64) DEFAULT '' NOT NULL"),
+                ('scope', "VARCHAR(20) DEFAULT 'individual' NOT NULL"),
+            ]
+            for col, ddl in ensure:
+                if col not in fe_cols:
+                    try:
+                        db.session.execute(text(f'ALTER TABLE feedback_edit ADD COLUMN {col} {ddl}'))
+                        db.session.commit()
+                        logger.info(f'Added {col} column to feedback_edit table')
+                    except Exception as _e:
+                        db.session.rollback()
+                        logger.error(f'feedback_edit ALTER ADD {col} failed: {_e}')
+
 
 def init_db(app):
     """Configure and initialize database."""
