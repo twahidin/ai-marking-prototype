@@ -3288,6 +3288,38 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
             ref = [asn.reference] if asn.reference else []
             script = sub.get_script_pages()
 
+            # Calibration block: prepend this teacher's prior calibration-bank
+            # edits to the marking system prompt. Best-effort — never blocks
+            # marking.  Backfill subject_bucket on assignments created before
+            # the bucketing field landed.
+            calibration_block = ''
+            try:
+                from ai_marking import (
+                    bucket_subject,
+                    fetch_calibration_examples,
+                    format_calibration_block,
+                )
+                if not getattr(asn, 'subject_bucket', None):
+                    asn.subject_bucket = bucket_subject(asn.subject or '')
+                    db.session.commit()
+                examples = fetch_calibration_examples(
+                    teacher_id=asn.teacher_id,
+                    assignment=asn,
+                    limit=10,
+                )
+                calibration_block = format_calibration_block(examples)
+                if examples:
+                    logger.info(
+                        f"Marking sub {submission_id}: prepending "
+                        f"{len(examples)} calibration example(s) "
+                        f"(bucket={asn.subject_bucket!r})"
+                    )
+            except Exception as _cal_err:
+                logger.warning(
+                    f"Calibration lookup failed for sub {submission_id}: {_cal_err}"
+                )
+                calibration_block = ''
+
             result = mark_script(
                 provider=asn.provider,
                 question_paper_pages=qp,
@@ -3303,6 +3335,7 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
                 scoring_mode=asn.scoring_mode,
                 total_marks=asn.total_marks,
                 session_keys=_resolve_api_keys(asn),
+                calibration_block=calibration_block,
             )
 
             # Safety net: in marks mode, every question must have marks_total.

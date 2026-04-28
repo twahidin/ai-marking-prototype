@@ -598,13 +598,14 @@ rubric."""
 
 
 def _build_rubrics_prompt(subject, rubrics_pages, reference_pages, question_paper_pages,
-                          script_pages, review_section, marking_section, total_marks):
+                          script_pages, review_section, marking_section, total_marks,
+                          calibration_block=''):
     """Build system prompt and content for rubrics/essay marking."""
     reference_section = ""
     if reference_pages:
         reference_section = "\nREFERENCE MATERIALS (sample works or other references) have been provided — use them to calibrate your expectations."
 
-    system_prompt = f"""You are an experienced teacher marking a student's essay/extended response using rubrics.
+    system_prompt = f"""{calibration_block}You are an experienced teacher marking a student's essay/extended response using rubrics.
 
 Subject: {subject or 'General'}
 {reference_section}
@@ -706,7 +707,8 @@ IMPORTANT:
 
 
 def _build_short_answer_prompt(subject, rubrics_pages, answer_key_pages, question_paper_pages,
-                               script_pages, review_section, marking_section, scoring_mode, total_marks):
+                               script_pages, review_section, marking_section, scoring_mode, total_marks,
+                               calibration_block=''):
     """Build system prompt and content for short answer marking."""
     rubrics_section = ""
     if rubrics_pages:
@@ -767,7 +769,7 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)"
         }}"""
 
-    system_prompt = f"""You are an experienced teacher marking a student's assignment script.
+    system_prompt = f"""{calibration_block}You are an experienced teacher marking a student's assignment script.
 
 Subject: {subject or 'General'}
 {rubrics_section}
@@ -918,7 +920,7 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
                 subject='', rubrics_pages=None, reference_pages=None,
                 review_instructions='', marking_instructions='',
                 model=None, assign_type='short_answer', scoring_mode='status', total_marks='',
-                session_keys=None):
+                session_keys=None, calibration_block=''):
     """
     Mark a student script using AI vision.
 
@@ -950,12 +952,14 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
     if assign_type == 'rubrics':
         system_prompt, content = _build_rubrics_prompt(
             subject, rubrics_pages, reference_pages, question_paper_pages, script_pages,
-            review_section, marking_section, total_marks
+            review_section, marking_section, total_marks,
+            calibration_block=calibration_block,
         )
     else:
         system_prompt, content = _build_short_answer_prompt(
             subject, rubrics_pages, answer_key_pages, question_paper_pages, script_pages,
-            review_section, marking_section, scoring_mode, total_marks
+            review_section, marking_section, scoring_mode, total_marks,
+            calibration_block=calibration_block,
         )
 
     try:
@@ -1102,3 +1106,243 @@ def generate_exemplar_analysis(provider, model, session_keys, subject, submissio
     if 'areas' not in parsed or not isinstance(parsed['areas'], list):
         raise ValueError("AI response missing 'areas' list")
     return parsed
+
+
+# ---------------------------------------------------------------------------
+# Calibration bank: helpers used by the propagation feature and by the
+# calibration block prepended to marking prompts. None of these make any AI
+# calls themselves — the AI cost lives entirely in mark_script (cached) and
+# refresh_criterion_feedback (cheap-tier Haiku, text-only).
+# ---------------------------------------------------------------------------
+
+def _rubric_version_hash(asn):
+    """MD5 hex digest of the assignment's raw rubric or answer_key bytes.
+    Used to detect rubric changes — when the hash changes, prior calibration
+    edits stop matching the same-assignment Tier-0 lookup automatically."""
+    import hashlib
+    blob = (getattr(asn, 'rubrics', None) or getattr(asn, 'answer_key', None) or b'')
+    if isinstance(blob, str):
+        blob = blob.encode('utf-8')
+    return hashlib.md5(blob).hexdigest()
+
+
+def fetch_calibration_examples(teacher_id, assignment, limit=10):
+    """Two-tier lookup of this teacher's prior calibration edits.
+
+    Tier 0 — same assignment + same rubric_version (no subject filter; rubric
+    hash already pins to this assignment's content).
+    Tier 1 — different assignment, same subject_bucket, same teacher.
+
+    Merged + deduplicated by edit id (Tier 0 wins), sorted by tier then
+    recency, collapsed to the most-recent edit per (criterion_id, field),
+    truncated to `limit`. All bound parameters via SQLAlchemy text() — no
+    f-string SQL anywhere.
+    """
+    from sqlalchemy import text as _sql_text
+    from db import db
+    if not teacher_id or not assignment:
+        return []
+
+    rubric_hash = _rubric_version_hash(assignment)
+    rows_by_id = {}
+
+    tier0_sql = _sql_text(
+        "SELECT id, original_text, edited_text, assignment_id, rubric_version, "
+        "criterion_id, field, subject_bucket, created_at, 0 AS match_tier "
+        "FROM feedback_edit "
+        "WHERE edited_by = :teacher_id "
+        "  AND active = true "
+        "  AND assignment_id = :aid "
+        "  AND rubric_version = :rubric_hash "
+        "ORDER BY created_at DESC"
+    )
+    for r in db.session.execute(tier0_sql, {
+        'teacher_id': teacher_id,
+        'aid': assignment.id,
+        'rubric_hash': rubric_hash,
+    }).mappings().all():
+        rows_by_id[r['id']] = dict(r)
+
+    sb = getattr(assignment, 'subject_bucket', None) or ''
+    if sb and sb != 'other':
+        tier1_sql = _sql_text(
+            "SELECT id, original_text, edited_text, assignment_id, rubric_version, "
+            "criterion_id, field, subject_bucket, created_at, 1 AS match_tier "
+            "FROM feedback_edit "
+            "WHERE edited_by = :teacher_id "
+            "  AND active = true "
+            "  AND assignment_id != :aid "
+            "  AND subject_bucket = :sb "
+            "ORDER BY created_at DESC"
+        )
+        for r in db.session.execute(tier1_sql, {
+            'teacher_id': teacher_id,
+            'aid': assignment.id,
+            'sb': sb,
+        }).mappings().all():
+            if r['id'] not in rows_by_id:  # Tier 0 wins on collisions
+                rows_by_id[r['id']] = dict(r)
+
+    def _ts(d):
+        ca = d.get('created_at')
+        if ca is None:
+            return 0
+        try:
+            return ca.timestamp()
+        except Exception:
+            return 0
+    sorted_rows = sorted(rows_by_id.values(),
+                         key=lambda d: (d['match_tier'], -_ts(d)))
+    seen_keys = set()
+    out = []
+    for d in sorted_rows:
+        key = (d['criterion_id'], d['field'])
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        out.append(d)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _truncate_at_word(s, max_chars=200):
+    """Truncate `s` to <= max_chars at the nearest word boundary; append '…'."""
+    if not s:
+        return ''
+    s = s.replace('\n', ' ').replace('\r', ' ').strip()
+    if len(s) <= max_chars:
+        return s
+    cut = s[:max_chars]
+    last_space = cut.rfind(' ')
+    if last_space > max_chars * 0.5:
+        cut = cut[:last_space]
+    return cut.rstrip(' .,;:!?') + '…'
+
+
+def format_calibration_block(examples):
+    """Render the list returned by fetch_calibration_examples as the
+    MARKING CALIBRATION block prepended to the system prompt. Returns ''
+    when empty so callers can splice unconditionally."""
+    if not examples:
+        return ''
+    lines = [
+        '---',
+        'MARKING CALIBRATION',
+        '',
+        "This teacher has previously edited AI-generated feedback on "
+        "this or similar assignments. Use these examples only to "
+        "calibrate your tone, length, and marking standard. Do not "
+        "reference them in your output. Apply the same corrections "
+        "silently to any similar criteria in this submission.",
+        '',
+    ]
+    for ex in examples:
+        orig = _truncate_at_word(ex.get('original_text') or '', 200)
+        edited = _truncate_at_word(ex.get('edited_text') or '', 200)
+        lines.append(f'Original AI feedback: "{orig}"')
+        lines.append(f'Teacher changed it to: "{edited}"')
+        if ex.get('match_tier') == 0:
+            lines.append('Context: same assignment, same rubric')
+        else:
+            lines.append('Context: different assignment, same subject')
+        lines.append('')
+    lines.append('---')
+    lines.append('')
+    return '\n'.join(lines)
+
+
+def refresh_criterion_feedback(provider, model, session_keys, subject,
+                                criterion_name, student_answer, correct_answer,
+                                marks_awarded, marks_total, calibration_edit):
+    """Regenerate feedback + improvement for ONE criterion on ONE student,
+    calibrated against a teacher's edit on a different student. Text-only
+    Haiku-tier call — no images, no marks change. Returns
+    {feedback, improvement}. Only used by _run_propagation_worker."""
+    helper_model = 'claude-haiku-4-5-20251001' if provider == 'anthropic' else (
+        'gpt-5.4-mini' if provider == 'openai' else (
+            'qwen3.5-plus-2026-02-15' if provider == 'qwen' else model
+        )
+    )
+    system_prompt = (
+        "You are regenerating feedback for one criterion on a student's "
+        "script. A teacher has shown you their marking standard by editing "
+        "another student's feedback on the same type of mistake.\n\n"
+        "Apply the same standard to this student's answer. If this student's "
+        "mistake is the same TYPE as the teacher's example, apply the "
+        "teacher's voice and framing. If the mistake is a different type "
+        "(factual error vs detail gap, off-topic vs incomplete, etc.), "
+        "write feedback appropriate to THIS student's actual mistake. Do "
+        "not force the teacher's framing onto a different kind of mistake. "
+        "Do not change the marks. Do not re-evaluate correctness.\n\n"
+        f"{FEEDBACK_GENERATION_RULES}\n\n"
+        "Return JSON only:\n"
+        "{\n"
+        '  "feedback": "...",\n'
+        '  "improvement": "..."\n'
+        "}"
+    )
+    orig = (calibration_edit.original_text or '')[:200]
+    edited = (calibration_edit.edited_text or '')[:200]
+    user_prompt = (
+        "TEACHER'S CALIBRATION EDIT (apply this standard):\n"
+        f"Original AI feedback: \"{orig}\"\n"
+        f"Teacher changed it to: \"{edited}\"\n\n"
+        "NOW APPLY THE SAME STANDARD TO:\n"
+        f"Subject: {subject or 'General'}\n"
+        f"Criterion: {criterion_name}\n"
+        f"Student's answer: {(student_answer or '')[:600]}\n"
+        f"Expected answer: {(correct_answer or '')[:400]}\n"
+        f"Marks: {marks_awarded if marks_awarded is not None else '-'} / {marks_total if marks_total is not None else '-'}\n\n"
+        "Return the JSON now."
+    )
+    parsed = _run_feedback_helper(provider, helper_model, session_keys,
+                                   system_prompt, user_prompt, max_tokens=300)
+    return {
+        'feedback': (parsed.get('feedback') or '').strip(),
+        'improvement': (parsed.get('improvement') or '').strip(),
+    }
+
+
+def _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=300):
+    """Single-shot JSON-returning text call. Used by refresh_criterion_feedback.
+    No images. Tries to parse the first {...} block from the response."""
+    import json as _json
+    if provider not in PROVIDERS:
+        raise ValueError(f"Unknown provider: {provider}")
+    api_key = _resolve_api_key(provider, session_keys)
+    if not api_key:
+        raise ValueError(f"No API key configured for provider: {provider}")
+    if provider == 'anthropic':
+        client = Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=[{'role': 'user', 'content': user_prompt}],
+        )
+        text = resp.content[0].text
+    else:
+        if not OPENAI_AVAILABLE:
+            raise RuntimeError("OpenAI SDK not installed")
+        if provider == 'qwen':
+            client = OpenAI(api_key=api_key, base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+        else:
+            client = OpenAI(api_key=api_key)
+        kwargs = {
+            'model': model,
+            'messages': [
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt},
+            ],
+        }
+        if provider == 'openai':
+            kwargs['max_completion_tokens'] = max_tokens
+        else:
+            kwargs['max_tokens'] = max_tokens
+        resp = client.chat.completions.create(**kwargs)
+        text = resp.choices[0].message.content
+    match = re.search(r'\{[\s\S]*\}', text)
+    if not match:
+        raise ValueError("Helper response contained no JSON object")
+    return _json.loads(match.group())
