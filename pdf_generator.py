@@ -97,6 +97,84 @@ def _split_text_and_math(text):
         yield ('text', text[pos:])
 
 
+# --- Math normalization helpers --------------------------------------------
+# AI feedback is inconsistent: same response often mixes unicode superscripts
+# ('ms⁻²'), caret notation ('t^3'), and proper LaTeX ('$\\frac{1}{2}$'). The
+# helpers below reshape everything into LaTeX wrapped in $...$ so matplotlib
+# mathtext can render it uniformly.
+
+_SUPER_TO_CHAR = {
+    '¹': '1', '²': '2', '³': '3',
+    '⁰': '0', '⁴': '4', '⁵': '5', '⁶': '6',
+    '⁷': '7', '⁸': '8', '⁹': '9',
+    '⁺': '+', '⁻': '-',
+}
+_SUB_TO_CHAR = {
+    '₀': '0', '₁': '1', '₂': '2', '₃': '3',
+    '₄': '4', '₅': '5', '₆': '6', '₇': '7',
+    '₈': '8', '₉': '9',
+}
+_SUPER_RE = re.compile('[' + ''.join(_SUPER_TO_CHAR.keys()) + ']+')
+_SUB_RE = re.compile('[' + ''.join(_SUB_TO_CHAR.keys()) + ']+')
+
+# Bare-math patterns. Conservative — these only match shapes that are
+# unambiguously mathematical, so wrapping won't capture prose accidentally.
+# Order matters: outer expressions (brackets, integrals) come first so the
+# inner caret-expressions inside them don't get wrapped twice.
+_BARE_MATH_PATTERNS = [
+    re.compile(r'\\int\b[^\$\n]*?\\,?d[a-zA-Z]+'),                # \int ... dx
+    re.compile(r'\[[^\]\$\n]+\]_\S+(?:\^\S+)?'),                  # [expr]_a^b
+    re.compile(r'\\(?:frac|sqrt|sum)\{[^}]*\}(?:\{[^}]*\})?'),    # \frac{a}{b}, \sqrt{x}
+    re.compile(r'(?<![a-zA-Z])[a-zA-Z]+\^\{[^}]+\}'),             # x^{2}, ms^{-2}
+    re.compile(r'(?<![a-zA-Z])[a-zA-Z]+\^[-+]?\d+'),              # x^2, ms^-2
+]
+
+
+def _normalize_unicode_math(text):
+    """Replace unicode super/subscript runs with LaTeX wrapped in $...$.
+    'ms⁻²' becomes '$\\mathrm{ms}^{-2}$'; a stray '²' becomes '${}^{2}$'."""
+    def _word_super(m):
+        base, run = m.group(1), m.group(2)
+        return '$\\mathrm{' + base + '}^{' + ''.join(_SUPER_TO_CHAR[c] for c in run) + '}$'
+    text = re.sub(
+        r'([A-Za-z]+)([' + ''.join(_SUPER_TO_CHAR.keys()) + r']+)',
+        _word_super, text,
+    )
+    text = _SUPER_RE.sub(
+        lambda m: '${}^{' + ''.join(_SUPER_TO_CHAR[c] for c in m.group(0)) + '}$',
+        text,
+    )
+    text = _SUB_RE.sub(
+        lambda m: '${}_{' + ''.join(_SUB_TO_CHAR[c] for c in m.group(0)) + '}$',
+        text,
+    )
+    return text
+
+
+def _wrap_bare_math(text):
+    """Wrap bare-math substrings in $...$ so they route through matplotlib.
+    Re-splits on $ between patterns so an outer wrap (e.g. [expr]_0^3)
+    protects its inner caret expressions from double-wrapping."""
+    for pat in _BARE_MATH_PATTERNS:
+        parts = text.split('$')
+        for i, part in enumerate(parts):
+            if i % 2 == 1:
+                continue  # already inside $...$
+            parts[i] = pat.sub(lambda m: '$' + m.group(0) + '$', part)
+        text = '$'.join(parts)
+    return text
+
+
+def _preprocess_math_for_pdf(text):
+    """Coerce mixed math notations into LaTeX inside $...$ so the rendering
+    pipeline produces consistent output. Idempotent."""
+    if not text:
+        return text
+    text = _normalize_unicode_math(text)
+    text = _wrap_bare_math(text)
+    return text
+
+
 def render_latex_for_pdf(text, fontsize=11, img_height=14):
     """Return ReportLab Paragraph markup with inline math rendered as PNGs.
 
@@ -107,6 +185,9 @@ def render_latex_for_pdf(text, fontsize=11, img_height=14):
     if not text:
         return ''
     text = str(text)
+    # Normalize unicode superscripts and bare math into $...$ first so the
+    # matplotlib pipeline catches everything that looks like math.
+    text = _preprocess_math_for_pdf(text)
     # Fast path: no math delimiters at all → defer to Unicode helper.
     if '$' not in text and '\\(' not in text and '\\[' not in text:
         return clean_for_pdf(text)
