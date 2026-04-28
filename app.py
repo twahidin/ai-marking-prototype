@@ -4284,8 +4284,6 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                         continue
                     new_text = (edit.get(_field) or '').strip()
                     old_text = old_text_by_field.get(_field, '')
-                    if new_text == old_text:
-                        continue  # no-op — don't write a calibration row
                     # Replace any prior active row for the same target so we
                     # only ever have one active calibration edit per
                     # (teacher, assignment, criterion, field).
@@ -4299,6 +4297,18 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                                             active=True)
                                  .order_by(FeedbackEdit.id.desc())
                                  .first())
+                        # Idempotent re-affirm: text unchanged AND already
+                        # in the bank with the same value. No new row, but
+                        # still emit edit_meta so the client renders the
+                        # indicator (e.g. user toggles the box on a field
+                        # that's already calibrated).
+                        if new_text == old_text and prior and (prior.edited_text or '') == new_text:
+                            edit_meta.setdefault(str(qn), {})[_field] = {
+                                'edit_id': prior.id,
+                                'calibrated': True,
+                            }
+                            sp.rollback()
+                            continue
                         # Anchor original_text to the AI original. If a prior
                         # bank row exists, reuse its original_text (which IS
                         # the AI original). Otherwise use the pre-edit text
