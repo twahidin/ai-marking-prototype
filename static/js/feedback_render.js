@@ -278,19 +278,12 @@
                 '<span class="fb-cat-corrected" style="color:#8a8db2;margin-left:6px;font-style:normal;" title="Teacher-corrected">✎</span>' : '';
             var labelTxt = q.specific_label ? esc(q.specific_label) : '';
             if (state.editable) {
-                catBlock = '<div class="fb-q-cat-row" ' +
-                    'title="Valid theme keys: reasoning_gap | evidence_handling | language_expression | procedural_error | content_gap" ' +
-                    'style="margin-bottom:4px; font-size:12px; color:#7a7f8c; line-height:1.5;">' +
+                catBlock = '<div class="fb-q-cat-row" style="margin-bottom:4px; font-size:12px; color:#7a7f8c; line-height:1.5;">' +
                     '<span class="fb-cat-line" data-field="category" contenteditable="true" spellcheck="false" ' +
                         'style="outline:none; padding:1px 4px; border-radius:3px; cursor:text; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;">' +
                         '[' + esc(q.theme_key) + '] ' + labelTxt +
                     '</span>' +
                     corrMark +
-                    '<span class="fb-cat-help" tabindex="0" ' +
-                        'title="Valid theme keys: reasoning_gap | evidence_handling | language_expression | procedural_error | content_gap" ' +
-                        'style="margin-left:8px; padding:0 5px; border:1px solid #c5cbe8; border-radius:50%; font-size:10px; color:#7a7f8c; cursor:help; user-select:none;">' +
-                        'i' +
-                    '</span>' +
                 '</div>';
             } else {
                 catBlock = '<div class="fb-q-cat-row" style="margin-bottom:4px; font-size:12px; color:#7a7f8c; line-height:1.5;">' +
@@ -407,21 +400,102 @@
         attachCategoryLineHandler(state, card);
     }
 
+    var THEME_KEYS = ['reasoning_gap', 'evidence_handling', 'language_expression', 'procedural_error', 'content_gap'];
+
     function attachCategoryLineHandler(state, card) {
         var span = card.querySelector('.fb-cat-line');
         if (!span || span.dataset.bound === '1') return;
         span.dataset.bound = '1';
 
         var originalText = (span.textContent || '').trim();
+        var dropdown = null;
+        var highlightIdx = -1;
 
-        // Single-line: Enter blurs instead of inserting a newline.
+        function showDropdown() {
+            if (dropdown) return;
+            dropdown = document.createElement('div');
+            dropdown.className = 'fb-cat-dropdown';
+            dropdown.style.cssText = 'position:absolute; background:white; border:1px solid #c5cbe8; border-radius:6px; box-shadow:0 4px 10px rgba(0,0,0,0.12); padding:4px 0; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; z-index:99999; min-width:200px;';
+            THEME_KEYS.forEach(function (k, i) {
+                var item = document.createElement('div');
+                item.className = 'fb-cat-dropdown-item';
+                item.style.cssText = 'padding:5px 12px; cursor:pointer; color:#333;';
+                item.textContent = k;
+                item.addEventListener('mousedown', function (ev) {
+                    ev.preventDefault();  // keep focus on span; mousedown fires before blur
+                    applyKey(k);
+                });
+                item.addEventListener('mouseenter', function () { highlight(i); });
+                dropdown.appendChild(item);
+            });
+            document.body.appendChild(dropdown);
+            var rect = span.getBoundingClientRect();
+            dropdown.style.top = (rect.bottom + window.scrollY + 2) + 'px';
+            dropdown.style.left = (rect.left + window.scrollX) + 'px';
+
+            // Pre-highlight whichever key the line currently shows.
+            var current = span.textContent || '';
+            var m = current.match(/^\s*\[([^\]]*)\]/);
+            if (m) {
+                var idx = THEME_KEYS.indexOf((m[1] || '').trim());
+                if (idx >= 0) highlight(idx);
+            }
+        }
+
+        function hideDropdown() {
+            if (dropdown) { dropdown.remove(); dropdown = null; }
+            highlightIdx = -1;
+        }
+
+        function highlight(i) {
+            if (!dropdown) return;
+            highlightIdx = i;
+            var children = dropdown.children;
+            for (var idx = 0; idx < children.length; idx++) {
+                children[idx].style.background = (idx === i) ? '#eef1ff' : 'white';
+            }
+        }
+
+        function applyKey(k) {
+            // Replace bracketed key, preserve specific_label after `]`.
+            var current = span.textContent || '';
+            var m = current.match(/^\s*\[[^\]]*\]\s*(.*)$/);
+            var label = m ? (m[1] || '') : '';
+            span.textContent = '[' + k + '] ' + label;
+            hideDropdown();
+            span.blur();  // triggers existing save flow
+        }
+
+        span.addEventListener('focus', function () { showDropdown(); });
+
         span.addEventListener('keydown', function (ev) {
-            if (ev.key === 'Enter') {
+            if (ev.key === 'ArrowDown') {
                 ev.preventDefault();
-                span.blur();
+                if (!dropdown) showDropdown();
+                var next = highlightIdx < 0 ? 0 : (highlightIdx + 1) % THEME_KEYS.length;
+                highlight(next);
+            } else if (ev.key === 'ArrowUp') {
+                ev.preventDefault();
+                if (!dropdown) showDropdown();
+                var prev = highlightIdx <= 0 ? THEME_KEYS.length - 1 : highlightIdx - 1;
+                highlight(prev);
+            } else if (ev.key === 'Enter' || ev.key === 'Tab') {
+                if (dropdown && highlightIdx >= 0) {
+                    ev.preventDefault();
+                    applyKey(THEME_KEYS[highlightIdx]);
+                } else if (ev.key === 'Enter') {
+                    ev.preventDefault();
+                    span.blur();
+                }
+                // Tab with no highlight: let the browser move focus naturally.
             } else if (ev.key === 'Escape') {
-                span.textContent = originalText;
-                span.blur();
+                ev.preventDefault();
+                if (dropdown) {
+                    hideDropdown();
+                } else {
+                    span.textContent = originalText;
+                    span.blur();
+                }
             }
         });
         // Strip rich text on paste.
@@ -432,6 +506,8 @@
             try { document.execCommand('insertText', false, text); } catch (e) { /* ignore */ }
         });
         span.addEventListener('blur', function () {
+            // Defer hide so a mousedown click on a dropdown item can fire first.
+            setTimeout(hideDropdown, 150);
             var current = (span.textContent || '').trim();
             if (current === originalText) return;
             // Parse [theme_key] specific_label
