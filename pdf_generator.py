@@ -72,172 +72,32 @@ def _render_math_to_png(math_tex, fontsize=11):
 def _split_text_and_math(text):
     """Yield (kind, content) tuples where kind is 'text' or 'math'.
 
-    Handles $...$ and $$...$$ (TeX delimiters), plus \\(...\\) and \\[...\\]
-    (MathJax-style delimiters). Unbalanced delimiters fall through as text
-    so bad input never crashes the PDF.
+    Handles both $...$ inline and $$...$$ display math. Unbalanced delimiters
+    fall through as text so bad input never crashes the PDF.
     """
-    import re as _re
-    # Find every math span and its boundaries — process them in order.
-    pattern = _re.compile(
-        r'\$\$(.+?)\$\$'         # $$...$$
-        r'|\$(.+?)\$'            # $...$
-        r'|\\\((.+?)\\\)'        # \(...\)
-        r'|\\\[(.+?)\\\]',       # \[...\]
-        _re.DOTALL,
-    )
-    pos = 0
-    for m in pattern.finditer(text):
-        if m.start() > pos:
-            yield ('text', text[pos:m.start()])
-        # Whichever group matched holds the math body.
-        body = next(g for g in m.groups() if g is not None)
-        yield ('math', body)
-        pos = m.end()
-    if pos < len(text):
-        yield ('text', text[pos:])
-
-
-# --- Math normalization helpers --------------------------------------------
-# AI feedback is inconsistent: same response often mixes unicode superscripts
-# ('ms⁻²'), caret notation ('t^3'), and proper LaTeX ('$\\frac{1}{2}$'). The
-# helpers below reshape everything into LaTeX wrapped in $...$ so matplotlib
-# mathtext can render it uniformly.
-
-_SUPER_TO_CHAR = {
-    '¹': '1', '²': '2', '³': '3',
-    '⁰': '0', '⁴': '4', '⁵': '5', '⁶': '6',
-    '⁷': '7', '⁸': '8', '⁹': '9',
-    '⁺': '+', '⁻': '-',
-}
-_SUB_TO_CHAR = {
-    '₀': '0', '₁': '1', '₂': '2', '₃': '3',
-    '₄': '4', '₅': '5', '₆': '6', '₇': '7',
-    '₈': '8', '₉': '9',
-}
-_SUPER_RE = re.compile('[' + ''.join(_SUPER_TO_CHAR.keys()) + ']+')
-_SUB_RE = re.compile('[' + ''.join(_SUB_TO_CHAR.keys()) + ']+')
-
-# Patterns are defined inline in _wrap_bare_math so the caret/underscore
-# matchers can apply their brace-fixup transformer at match time. The outer
-# patterns (brackets, integrals, frac/sqrt) just wrap as-is.
-
-
-def _normalize_unicode_math(text):
-    """Replace unicode super/subscript runs with LaTeX wrapped in $...$.
-    'ms⁻²' becomes '$\\mathrm{ms}^{-2}$'; a stray '²' becomes '${}^{2}$'."""
-    def _word_super(m):
-        base, run = m.group(1), m.group(2)
-        return '$\\mathrm{' + base + '}^{' + ''.join(_SUPER_TO_CHAR[c] for c in run) + '}$'
-    text = re.sub(
-        r'([A-Za-z]+)([' + ''.join(_SUPER_TO_CHAR.keys()) + r']+)',
-        _word_super, text,
-    )
-    text = _SUPER_RE.sub(
-        lambda m: '${}^{' + ''.join(_SUPER_TO_CHAR[c] for c in m.group(0)) + '}$',
-        text,
-    )
-    text = _SUB_RE.sub(
-        lambda m: '${}_{' + ''.join(_SUB_TO_CHAR[c] for c in m.group(0)) + '}$',
-        text,
-    )
-    return text
-
-
-def _normalize_caret_exponent(match):
-    """Wrap multi-character or signed exponents in braces so matplotlib
-    mathtext renders them as a single superscript. Bare 's^-2' confuses
-    mathtext (it treats '^-' as a single-char superscript and emits 's⁻2')
-    so we rewrite to 's^{-2}' inside the surrounding $...$."""
-    raw = match.group(0)
-    idx = raw.index('^')
-    base, exp = raw[:idx], raw[idx + 1:]
-    # Already-braced exponents come through this regex too — pass through.
-    if exp.startswith('{'):
-        return '$' + raw + '$'
-    if len(exp) == 1 and exp.isdigit():
-        return '$' + raw + '$'  # mathtext handles single-digit fine
-    return '$' + base + '^{' + exp + '}$'
-
-
-def _normalize_underscore_subscript(match):
-    """Same idea for subscripts: 't_1' is fine but 't_10' or 't_max' is not.
-    Brace multi-char subscripts so mathtext groups them correctly."""
-    raw = match.group(0)
-    idx = raw.index('_')
-    base, sub = raw[:idx], raw[idx + 1:]
-    if sub.startswith('{'):
-        return '$' + raw + '$'
-    if len(sub) == 1:
-        return '$' + raw + '$'
-    return '$' + base + '_{' + sub + '}$'
-
-
-def _wrap_bare_math(text):
-    """Wrap bare-math substrings in $...$ so they route through matplotlib.
-    Re-splits on $ between patterns so an outer wrap (e.g. [expr]_0^3)
-    protects its inner caret expressions from double-wrapping. Caret/underscore
-    expressions get an exponent-braces fixup so mathtext groups multi-char
-    exponents correctly."""
-    # Special wrappers for caret and underscore expressions.
-    caret_with_exp_re = re.compile(r'(?<![a-zA-Z])[a-zA-Z]+\^(?:\{[^}]+\}|[-+]?\d+)')
-    under_with_sub_re = re.compile(r'(?<![a-zA-Z])[a-zA-Z]+_(?:\{[^}]+\}|[a-zA-Z0-9]+)')
-
-    # Outer expressions first (brackets, integrals, frac/sqrt) so inner
-    # carets inside them don't double-wrap.
-    outer_patterns = [
-        re.compile(r'\\int\b[^\$\n]*?\\,?d[a-zA-Z]+'),                # \int ... dx
-        re.compile(r'\[[^\]\$\n]+\]_\S+(?:\^\S+)?'),                  # [expr]_a^b
-        re.compile(r'\\(?:frac|sqrt|sum)\{[^}]*\}(?:\{[^}]*\})?'),    # \frac{a}{b}, \sqrt{x}
-    ]
-    for pat in outer_patterns:
-        parts = text.split('$')
-        for i, part in enumerate(parts):
-            if i % 2 == 1:
-                continue
-            parts[i] = pat.sub(lambda m: '$' + m.group(0) + '$', part)
-        text = '$'.join(parts)
-
-    # Caret/underscore expressions with the brace-fixup applied.
-    for pat, fixer in ((caret_with_exp_re, _normalize_caret_exponent),
-                       (under_with_sub_re, _normalize_underscore_subscript)):
-        parts = text.split('$')
-        for i, part in enumerate(parts):
-            if i % 2 == 1:
-                continue
-            parts[i] = pat.sub(fixer, part)
-        text = '$'.join(parts)
-
-    return text
-
-
-def _strip_mathtext_incompatible(text):
-    """Remove or replace LaTeX commands that matplotlib mathtext doesn't
-    parse. Operates inside AND outside $...$ — outside, '\\,' shows as a
-    literal '\\, ' in the PDF; inside, it makes the whole expression fail
-    to render. Either way the right answer is to drop it."""
-    parts = text.split('$')
-    for i, part in enumerate(parts):
-        # \, \: \; \! and similar spacing commands → drop. Inside math,
-        # mathtext doesn't grok them; outside, they appear as literal
-        # backslash-punctuation in the rendered text.
-        part = re.sub(r'\\[,:;!]', '', part)
-        if i % 2 == 1:
-            # Inside $...$: also strip \text{...} wrapper (mathtext lacks
-            # \text; \mathrm and \mathbf are supported and pass through).
-            part = re.sub(r'\\text\{([^}]*)\}', r'\1', part)
-        parts[i] = part
-    return '$'.join(parts)
-
-
-def _preprocess_math_for_pdf(text):
-    """Coerce mixed math notations into LaTeX inside $...$ so the rendering
-    pipeline produces consistent output. Idempotent."""
-    if not text:
-        return text
-    text = _normalize_unicode_math(text)
-    text = _wrap_bare_math(text)
-    text = _strip_mathtext_incompatible(text)
-    return text
+    i, n = 0, len(text)
+    while i < n:
+        if text[i:i + 2] == '$$':
+            end = text.find('$$', i + 2)
+            if end == -1:
+                yield ('text', text[i:])
+                return
+            yield ('math', text[i + 2:end])
+            i = end + 2
+        elif text[i] == '$':
+            end = text.find('$', i + 1)
+            if end == -1:
+                yield ('text', text[i:])
+                return
+            yield ('math', text[i + 1:end])
+            i = end + 1
+        else:
+            nxt = text.find('$', i)
+            if nxt == -1:
+                yield ('text', text[i:])
+                return
+            yield ('text', text[i:nxt])
+            i = nxt
 
 
 def render_latex_for_pdf(text, fontsize=11, img_height=14):
@@ -250,11 +110,8 @@ def render_latex_for_pdf(text, fontsize=11, img_height=14):
     if not text:
         return ''
     text = str(text)
-    # Normalize unicode superscripts and bare math into $...$ first so the
-    # matplotlib pipeline catches everything that looks like math.
-    text = _preprocess_math_for_pdf(text)
-    # Fast path: no math delimiters at all → defer to Unicode helper.
-    if '$' not in text and '\\(' not in text and '\\[' not in text:
+    # Fast path: no $ at all → defer to the Unicode-approximation helper.
+    if '$' not in text:
         return clean_for_pdf(text)
     if not _matplotlib_available():
         return clean_for_pdf(text)
@@ -304,13 +161,10 @@ def clean_for_pdf(text):
         return ''
     text = str(text)
 
-    # Strip math delimiters — keep the body so the Unicode replacements
-    # below still get a chance to convert \frac, \times, etc.
-    text = re.sub(r'\$\$(.+?)\$\$', r'\1', text, flags=re.DOTALL)
+    # Remove $$ and $ delimiters
+    text = text.replace('$$', '')
     text = re.sub(r'\$([^$]+)\$', r'\1', text)
     text = text.replace('$', '')
-    text = re.sub(r'\\\((.+?)\\\)', r'\1', text, flags=re.DOTALL)
-    text = re.sub(r'\\\[(.+?)\\\]', r'\1', text, flags=re.DOTALL)
 
     # Common LaTeX -> Unicode
     replacements = {
