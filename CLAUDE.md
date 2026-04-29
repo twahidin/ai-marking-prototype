@@ -103,3 +103,29 @@ At least one AI provider API key must be set. Providers only appear in the UI if
 
 - **poppler** is required for `pdf2image` (PDF-to-image conversion for OpenAI/Qwen providers). Install via `brew install poppler` (macOS) or `apt-get install poppler-utils` (Linux).
 - Railway/Nixpacks handles this automatically in production.
+
+## Schema evolution policy
+
+This app is in active use. Any code change that adds or relies on a new column / field / data shape MUST consider that prior rows do not have it. Old assignments and old submissions are real data, not edge cases.
+
+**When adding a column that ANY query filters or groups on:**
+
+1. **Lazy-fill at the closest write path.** If the value is derivable (e.g. `subject_family` from `asn.subject` via `classify_subject_family`), compute it inline before the first INSERT/UPDATE that needs it, and persist it back to the parent row too. Never write `NULL` into a column the new feature filters on.
+2. **Add a one-shot backfill** in the boot path (or as a `flask` CLI command). Idempotent — guard with `WHERE col IS NULL`, safe to re-run on every boot.
+3. **Do NOT add `if row.col is None: skip` branches in readers.** If the reader needs the column populated, the writer + backfill are responsible. Branching in readers is how this gets unmaintainable.
+
+**When adding a feature that reads new fields on existing rows:**
+
+- Audit the write paths that produce those rows. If a write path can produce a row without the field, fix the write path — don't paper over it in the reader.
+- If a value cannot be derived for legacy rows, the feature must tolerate that *explicitly* with a UI affordance ("not categorised yet — re-mark to enable"), never silently drop the row.
+
+**When fixing a "old data doesn't work with new feature" bug:**
+
+- Default fix shape: lazy-fill at write + one-shot backfill.
+- Reader-side tolerance is a last resort, only when the value is genuinely irrecoverable for legacy rows.
+
+**Currently load-bearing fields** (treat as required, not optional, on writes):
+
+- `Assignment.subject_family` and `FeedbackEdit.subject_family` — drive marking-patterns aggregation, calibration lookup, and propagation candidate detection.
+- `FeedbackEdit.theme_key` — drives Tier-1 calibration retrieval and student-facing "Group by Mistake Type".
+- `Submission.categorisation_status` — gates UI rendering of the category line.

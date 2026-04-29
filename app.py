@@ -181,6 +181,93 @@ if _ENV_DEMO_MODE and _ENV_DEPT_MODE:
         seed_demo_department(db, Teacher, Class, TeacherClass, Assignment, Student, Submission)
 
 
+def _backfill_subject_family(batch_limit=50):
+    """One-shot, idempotent backfill for legacy rows missing subject_family.
+
+    Old assignments created before subject_family existed (and the
+    FeedbackEdit rows that inherited from them) are silently excluded
+    from marking-patterns aggregation, calibration lookup, and
+    propagation candidate detection because every relevant query has a
+    `subject_family IS NOT NULL` filter.
+
+    Strategy:
+      1. Walk Assignment rows where subject_family is NULL/empty and
+         classify each one via classify_subject_family. Bounded by
+         batch_limit to keep boot time predictable on large legacy sets;
+         eventually consistent across reboots.
+      2. Walk FeedbackEdit rows with NULL subject_family whose parent
+         assignment now has one, and copy it down. No AI calls, no
+         batching needed.
+
+    Best-effort: every failure is logged and swallowed so a transient
+    AI/API outage cannot block app boot. Safe to re-run.
+    """
+    from sqlalchemy import or_, and_
+    try:
+        from ai_marking import classify_subject_family
+    except Exception as _imp_err:
+        logger.warning(f"backfill_subject_family: import failed, skipping: {_imp_err}")
+        return
+
+    # Step 1 — assignments
+    asn_q = (Assignment.query
+             .filter(or_(Assignment.subject_family.is_(None),
+                         Assignment.subject_family == ''))
+             .limit(batch_limit))
+    asn_rows = asn_q.all()
+    asn_filled = 0
+    for _asn in asn_rows:
+        try:
+            sf = classify_subject_family(
+                provider=_asn.provider,
+                model=_asn.model,
+                session_keys=_resolve_api_keys(_asn),
+                subject=_asn.subject or '',
+                assign_type=_asn.assign_type,
+                has_rubric=bool(_asn.rubrics),
+                has_answer_key=bool(_asn.answer_key),
+            )
+            if sf:
+                _asn.subject_family = sf
+                asn_filled += 1
+        except Exception as _e:
+            logger.warning(f"backfill: classify failed for asn {_asn.id}: {_e}")
+    if asn_filled:
+        try:
+            db.session.commit()
+        except Exception as _ce:
+            db.session.rollback()
+            logger.error(f"backfill: assignment commit failed: {_ce}")
+            asn_filled = 0
+
+    # Step 2 — feedback_edit rows (no AI calls; cheap to do all at once)
+    fe_filled = 0
+    try:
+        from db import FeedbackEdit
+        rows = (db.session.query(FeedbackEdit, Assignment)
+                .join(Assignment, FeedbackEdit.assignment_id == Assignment.id)
+                .filter(or_(FeedbackEdit.subject_family.is_(None),
+                            FeedbackEdit.subject_family == ''))
+                .filter(Assignment.subject_family.isnot(None))
+                .filter(Assignment.subject_family != '')
+                .all())
+        for fe, asn in rows:
+            fe.subject_family = asn.subject_family
+            fe_filled += 1
+        if fe_filled:
+            db.session.commit()
+    except Exception as _fee:
+        db.session.rollback()
+        logger.error(f"backfill: feedback_edit pass failed: {_fee}")
+        fe_filled = 0
+
+    if asn_filled or fe_filled:
+        logger.info(
+            f"backfill_subject_family: filled {asn_filled} assignments, "
+            f"{fe_filled} feedback_edit rows"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Security: headers, rate limiting, error handlers
 # ---------------------------------------------------------------------------
@@ -5151,6 +5238,28 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             if editor_id and ('feedback' in edit or 'improvement' in edit):
                 snapshot_bucket = bucket_subject(asn.subject or '')
                 rubric_hash = _rubric_version_hash(asn)
+                # Lazy-fill: legacy assignments created before subject_family
+                # existed have it as NULL, which would silently exclude their
+                # calibration edits from the marking-patterns aggregation
+                # (filters subject_family IS NOT NULL). Classify on the fly
+                # and persist on the assignment so this only ever runs once.
+                if cal_flag and not (getattr(asn, 'subject_family', None) or '').strip():
+                    try:
+                        from ai_marking import classify_subject_family
+                        asn.subject_family = classify_subject_family(
+                            provider=asn.provider,
+                            model=asn.model,
+                            session_keys=_resolve_api_keys(asn),
+                            subject=asn.subject or '',
+                            assign_type=asn.assign_type,
+                            has_rubric=bool(asn.rubrics),
+                            has_answer_key=bool(asn.answer_key),
+                        )
+                        db.session.flush()
+                    except Exception as _lazy_err:
+                        logger.warning(
+                            f"lazy classify_subject_family failed for {asn.id}: {_lazy_err}"
+                        )
                 for _field in ('feedback', 'improvement'):
                     if _field not in edit:
                         continue
@@ -7314,6 +7423,16 @@ def _run_propagation_worker(app_obj, edit_id, target_ids):
                 db.session.rollback()
 
 
+
+
+# Run the schema-evolution backfill ONCE at boot. Placed at module bottom
+# so every helper it depends on (e.g. _resolve_api_keys) is already
+# defined. Wrapped — backfill problems must not block app boot.
+with app.app_context():
+    try:
+        _backfill_subject_family()
+    except Exception as _bf_err:
+        logger.error(f"backfill_subject_family raised at boot: {_bf_err}")
 
 
 if __name__ == '__main__':
