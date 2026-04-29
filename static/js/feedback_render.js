@@ -22,6 +22,74 @@
         return d.innerHTML;
     }
 
+    // Math preprocessor: AI feedback often writes math without $...$ delimiters
+    // ('t^3', 'ms^-2', 't_1', '[t^3-6t^2+9t]_0^3'), which MathJax then skips,
+    // leaving the carets and underscores as visual clutter. Wrap obvious bare
+    // math in $...$ so MathJax typesets it as proper symbols. Mirrors the
+    // server-side _preprocess_math_for_pdf logic.
+    var SUPER_TO_CHAR = {
+        '⁰':'0','¹':'1','²':'2','³':'3','⁴':'4','⁵':'5',
+        '⁶':'6','⁷':'7','⁸':'8','⁹':'9','⁺':'+','⁻':'-'
+    };
+    var SUB_TO_CHAR = {
+        '₀':'0','₁':'1','₂':'2','₃':'3','₄':'4',
+        '₅':'5','₆':'6','₇':'7','₈':'8','₉':'9'
+    };
+    var SUPER_CLASS = '[⁰¹²³⁴-⁹⁺⁻]';
+    var SUB_CLASS = '[₀-₉]';
+
+    function _convertRun(run, table) {
+        var out = '';
+        for (var i = 0; i < run.length; i++) out += (table[run[i]] || run[i]);
+        return out;
+    }
+
+    function preprocessMath(text) {
+        if (!text) return text;
+        text = String(text);
+        // word + supers: 'ms⁻²' → '$\mathrm{ms}^{-2}$'
+        text = text.replace(
+            new RegExp('([A-Za-z]+)(' + SUPER_CLASS + '+)', 'g'),
+            function (_, base, run) {
+                return '$\\mathrm{' + base + '}^{' + _convertRun(run, SUPER_TO_CHAR) + '}$';
+            }
+        );
+        // standalone superscript runs: '²' → '${}^{2}$'
+        text = text.replace(new RegExp(SUPER_CLASS + '+', 'g'), function (m) {
+            return '${}^{' + _convertRun(m, SUPER_TO_CHAR) + '}$';
+        });
+        // standalone subscript runs
+        text = text.replace(new RegExp(SUB_CLASS + '+', 'g'), function (m) {
+            return '${}_{' + _convertRun(m, SUB_TO_CHAR) + '}$';
+        });
+        // Bare math patterns. Outer expressions first so inner ones don't
+        // double-wrap. Re-split on $ between patterns to skip already-wrapped.
+        var patterns = [
+            /\\int\b[^$\n]*?\\,?d[a-zA-Z]+/g,                  // \int ... dx
+            /\[[^\]$\n]+\]_\S+(?:\^\S+)?/g,                    // [expr]_a^b
+            /\\(?:frac|sqrt|sum)\{[^}]*\}(?:\{[^}]*\})?/g,     // \frac{a}{b}, \sqrt{x}
+            /(?<![A-Za-z])[A-Za-z]+\^\{[^}]+\}/g,              // x^{2}
+            /(?<![A-Za-z])[A-Za-z]+\^[-+]?\d+/g,               // x^2, ms^-2, s^-1
+            /(?<![A-Za-z])[A-Za-z]+_\{[^}]+\}/g,               // x_{i}
+            /(?<![A-Za-z])[A-Za-z]+_[a-zA-Z0-9]/g,             // t_1, x_i
+        ];
+        for (var p = 0; p < patterns.length; p++) {
+            var pat = patterns[p];
+            var parts = text.split('$');
+            for (var i = 0; i < parts.length; i++) {
+                if (i % 2 === 1) continue;
+                parts[i] = parts[i].replace(pat, function (m) { return '$' + m + '$'; });
+            }
+            text = parts.join('$');
+        }
+        return text;
+    }
+
+    function escMath(s) {
+        if (s == null) return '';
+        return esc(preprocessMath(String(s)));
+    }
+
     function deriveStatus(marksAwarded, marksTotal) {
         if (marksAwarded == null || marksTotal == null || marksTotal <= 0) return null;
         var ratio = marksAwarded / marksTotal;
@@ -88,7 +156,7 @@
             currentTeacherId: options.currentTeacherId || null,
             onSave: options.onSave || null,
             isMarksMode: isMarksMode,
-            textEditMeta: options.textEditMeta || {},
+            textEditMeta: options.textEditMeta || {},  // {qKey: {field: {edit_id, version, calibrated}}}
         };
         if (state.editable && (!state.assignmentId || !state.submissionId)) {
             state.editable = false;
@@ -172,7 +240,7 @@
         var prefix = state.prefix;
         if (state.editable) {
             var content = state.overall
-                ? esc(state.overall)
+                ? escMath(state.overall)
                 : '<span class="fb-placeholder">Click to add overall feedback…</span>';
             return '<div class="fb-overall-box">' +
                 '<h4>Overall Feedback <small style="color:#bbb;font-weight:400;">(click to edit)</small></h4>' +
@@ -183,7 +251,7 @@
             '</div>';
         }
         if (state.overall) {
-            return '<div class="fb-overall-box"><h4>Overall Feedback</h4><p>' + esc(state.overall) + '</p></div>';
+            return '<div class="fb-overall-box"><h4>Overall Feedback</h4><p>' + escMath(state.overall) + '</p></div>';
         }
         return '';
     }
@@ -256,8 +324,8 @@
 
         var fbBlock, impBlock;
         if (state.editable) {
-            var fbContent = q.feedback ? esc(q.feedback) : '<span class="fb-placeholder">Click to add feedback…</span>';
-            var impContent = q.improvement ? esc(q.improvement) : '<span class="fb-placeholder">Click to add suggested improvement…</span>';
+            var fbContent = q.feedback ? escMath(q.feedback) : '<span class="fb-placeholder">Click to add feedback…</span>';
+            var impContent = q.improvement ? escMath(q.improvement) : '<span class="fb-placeholder">Click to add suggested improvement…</span>';
             fbBlock = '<div class="fb-q-field"><div class="fb-q-field-label">Feedback <small style="color:#bbb;font-weight:400;">(click to edit)</small></div>' +
                 '<div class="fb-q-field-value feedback fb-editable" data-field="feedback">' + fbContent +
                 '<span class="edit-hint">✎ edit</span></div></div>';
@@ -265,8 +333,8 @@
                 '<div class="fb-q-field-value improvement fb-editable" data-field="improvement">' + impContent +
                 '<span class="edit-hint">✎ edit</span></div></div>';
         } else {
-            fbBlock = q.feedback ? '<div class="fb-q-field"><div class="fb-q-field-label">Feedback</div><div class="fb-q-field-value feedback">' + esc(q.feedback) + '</div></div>' : '';
-            impBlock = q.improvement ? '<div class="fb-q-field"><div class="fb-q-field-label">Suggested Improvement</div><div class="fb-q-field-value improvement">' + esc(q.improvement) + '</div></div>' : '';
+            fbBlock = q.feedback ? '<div class="fb-q-field"><div class="fb-q-field-label">Feedback</div><div class="fb-q-field-value feedback">' + escMath(q.feedback) + '</div></div>' : '';
+            impBlock = q.improvement ? '<div class="fb-q-field"><div class="fb-q-field-label">Suggested Improvement</div><div class="fb-q-field-value improvement">' + escMath(q.improvement) + '</div></div>' : '';
         }
 
         // Category line: muted, contenteditable annotation in the form
@@ -301,8 +369,8 @@
                 '<span id="' + state.prefix + 'StatusBadgeWrap">' + badge + '</span>' +
             '</div>' +
             '<div class="fb-q-card-body">' +
-                '<div class="fb-q-field"><div class="fb-q-field-label">' + ansLabel + '</div><div class="fb-q-field-value">' + esc(q.student_answer || 'N/A') + '</div></div>' +
-                '<div class="fb-q-field"><div class="fb-q-field-label">' + refLabel + '</div><div class="fb-q-field-value">' + esc(q.correct_answer || 'N/A') + '</div></div>' +
+                '<div class="fb-q-field"><div class="fb-q-field-label">' + ansLabel + '</div><div class="fb-q-field-value">' + escMath(q.student_answer || 'N/A') + '</div></div>' +
+                '<div class="fb-q-field"><div class="fb-q-field-label">' + refLabel + '</div><div class="fb-q-field-value">' + escMath(q.correct_answer || 'N/A') + '</div></div>' +
                 catBlock +
                 fbBlock +
                 impBlock +
@@ -328,11 +396,13 @@
             attachQuestionEditHandlers(state);
         }
 
-        // Initial-load: render tags for criteria that already have edits.
+        // Initial-load: render any per-field tag for this question that
+        // already has an active calibration row (server populates state via
+        // text_edit_meta on the GET response).
         if (state.textEditMeta) {
-            var q = state.questions[state.currentQ];
-            if (q) {
-                var qKey = String(q.question_num != null ? q.question_num : (state.currentQ + 1));
+            var qNow = state.questions[state.currentQ];
+            if (qNow) {
+                var qKey = String(qNow.question_num != null ? qNow.question_num : (state.currentQ + 1));
                 var qMeta = state.textEditMeta[qKey] || {};
                 if (qMeta.feedback)    renderEditTag(state, state.currentQ, 'feedback',    qMeta.feedback);
                 if (qMeta.improvement) renderEditTag(state, state.currentQ, 'improvement', qMeta.improvement);
@@ -583,6 +653,45 @@
 
         el.innerHTML = '';
         el.appendChild(textarea);
+
+        // Calibration-bank checkbox — only on feedback / improvement text fields.
+        // Pre-checked when this field already has an active calibration row,
+        // so re-opening the editor reflects the saved state.
+        var cb = null;
+        var initialCalibrate = false;
+        if (field === 'feedback' || field === 'improvement') {
+            var wrap = document.createElement('div');
+            wrap.className = 'fb-cal-wrap';
+            wrap.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:#666;cursor:pointer;user-select:none;';
+            cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'fb-cal-cb';
+            // pointer-events:none so the input never receives its own click —
+            // every click lands on the wrap, which is the single toggle path.
+            // Without this, native checkbox toggle + wrap manual toggle
+            // cancelled each other out and the box appeared stuck.
+            cb.style.cssText = 'margin:0;pointer-events:none;';
+            // Pre-check from textEditMeta so the box reflects the saved state.
+            var qNow = state.questions[state.currentQ];
+            var qKey = qNow ? String(qNow.question_num != null ? qNow.question_num : (state.currentQ + 1)) : null;
+            var existingMeta = (qKey && state.textEditMeta && state.textEditMeta[qKey] && state.textEditMeta[qKey][field]) || null;
+            if (existingMeta && existingMeta.calibrated) {
+                cb.checked = true;
+                initialCalibrate = true;
+            }
+            wrap.appendChild(cb);
+            wrap.appendChild(document.createTextNode('Save to calibration bank'));
+            el.appendChild(wrap);
+            // preventDefault on mousedown keeps focus on the textarea so the
+            // blur→commit handler doesn't fire mid-click with stale state.
+            wrap.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+            wrap.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                cb.checked = !cb.checked;
+            });
+        }
+
         textarea.focus();
         textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 
@@ -628,8 +737,11 @@
             submitted = true;
             var newVal = textarea.value;
             var calibrate = !!(cb && cb.checked);
-            if (newVal === currentValue) {
-                // No change → just revert display
+            // Skip the round-trip only when nothing changed: same text AND
+            // same calibration state. If the teacher unchecked the box (or
+            // checked it without editing), we need to round-trip so the
+            // server can write/deactivate the bank row.
+            if (newVal === currentValue && calibrate === initialCalibrate) {
                 if (field === 'overall') renderShell(state);
                 else renderQuestion(state);
                 return;
@@ -738,7 +850,8 @@
         });
         var data = await res.json();
         if (!res.ok || !data.success) throw new Error((data && data.error) || 'Save failed');
-        // Return full response so callers can access edit_meta alongside result.
+        // Return full response so callers can inspect edit_meta + auto_propagation
+        // alongside the merged result_json.
         return data;
     }
 
@@ -776,20 +889,42 @@
             if (field === 'overall') renderShell(state); else renderQuestion(state);
             showToast('success', 'Saved');
             if (state.onSave) { try { state.onSave(data.result); } catch (e) {} }
-            // Render per-field tag from edit_meta if the server logged this edit.
-            if (data && data.edit_meta && savedQNum != null) {
+            // Reflect the server-confirmed calibration state. calibrated:true
+            // means a row was written/affirmed → render the indicator.
+            // calibrated:false means the prior row was deactivated (user
+            // unchecked the box) → drop the indicator and the cached meta.
+            if (data && data.edit_meta && savedQNum != null && !data.calibration_warning) {
                 var qKey = String(savedQNum);
                 var fieldMeta = (data.edit_meta[qKey] || {})[field];
                 if (fieldMeta) {
-                    // Store into textEditMeta so the tag survives re-renders.
-                    if (!state.textEditMeta) state.textEditMeta = {};
-                    if (!state.textEditMeta[qKey]) state.textEditMeta[qKey] = {};
-                    state.textEditMeta[qKey][field] = fieldMeta;
-                    renderEditTag(state, state.currentQ, field, fieldMeta);
+                    if (fieldMeta.calibrated === false) {
+                        if (state.textEditMeta && state.textEditMeta[qKey]) {
+                            delete state.textEditMeta[qKey][field];
+                        }
+                        removeEditTag(state, state.currentQ, field);
+                    } else {
+                        if (!state.textEditMeta) state.textEditMeta = {};
+                        if (!state.textEditMeta[qKey]) state.textEditMeta[qKey] = {};
+                        state.textEditMeta[qKey][field] = fieldMeta;
+                        renderEditTag(state, state.currentQ, field, fieldMeta);
+                    }
                 }
             }
-            if (data && data.propagation_prompt) {
-                try { fbShowPropagationBanner(state, data.propagation_prompt); } catch (e) { /* silent */ }
+            // Auto-propagation: server kicked off the worker for all matching
+            // candidates (or surfaced 0 candidates so we tell the teacher the
+            // calibration save was accepted but nothing else needs updating).
+            if (data && data.auto_propagation) {
+                var n = data.auto_propagation.candidate_count || 0;
+                if (n > 0) {
+                    showToast('success',
+                        'Auto-applying to ' + n + ' similar answer' + (n === 1 ? '' : 's') + '…');
+                } else {
+                    showToast('success',
+                        'Calibration saved. No other answers needed updating.');
+                }
+            }
+            if (data && data.calibration_warning) {
+                showToast('error', data.calibration_warning);
             }
         } catch (err) {
             if (field === 'overall') renderShell(state); else renderQuestion(state);
@@ -872,14 +1007,25 @@
         }
     }
 
-    // ---- Edit tag renderer ----
+    // -------------------------------------------------------------------
+    // Calibration bank: per-field tag + retire + view-history link
+    // -------------------------------------------------------------------
+
+    function removeEditTag(state, idx, field) {
+        var prefix = state.prefix || 'fb';
+        var rowId = prefix + 'TagRow-' + idx + '-' + field;
+        var existing = document.getElementById(rowId);
+        if (existing) existing.remove();
+    }
 
     function renderEditTag(state, idx, field, meta) {
-        // meta = {version, calibrated}.  Replace any existing tag row for this
-        // (idx, field). Insert as a sibling immediately after the field's
-        // visible element so the tag + history link sit beneath it.
+        // Only render for active calibration rows. Anything else (uncheck,
+        // retire, no meta) routes through removeEditTag.
+        if (!meta || !meta.calibrated) {
+            removeEditTag(state, idx, field);
+            return;
+        }
         var prefix = state.prefix || 'fb';
-        // renderQuestion only shows one card at a time, identified by prefix + 'QCard'.
         var qCard = document.getElementById(prefix + 'QCard');
         if (!qCard) return;
         var fieldEl = qCard.querySelector('[data-field="' + field + '"]');
@@ -892,23 +1038,60 @@
         row.className = 'fb-edit-tag-row';
         row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:2px;font-size:11px;color:#7a7f8c;letter-spacing:0.2px;';
         var tag = document.createElement('span');
-        tag.className = 'fb-edit-tag' + (meta.calibrated ? ' fb-tag-cal' : ' fb-tag-wf');
-        tag.textContent = meta.calibrated ? '· in calibration bank' : '· workflow note';
+        tag.className = 'fb-edit-tag fb-tag-cal';
+        tag.textContent = '✓ Saved to calibration bank — your edit will help calibrate similar answers';
         row.appendChild(tag);
-        var link = document.createElement('a');
-        link.href = '#';
-        link.className = 'fb-history-link';
-        link.style.cssText = 'color:#5a6fd6;text-decoration:none;';
-        link.textContent = 'View edit history';
-        link.addEventListener('click', function (ev) {
-            ev.preventDefault();
-            ev.stopPropagation();
-            toggleHistoryPanel(state, idx, field, row);
-        });
-        row.appendChild(link);
+        if (meta.edit_id) {
+            var retire = document.createElement('a');
+            retire.href = '#';
+            retire.className = 'fb-retire-link';
+            retire.style.cssText = 'color:#b94a48;text-decoration:none;';
+            retire.textContent = 'Retire';
+            retire.title = 'Remove this edit from your calibration bank — it will no longer influence future marking.';
+            retire.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                fbRetireEdit(state, idx, field, meta.edit_id);
+            });
+            row.appendChild(retire);
+        }
+        // History link — visible whenever there's a versioned log entry.
+        if (meta.version && meta.version >= 1) {
+            var link = document.createElement('a');
+            link.href = '#';
+            link.className = 'fb-history-link';
+            link.style.cssText = 'color:#5a6fd6;text-decoration:none;';
+            link.textContent = 'View edit history';
+            link.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                toggleHistoryPanel(state, idx, field, row);
+            });
+            row.appendChild(link);
+        }
         if (fieldEl.parentNode) {
             fieldEl.parentNode.insertBefore(row, fieldEl.nextSibling);
         }
+    }
+
+    function fbRetireEdit(state, idx, field, editId) {
+        // Per-field tag retire (X next to the indicator). Drops the tag and
+        // the cached meta on success so the box reopens unchecked.
+        fetch('/feedback/deprecate-edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ edit_id: editId }),
+        }).then(function (r) { return r.json(); }).then(function (data) {
+            if (data && data.status === 'ok') {
+                var q = state.questions[idx];
+                var qKey = q ? String(q.question_num != null ? q.question_num : (idx + 1)) : null;
+                if (qKey && state.textEditMeta && state.textEditMeta[qKey]) {
+                    delete state.textEditMeta[qKey][field];
+                }
+                removeEditTag(state, idx, field);
+            }
+        }).catch(function () { /* silent */ });
     }
 
     function toggleHistoryPanel(state, idx, field, anchorRow) {
@@ -931,7 +1114,6 @@
     }
 
     function fetchAndRenderHistory(state, idx, panel) {
-        // Use the current question's question_num for the criterion_id segment.
         var q = (state.questions || [])[idx];
         if (!q) {
             panel.textContent = 'Could not resolve criterion.';
@@ -975,7 +1157,6 @@
                 body.style.cssText = 'white-space:pre-wrap;color:#333;margin-top:2px;';
                 body.textContent = v.feedback_text || '';
                 block.appendChild(body);
-                // Retire link only for active teacher edits.
                 if (v.edit_id && v.active === true && v.author_type === 'teacher' &&
                     v.author_id && state.currentTeacherId &&
                     v.author_id === state.currentTeacherId) {
@@ -988,7 +1169,7 @@
                         ret.addEventListener('click', function (ev) {
                             ev.preventDefault();
                             ev.stopPropagation();
-                            retireEdit(state, idx, editId, panel);
+                            retireEditFromHistory(state, idx, editId, panel);
                         });
                     }(v.edit_id));
                     block.appendChild(ret);
@@ -1001,7 +1182,9 @@
         }
     }
 
-    function retireEdit(state, idx, editId, panel) {
+    function retireEditFromHistory(state, idx, editId, panel) {
+        // History-panel retire (works inside the expanded version list).
+        // On success, re-fetch the history so the version flips to "retired".
         fetch('/feedback/deprecate-edit', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1011,7 +1194,6 @@
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 if (data && data.status === 'ok') {
-                    // Re-fetch the history so the version flips to retired.
                     panel.textContent = 'Loading…';
                     fetchAndRenderHistory(state, idx, panel);
                 } else {
@@ -1020,6 +1202,12 @@
             })
             .catch(function () { panel.textContent = 'Could not retire (network).'; });
     }
+
+    // -------------------------------------------------------------------
+    // Propagation banner — kept for future re-enable; auto-apply behavior
+    // means no caller currently invokes fbShowPropagationBanner.
+    // -------------------------------------------------------------------
+
 
     function fbShowPropagationBanner(state, prompt) {
         var banner = document.getElementById('fbPropagationBanner');
@@ -1033,10 +1221,10 @@
         if (review) { review.hidden = true; review.innerHTML = ''; }
         if (progress) { progress.hidden = true; progress.textContent = ''; }
         if (text) {
-            text.textContent =
-                '⟳ ' + prompt.candidate_count + ' other student' +
+            var critLabel = prompt.criterion_name || prompt.criterion_id || 'this criterion';
+            text.textContent = '⟳ ' + prompt.candidate_count + ' other student' +
                 (prompt.candidate_count === 1 ? '' : 's') +
-                ' have similar mistakes on ' + (prompt.criterion_name || 'this criterion') + '.';
+                ' have similar mistakes on ' + critLabel + '.';
         }
         banner.dataset.editId = String(prompt.edit_id);
         banner.hidden = false;
@@ -1072,10 +1260,10 @@
         if (!editId) return;
         fetch('/feedback/propagate', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
-            body: JSON.stringify({edit_id: editId, mode: 'all'})
-        }).then(function(r){return r.json();}).then(function(data){
+            body: JSON.stringify({ edit_id: editId, mode: 'all' }),
+        }).then(function (r) { return r.json(); }).then(function (data) {
             if (data && data.status === 'started') {
                 fbStartPropagationPolling(editId);
             }
@@ -1089,19 +1277,19 @@
         if (!review) return;
         review.innerHTML = 'Loading…';
         review.hidden = false;
-        fetch('/feedback/propagation-candidates/' + editId, {credentials: 'same-origin'})
-            .then(function(r){return r.json();})
-            .then(function(data){
+        fetch('/feedback/propagation-candidates/' + editId, { credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
                 if (!data || !data.candidates) {
                     review.textContent = 'Could not load candidates.';
                     return;
                 }
                 review.innerHTML = '';
-                (data.candidates || []).forEach(function(c){
+                (data.candidates || []).forEach(function (c) {
                     var row = document.createElement('div');
-                    row.style.cssText = 'padding: 8px 10px; margin-bottom: 6px; border: 1px solid #e3e6f0; border-radius: 6px;';
+                    row.style.cssText = 'padding:8px 10px;margin-bottom:6px;border:1px solid #e3e6f0;border-radius:6px;';
                     var head = document.createElement('label');
-                    head.style.cssText = 'display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 12.5px; cursor: pointer;';
+                    head.style.cssText = 'display:flex;align-items:center;gap:8px;font-weight:600;font-size:12.5px;cursor:pointer;';
                     var cb = document.createElement('input');
                     cb.type = 'checkbox';
                     cb.checked = true;
@@ -1113,34 +1301,50 @@
                         (c.marks_total != null ? c.marks_total : '-') + ')';
                     head.appendChild(hd);
                     row.appendChild(head);
+                    // Student's extracted answer — so the teacher can confirm
+                    // the calibration applies to what the student actually wrote.
+                    if (c.student_answer) {
+                        var ans = document.createElement('div');
+                        ans.style.cssText = 'margin-top:6px;padding-left:24px;font-size:12px;color:#333;';
+                        var ansLbl = document.createElement('span');
+                        ansLbl.style.cssText = 'color:#888;font-weight:600;';
+                        ansLbl.textContent = "Student's answer: ";
+                        ans.appendChild(ansLbl);
+                        ans.appendChild(document.createTextNode(c.student_answer));
+                        row.appendChild(ans);
+                    }
                     var fb = document.createElement('div');
-                    fb.style.cssText = 'margin-top: 4px; padding-left: 24px; font-size: 12px; color: #555;';
-                    fb.textContent = c.current_feedback || '(no feedback)';
+                    fb.style.cssText = 'margin-top:4px;padding-left:24px;font-size:12px;color:#555;';
+                    var fbLbl = document.createElement('span');
+                    fbLbl.style.cssText = 'color:#888;font-weight:600;';
+                    fbLbl.textContent = 'Current feedback: ';
+                    fb.appendChild(fbLbl);
+                    fb.appendChild(document.createTextNode(c.current_feedback || '(no feedback)'));
                     row.appendChild(fb);
                     review.appendChild(row);
                 });
                 var actions = document.createElement('div');
-                actions.style.cssText = 'margin-top: 10px; display: flex; gap: 8px;';
+                actions.style.cssText = 'margin-top:10px;display:flex;gap:8px;';
                 var confirm = document.createElement('button');
                 confirm.type = 'button';
                 confirm.className = 'upload-btn';
-                confirm.style.cssText = 'padding: 6px 12px; font-size: 12.5px;';
+                confirm.style.cssText = 'padding:6px 12px;font-size:12.5px;';
                 confirm.textContent = 'Apply to selected';
                 confirm.addEventListener('click', fbPropagateSelectedConfirm);
                 actions.appendChild(confirm);
                 var cancel = document.createElement('button');
                 cancel.type = 'button';
                 cancel.className = 'upload-btn';
-                cancel.style.cssText = 'padding: 6px 12px; font-size: 12.5px;';
+                cancel.style.cssText = 'padding:6px 12px;font-size:12.5px;';
                 cancel.textContent = 'Cancel';
-                cancel.addEventListener('click', function(){
+                cancel.addEventListener('click', function () {
                     var rev = document.getElementById('fbPropagationBannerReview');
                     if (rev) { rev.hidden = true; rev.innerHTML = ''; }
                 });
                 actions.appendChild(cancel);
                 review.appendChild(actions);
             })
-            .catch(function(){ review.textContent = 'Could not load candidates.'; });
+            .catch(function () { review.textContent = 'Could not load candidates.'; });
     }
 
     function fbPropagateSelectedConfirm() {
@@ -1148,16 +1352,16 @@
         var review = document.getElementById('fbPropagationBannerReview');
         if (!editId || !review) return;
         var ids = [];
-        review.querySelectorAll('input[type="checkbox"]').forEach(function(cb){
+        review.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
             if (cb.checked && cb.dataset.sid) ids.push(parseInt(cb.dataset.sid, 10));
         });
         if (!ids.length) return;
         fetch('/feedback/propagate', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
-            body: JSON.stringify({edit_id: editId, mode: 'selected', submission_ids: ids})
-        }).then(function(r){return r.json();}).then(function(data){
+            body: JSON.stringify({ edit_id: editId, mode: 'selected', submission_ids: ids }),
+        }).then(function (r) { return r.json(); }).then(function (data) {
             if (data && data.status === 'started') {
                 review.hidden = true;
                 review.innerHTML = '';
@@ -1171,10 +1375,10 @@
         if (!editId) return;
         fetch('/feedback/propagate-skip', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
-            body: JSON.stringify({edit_id: editId})
-        }).then(function(){
+            body: JSON.stringify({ edit_id: editId }),
+        }).then(function () {
             var b = document.getElementById('fbPropagationBanner');
             if (b) b.hidden = true;
         });
@@ -1188,12 +1392,12 @@
         progress.hidden = false;
         progress.textContent = 'Starting…';
         var attempts = 0;
-        var timer = setInterval(function(){
+        var timer = setInterval(function () {
             attempts++;
             if (attempts > 60) { clearInterval(timer); progress.textContent = 'Still running…'; return; }
-            fetch('/feedback/propagation-progress/' + editId, {credentials: 'same-origin'})
-                .then(function(r){return r.json();})
-                .then(function(data){
+            fetch('/feedback/propagation-progress/' + editId, { credentials: 'same-origin' })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
                     if (!data) return;
                     progress.textContent = 'Updating ' + (data.done || 0) + ' of ' + (data.total || 0) + ' students…';
                     if (data.propagation_status === 'complete' || data.propagation_status === 'partial') {
@@ -1203,13 +1407,13 @@
                         progress.textContent = '✓ Feedback updated for ' + doneN + ' student' +
                             (doneN === 1 ? '' : 's') +
                             (failN ? ' · ' + failN + ' failed' : '') + '.';
-                        setTimeout(function(){
+                        setTimeout(function () {
                             var b = document.getElementById('fbPropagationBanner');
                             if (b) b.hidden = true;
                         }, 4000);
                     }
                 })
-                .catch(function(){ /* silent */ });
+                .catch(function () { /* silent */ });
         }, 2000);
     }
 

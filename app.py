@@ -185,6 +185,17 @@ if _ENV_DEMO_MODE and _ENV_DEPT_MODE:
 # Security: headers, rate limiting, error handlers
 # ---------------------------------------------------------------------------
 
+def _compute_static_version():
+    """Cache-buster for static assets. Uses process start time so every
+    Railway redeploy gets a fresh value, regardless of how the build tool
+    handles file mtimes."""
+    import time
+    return str(int(time.time()))
+
+
+_STATIC_VERSION = _compute_static_version()
+
+
 @app.context_processor
 def inject_dept_context():
     """Make dept_mode, demo_mode, app_title and current teacher available in all templates."""
@@ -194,6 +205,7 @@ def inject_dept_context():
         'demo_mode': is_demo_mode(),
         'app_title': get_app_title(),
         'current_teacher': teacher,
+        'static_version': _STATIC_VERSION,
     }
 
 
@@ -3337,8 +3349,13 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
             ref = [asn.reference] if asn.reference else []
             script = sub.get_script_pages()
 
-            # Calibration: tiered injection — raw examples below threshold,
-            # shared principles file at/above threshold. Best-effort — never blocks marking.
+            # Calibration injection. feed_forward_beta's build_calibration_block
+            # gives us the tiered behavior — raw examples below the principles
+            # threshold, shared markdown principles at/above. fetch_calibration_examples
+            # under the hood now matches both subject_bucket (keyword-derived)
+            # AND subject_family (AI-categorised) so either path finds edits.
+            # Best-effort: a failure here never blocks marking, and we roll
+            # back so the session isn't poisoned for the result-write commit.
             calibration_block = ''
             try:
                 from ai_marking import build_calibration_block
@@ -3358,9 +3375,19 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
                     session_keys=_resolve_api_keys(asn),
                 )
                 if calibration_block:
-                    logger.info(f"Marking sub {submission_id}: prepended calibration block ({len(calibration_block)} chars)")
+                    logger.info(
+                        f"Marking sub {submission_id}: prepended calibration "
+                        f"block ({len(calibration_block)} chars)"
+                    )
             except Exception as cal_err:
-                logger.warning(f"Calibration lookup failed for sub {submission_id}, marking with no calibration: {cal_err}")
+                logger.warning(
+                    f"Calibration lookup failed for sub {submission_id}, "
+                    f"marking without it: {cal_err}"
+                )
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
                 calibration_block = ''
 
             result = mark_script(
@@ -4281,6 +4308,24 @@ def teacher_edit(assignment_id):
     })
 
 
+@app.route('/teacher/assignment/<assignment_id>/issue-feedback', methods=['POST'])
+def teacher_assignment_issue_feedback(assignment_id):
+    """Flip show_results to True so students can view AI feedback in the
+    browser and download PDFs. Used when an assignment was created with
+    show_results=False so the teacher could review/edit before students
+    saw anything. Idempotent — re-posting on an already-issued assignment
+    is a no-op."""
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    if not asn.show_results:
+        asn.show_results = True
+        db.session.commit()
+        logger.info(f"Issued AI feedback to students for assignment {assignment_id}")
+    return jsonify({'success': True, 'show_results': True})
+
+
 @app.route('/teacher/assignment/<assignment_id>')
 def teacher_assignment_detail(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)
@@ -4288,6 +4333,15 @@ def teacher_assignment_detail(assignment_id):
     if err:
         return err
     students = _sort_by_index(Student.query.filter_by(class_id=asn.class_id).all()) if asn.class_id else _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
+
+    # Stuck-submission detection: submissions that entered an in-progress
+    # status more than 5 minutes ago without finishing are surfaced as
+    # 'stuck' so the teacher can retry them. The marking worker can die
+    # silently (deploy mid-flight, transient API error during extraction),
+    # leaving submissions in 'extracting' or 'processing' forever otherwise.
+    STUCK_THRESHOLD_SECONDS = 300
+    IN_PROGRESS = ('pending', 'processing', 'extracting', 'preview')
+    now_utc = datetime.now(timezone.utc)
 
     student_data = []
     for s in students:
@@ -4306,13 +4360,13 @@ def teacher_assignment_detail(assignment_id):
                 correct = sum(1 for q in questions if q.get('status') == 'correct')
                 score = f"{correct}/{len(questions)}"
 
-        # Tiered-feedback engagement status (student has three visible states):
+        # Tiered-feedback engagement status:
         #   not_opened      — no submission yet, or student hasn't opened their feedback page
         #   opened          — student has opened the feedback page at least once
         #   corrections_done — student has also submitted at least one "Now You Try" correction
-        if sub and sub.correction_submitted_at:
+        if sub and getattr(sub, 'correction_submitted_at', None):
             feedback_status = 'corrections_done'
-        elif sub and sub.feedback_opened_at:
+        elif sub and getattr(sub, 'feedback_opened_at', None):
             feedback_status = 'opened'
         else:
             feedback_status = 'not_opened'
@@ -4333,18 +4387,27 @@ def teacher_assignment_detail(assignment_id):
             source_icon = '○'
             source_label = 'Original AI feedback'
 
+        stuck = False
+        if sub and sub.status in IN_PROGRESS and sub.submitted_at:
+            submitted = sub.submitted_at
+            if submitted.tzinfo is None:
+                submitted = submitted.replace(tzinfo=timezone.utc)
+            if (now_utc - submitted).total_seconds() > STUCK_THRESHOLD_SECONDS:
+                stuck = True
+
         student_data.append({
             'student_id': s.id,
             'index': s.index_number,
             'name': s.name,
             'status': sub.status if sub else 'not_submitted',
+            'stuck': stuck,
             'score': score,
             'submitted_at': sub.submitted_at.strftime('%d %b %H:%M') if sub and sub.submitted_at else None,
             'student_amended': sub.student_amended if sub else False,
             'submission_id': sub.id if sub else None,
             'feedback_status': feedback_status,
-            'feedback_opened_at': sub.feedback_opened_at.strftime('%d %b %H:%M') if sub and sub.feedback_opened_at else None,
-            'correction_submitted_at': sub.correction_submitted_at.strftime('%d %b %H:%M') if sub and sub.correction_submitted_at else None,
+            'feedback_opened_at': sub.feedback_opened_at.strftime('%d %b %H:%M') if sub and getattr(sub, 'feedback_opened_at', None) else None,
+            'correction_submitted_at': sub.correction_submitted_at.strftime('%d %b %H:%M') if sub and getattr(sub, 'correction_submitted_at', None) else None,
             'source_icon': source_icon,
             'source_label': source_label,
         })
@@ -4740,45 +4803,73 @@ def _detect_mime(data):
 
 def _build_text_edit_meta(submission_id, teacher_id=None):
     """Per (criterion_id, field), the latest teacher version + whether an
-    active feedback_edit row exists. Used by the GET handler so the page
-    can render per-field tags on initial load without a second round-trip.
+    active feedback_edit (calibration bank) row exists, plus its edit_id
+    so the client can wire the Retire link.
 
-    When `teacher_id` is provided, the `calibrated` flag reflects only that
-    teacher's active edits — important in department mode where several
-    teachers may calibrate the same submission.
+    When `teacher_id` is provided, the `calibrated` flag and `edit_id`
+    reflect only that teacher's active edits — important in department
+    mode where several teachers may calibrate the same submission.
 
-    Shape: {criterion_id: {field: {'version': N, 'calibrated': bool}}}
+    Shape: {criterion_id: {field: {'version': N, 'calibrated': bool,
+                                    'edit_id': N (when calibrated)}}}
+
+    Best-effort — wrapped in try/except so a partial schema or other DB
+    hiccup never blocks the feedback modal from rendering.
     """
     from db import FeedbackLog, FeedbackEdit
     from sqlalchemy import func as _func
 
-    log_rows = db.session.query(
-        FeedbackLog.criterion_id,
-        FeedbackLog.field,
-        _func.max(FeedbackLog.version).label('latest_version'),
-    ).filter(
-        FeedbackLog.submission_id == submission_id,
-        FeedbackLog.author_type == 'teacher',
-    ).group_by(
-        FeedbackLog.criterion_id, FeedbackLog.field,
-    ).all()
+    out = {}
+    try:
+        log_rows = db.session.query(
+            FeedbackLog.criterion_id,
+            FeedbackLog.field,
+            _func.max(FeedbackLog.version).label('latest_version'),
+        ).filter(
+            FeedbackLog.submission_id == submission_id,
+            FeedbackLog.author_type == 'teacher',
+        ).group_by(
+            FeedbackLog.criterion_id, FeedbackLog.field,
+        ).all()
 
-    edit_q = FeedbackEdit.query.filter_by(
-        submission_id=submission_id,
-        active=True,
-    )
-    if teacher_id:
-        edit_q = edit_q.filter_by(edited_by=teacher_id)
-    active_edits = edit_q.all()
-    active_set = {(e.criterion_id, e.field) for e in active_edits}
+        edit_q = FeedbackEdit.query.filter_by(
+            submission_id=submission_id,
+            active=True,
+        )
+        if teacher_id:
+            edit_q = edit_q.filter_by(edited_by=teacher_id)
+        active_edits = edit_q.all()
+        active_by_key = {(e.criterion_id, e.field): e for e in active_edits}
 
-    meta = {}
-    for row in log_rows:
-        meta.setdefault(row.criterion_id, {})[row.field] = {
-            'version': int(row.latest_version),
-            'calibrated': (row.criterion_id, row.field) in active_set,
-        }
-    return meta
+        for row in log_rows:
+            entry = {
+                'version': int(row.latest_version),
+                'calibrated': (row.criterion_id, row.field) in active_by_key,
+            }
+            ed = active_by_key.get((row.criterion_id, row.field))
+            if ed:
+                entry['edit_id'] = ed.id
+            out.setdefault(row.criterion_id, {})[row.field] = entry
+
+        # Calibration rows without a corresponding FeedbackLog (e.g. legacy
+        # data from staging which didn't write FeedbackLog) — emit them too
+        # so the indicator still renders for those.
+        for (cid, fld), ed in active_by_key.items():
+            if cid in out and fld in out[cid]:
+                continue
+            out.setdefault(cid, {})[fld] = {
+                'version': 0,
+                'calibrated': True,
+                'edit_id': ed.id,
+            }
+    except Exception as _meta_err:
+        logger.warning(f"text_edit_meta lookup failed for sub {submission_id}: {_meta_err}")
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        return {}
+    return out
 
 
 @app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/result')
@@ -4905,8 +4996,16 @@ def _process_text_edit(submission, criterion_id, field, edited_text,
 @app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/result', methods=['PATCH'])
 def teacher_submission_result_patch(assignment_id, submission_id):
     """Teacher edits AI-generated feedback. Overwrites fields in sub.result_json.
-    Editable: overall_feedback + per-question marks_awarded/marks_total/feedback/improvement.
+    Editable: overall_feedback + per-question marks_awarded/marks_total/feedback/
+    improvement/status. Per-question entries may carry calibrate=true to also
+    write a feedback_edit row + trigger propagation candidate detection.
     """
+    from db import FeedbackEdit
+    from ai_marking import (
+        _rubric_version_hash,
+        bucket_subject,
+    )
+
     asn = Assignment.query.get_or_404(assignment_id)
     err = _check_assignment_ownership(asn)
     if err:
@@ -4918,8 +5017,8 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     # The authoring teacher for log/edit rows. _current_teacher() returns the
     # logged-in Teacher in dept mode; in legacy single-teacher mode it may
     # return None — fall back to the assignment's owning teacher_id.
-    _editor = _current_teacher()
-    editor_id = (_editor.id if _editor else asn.teacher_id)
+    teacher = _current_teacher()
+    editor_id = teacher.id if teacher else (asn.teacher_id or None)
 
     payload = request.get_json(silent=True) or {}
     edit_meta = {}
@@ -4932,13 +5031,14 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             return jsonify({'success': False, 'error': 'overall_feedback must be a string'}), 400
         result['overall_feedback'] = (val or '').strip()
 
+    edit_meta = {}            # per-criterion summary returned to the client
+    fresh_calibration_edits = []  # FeedbackEdit rows written this request
+    calibration_write_errors = []  # surfaced to client so the toast can warn
+
     incoming_qs = payload.get('questions')
     if incoming_qs is not None:
         if not isinstance(incoming_qs, list):
             return jsonify({'success': False, 'error': 'questions must be a list'}), 400
-        # Build a lookup of existing questions by question_num so we can apply edits
-        # even if the client omits some. question_num in the stored result can be
-        # int, string, or a compound like "1a".
         by_num = {}
         for idx, q in enumerate(questions):
             qn = q.get('question_num')
@@ -4954,12 +5054,14 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             if target is None:
                 continue
 
-            # Capture old values so the edit-log helper can detect actual changes.
+            # Snapshot pre-edit text BEFORE applying writes, so the
+            # _process_text_edit helper sees the actual diff and the
+            # calibration row can pin original_text correctly even if the
+            # same criterion is edited multiple times.
             old_text_by_field = {
                 'feedback': (target.get('feedback') or '').strip(),
                 'improvement': (target.get('improvement') or '').strip(),
             }
-
             # Validate text length before applying in-place updates.
             for _field in ('feedback', 'improvement'):
                 if _field in edit:
@@ -4967,7 +5069,7 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                     if len(_val) > 2000:
                         return jsonify({'success': False, 'error': f'{_field} too long (max 2000 chars)'}), 400
 
-            # Mark this question as teacher-edited so propagation never overwrites it.
+            # Mark this question teacher_edited so propagation never overwrites it.
             if 'feedback' in edit or 'improvement' in edit:
                 target['feedback_source'] = 'teacher_edit'
 
@@ -4994,11 +5096,11 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                 elif v is not None:
                     return jsonify({'success': False, 'error': 'status must be correct | partially_correct | incorrect'}), 400
 
-            # Categorisation correction — accept theme_key + specific_label from
-            # the inline editable category line above the feedback textarea.
-            # Validate theme_key against THEMES; on invalid, silently leave the
-            # existing values (client re-renders from response). On valid change,
-            # write a CategorisationCorrection audit row.
+            # Categorisation correction — feed_forward_beta inline editable
+            # category line above the feedback textarea. Validate theme_key
+            # against THEMES; on valid change, write a CategorisationCorrection
+            # audit row. The corrected theme_key flows into the FeedbackEdit
+            # row below if the teacher also calibrates.
             if 'theme_key' in edit or 'specific_label' in edit:
                 try:
                     from config.mistake_themes import THEMES as _THEMES
@@ -5037,35 +5139,110 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                 except Exception as outer_cat_err:
                     logger.warning(f"categorisation correction handling failed: {outer_cat_err}")
 
-            # Edit-log integration — only acts on feedback/improvement text changes.
+            # Calibration bank + audit log. Combined behavior from both
+            # branches:
+            #   • Always log text changes to FeedbackLog (audit trail).
+            #   • calibrate=true + new text → write a FeedbackEdit row.
+            #   • calibrate=true + text unchanged + prior matches → idempotent
+            #     re-affirm (no row, but emit edit_meta so the indicator shows).
+            #   • calibrate=false → deactivate any prior FeedbackEdit row so
+            #     unchecking the box actually removes it from the bank.
             cal_flag = bool(edit.get('calibrate'))
-            for _field in ('feedback', 'improvement'):
-                if _field not in edit:
-                    continue
-                new_text = (edit.get(_field) or '').strip()
-                old_text = old_text_by_field.get(_field, '')
-                sp = db.session.begin_nested()
-                try:
-                    meta = _process_text_edit(
-                        submission=sub,
-                        criterion_id=str(qn),
-                        field=_field,
-                        edited_text=new_text,
-                        teacher_id=editor_id,
-                        assignment=asn,
-                        calibrate=cal_flag,
-                        current_text=old_text,
-                    )
-                    sp.commit()
-                    if meta:
-                        edit_meta.setdefault(str(qn), {})[_field] = meta
-                except Exception as log_err:
-                    sp.rollback()
-                    logger.warning(f"feedback log/edit write failed (sub={sub.id}, crit={qn}, field={_field}): {log_err}")
-                    # in-place result_json change for this field already applied;
-                    # ensure it stays applied even though the savepoint rolled back
-                    # any FeedbackLog rows the helper queued.
-                    target[_field] = new_text
+            if editor_id and ('feedback' in edit or 'improvement' in edit):
+                snapshot_bucket = bucket_subject(asn.subject or '')
+                rubric_hash = _rubric_version_hash(asn)
+                for _field in ('feedback', 'improvement'):
+                    if _field not in edit:
+                        continue
+                    new_text = (edit.get(_field) or '').strip()
+                    old_text = old_text_by_field.get(_field, '')
+
+                    sp = db.session.begin_nested()
+                    try:
+                        prior = (FeedbackEdit.query
+                                 .filter_by(edited_by=editor_id,
+                                            assignment_id=asn.id,
+                                            criterion_id=str(qn),
+                                            field=_field,
+                                            active=True)
+                                 .order_by(FeedbackEdit.id.desc())
+                                 .first())
+
+                        # Always log to FeedbackLog when the text actually
+                        # changed, regardless of calibrate flag — audit trail.
+                        log_meta = None
+                        if new_text != old_text:
+                            log_meta = _process_text_edit(
+                                submission=sub,
+                                criterion_id=str(qn),
+                                field=_field,
+                                edited_text=new_text,
+                                teacher_id=editor_id,
+                                assignment=asn,
+                                calibrate=False,  # FeedbackEdit handled separately below
+                                current_text=old_text,
+                            )
+
+                        # Uncheck path: deactivate any prior bank row.
+                        if not cal_flag:
+                            if prior:
+                                prior.active = False
+                                db.session.flush()
+                            entry = {'calibrated': False}
+                            if log_meta and log_meta.get('version'):
+                                entry['version'] = log_meta['version']
+                            edit_meta.setdefault(str(qn), {})[_field] = entry
+                            sp.commit()
+                            continue
+
+                        # Idempotent re-affirm.
+                        if new_text == old_text and prior and (prior.edited_text or '') == new_text:
+                            entry = {'edit_id': prior.id, 'calibrated': True}
+                            edit_meta.setdefault(str(qn), {})[_field] = entry
+                            sp.rollback()
+                            continue
+
+                        # Write a new FeedbackEdit row. Anchor original_text
+                        # to the AI original (prior row's original_text if it
+                        # exists; pre-edit text otherwise).
+                        original_text = (prior.original_text if prior else old_text) or old_text
+                        if prior:
+                            prior.active = False
+                        new_edit = FeedbackEdit(
+                            submission_id=sub.id,
+                            criterion_id=str(qn),
+                            field=_field,
+                            original_text=original_text,
+                            edited_text=new_text,
+                            edited_by=editor_id,
+                            assignment_id=asn.id,
+                            rubric_version=rubric_hash,
+                            subject_bucket=snapshot_bucket,
+                            subject_family=getattr(asn, 'subject_family', None),
+                            theme_key=target.get('theme_key'),
+                            scope='individual',
+                            active=True,
+                            propagation_status='none',
+                        )
+                        db.session.add(new_edit)
+                        db.session.flush()
+                        sp.commit()
+                        fresh_calibration_edits.append(new_edit)
+                        entry = {'edit_id': new_edit.id, 'calibrated': True}
+                        if log_meta and log_meta.get('version'):
+                            entry['version'] = log_meta['version']
+                        edit_meta.setdefault(str(qn), {})[_field] = entry
+                    except Exception as _log_err:
+                        sp.rollback()
+                        logger.error(
+                            f"feedback_edit write failed (sub={sub.id}, crit={qn}, "
+                            f"field={_field}): {type(_log_err).__name__}: {_log_err}",
+                            exc_info=True,
+                        )
+                        calibration_write_errors.append(
+                            f"{type(_log_err).__name__}: {_log_err}"
+                        )
+                        target[_field] = new_text  # ensure in-memory change survives the rollback
 
         # Recompute per-question status from marks if both are present
         for q in questions:
@@ -5084,25 +5261,18 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     db.session.commit()
     logger.info(f"Teacher edited feedback for submission {submission_id} on assignment {assignment_id}")
 
-    # Propagation hooks: fire when at least one calibrate=True text edit was
-    # just written for this submission. Detect via edit_meta — any field with
-    # calibrated=True implies a fresh feedback_edit row to wire up.
-    propagation_prompt = None
-    fresh_edits = []
-    for crit_id, fields in (edit_meta or {}).items():
-        for field_name, meta in (fields or {}).items():
-            if meta and meta.get('calibrated'):
-                from db import FeedbackEdit
-                fe = (FeedbackEdit.query
-                      .filter_by(submission_id=sub.id, criterion_id=crit_id,
-                                 field=field_name, edited_by=editor_id, active=True)
-                      .order_by(FeedbackEdit.id.desc())
-                      .first())
-                if fe:
-                    fresh_edits.append(fe)
-
-    if fresh_edits:
-        # Mark the shared subject cache stale (one row across the dept).
+    # Calibration follow-ups for fresh FeedbackEdit rows written this request:
+    #   1) Mark subject's marking-principles cache stale so the next render
+    #      regenerates with the new edit included.
+    #   2) Spawn an insight-extraction worker per fresh edit (mistake_pattern,
+    #      correction_principle, transferability — background, non-blocking).
+    #   3) Auto-fire propagation: same teacher standard applied to every
+    #      matching candidate without prompting the teacher (banner UX
+    #      deferred). Always echo auto_propagation to the client (even with
+    #      0 candidates) so the toast can confirm the save landed.
+    auto_propagation = None
+    if fresh_calibration_edits:
+        # Mark principles cache stale.
         try:
             from db import MarkingPrinciplesCache
             sf = asn.subject_family
@@ -5113,11 +5283,13 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                 db.session.commit()
         except Exception as stale_err:
             logger.warning(f"Could not mark principles cache stale: {stale_err}")
-            try: db.session.rollback()
-            except Exception: pass
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
 
-        # Spawn one insight worker per fresh edit (background, never blocks).
-        for fe in fresh_edits:
+        # Spawn one insight worker per fresh edit.
+        for fe in fresh_calibration_edits:
             try:
                 threading.Thread(
                     target=_run_insight_extraction_worker,
@@ -5127,20 +5299,45 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             except Exception as worker_err:
                 logger.warning(f"Could not spawn insight worker for edit {fe.id}: {worker_err}")
 
-        # Synchronous candidate detection on the FIRST fresh edit (the most
-        # interesting one for the banner — typically there's only one).
+        # Auto-fire propagation worker on the most-recent fresh edit.
         try:
-            anchor = fresh_edits[0]
-            propagation_prompt = _find_propagation_candidates(anchor, asn)
-        except Exception as cand_err:
-            logger.warning(f"Propagation candidate lookup failed: {cand_err}")
-            propagation_prompt = None
+            anchor = fresh_calibration_edits[-1]
+            cands = _find_propagation_candidates(anchor, asn)
+            target_ids = [c['submission_id'] for c in cands.get('candidates') or []]
+            logger.info(
+                f"Auto-propagation: edit_id={anchor.id} crit={anchor.criterion_id} "
+                f"field={anchor.field} candidates={len(target_ids)}"
+            )
+            auto_propagation = {
+                'edit_id': anchor.id,
+                'candidate_count': len(target_ids),
+            }
+            if target_ids:
+                anchor.propagation_status = 'pending'
+                db.session.commit()
+                threading.Thread(
+                    target=_run_propagation_worker,
+                    args=(app, anchor.id, target_ids),
+                    daemon=True,
+                ).start()
+                logger.info(f"Auto-propagation worker started for edit_id={anchor.id}")
+        except Exception as _cand_err:
+            logger.error(
+                f"Auto-propagation kickoff failed: {type(_cand_err).__name__}: {_cand_err}",
+                exc_info=True,
+            )
+            auto_propagation = None
 
-    response = {'success': True, 'result': result}
+    response = {'success': True, 'result': sub.get_result()}
     if edit_meta:
         response['edit_meta'] = edit_meta
-    if propagation_prompt and propagation_prompt.get('candidate_count', 0) > 0:
-        response['propagation_prompt'] = propagation_prompt
+    if auto_propagation:
+        response['auto_propagation'] = auto_propagation
+    if calibration_write_errors:
+        response['calibration_warning'] = (
+            f'Calibration save failed for {len(calibration_write_errors)} field(s). '
+            f'First error: {calibration_write_errors[0]}'
+        )
     return jsonify(response)
 
 
@@ -5169,6 +5366,42 @@ def teacher_submission_remark(assignment_id, submission_id):
         daemon=True,
     )
     thread.start()
+
+    return jsonify({'success': True})
+
+
+@app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/force-remark', methods=['POST'])
+def teacher_submission_force_remark(assignment_id, submission_id):
+    """Re-kick the marking worker for a stuck submission. Bypasses the
+    'already in progress' guard that the regular /remark endpoint enforces,
+    because the whole point of this route is to recover from a status that
+    never advanced (worker died mid-extraction, etc.)."""
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+    if not sub.get_script_pages():
+        return jsonify({'success': False, 'error': 'No stored script available to retry'}), 400
+
+    logger.warning(
+        f"Force-remark stuck submission: assignment={assignment_id} "
+        f"submission={submission_id} prior_status={sub.status} "
+        f"submitted_at={sub.submitted_at}"
+    )
+    sub.status = 'pending'
+    sub.result_json = None
+    sub.marked_at = None
+    sub.submitted_at = datetime.now(timezone.utc)  # reset so 'stuck' clears
+    db.session.commit()
+
+    threading.Thread(
+        target=_run_submission_marking,
+        args=(app, sub.id, assignment_id),
+        daemon=True,
+    ).start()
 
     return jsonify({'success': True})
 
@@ -6169,11 +6402,13 @@ def student_submission_status(assignment_id, submission_id):
 
 @app.route('/submit/<assignment_id>/download/<int:submission_id>')
 def download_submission_pdf(assignment_id, submission_id):
-    """Download a PDF report for a specific submission. Teachers always; students
-    only when they have a classroom-code session for this assignment AND the
-    assignment has show_results enabled (same model as the tiered feedback page)."""
+    """Download a PDF report for a specific submission. Allowed for the
+    assignment's teacher OR a student authenticated for this assignment;
+    students additionally require asn.show_results=True so the teacher's
+    'Issue AI Feedback' gate covers downloads as well as the in-browser
+    view."""
     is_teacher = _is_authenticated()
-    is_student = session.get(f'student_auth_{assignment_id}')
+    is_student = bool(session.get(f'student_auth_{assignment_id}'))
     if not is_teacher and not is_student:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
@@ -6184,9 +6419,8 @@ def download_submission_pdf(assignment_id, submission_id):
         return jsonify({'success': False, 'error': 'No results available'}), 404
 
     asn = Assignment.query.get(assignment_id)
-    if not is_teacher and (not asn or not asn.show_results):
-        return jsonify({'success': False, 'error': 'Results are not available for this assignment'}), 403
-
+    if not is_teacher and not (asn and asn.show_results):
+        return jsonify({'success': False, 'error': 'Feedback not yet released by the teacher'}), 403
     result = sub.get_result()
     subject = asn.subject if asn else ''
     pdf_bytes = generate_report_pdf(result, subject=subject, app_title=get_app_title())
@@ -6886,6 +7120,200 @@ def settings_go_live():
     session.clear()
 
     return jsonify({'success': True, 'message': 'Switched to live mode. All demo data has been removed.'})
+
+
+# ---------------------------------------------------------------------------
+# Calibration bank — propagation
+# ---------------------------------------------------------------------------
+
+def _find_propagation_candidates(edit, asn):
+    """Synchronous: list other students in the same assignment who have a
+    matching criterion with marks lost AND haven't already been teacher-
+    edited / propagated. Returns the shape consumed by the banner."""
+    from db import Submission, Student
+    out = []
+    rows = (
+        db.session.query(Submission, Student)
+        .outerjoin(Student, Submission.student_id == Student.id)
+        .filter(
+            Submission.assignment_id == asn.id,
+            Submission.id != edit.submission_id,
+            Submission.status == 'done',
+        )
+        .order_by(Submission.id)
+        .all()
+    )
+    for sub, student in rows:
+        try:
+            result = sub.get_result() or {}
+        except Exception:
+            continue
+        target_q = None
+        for q in (result.get('questions') or []):
+            if str(q.get('question_num')) == edit.criterion_id:
+                target_q = q
+                break
+        if not target_q:
+            continue
+        ma = target_q.get('marks_awarded')
+        mt = target_q.get('marks_total')
+        lost_by_marks = (mt and ma is not None and mt > 0 and ma < mt)
+        lost_by_status = (not lost_by_marks
+                          and target_q.get('status')
+                          and target_q.get('status') != 'correct')
+        if not (lost_by_marks or lost_by_status):
+            continue
+        source = target_q.get('feedback_source')
+        if source not in (None, 'original_ai', 'propagated'):
+            continue  # whitelist — never propagate over teacher_edit
+        out.append({
+            'submission_id': sub.id,
+            'student_name': (student.name if student else f"Student #{sub.student_id}"),
+            'marks_awarded': ma,
+            'marks_total': mt,
+            'student_answer': (target_q.get('student_answer') or ''),
+            'current_feedback': (target_q.get('feedback') or ''),
+            'current_improvement': (target_q.get('improvement') or ''),
+        })
+    return {
+        'edit_id': edit.id,
+        'criterion_id': edit.criterion_id,
+        'field': edit.field,
+        'candidate_count': len(out),
+        'candidates': out,
+    }
+
+
+def _check_edit_owner(edit_id):
+    """Helper: load FeedbackEdit + verify the current teacher owns it.
+    Returns (edit, None) on success or (None, error_response_tuple)."""
+    from db import FeedbackEdit
+    if not _is_authenticated():
+        return None, (jsonify({'status': 'error', 'message': 'Not authenticated'}), 401)
+    teacher = _current_teacher()
+    teacher_id = teacher.id if teacher else None
+    if not teacher_id:
+        return None, (jsonify({'status': 'error', 'message': 'Not authenticated'}), 401)
+    edit = FeedbackEdit.query.get(edit_id)
+    if not edit:
+        return None, (jsonify({'status': 'error', 'message': 'Edit not found'}), 404)
+    if edit.edited_by != teacher_id:
+        return None, (jsonify({'status': 'error', 'message': 'Forbidden'}), 403)
+    return edit, None
+
+
+def _run_propagation_worker(app_obj, edit_id, target_ids):
+    """Background thread: refresh feedback for each candidate submission in
+    sequence (never parallel — avoids DB contention). Updates result_json
+    in place per submission, logs failures, and stamps the originating
+    feedback_edit row with the final propagation_status + propagated_to."""
+    from db import FeedbackEdit, Submission
+    import json as _json
+
+    with app_obj.app_context():
+        try:
+            edit = FeedbackEdit.query.get(edit_id)
+            if not edit:
+                logger.warning(f"propagation worker: edit {edit_id} not found")
+                return
+            asn = Assignment.query.get(edit.assignment_id)
+            if not asn:
+                logger.warning(f"propagation worker: assignment for edit {edit_id} not found")
+                return
+
+            # Seed propagated_to with pending entries so the progress poll has
+            # the full target list visible from the very first poll.
+            seeded = [{'submission_id': int(sid), 'status': 'pending'} for sid in target_ids]
+            edit.propagated_to = _json.dumps(seeded)
+            edit.propagation_status = 'pending'
+            db.session.commit()
+
+            from ai_marking import refresh_criterion_feedback
+            results = []
+            for sid in target_ids:
+                entry = {'submission_id': int(sid), 'status': 'pending'}
+                try:
+                    sub = Submission.query.get(int(sid))
+                    if not sub:
+                        entry = {'submission_id': int(sid), 'status': 'failed', 'error': 'submission not found'}
+                        results.append(entry)
+                    else:
+                        result = sub.get_result() or {}
+                        target_q = None
+                        for q in (result.get('questions') or []):
+                            if str(q.get('question_num')) == edit.criterion_id:
+                                target_q = q
+                                break
+                        if not target_q:
+                            entry = {'submission_id': int(sid), 'status': 'failed', 'error': 'criterion not found on this submission'}
+                            results.append(entry)
+                        else:
+                            refreshed = refresh_criterion_feedback(
+                                provider=asn.provider,
+                                model=asn.model,
+                                session_keys=_resolve_api_keys(asn),
+                                subject=asn.subject or '',
+                                criterion_name=edit.criterion_id,
+                                student_answer=target_q.get('student_answer') or '',
+                                correct_answer=target_q.get('correct_answer') or '',
+                                marks_awarded=target_q.get('marks_awarded'),
+                                marks_total=target_q.get('marks_total'),
+                                calibration_edit=edit,
+                            )
+                            target_q['feedback'] = refreshed['feedback'] or target_q.get('feedback') or ''
+                            target_q['improvement'] = refreshed['improvement'] or target_q.get('improvement') or ''
+                            target_q['feedback_source'] = 'propagated'
+                            target_q['propagated_from_edit'] = edit.id
+                            sub.set_result(result)
+                            db.session.commit()
+                            entry = {'submission_id': int(sid), 'status': 'done'}
+                            results.append(entry)
+                except Exception as e:
+                    db.session.rollback()
+                    err = str(e)[:200]
+                    logger.warning(f"propagation refresh failed sub={sid} edit={edit_id}: {e}")
+                    entry = {'submission_id': int(sid), 'status': 'failed', 'error': err}
+                    results.append(entry)
+
+                # Persist running state after each iteration so the progress
+                # poll reflects partial progress.
+                try:
+                    edit_fresh = FeedbackEdit.query.get(edit_id)
+                    current = _json.loads(edit_fresh.propagated_to or '[]')
+                    for i, c in enumerate(current):
+                        if int(c.get('submission_id')) == int(sid):
+                            current[i] = entry
+                            break
+                    edit_fresh.propagated_to = _json.dumps(current)
+                    db.session.commit()
+                except Exception as persist_err:
+                    db.session.rollback()
+                    logger.warning(f"propagation progress persist failed: {persist_err}")
+
+            # Final state.
+            try:
+                failed_n = sum(1 for r in results if r.get('status') == 'failed')
+                final_status = 'complete' if failed_n == 0 else 'partial'
+                edit_final = FeedbackEdit.query.get(edit_id)
+                edit_final.propagation_status = final_status
+                edit_final.propagated_at = datetime.now(timezone.utc)
+                db.session.commit()
+                logger.info(f"propagation finished edit={edit_id} status={final_status} "
+                            f"done={len(results) - failed_n} failed={failed_n}")
+            except Exception as final_err:
+                db.session.rollback()
+                logger.error(f"propagation final-status persist failed: {final_err}")
+        except Exception as outer:
+            logger.error(f"propagation worker crashed for edit {edit_id}: {outer}")
+            try:
+                edit_err = FeedbackEdit.query.get(edit_id)
+                if edit_err and edit_err.propagation_status == 'pending':
+                    edit_err.propagation_status = 'partial'
+                    db.session.commit()
+            except Exception:
+                db.session.rollback()
+
+
 
 
 if __name__ == '__main__':

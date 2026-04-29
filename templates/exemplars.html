@@ -104,7 +104,7 @@
     window.pdfjsLib = pdfjsLib;
     window.dispatchEvent(new Event('pdfjs-ready'));
 </script>
-<script src="{{ url_for('static', filename='js/document_viewer.js') }}"></script>
+<script src="{{ url_for('static', filename='js/document_viewer.js') }}?v={{ static_version }}"></script>
 <script>
 var EX_ASSIGNMENT_ID = '{{ assignment.id }}';
 var exAnalysis = {{ (analysis or {'areas': []}) | tojson }};

@@ -74,9 +74,7 @@ PROVIDER_KEY_MAP = {
 
 
 # Cheap per-provider model used for the small JSON-classification tasks —
-# explain_criterion ("the idea" sentence) and evaluate_correction ("good"/
-# "not_quite" judgement). Both are short pattern-matching tasks where the
-# tier-2 model is plenty.
+# explain_criterion, evaluate_correction. Tier-2 is plenty for these.
 HELPER_MODELS = {
     'anthropic': 'claude-haiku-4-5-20251001',
     'openai': 'gpt-5.4-mini',
@@ -88,6 +86,39 @@ def _helper_model_for(provider, fallback):
     """Return the cheap helper model for `provider`, or `fallback` if the
     provider isn't in the cheap map (custom providers, future additions)."""
     return HELPER_MODELS.get(provider) or fallback
+
+
+# Coarse subject buckets derived from Assignment.subject (free-text). Used by
+# the keyword-based cross-assignment calibration lookup — a teacher's edits
+# on Assignment A inform marking of Assignment B when both share a bucket.
+# This complements feed_forward_beta's AI-categorised `subject_family` —
+# bucket is the cheap fallback when the AI categorisation hasn't run yet.
+SUBJECT_BUCKETS = [
+    ('math',       ['math', 'algebra', 'geometry', 'calculus', 'statistics', 'arithmetic']),
+    ('physics',    ['physics']),
+    ('chemistry',  ['chem']),
+    ('biology',    ['biology', 'biological']),
+    ('history',    ['hist']),
+    ('geography',  ['geograph']),
+    ('literature', ['literature', 'english lit']),
+    ('language',   ['english', 'language', 'mother tongue', 'grammar',
+                    'mandarin', 'chinese', 'malay', 'tamil']),
+    ('science',    ['science']),
+    ('humanities', ['humanit', 'social stud', 'civics', 'economics']),
+]
+
+
+def bucket_subject(subject_text):
+    """Map a free-text subject to a coarse bucket. Returns 'other' on no
+    match. Pure string matching, no AI call."""
+    if not subject_text:
+        return 'other'
+    s = str(subject_text).lower().strip()
+    for bucket, keywords in SUBJECT_BUCKETS:
+        for kw in keywords:
+            if kw in s:
+                return bucket
+    return 'other'
 
 
 def _resolve_api_key(provider, session_keys=None):
@@ -693,7 +724,10 @@ HANDWRITING RULES:
 - Focus on the student's FINAL intended answer, not drafts or corrections
 
 FORMATTING:
-- Use LaTeX in $ delimiters for math: $x^2 + 3x = 0$
+- Wrap ALL math in $ delimiters so it renders as proper symbols/fractions in the report.
+- Use \frac for fractions: $\frac{{1}}{{2}}$ (NOT 1/2). Use ^{{ }} for powers: $x^{{2}}$.
+- Use \times for multiplication, \div for division, \leq / \geq for inequalities, \pi for pi, \sqrt{{ }} for square roots.
+- Examples: $\frac{{3}}{{4}}$, $x^{{2}} + 3x = 0$, $5 \times 3 = 15$, $\sqrt{{16}} = 4$.
 
 TIERED FEEDBACK FOR THE STUDENT — mandatory.
 
@@ -876,8 +910,11 @@ HANDWRITING RULES:
 - Focus on the student's FINAL intended answer, not drafts or corrections
 
 FORMATTING:
-- Use LaTeX in $ delimiters for math: $x^2 + 3x = 0$
-- Use $$ for display equations: $$E = mc^2$$
+- Wrap ALL math in $ delimiters so it renders as proper symbols/fractions in the report.
+- Use \frac for fractions: $\frac{{1}}{{2}}$ (NOT 1/2). Use ^{{ }} for powers: $x^{{2}}$.
+- Use \times for multiplication, \div for division, \leq / \geq for inequalities, \pi for pi, \sqrt{{ }} for square roots.
+- Use $$ for centered display equations: $$E = mc^2$$.
+- Examples: $\frac{{3}}{{4}}$, $x^{{2}} + 3x = 0$, $5 \times 3 = 15$, $\sqrt{{16}} = 4$.
 
 Respond ONLY with valid JSON:
 {{
@@ -954,7 +991,10 @@ HANDWRITING RULES:
 - Focus on the student's FINAL intended answer, not drafts or corrections
 
 FORMATTING:
-- Use LaTeX in $ delimiters for math: $x^2 + 3x = 0$
+- Wrap ALL math in $ delimiters so it renders as proper symbols/fractions in the report.
+- Use \frac for fractions: $\frac{{1}}{{2}}$ (NOT 1/2). Use ^{{ }} for powers: $x^{{2}}$.
+- Use \times for multiplication, \div for division, \leq / \geq for inequalities, \pi for pi, \sqrt{{ }} for square roots.
+- Examples: $\frac{{3}}{{4}}$, $x^{{2}} + 3x = 0$, $5 \times 3 = 15$, $\sqrt{{16}} = 4$.
 
 Respond ONLY with valid JSON:
 {{
@@ -1195,7 +1235,9 @@ def generate_exemplar_analysis(provider, model, session_keys, subject, submissio
 
 
 # ---------------------------------------------------------------------------
-# Tiered feedback helpers (student-facing)
+# Tiered feedback helpers (student-facing) — feed_forward_beta layer-3
+# explain/evaluate calls. Tier-2 model is plenty for these short
+# JSON-classification tasks.
 # ---------------------------------------------------------------------------
 
 def _run_text_completion(provider, model, session_keys, system_prompt, user_prompt, max_tokens=400):
@@ -1238,8 +1280,224 @@ def _run_text_completion(provider, model, session_keys, system_prompt, user_prom
     return resp.choices[0].message.content
 
 
+# ---------------------------------------------------------------------------
+# Calibration bank: helpers used by the propagation feature and the
+# calibration block prepended to marking prompts. None of these make any AI
+# calls — the AI cost lives in mark_script and refresh_criterion_feedback.
+# ---------------------------------------------------------------------------
+
+def _rubric_version_hash(asn):
+    """MD5 hex digest of the assignment's raw rubric or answer_key bytes.
+    Used to detect rubric changes — when the hash changes, prior calibration
+    edits stop matching the same-assignment Tier-0 lookup automatically."""
+    import hashlib
+    blob = (getattr(asn, 'rubrics', None) or getattr(asn, 'answer_key', None) or b'')
+    if isinstance(blob, str):
+        blob = blob.encode('utf-8')
+    return hashlib.md5(blob).hexdigest()
+
+
+def fetch_calibration_examples(teacher_id, assignment, theme_keys=None, limit=10):
+    """Two-tier lookup of this teacher's prior calibration edits.
+
+    Tier 0 — same assignment + same rubric_version (rubric hash already
+    pins to this assignment's content).
+    Tier 1 — different assignment, same subject_bucket OR same
+    subject_family if the AI has categorised this assignment yet.
+
+    `theme_keys` (optional iterable) further filters Tier 1 to edits
+    whose theme_key matches one of the supplied keys — used by
+    build_calibration_block when feed_forward_beta has identified the
+    submission's mistake themes.
+
+    Merged + deduplicated by edit id (Tier 0 wins), sorted by tier then
+    recency, collapsed to the most-recent edit per (criterion_id, field),
+    truncated to `limit`. All bound parameters via SQLAlchemy text().
+    """
+    from sqlalchemy import text as _sql_text
+    from db import db
+    if not teacher_id or not assignment:
+        return []
+
+    rubric_hash = _rubric_version_hash(assignment)
+    rows_by_id = {}
+
+    tier0_sql = _sql_text(
+        "SELECT id, original_text, edited_text, assignment_id, rubric_version, "
+        "criterion_id, field, subject_bucket, subject_family, created_at, 0 AS match_tier "
+        "FROM feedback_edit "
+        "WHERE edited_by = :teacher_id "
+        "  AND active = true "
+        "  AND assignment_id = :aid "
+        "  AND rubric_version = :rubric_hash "
+        "ORDER BY created_at DESC"
+    )
+    for r in db.session.execute(tier0_sql, {
+        'teacher_id': teacher_id,
+        'aid': assignment.id,
+        'rubric_hash': rubric_hash,
+    }).mappings().all():
+        rows_by_id[r['id']] = dict(r)
+
+    sb = bucket_subject(getattr(assignment, 'subject', '') or '')
+    sf = getattr(assignment, 'subject_family', None)
+    if (sb and sb != 'other') or sf:
+        # Match on subject_bucket OR subject_family — bucket is keyword-derived
+        # and works without AI categorisation; family is the AI-categorised
+        # version. Either path finds cross-assignment edits from the same
+        # teacher. Optional theme_keys narrows further to specific mistake
+        # themes when feed_forward_beta has categorised the submission.
+        theme_filter = ''
+        params = {
+            'teacher_id': teacher_id,
+            'aid': assignment.id,
+            'sb': sb if sb and sb != 'other' else None,
+            'sf': sf,
+        }
+        if theme_keys:
+            theme_list = [tk for tk in theme_keys if tk]
+            if theme_list:
+                placeholders = ', '.join(f':tk{i}' for i in range(len(theme_list)))
+                theme_filter = f' AND theme_key IN ({placeholders})'
+                for i, tk in enumerate(theme_list):
+                    params[f'tk{i}'] = tk
+        tier1_sql = _sql_text(
+            "SELECT id, original_text, edited_text, assignment_id, rubric_version, "
+            "criterion_id, field, subject_bucket, subject_family, created_at, 1 AS match_tier "
+            "FROM feedback_edit "
+            "WHERE edited_by = :teacher_id "
+            "  AND active = true "
+            "  AND assignment_id != :aid "
+            "  AND ((:sb IS NOT NULL AND subject_bucket = :sb) "
+            "    OR (:sf IS NOT NULL AND subject_family = :sf)) "
+            f"  {theme_filter}"
+            " ORDER BY created_at DESC"
+        )
+        for r in db.session.execute(tier1_sql, params).mappings().all():
+            if r['id'] not in rows_by_id:
+                rows_by_id[r['id']] = dict(r)
+
+    def _ts(d):
+        ca = d.get('created_at')
+        if ca is None:
+            return 0
+        try:
+            return ca.timestamp()
+        except Exception:
+            return 0
+    sorted_rows = sorted(rows_by_id.values(),
+                         key=lambda d: (d['match_tier'], -_ts(d)))
+    seen_keys = set()
+    out = []
+    for d in sorted_rows:
+        key = (d['criterion_id'], d['field'])
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        out.append(d)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _truncate_at_word(s, max_chars=200):
+    """Truncate `s` to <= max_chars at the nearest word boundary; append '...'."""
+    if not s:
+        return ''
+    s = s.replace('\n', ' ').replace('\r', ' ').strip()
+    if len(s) <= max_chars:
+        return s
+    cut = s[:max_chars]
+    last_space = cut.rfind(' ')
+    if last_space > max_chars * 0.5:
+        cut = cut[:last_space]
+    return cut.rstrip(' .,;:!?') + '…'
+
+
+def format_calibration_block(examples):
+    """Render the list returned by fetch_calibration_examples as the
+    MARKING CALIBRATION block prepended to the system prompt. Returns ''
+    when empty so callers can splice unconditionally."""
+    if not examples:
+        return ''
+    lines = [
+        '---',
+        'MARKING CALIBRATION',
+        '',
+        "This teacher has previously edited AI-generated feedback on "
+        "this or similar assignments. Use these examples only to "
+        "calibrate your tone, length, and marking standard. Do not "
+        "reference them in your output. Apply the same corrections "
+        "silently to any similar criteria in this submission.",
+        '',
+    ]
+    for ex in examples:
+        orig = _truncate_at_word(ex.get('original_text') or '', 200)
+        edited = _truncate_at_word(ex.get('edited_text') or '', 200)
+        lines.append(f'Original AI feedback: "{orig}"')
+        lines.append(f'Teacher changed it to: "{edited}"')
+        if ex.get('match_tier') == 0:
+            lines.append('Context: same assignment, same rubric')
+        else:
+            lines.append('Context: different assignment, same subject')
+        lines.append('')
+    lines.append('---')
+    lines.append('')
+    return '\n'.join(lines)
+
+
+def refresh_criterion_feedback(provider, model, session_keys, subject,
+                                criterion_name, student_answer, correct_answer,
+                                marks_awarded, marks_total, calibration_edit):
+    """Regenerate feedback + improvement for ONE criterion on ONE student,
+    calibrated against a teacher's edit on a different student. Text-only
+    cheap-tier call — no images, no marks change. Returns
+    {feedback, improvement}. Used by _run_propagation_worker."""
+    helper_model = _helper_model_for(provider, model)
+    system_prompt = (
+        "You are regenerating feedback for one criterion on a student's "
+        "script. A teacher has shown you their marking standard by editing "
+        "another student's feedback on the same type of mistake.\n\n"
+        "Apply the same standard to this student's answer. If this student's "
+        "mistake is the same TYPE as the teacher's example, apply the "
+        "teacher's voice and framing. If the mistake is a different type "
+        "(factual error vs detail gap, off-topic vs incomplete, etc.), "
+        "write feedback appropriate to THIS student's actual mistake. Do "
+        "not force the teacher's framing onto a different kind of mistake. "
+        "Do not change the marks. Do not re-evaluate correctness.\n\n"
+        f"{FEEDBACK_GENERATION_RULES}\n\n"
+        "Return JSON only:\n"
+        "{\n"
+        '  "feedback": "...",\n'
+        '  "improvement": "..."\n'
+        "}"
+    )
+    orig = (calibration_edit.original_text or '')[:200]
+    edited = (calibration_edit.edited_text or '')[:200]
+    user_prompt = (
+        "TEACHER'S CALIBRATION EDIT (apply this standard):\n"
+        f"Original AI feedback: \"{orig}\"\n"
+        f"Teacher changed it to: \"{edited}\"\n\n"
+        "NOW APPLY THE SAME STANDARD TO:\n"
+        f"Subject: {subject or 'General'}\n"
+        f"Criterion: {criterion_name}\n"
+        f"Student's answer: {(student_answer or '')[:600]}\n"
+        f"Expected answer: {(correct_answer or '')[:400]}\n"
+        f"Marks: {marks_awarded if marks_awarded is not None else '-'} / {marks_total if marks_total is not None else '-'}\n\n"
+        "Return the JSON now."
+    )
+    parsed = _run_feedback_helper(provider, helper_model, session_keys,
+                                   system_prompt, user_prompt, max_tokens=300)
+    return {
+        'feedback': (parsed.get('feedback') or '').strip(),
+        'improvement': (parsed.get('improvement') or '').strip(),
+    }
+
+
 def _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=400):
-    """Shared single-shot JSON-returning call used by Layer 3 explain and correction evaluation."""
+    """Single-shot chat completion that parses the first {...} block from
+    the response as JSON. Used by extract_correction_insight,
+    refresh_criterion_feedback, and any other tier-2 JSON helper."""
     import json as _json
     if provider not in PROVIDERS:
         raise ValueError(f"Unknown provider: {provider}")
@@ -1281,6 +1539,7 @@ def _run_feedback_helper(provider, model, session_keys, system_prompt, user_prom
     if not match:
         raise ValueError("AI response contained no JSON object")
     return _json.loads(match.group())
+
 
 
 def extract_correction_insight(provider, model, session_keys,

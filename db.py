@@ -158,32 +158,37 @@ def _migrate_add_columns(app):
                 db.session.execute(text('ALTER TABLE assignments ADD COLUMN subject_family VARCHAR(40)'))
                 db.session.commit()
                 logger.info('Added subject_family column to assignments table')
+        # feedback_edit super-set columns. The table may exist on prod from
+        # an older feed_forward_beta or staging deploy with a partial column
+        # set; SELECTs blow up with "column does not exist" if the model
+        # references a column the table is missing. Single ensure-list with
+        # every column the current model SELECTs/INSERTs.
         if 'feedback_edit' in inspector.get_table_names():
-            columns = [c['name'] for c in inspector.get_columns('feedback_edit')]
-            if 'propagation_status' not in columns:
-                db.session.execute(text("ALTER TABLE feedback_edit ADD COLUMN propagation_status VARCHAR(20) DEFAULT 'none'"))
-                db.session.commit()
-                logger.info('Added propagation_status column to feedback_edit table')
-            if 'propagated_to' not in columns:
-                db.session.execute(text("ALTER TABLE feedback_edit ADD COLUMN propagated_to TEXT DEFAULT '[]'"))
-                db.session.commit()
-                logger.info('Added propagated_to column to feedback_edit table')
-            if 'propagated_at' not in columns:
-                db.session.execute(text('ALTER TABLE feedback_edit ADD COLUMN propagated_at TIMESTAMP'))
-                db.session.commit()
-                logger.info('Added propagated_at column to feedback_edit table')
-            if 'mistake_pattern' not in columns:
-                db.session.execute(text('ALTER TABLE feedback_edit ADD COLUMN mistake_pattern VARCHAR(80)'))
-                db.session.commit()
-                logger.info('Added mistake_pattern column to feedback_edit table')
-            if 'correction_principle' not in columns:
-                db.session.execute(text('ALTER TABLE feedback_edit ADD COLUMN correction_principle VARCHAR(300)'))
-                db.session.commit()
-                logger.info('Added correction_principle column to feedback_edit table')
-            if 'transferability' not in columns:
-                db.session.execute(text('ALTER TABLE feedback_edit ADD COLUMN transferability VARCHAR(10)'))
-                db.session.commit()
-                logger.info('Added transferability column to feedback_edit table')
+            fe_cols = {c['name'] for c in inspector.get_columns('feedback_edit')}
+            ensure_fe = [
+                ('subject_family', 'VARCHAR(40)'),
+                ('subject_bucket', 'VARCHAR(40)'),
+                ('theme_key', 'VARCHAR(40)'),
+                ('promoted_by', 'VARCHAR(36)'),
+                ('promoted_at', 'TIMESTAMP'),
+                ('propagation_status', "VARCHAR(20) DEFAULT 'none' NOT NULL"),
+                ('propagated_to', "TEXT DEFAULT '[]' NOT NULL"),
+                ('propagated_at', 'TIMESTAMP'),
+                ('rubric_version', "VARCHAR(64) DEFAULT '' NOT NULL"),
+                ('scope', "VARCHAR(20) DEFAULT 'individual' NOT NULL"),
+                ('mistake_pattern', 'VARCHAR(80)'),
+                ('correction_principle', 'VARCHAR(300)'),
+                ('transferability', 'VARCHAR(10)'),
+            ]
+            for col, ddl in ensure_fe:
+                if col not in fe_cols:
+                    try:
+                        db.session.execute(text(f'ALTER TABLE feedback_edit ADD COLUMN {col} {ddl}'))
+                        db.session.commit()
+                        logger.info(f'Added {col} column to feedback_edit table')
+                    except Exception as _e:
+                        db.session.rollback()
+                        logger.error(f'feedback_edit ALTER ADD {col} failed: {_e}')
 
 
 def init_db(app):
@@ -199,6 +204,20 @@ def init_db(app):
     with app.app_context():
         db.create_all()
         _migrate_add_columns(app)
+        # Belt-and-suspenders: confirm feedback_edit table actually exists.
+        # If create_all silently failed for any reason, force-create it now
+        # so calibration writes don't go to /dev/null.
+        from sqlalchemy import inspect as _inspect
+        existing = set(_inspect(db.engine).get_table_names())
+        if 'feedback_edit' not in existing:
+            logger.error('feedback_edit table missing after create_all — forcing creation')
+            try:
+                FeedbackEdit.__table__.create(db.engine)
+                logger.error('feedback_edit table created via fallback')
+            except Exception as _ce:
+                logger.error(f'fallback feedback_edit create failed: {_ce}')
+        else:
+            logger.info('feedback_edit table present at boot')
 
 
 class Teacher(db.Model):
@@ -416,15 +435,19 @@ class Submission(db.Model):
 
 
 class FeedbackLog(db.Model):
+    """Versioned audit log of teacher feedback edits. v1 = AI original,
+    v2+ = teacher edits. Used for the edit-history view and the
+    calibration anchor lookup so the bank row points back to the
+    original AI text it was calibrating against."""
     __tablename__ = 'feedback_log'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     submission_id = db.Column(db.Integer, db.ForeignKey('submissions.id'), nullable=False, index=True)
     criterion_id = db.Column(db.String(64), nullable=False)
     field = db.Column(db.String(20), nullable=False)  # 'feedback' | 'improvement'
-    version = db.Column(db.Integer, nullable=False)   # 1 = AI original, 2+ = teacher edits
+    version = db.Column(db.Integer, nullable=False)
     feedback_text = db.Column(db.Text, nullable=False, default='')
     author_type = db.Column(db.String(10), nullable=False)  # 'ai' | 'teacher'
-    author_id = db.Column(db.String(36), nullable=True)     # NULL for AI; teacher.id otherwise
+    author_id = db.Column(db.String(36), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
@@ -434,19 +457,29 @@ class FeedbackLog(db.Model):
 
 
 class FeedbackEdit(db.Model):
+    """Calibration bank — one row per teacher edit saved with the
+    "Save to calibration bank" checkbox. Drives the calibration block
+    prepended to future marking prompts and the propagation candidate
+    detection that fires after each save.
+
+    Super-set schema: keeps feed_forward_beta's categorisation/insight
+    columns (subject_family, theme_key, mistake_pattern, etc.) AND
+    staging's keyword-bucket field (subject_bucket) so either matching
+    path keeps working.
+    """
     __tablename__ = 'feedback_edit'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     submission_id = db.Column(db.Integer, db.ForeignKey('submissions.id'), nullable=False, index=True)
     criterion_id = db.Column(db.String(64), nullable=False)
-    field = db.Column(db.String(20), nullable=False)  # 'feedback' | 'improvement'
+    field = db.Column(db.String(20), nullable=False)
     original_text = db.Column(db.Text, nullable=False, default='')
     edited_text = db.Column(db.Text, nullable=False, default='')
     edited_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=False, index=True)
     subject_family = db.Column(db.String(40), nullable=True)
+    subject_bucket = db.Column(db.String(40), nullable=True, index=True)
     theme_key = db.Column(db.String(40), nullable=True)
     assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)
     rubric_version = db.Column(db.String(64), nullable=False, default='')
-    # FUTURE: department-level promotion logic goes here.
     scope = db.Column(db.String(20), nullable=False, default='individual')
     promoted_by = db.Column(db.String(36), nullable=True)
     promoted_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -461,6 +494,7 @@ class FeedbackEdit(db.Model):
 
     __table_args__ = (
         db.Index('ix_feedback_edit_lookup', 'edited_by', 'active', 'subject_family', 'theme_key'),
+        db.Index('ix_feedback_edit_bucket', 'edited_by', 'active', 'subject_bucket'),
         db.Index('ix_feedback_edit_assignment', 'assignment_id', 'rubric_version'),
     )
 

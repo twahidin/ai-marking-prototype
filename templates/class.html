@@ -177,12 +177,14 @@
 
             <!-- Show results toggle -->
             <div class="check-row">
-                <input type="checkbox" id="teacherShowResults" checked>
-                <label for="teacherShowResults">Allow students to see AI feedback immediately</label>
+                <input type="checkbox" id="teacherShowResults" checked onchange="onShowResultsChange()">
+                <label for="teacherShowResults" id="teacherShowResultsLabel">Allow students to see AI feedback immediately</label>
             </div>
 
-            <!-- Allow drafts toggle -->
-            <div class="check-row">
+            <!-- Allow drafts toggle — hidden for now, feature deferred. The
+                 inputs stay in the DOM so the form post still includes the
+                 default values; unhide the wrapper to bring it back. -->
+            <div class="check-row" style="display:none;">
                 <input type="checkbox" id="allow_drafts" name="allow_drafts" onchange="onAllowDraftsChange()">
                 <label for="allow_drafts">Allow students to submit multiple drafts</label>
             </div>
@@ -449,6 +451,16 @@ function onAllowDraftsChange() {
     const row = document.getElementById('max_drafts_row');
     row.style.display = cb.checked ? '' : 'none';
 }
+
+function onShowResultsChange() {
+    const cb = document.getElementById('teacherShowResults');
+    const lbl = document.getElementById('teacherShowResultsLabel');
+    if (!cb || !lbl) return;
+    lbl.textContent = cb.checked
+        ? 'Allow students to see AI feedback immediately'
+        : 'Teacher controls when to issue AI feedback';
+}
+document.addEventListener('DOMContentLoaded', onShowResultsChange);
 
 async function createAssignment() {
     hideTeacherError();
