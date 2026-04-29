@@ -95,7 +95,10 @@
 
         <!-- Subject -->
         <span class="section-label" style="margin-top:16px;">Subject (optional)</span>
-        <input type="text" class="form-input" id="subject" placeholder="e.g. Mathematics, English, Science">
+        <input type="text" class="form-input" id="subject" list="subjectOptions" autocomplete="off" placeholder="Pick or type — Mathematics, Physics, English…">
+        <datalist id="subjectOptions">
+            {% for s in canonical_subjects %}<option value="{{ s }}">{% endfor %}
+        </datalist>
 
         <!-- Assignment Type -->
         <span class="section-label" style="margin-top:16px;">Assignment Type</span>

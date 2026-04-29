@@ -1730,53 +1730,54 @@ def evaluate_correction(provider, model, session_keys, subject, criterion_name,
 # mistake categorisation (run ONCE per submission after marking, async).
 # ---------------------------------------------------------------------------
 
-SUBJECT_FAMILIES = [
-    'science',
-    'humanities_seq',       # essay-type humanities (rubric)
-    'humanities_sbq',       # source-based questions humanities (answer key)
-    'literature',
-    'mother_tongue_comprehension',
-    'mother_tongue_composition',
-    'mother_tongue_translation',
-]
+# Canonical subject taxonomy lives in subjects.py. Importing here keeps
+# the AI prompt + the dropdown UI + the marking-patterns header on the
+# same source of truth.
+from subjects import (
+    SUBJECT_KEYS as SUBJECT_FAMILIES,
+    SUBJECTS as _CANONICAL_SUBJECTS,
+    resolve_subject_key as _resolve_subject_key,
+)
 
 
 def classify_subject_family(provider, model, session_keys, subject, assign_type,
                              has_rubric=False, has_answer_key=False):
     """One-shot classification of a freeform subject string into one of
-    SUBJECT_FAMILIES. Uses the marking format as a strong signal:
+    the canonical SUBJECT_FAMILIES (see subjects.py).
 
-        rubric     → essay-type          → *_seq / composition / literature
-        answer key → short-answer / SBQ  → *_sbq / comprehension / science
+    The vast majority of assignments now come from the dropdown, so the
+    typed string already matches a display name or alias and we skip the
+    AI entirely. AI fallback only kicks in for genuinely freeform input
+    that doesn't match anything in the alias table.
 
-    Returns a key string. Falls back to the closest family on any error or
-    low-confidence response so the caller never has to handle None.
+    Returns a key string. Falls back to a sensible default on AI error
+    so the caller never has to handle None.
     """
-    # A couple of cheap shortcuts — save an API call when the subject is
-    # obvious. Anything ambiguous still goes to the AI.
-    s = (subject or '').strip().lower()
-    if s:
-        if any(w in s for w in ['biology', 'chemistry', 'physics', 'science', 'combined science', 'bio', 'chem', 'phy']):
-            return 'science'
-        if 'literature' in s or 'lit ' in s or s.endswith(' lit'):
-            return 'literature'
+    # Fast path: exact display match or alias hit. Catches every
+    # dropdown selection plus common abbreviations (math, phy, lit, ...).
+    direct = _resolve_subject_key(subject)
+    if direct:
+        return direct
 
     format_hint = 'rubric (essay)' if has_rubric else ('answer key' if has_answer_key else assign_type or 'unknown')
+
+    # Build the per-family enumeration for the prompt from the canonical
+    # taxonomy so the prompt stays in sync with subjects.py automatically.
+    fam_lines = '\n'.join(
+        f"  {s['key']:<28} - {s['display']}" for s in _CANONICAL_SUBJECTS
+    )
 
     system_prompt = (
         "You classify a subject string for a Singapore secondary school assignment "
         "into exactly one of these family keys:\n\n"
-        "  science                      - any science subject (biology, chemistry, physics, combined)\n"
-        "  humanities_seq               - humanities essay-type question (marked by rubric). "
-        "Subjects: history, geography, social studies, economics — when the marking format is a rubric.\n"
-        "  humanities_sbq               - humanities source-based question (marked against an answer key). "
-        "Same subjects as above but when the marking format is an answer key / mark scheme.\n"
-        "  literature                   - English Literature or any literature-in-a-language course\n"
-        "  mother_tongue_comprehension  - Chinese / Malay / Tamil comprehension papers\n"
-        "  mother_tongue_composition    - Chinese / Malay / Tamil composition / essay (rubric)\n"
-        "  mother_tongue_translation    - Chinese / Malay / Tamil translation exercises\n\n"
-        "Marking format is an important disambiguator: rubric implies essay-type; answer key "
-        "implies SBQ or comprehension.\n\n"
+        f"{fam_lines}\n\n"
+        "Notes:\n"
+        "  - 'biology', 'bio', or general 'science' at lower-secondary level → lower_secondary_science.\n"
+        "  - Upper-secondary 'physics' or 'chemistry' → their own family.\n"
+        "  - 'literature' (any language) → literature_in_english unless explicitly mother-tongue.\n"
+        "  - Mother-tongue subjects (Chinese / Malay / Tamil / Hindi) → that language family,\n"
+        "    regardless of whether it's comprehension, composition, or translation.\n"
+        "  - Marking format hints help disambiguate borderline cases but never override an explicit subject.\n\n"
         "Return JSON ONLY in this shape: {\"family\": \"<one key>\"}. If genuinely ambiguous, "
         "choose the most semantically similar family — never leave it blank."
     )
@@ -1796,9 +1797,13 @@ def classify_subject_family(provider, model, session_keys, subject, assign_type,
         logger.warning(f"classify_subject_family failed for {subject!r}: {e}")
 
     # Heuristic fallback when the AI fails or returns an unknown key.
+    # Pick the most generic family for the marking format. Lower-sec
+    # science covers the majority of short-answer/answer-key marking;
+    # english covers most rubric-marked freeform that isn't a humanities
+    # subject we can identify.
     if has_rubric:
-        return 'humanities_seq'
-    return 'humanities_sbq'
+        return 'english'
+    return 'lower_secondary_science'
 
 
 # Advice-language detector for specific_label sanitisation. Single-pass

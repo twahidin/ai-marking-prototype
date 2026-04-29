@@ -616,7 +616,10 @@
             </div>
             <div class="edit-form-group">
                 <label for="editSubject">Subject</label>
-                <input type="text" id="editSubject" value="{{ assignment.subject or '' }}">
+                <input type="text" id="editSubject" list="subjectOptions" autocomplete="off" value="{{ assignment.subject or '' }}">
+                <datalist id="subjectOptions">
+                    {% for s in canonical_subjects %}<option value="{{ s }}">{% endfor %}
+                </datalist>
             </div>
         </div>
 

@@ -17,7 +17,7 @@
     {% for s in sections %}
     <div style="margin-bottom: 28px; padding: 18px 20px; background: white; border: 1px solid #e3e6f0; border-radius: 10px;">
         <div style="display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px;">
-            <h2 style="font-size: 17px; margin: 0;">{{ s.subject_family|replace('_', ' ')|title }}</h2>
+            <h2 style="font-size: 17px; margin: 0;">{{ s.display_name }}</h2>
             <span style="font-size: 12px; color: #7a7f8c;">
                 You've contributed {{ s.my_count }} of {{ s.total_count }} active edits in this subject.
             </span>

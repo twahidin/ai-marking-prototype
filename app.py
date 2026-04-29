@@ -182,37 +182,47 @@ if _ENV_DEMO_MODE and _ENV_DEPT_MODE:
 
 
 def _backfill_subject_family(batch_limit=50):
-    """One-shot, idempotent backfill for legacy rows missing subject_family.
+    """One-shot, idempotent backfill / remap for subject_family.
 
-    Old assignments created before subject_family existed (and the
-    FeedbackEdit rows that inherited from them) are silently excluded
-    from marking-patterns aggregation, calibration lookup, and
-    propagation candidate detection because every relevant query has a
-    `subject_family IS NOT NULL` filter.
+    Two distinct legacy populations need fixing up so the marking-patterns
+    aggregation, calibration lookup, and propagation candidate detection
+    see them under the new canonical taxonomy:
+
+      A. NULL/empty subject_family — assignments created before the
+         column existed.
+      B. Old-taxonomy subject_family — rows stamped 'science' /
+         'humanities_seq' / etc. before the 16-family taxonomy in
+         subjects.py shipped. These appear as a stale single bucket on
+         the patterns page and need re-classification.
 
     Strategy:
-      1. Walk Assignment rows where subject_family is NULL/empty and
-         classify each one via classify_subject_family. Bounded by
-         batch_limit to keep boot time predictable on large legacy sets;
-         eventually consistent across reboots.
-      2. Walk FeedbackEdit rows with NULL subject_family whose parent
-         assignment now has one, and copy it down. No AI calls, no
-         batching needed.
+      1. Walk Assignment rows in either population A or B and classify
+         each via classify_subject_family. Bounded by batch_limit to
+         keep boot time predictable; eventually consistent across boots.
+      2. Walk FeedbackEdit rows in either population A or B whose parent
+         assignment now has a canonical key, and copy it down. No AI
+         calls — cheap to do all at once.
 
     Best-effort: every failure is logged and swallowed so a transient
     AI/API outage cannot block app boot. Safe to re-run.
     """
-    from sqlalchemy import or_, and_
+    from sqlalchemy import or_
     try:
         from ai_marking import classify_subject_family
+        from subjects import LEGACY_FAMILY_KEYS
     except Exception as _imp_err:
         logger.warning(f"backfill_subject_family: import failed, skipping: {_imp_err}")
         return
 
+    legacy = list(LEGACY_FAMILY_KEYS)
+
+    def _needs_remap(col):
+        # Population A (NULL/empty) OR Population B (in legacy set).
+        return or_(col.is_(None), col == '', col.in_(legacy))
+
     # Step 1 — assignments
     asn_q = (Assignment.query
-             .filter(or_(Assignment.subject_family.is_(None),
-                         Assignment.subject_family == ''))
+             .filter(_needs_remap(Assignment.subject_family))
              .limit(batch_limit))
     asn_rows = asn_q.all()
     asn_filled = 0
@@ -240,16 +250,18 @@ def _backfill_subject_family(batch_limit=50):
             logger.error(f"backfill: assignment commit failed: {_ce}")
             asn_filled = 0
 
-    # Step 2 — feedback_edit rows (no AI calls; cheap to do all at once)
+    # Step 2 — feedback_edit rows (no AI calls; cheap to do all at once).
+    # Pull rows where the EDIT row needs remap AND the parent assignment
+    # already has a canonical key (so we have something to copy down).
     fe_filled = 0
     try:
         from db import FeedbackEdit
         rows = (db.session.query(FeedbackEdit, Assignment)
                 .join(Assignment, FeedbackEdit.assignment_id == Assignment.id)
-                .filter(or_(FeedbackEdit.subject_family.is_(None),
-                            FeedbackEdit.subject_family == ''))
+                .filter(_needs_remap(FeedbackEdit.subject_family))
                 .filter(Assignment.subject_family.isnot(None))
                 .filter(Assignment.subject_family != '')
+                .filter(~Assignment.subject_family.in_(legacy))
                 .all())
         for fe, asn in rows:
             fe.subject_family = asn.subject_family
@@ -263,7 +275,7 @@ def _backfill_subject_family(batch_limit=50):
 
     if asn_filled or fe_filled:
         logger.info(
-            f"backfill_subject_family: filled {asn_filled} assignments, "
+            f"backfill_subject_family: filled/remapped {asn_filled} assignments, "
             f"{fe_filled} feedback_edit rows"
         )
 
@@ -287,12 +299,14 @@ _STATIC_VERSION = _compute_static_version()
 def inject_dept_context():
     """Make dept_mode, demo_mode, app_title and current teacher available in all templates."""
     teacher = _current_teacher()  # works for both modes now
+    from subjects import SUBJECT_DISPLAY_NAMES
     return {
         'dept_mode': is_dept_mode(),
         'demo_mode': is_demo_mode(),
         'app_title': get_app_title(),
         'current_teacher': teacher,
         'static_version': _STATIC_VERSION,
+        'canonical_subjects': SUBJECT_DISPLAY_NAMES,
     }
 
 
@@ -4034,6 +4048,7 @@ def teacher_marking_patterns():
 
     from db import FeedbackEdit, MarkingPrinciplesCache
     from sqlalchemy import func as _func
+    from subjects import display_name as _subject_display
 
     contributed_rows = (
         db.session.query(FeedbackEdit.subject_family,
@@ -4058,6 +4073,7 @@ def teacher_marking_patterns():
         threshold_met = total >= 8
         sections.append({
             'subject_family': sf,
+            'display_name': _subject_display(sf),
             'my_count': my_count,
             'total_count': total,
             'has_principles': bool(cache and cache.markdown_text and threshold_met),
@@ -4066,6 +4082,8 @@ def teacher_marking_patterns():
             'threshold_met': threshold_met,
             'remaining_to_threshold': max(0, 8 - total),
         })
+    # Stable display order: alphabetical by display name.
+    sections.sort(key=lambda s: s['display_name'].lower())
     return render_template('marking_patterns.html', sections=sections, teacher=teacher)
 
 
@@ -5238,28 +5256,36 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             if editor_id and ('feedback' in edit or 'improvement' in edit):
                 snapshot_bucket = bucket_subject(asn.subject or '')
                 rubric_hash = _rubric_version_hash(asn)
-                # Lazy-fill: legacy assignments created before subject_family
-                # existed have it as NULL, which would silently exclude their
-                # calibration edits from the marking-patterns aggregation
-                # (filters subject_family IS NOT NULL). Classify on the fly
-                # and persist on the assignment so this only ever runs once.
-                if cal_flag and not (getattr(asn, 'subject_family', None) or '').strip():
+                # Lazy-fill: legacy assignments may have subject_family as
+                # NULL (column added later) or as an old-taxonomy key
+                # ('science', 'humanities_seq', ...) from before the
+                # 16-family taxonomy in subjects.py shipped. Either case
+                # means the calibration edit would land in a stale
+                # bucket. Classify on the fly into the new canonical
+                # taxonomy and persist on the assignment.
+                if cal_flag:
                     try:
-                        from ai_marking import classify_subject_family
-                        asn.subject_family = classify_subject_family(
-                            provider=asn.provider,
-                            model=asn.model,
-                            session_keys=_resolve_api_keys(asn),
-                            subject=asn.subject or '',
-                            assign_type=asn.assign_type,
-                            has_rubric=bool(asn.rubrics),
-                            has_answer_key=bool(asn.answer_key),
-                        )
-                        db.session.flush()
-                    except Exception as _lazy_err:
-                        logger.warning(
-                            f"lazy classify_subject_family failed for {asn.id}: {_lazy_err}"
-                        )
+                        from subjects import LEGACY_FAMILY_KEYS
+                    except Exception:
+                        LEGACY_FAMILY_KEYS = set()
+                    _cur_sf = (getattr(asn, 'subject_family', None) or '').strip()
+                    if (not _cur_sf) or (_cur_sf in LEGACY_FAMILY_KEYS):
+                        try:
+                            from ai_marking import classify_subject_family
+                            asn.subject_family = classify_subject_family(
+                                provider=asn.provider,
+                                model=asn.model,
+                                session_keys=_resolve_api_keys(asn),
+                                subject=asn.subject or '',
+                                assign_type=asn.assign_type,
+                                has_rubric=bool(asn.rubrics),
+                                has_answer_key=bool(asn.answer_key),
+                            )
+                            db.session.flush()
+                        except Exception as _lazy_err:
+                            logger.warning(
+                                f"lazy classify_subject_family failed for {asn.id}: {_lazy_err}"
+                            )
                 for _field in ('feedback', 'improvement'):
                     if _field not in edit:
                         continue

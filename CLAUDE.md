@@ -129,3 +129,17 @@ This app is in active use. Any code change that adds or relies on a new column /
 - `Assignment.subject_family` and `FeedbackEdit.subject_family` — drive marking-patterns aggregation, calibration lookup, and propagation candidate detection.
 - `FeedbackEdit.theme_key` — drives Tier-1 calibration retrieval and student-facing "Group by Mistake Type".
 - `Submission.categorisation_status` — gates UI rendering of the category line.
+
+## Canonical subjects
+
+`subjects.py` is the single source of truth for the subject taxonomy. It defines:
+
+- `SUBJECTS` — list of dicts with `key` (slugged DB value), `display` (human label), `aliases` (common typed strings).
+- `SUBJECT_KEYS`, `SUBJECT_DISPLAY_NAMES`, `KEY_TO_DISPLAY` — derived lookups.
+- `LEGACY_FAMILY_KEYS` — old taxonomy keys; only used by the boot-time backfill to detect rows that need re-classification.
+- `resolve_subject_key(text)` — fast alias→key resolver used by `classify_subject_family` to skip the AI call when a typed subject matches a known display name or alias.
+- `display_name(key)` — human label for a key, used in marking-patterns headers.
+
+Anywhere that needs subject-family logic — the assignment dropdown (via `canonical_subjects` in the template context), the AI classifier, the marking-patterns page header, the backfill — must read from `subjects.py`. Don't hardcode subject lists or keys elsewhere.
+
+**Future band axis (G1 / G2 / G3) — deferred.** When ready, add a `subject_band` column to `Assignment` and `FeedbackEdit`, populate it on writes via the dropdown, include it in the calibration-lookup grouping. Per the schema-evolution policy above, do NOT add the column until you're populating it on writes — a NULL-everywhere column is exactly the rot the policy is trying to prevent.
