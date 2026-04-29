@@ -15,6 +15,7 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
     <script src="{{ url_for('static', filename='js/latex_autocomplete.js') }}?v={{ static_version }}"></script>
+    <script src="{{ url_for('static', filename='js/subject_autocomplete.js') }}?v={{ static_version }}" defer></script>
 </head>
 <body>
 {% if current_teacher %}
