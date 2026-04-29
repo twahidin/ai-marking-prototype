@@ -702,35 +702,6 @@
             global.LatexAutocomplete.attach(textarea);
         }
 
-        // Calibration checkbox — only for feedback/improvement text fields.
-        var cb = null;
-        if (field === 'feedback' || field === 'improvement') {
-            var wrap = document.createElement('label');
-            wrap.className = 'fb-cal-wrap';
-            wrap.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:#666;cursor:pointer;user-select:none;';
-            cb = document.createElement('input');
-            cb.type = 'checkbox';
-            cb.className = 'fb-cal-cb';
-            cb.style.cssText = 'margin:0;cursor:pointer;';
-            var labelTxt = document.createTextNode('Save to calibration bank');
-            wrap.appendChild(cb);
-            wrap.appendChild(labelTxt);
-            el.appendChild(wrap);
-            // preventDefault on mousedown stops focus transfer to the checkbox, so
-            // the textarea keeps focus and doesn't blur (which would save before
-            // the checkbox state could be captured). The click still fires and
-            // toggles the checkbox normally — only the focus shift is blocked.
-            wrap.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
-            cb.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
-            // Manually toggle on every click (direct-on-box AND label-text both
-            // bubble to wrap). preventDefault suppresses the label's implicit
-            // re-toggle that would otherwise double-flip when clicking the box.
-            wrap.addEventListener('click', function (ev) {
-                ev.preventDefault();
-                cb.checked = !cb.checked;
-            });
-        }
-
         var submitted = false;
         function commit() {
             if (submitted) return;
