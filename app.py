@@ -3705,6 +3705,24 @@ def teacher_edit(assignment_id):
     })
 
 
+@app.route('/teacher/assignment/<assignment_id>/issue-feedback', methods=['POST'])
+def teacher_assignment_issue_feedback(assignment_id):
+    """Flip show_results to True so students can view AI feedback in the
+    browser and download PDFs. Used when an assignment was created with
+    show_results=False so the teacher could review/edit before students
+    saw anything. Idempotent — re-posting on an already-issued assignment
+    is a no-op."""
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    if not asn.show_results:
+        asn.show_results = True
+        db.session.commit()
+        logger.info(f"Issued AI feedback to students for assignment {assignment_id}")
+    return jsonify({'success': True, 'show_results': True})
+
+
 @app.route('/teacher/assignment/<assignment_id>')
 def teacher_assignment_detail(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)

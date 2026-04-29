@@ -320,6 +320,9 @@
         <div style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;display:flex;gap:10px;flex-wrap:wrap;">
             <button class="upload-btn" onclick="openEditModal()" style="padding:8px 20px;font-size:13px;">Edit Assignment</button>
             <button class="upload-btn" onclick="openShareModal()" style="padding:8px 20px;font-size:13px;">Share to Assignment Bank</button>
+            {% if not assignment.show_results %}
+            <button class="upload-btn" type="button" onclick="issueAiFeedback()" style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border-color:#28a745;">Issue AI Feedback</button>
+            {% endif %}
         </div>
     </div>
 
@@ -641,7 +644,10 @@
                     <option value="" {% if not assignment.show_results %}selected{% endif %}>No</option>
                 </select>
             </div>
-            <div class="edit-form-group">
+            <!-- Allow Drafts deferred: keep the select hidden so the
+                 existing assignment value persists on edit (the form-post JS
+                 still reads its .value), but don't show it to teachers. -->
+            <div class="edit-form-group" style="display:none;">
                 <label for="editAllowDrafts">Allow Drafts</label>
                 <select id="editAllowDrafts" onchange="document.getElementById('editMaxDraftsRow').style.display = this.value === 'on' ? '' : 'none';">
                     <option value="on" {% if assignment.allow_drafts %}selected{% endif %}>Yes</option>
@@ -650,7 +656,7 @@
             </div>
         </div>
 
-        <div class="edit-form-group" id="editMaxDraftsRow" style="{% if not assignment.allow_drafts %}display:none;{% endif %}">
+        <div class="edit-form-group" id="editMaxDraftsRow" style="display:none;">
             <label for="editMaxDrafts">Max Drafts</label>
             <input type="number" id="editMaxDrafts" min="2" max="10" value="{{ assignment.max_drafts or 3 }}">
         </div>
@@ -818,6 +824,24 @@ document.getElementById('uploadModal').addEventListener('click', function(e) {
     setTimeout(tick, 10000);
 })();
 {% endif %}
+
+async function issueAiFeedback() {
+    if (!confirm('Issue AI feedback to students now? They will be able to view feedback in the browser and download PDFs after this.')) return;
+    try {
+        var res = await fetch(
+            '/teacher/assignment/{{ assignment.id }}/issue-feedback',
+            { method: 'POST', credentials: 'same-origin' }
+        );
+        var data = await res.json();
+        if (data && data.success) {
+            window.location.reload();
+            return;
+        }
+        alert('Failed to issue feedback: ' + ((data && data.error) || 'unknown error'));
+    } catch (e) {
+        alert('Failed to issue feedback: ' + e.message);
+    }
+}
 
 async function forceRetryStuck(btn, submissionId) {
     if (!confirm('Retry this stuck submission? The marking worker will be re-kicked.')) return;
