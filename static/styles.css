@@ -339,6 +339,26 @@ body {
     font-size: 13px; opacity: 0.8; transition: opacity 0.2s;
 }
 .dept-nav-user a:hover { opacity: 1; }
+.dept-nav-cog { position: relative; }
+.dept-nav-cog-btn {
+    background: none; border: none; padding: 4px 6px; cursor: pointer;
+    color: #667eea; font-size: 18px; line-height: 1; opacity: 0.85;
+    transition: opacity 0.2s;
+}
+.dept-nav-cog-btn:hover { opacity: 1; }
+.dept-nav-cog-menu {
+    display: none; position: absolute; right: 0; top: calc(100% + 6px);
+    background: white; border: 1px solid #d0d4e0; border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.10);
+    min-width: 160px; padding: 4px 0; z-index: 1001;
+}
+.dept-nav-cog.open .dept-nav-cog-menu { display: block; }
+.dept-nav-cog-menu a {
+    display: block; padding: 9px 14px; color: #2d2d2d;
+    font-size: 14px; font-weight: 500; text-decoration: none;
+    opacity: 1;
+}
+.dept-nav-cog-menu a:hover { background: #eef1ff; color: #667eea; }
 @media (max-width: 600px) {
     .dept-nav-inner { gap: 12px; flex-wrap: wrap; height: auto; padding: 10px 0; }
     .dept-nav-links { gap: 2px; }
