@@ -23,17 +23,16 @@
     <div class="dept-nav-inner">
         <a href="/" class="dept-nav-brand">{{ app_title }}</a>
         <div class="dept-nav-links">
-            {% if dept_mode and current_teacher.role in ('hod', 'subject_head', 'manager') %}
-            <a href="/department">Dashboard</a>
-            <a href="/department/classes">Manage</a>
-            {% endif %}
+            <a href="/dashboard">My Classes</a>
             {% if current_teacher.role in ('hod', 'subject_head', 'lead', 'owner') %}
             <a href="/department/insights">Insights</a>
             {% endif %}
-            <a href="/dashboard">My Classes</a>
-            <a href="/class">Assignments</a>
+            <a href="/class">Make Assignment</a>
             <a href="/bank">Bank</a>
-            <a href="/teacher/marking-patterns">My marking patterns</a>
+            {% if dept_mode and current_teacher.role in ('hod', 'subject_head', 'manager') %}
+            <a href="/department">Overview</a>
+            {% endif %}
+            <a href="/teacher/marking-patterns">Department Standards</a>
             {% if not dept_mode or demo_mode %}
             <a href="/mark">Mark</a>
             {% endif %}
@@ -41,12 +40,43 @@
         <div class="dept-nav-user">
             <span>{{ current_teacher.name }}</span>
             {% if current_teacher.role in ('hod', 'subject_head', 'owner') %}
-            <a href="/settings" title="Settings">&#9881;</a>
+            <div class="dept-nav-cog" data-cog-menu>
+                <button type="button" class="dept-nav-cog-btn" aria-haspopup="true" aria-expanded="false" aria-label="Settings">&#9881;</button>
+                <div class="dept-nav-cog-menu" role="menu">
+                    <a href="/settings" role="menuitem">Settings</a>
+                    {% if dept_mode and current_teacher.role in ('hod', 'subject_head', 'manager') %}
+                    <a href="/department/classes" role="menuitem">Manage</a>
+                    {% endif %}
+                </div>
+            </div>
             {% endif %}
             <a href="/logout">Logout</a>
         </div>
     </div>
 </nav>
+<script>
+(function () {
+    var wrap = document.querySelector('[data-cog-menu]');
+    if (!wrap) return;
+    var btn = wrap.querySelector('.dept-nav-cog-btn');
+    var menu = wrap.querySelector('.dept-nav-cog-menu');
+    function close() {
+        wrap.classList.remove('open');
+        btn.setAttribute('aria-expanded', 'false');
+    }
+    btn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        var open = wrap.classList.toggle('open');
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    document.addEventListener('click', function (ev) {
+        if (!wrap.contains(ev.target)) close();
+    });
+    document.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape') close();
+    });
+})();
+</script>
 {% endif %}
 {% block body %}{% endblock %}
 <script src="{{ url_for('static', filename='common.js') }}?v={{ static_version }}"></script>
