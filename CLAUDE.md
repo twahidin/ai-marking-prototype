@@ -103,3 +103,37 @@ At least one AI provider API key must be set. Providers only appear in the UI if
 
 - **poppler** is required for `pdf2image` (PDF-to-image conversion for OpenAI/Qwen providers). Install via `brew install poppler` (macOS) or `apt-get install poppler-utils` (Linux).
 - Railway/Nixpacks handles this automatically in production.
+
+## Schema evolution policy
+
+This app is in active use. Any code change that adds or relies on a new column / field / data shape MUST consider that prior rows do not have it. Old assignments and old submissions are real data, not edge cases.
+
+**When adding a column that ANY query filters or groups on:**
+
+1. **Lazy-fill at the closest write path.** If the value is derivable from existing data, compute it inline before the first INSERT/UPDATE that needs it, and persist it back to the parent row too. Never write `NULL` into a column the new feature filters on.
+2. **Add a one-shot backfill** in the boot path (or as a `flask` CLI command). Idempotent — guard with `WHERE col IS NULL`, safe to re-run on every boot.
+3. **Do NOT add `if row.col is None: skip` branches in readers.** If the reader needs the column populated, the writer + backfill are responsible. Branching in readers is how this gets unmaintainable.
+
+**When adding a feature that reads new fields on existing rows:**
+
+- Audit the write paths that produce those rows. If a write path can produce a row without the field, fix the write path — don't paper over it in the reader.
+- If a value cannot be derived for legacy rows, the feature must tolerate that *explicitly* with a UI affordance ("not categorised yet — re-mark to enable"), never silently drop the row.
+
+**When fixing a "old data doesn't work with new feature" bug:**
+
+- Default fix shape: lazy-fill at write + one-shot backfill.
+- Reader-side tolerance is a last resort, only when the value is genuinely irrecoverable for legacy rows.
+
+## Canonical subjects
+
+`subjects.py` is the single source of truth for the subject taxonomy. It defines:
+
+- `SUBJECTS` — list of dicts with `key` (slugged DB value), `display` (human label), `aliases` (common typed strings).
+- `SUBJECT_KEYS`, `SUBJECT_DISPLAY_NAMES`, `KEY_TO_DISPLAY` — derived lookups.
+- `LEGACY_FAMILY_KEYS` — old taxonomy keys; only used by future migration code.
+- `resolve_subject_key(text)` — fast alias→key resolver.
+- `display_name(key)` — human label for a key.
+
+Anywhere that needs subject-family logic — the assignment dropdown (via `canonical_subjects` in the template context), and any future AI classifier or aggregation page — must read from `subjects.py`. Don't hardcode subject lists or keys elsewhere.
+
+**Future band axis (G1 / G2 / G3) — deferred.** When ready, add a `subject_band` column to `Assignment` (and any related tables), populate it on writes via the dropdown, include it in any future grouping query. Per the schema-evolution policy above, do NOT add the column until you're populating it on writes — a NULL-everywhere column is exactly the rot the policy is trying to prevent.

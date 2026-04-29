@@ -121,7 +121,10 @@
             </div>
             <div class="form-group">
                 <label for="teacherSubject">Subject</label>
-                <input type="text" class="form-input" id="teacherSubject" placeholder="e.g. Mathematics, English, Science">
+                <input type="text" class="form-input subject-autocomplete" id="teacherSubject"
+                       autocomplete="off"
+                       placeholder="Pick or type — Mathematics, Physics, English…"
+                       data-subject-options='{{ canonical_subjects|tojson }}'>
             </div>
 
             <div class="form-group">

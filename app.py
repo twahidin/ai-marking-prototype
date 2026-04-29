@@ -193,12 +193,14 @@ _STATIC_VERSION = _compute_static_version()
 def inject_dept_context():
     """Make dept_mode, demo_mode, app_title and current teacher available in all templates."""
     teacher = _current_teacher()  # works for both modes now
+    from subjects import SUBJECT_DISPLAY_NAMES
     return {
         'dept_mode': is_dept_mode(),
         'demo_mode': is_demo_mode(),
         'app_title': get_app_title(),
         'current_teacher': teacher,
         'static_version': _STATIC_VERSION,
+        'canonical_subjects': SUBJECT_DISPLAY_NAMES,
     }
 
 

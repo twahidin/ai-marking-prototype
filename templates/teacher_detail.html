@@ -607,7 +607,11 @@
             </div>
             <div class="edit-form-group">
                 <label for="editSubject">Subject</label>
-                <input type="text" id="editSubject" value="{{ assignment.subject or '' }}">
+                <input type="text" id="editSubject"
+                       class="subject-autocomplete"
+                       autocomplete="off"
+                       value="{{ assignment.subject or '' }}"
+                       data-subject-options='{{ canonical_subjects|tojson }}'>
             </div>
         </div>
 
