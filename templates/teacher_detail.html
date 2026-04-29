@@ -431,6 +431,7 @@
                             <td style="font-weight:600;">{% if s.status == 'done' and s.submission_id %}<a href="/teacher/assignment/{{ assignment.id }}/submission/{{ s.submission_id }}/review" target="_blank" rel="noopener" style="color:#667eea;text-decoration:none;" title="Open split-view review">{{ s.name }}</a>{% else %}{{ s.name }}{% endif %}</td>
                             <td>
                                 {% if s.status == 'not_submitted' %}<span class="badge badge-gray">Not Submitted</span>
+                                {% elif s.stuck %}<span class="badge badge-red" title="No progress for over 5 minutes — likely stuck. Click Retry to re-kick the worker.">Stuck</span>
                                 {% elif s.status in ['pending', 'processing'] %}<span class="badge badge-blue">Marking...</span>
                                 {% elif s.status in ['extracting', 'preview'] %}<span class="badge badge-blue">Extracting...</span>
                                 {% elif s.status == 'done' %}<span class="badge badge-green">Done</span>
@@ -448,6 +449,9 @@
                                 {% endif %}
                                 {% if s.status in ('done', 'error') and s.submission_id %}
                                 <button class="remark-btn" type="button" data-submission-id="{{ s.submission_id }}" onclick='remarkStudent(this, {{ s.submission_id|tojson }})'>Re-mark</button>
+                                {% endif %}
+                                {% if s.stuck and s.submission_id %}
+                                <button class="upload-btn" type="button" onclick='forceRetryStuck(this, {{ s.submission_id|tojson }})'>Retry</button>
                                 {% endif %}
                                 <button class="upload-btn" onclick='openUploadModal({{ s.student_id|tojson }}, {{ s.name|tojson }})'>
                                     {% if s.status == 'not_submitted' %}Upload{% else %}Re-upload{% endif %}
@@ -799,8 +803,46 @@ document.getElementById('uploadModal').addEventListener('click', function(e) {
 
 {% set processing_count = students | selectattr('status', 'in', ['pending', 'processing', 'extracting', 'preview']) | list | length %}
 {% if processing_count > 0 %}
-setTimeout(function() { window.location.reload(); }, 10000);
+// Auto-refresh while submissions are still processing. Defers while the
+// teacher has the feedback modal open — a hard reload would close it
+// mid-review. Polls every 5s until the modal closes, then refreshes.
+(function () {
+    function tick() {
+        var modal = document.getElementById('feedbackModal');
+        if (modal && modal.classList.contains('active')) {
+            setTimeout(tick, 5000);
+            return;
+        }
+        window.location.reload();
+    }
+    setTimeout(tick, 10000);
+})();
 {% endif %}
+
+async function forceRetryStuck(btn, submissionId) {
+    if (!confirm('Retry this stuck submission? The marking worker will be re-kicked.')) return;
+    var orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Retrying…';
+    try {
+        var res = await fetch(
+            '/teacher/assignment/{{ assignment.id }}/submission/' + submissionId + '/force-remark',
+            { method: 'POST', credentials: 'same-origin' }
+        );
+        var data = await res.json();
+        if (data && data.success) {
+            window.location.reload();
+            return;
+        }
+        btn.disabled = false;
+        btn.textContent = orig;
+        alert('Retry failed: ' + ((data && data.error) || 'unknown error'));
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = orig;
+        alert('Retry failed: ' + e.message);
+    }
+}
 
 /* Bulk marking */
 var bulkJobId = null;

@@ -3713,6 +3713,15 @@ def teacher_assignment_detail(assignment_id):
         return err
     students = _sort_by_index(Student.query.filter_by(class_id=asn.class_id).all()) if asn.class_id else _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
 
+    # Stuck-submission detection: submissions that entered an in-progress
+    # status more than 5 minutes ago without finishing are surfaced as
+    # 'stuck' so the teacher can retry them. The marking worker can die
+    # silently (deploy mid-flight, transient API error during extraction),
+    # leaving submissions in 'extracting' or 'processing' forever otherwise.
+    STUCK_THRESHOLD_SECONDS = 300
+    IN_PROGRESS = ('pending', 'processing', 'extracting', 'preview')
+    now_utc = datetime.now(timezone.utc)
+
     student_data = []
     for s in students:
         sub = Submission.query.filter_by(student_id=s.id, assignment_id=assignment_id, is_final=True).first()
@@ -3746,11 +3755,20 @@ def teacher_assignment_detail(assignment_id):
             source_icon = '○'
             source_label = 'Original AI feedback'
 
+        stuck = False
+        if sub and sub.status in IN_PROGRESS and sub.submitted_at:
+            submitted = sub.submitted_at
+            if submitted.tzinfo is None:
+                submitted = submitted.replace(tzinfo=timezone.utc)
+            if (now_utc - submitted).total_seconds() > STUCK_THRESHOLD_SECONDS:
+                stuck = True
+
         student_data.append({
             'student_id': s.id,
             'index': s.index_number,
             'name': s.name,
             'status': sub.status if sub else 'not_submitted',
+            'stuck': stuck,
             'score': score,
             'submitted_at': sub.submitted_at.strftime('%d %b %H:%M') if sub and sub.submitted_at else None,
             'student_amended': sub.student_amended if sub else False,
@@ -4472,6 +4490,42 @@ def teacher_submission_remark(assignment_id, submission_id):
         daemon=True,
     )
     thread.start()
+
+    return jsonify({'success': True})
+
+
+@app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/force-remark', methods=['POST'])
+def teacher_submission_force_remark(assignment_id, submission_id):
+    """Re-kick the marking worker for a stuck submission. Bypasses the
+    'already in progress' guard that the regular /remark endpoint enforces,
+    because the whole point of this route is to recover from a status that
+    never advanced (worker died mid-extraction, etc.)."""
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+    if not sub.get_script_pages():
+        return jsonify({'success': False, 'error': 'No stored script available to retry'}), 400
+
+    logger.warning(
+        f"Force-remark stuck submission: assignment={assignment_id} "
+        f"submission={submission_id} prior_status={sub.status} "
+        f"submitted_at={sub.submitted_at}"
+    )
+    sub.status = 'pending'
+    sub.result_json = None
+    sub.marked_at = None
+    sub.submitted_at = datetime.now(timezone.utc)  # reset so 'stuck' clears
+    db.session.commit()
+
+    threading.Thread(
+        target=_run_submission_marking,
+        args=(app, sub.id, assignment_id),
+        daemon=True,
+    ).start()
 
     return jsonify({'success': True})
 
