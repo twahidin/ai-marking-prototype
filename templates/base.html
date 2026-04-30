@@ -24,9 +24,7 @@
         <a href="/" class="dept-nav-brand">{{ app_title }}</a>
         <div class="dept-nav-links">
             <a href="/dashboard">My Classes</a>
-            {% if current_teacher.role in ('hod', 'subject_head', 'lead', 'owner') %}
-            <a href="/department/insights">Insights</a>
-            {% endif %}
+            <a href="/insights">Insights</a>
             <a href="/class">Make Assignment</a>
             <a href="/bank">Bank</a>
             {% if dept_mode and current_teacher.role in ('hod', 'subject_head', 'manager') %}

@@ -1674,6 +1674,67 @@ def dept_save_keys():
     return jsonify({'success': True})
 
 
+# Roles that default to the Department insights tab. Everyone else (teacher,
+# manager, owner) lands on My Class insights first, but can toggle either way
+# if they have the underlying access.
+ROLES_DEFAULT_DEPT_INSIGHTS = {'hod', 'subject_head', 'lead'}
+
+
+@app.route('/insights')
+def insights_entrypoint():
+    """Smart redirect: HOD/SH/Lead -> Department; everyone else -> My Class.
+
+    A class teacher accidentally hitting an HOD-shared link still ends up on
+    a page they have access to, and HODs preserve their muscle memory.
+    """
+    if not _is_authenticated():
+        return redirect(url_for('hub'))
+    teacher = _current_teacher()
+    if not teacher:
+        return redirect(url_for('hub'))
+    if teacher.role in ROLES_DEFAULT_DEPT_INSIGHTS:
+        return redirect(url_for('department_insights'))
+    return redirect(url_for('teacher_insights'))
+
+
+@app.route('/teacher/insights')
+def teacher_insights():
+    """My Class insights: per-class, customisable widget grid."""
+    if not _is_authenticated():
+        return redirect(url_for('hub'))
+    teacher = _current_teacher()
+    if not teacher:
+        return redirect(url_for('hub'))
+
+    # Senior roles see all classes; teachers see only their assigned classes.
+    is_senior = teacher.role in ROLES_CAN_VIEW_INSIGHTS
+    if is_senior:
+        classes = Class.query.order_by(Class.name).all()
+    else:
+        classes = sorted(teacher.classes, key=lambda c: c.name or '')
+
+    # Class selection: ?class_id= takes priority; otherwise pick the first
+    # class the user has access to. None is a legit state (no classes yet).
+    selected_class_id = request.args.get('class_id', '').strip() or None
+    selected_class = None
+    if selected_class_id:
+        selected_class = next((c for c in classes if c.id == selected_class_id), None)
+    if not selected_class and classes:
+        selected_class = classes[0]
+
+    can_view_dept = teacher.role in ROLES_CAN_VIEW_INSIGHTS
+
+    return render_template(
+        'teacher_insights.html',
+        teacher=teacher,
+        classes=classes,
+        selected_class=selected_class,
+        can_view_dept=can_view_dept,
+        demo_mode=is_demo_mode(),
+        dept_mode=is_dept_mode(),
+    )
+
+
 @app.route('/department/insights')
 def department_insights():
     err = _require_insights_access()

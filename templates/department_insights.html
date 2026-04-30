@@ -91,6 +91,20 @@
     .pct-good { background: #e8f5e9; color: #28a745; font-weight: 600; border-radius: 6px; }
     .pct-mid { background: #fff3cd; color: #856404; font-weight: 600; border-radius: 6px; }
     .pct-low { background: #fde8e8; color: #dc3545; font-weight: 600; border-radius: 6px; }
+
+    /* Insights toggle (mirrored on teacher_insights.html) */
+    .insights-toggle-row { display: flex; justify-content: center; margin-bottom: 24px; }
+    .insights-toggle {
+        display: inline-flex; background: white; border-radius: 999px;
+        box-shadow: 0 1px 6px rgba(0,0,0,0.06); padding: 4px;
+        border: 1px solid rgba(0,0,0,0.05);
+    }
+    .insights-toggle a {
+        text-decoration: none; padding: 8px 22px; border-radius: 999px;
+        font-size: 14px; font-weight: 600; color: #666; transition: all 0.15s;
+    }
+    .insights-toggle a:hover { color: #333; }
+    .insights-toggle a.active { background: #667eea; color: white; }
 </style>
 {% endblock %}
 
@@ -99,6 +113,13 @@
     <div class="dept-page-header animate__animated animate__fadeInDown" style="animation-duration:0.5s;">
         <h1>Department Insights</h1>
         <p>Performance analytics and reports</p>
+    </div>
+
+    <div class="insights-toggle-row">
+        <div class="insights-toggle" role="tablist">
+            <a class="active" aria-current="page" role="tab" aria-selected="true">Department</a>
+            <a href="/teacher/insights" role="tab">My Class</a>
+        </div>
     </div>
 
     {% if demo_mode and not dept_mode %}

@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block title %}My Class Insights - {{ app_title }}{% endblock %}
+
+{% block head %}
+<style>
+    /* Shared insights toggle (also rendered on department_insights.html) */
+    .insights-toggle-row { display: flex; justify-content: center; margin-bottom: 24px; }
+    .insights-toggle {
+        display: inline-flex; background: white; border-radius: 999px;
+        box-shadow: 0 1px 6px rgba(0,0,0,0.06); padding: 4px;
+        border: 1px solid rgba(0,0,0,0.05);
+    }
+    .insights-toggle a {
+        text-decoration: none; padding: 8px 22px; border-radius: 999px;
+        font-size: 14px; font-weight: 600; color: #666; transition: all 0.15s;
+    }
+    .insights-toggle a:hover { color: #333; }
+    .insights-toggle a.active { background: #667eea; color: white; }
+    .insights-toggle a.disabled { opacity: 0.45; pointer-events: none; }
+
+    /* Class picker bar */
+    .class-picker-bar {
+        background: white; border-radius: 14px; padding: 16px 20px;
+        box-shadow: 0 1px 12px rgba(0,0,0,0.06);
+        border: 1px solid rgba(0,0,0,0.04);
+        display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+        margin-bottom: 24px;
+    }
+    .class-picker-bar label {
+        font-size: 13px; font-weight: 600; color: #555; flex-shrink: 0;
+    }
+    .class-picker-bar select {
+        padding: 8px 14px; border: 2px solid #e0e0e0; border-radius: 8px;
+        font-size: 14px; outline: none; min-width: 220px; flex: 1;
+    }
+    .class-picker-bar select:focus { border-color: #667eea; }
+    .insights-actions { margin-left: auto; display: flex; gap: 10px; }
+    .icon-btn {
+        width: 38px; height: 38px; border-radius: 50%;
+        border: 1px solid #e0e0e0; background: white; cursor: pointer;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 18px; color: #555; transition: all 0.15s;
+    }
+    .icon-btn:hover { border-color: #667eea; color: #667eea; }
+    .icon-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
+    .icon-btn.active { background: #667eea; color: white; border-color: #667eea; }
+
+    /* Empty / placeholder state for the widget grid */
+    .insights-empty-grid {
+        background: white; border-radius: 14px; padding: 80px 24px;
+        box-shadow: 0 1px 12px rgba(0,0,0,0.06);
+        border: 1px dashed rgba(0,0,0,0.12);
+        text-align: center; color: #888;
+    }
+    .insights-empty-grid h3 { color: #333; margin-bottom: 6px; font-size: 16px; }
+    .insights-empty-grid p { font-size: 13px; line-height: 1.6; margin: 0 auto; max-width: 460px; }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="dept-page">
+    <div class="dept-page-header animate__animated animate__fadeInDown" style="animation-duration:0.5s;">
+        <h1>Insights</h1>
+        <p>{% if selected_class %}{{ selected_class.name }}{% if selected_class.level %} • {{ selected_class.level }}{% endif %}{% else %}Pick a class to start{% endif %}</p>
+    </div>
+
+    {# --- Insights tab toggle --- #}
+    <div class="insights-toggle-row">
+        <div class="insights-toggle" role="tablist">
+            {% if can_view_dept %}
+            <a href="/department/insights" role="tab">Department</a>
+            {% else %}
+            <a class="disabled" aria-disabled="true" title="Department insights are restricted to HOD / Subject Head / Lead.">Department</a>
+            {% endif %}
+            <a class="active" aria-current="page" role="tab" aria-selected="true">My Class</a>
+        </div>
+    </div>
+
+    {% if classes %}
+    <div class="class-picker-bar">
+        <label for="classPicker">Class</label>
+        <select id="classPicker" onchange="window.location.href='/teacher/insights?class_id=' + encodeURIComponent(this.value)">
+            {% for cls in classes %}
+            <option value="{{ cls.id }}" {% if selected_class and cls.id == selected_class.id %}selected{% endif %}>
+                {{ cls.name }}{% if cls.level %} ({{ cls.level }}){% endif %}
+            </option>
+            {% endfor %}
+        </select>
+        <div class="insights-actions">
+            <button type="button" class="icon-btn" id="editModeBtn" disabled title="Edit dashboard (coming soon)">&#9881;</button>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if not classes %}
+    <div class="insights-empty-grid">
+        <h3>No classes assigned to you yet</h3>
+        <p>Once a class is added to your roster, you'll be able to build a custom dashboard of widgets here.</p>
+    </div>
+    {% elif not selected_class %}
+    <div class="insights-empty-grid">
+        <h3>Pick a class to get started</h3>
+        <p>Use the class selector above. Each class gets its own dashboard — you can add and arrange the widgets that matter most for your teaching.</p>
+    </div>
+    {% else %}
+    <div class="insights-empty-grid" id="widgetGrid">
+        <h3>Your dashboard is empty</h3>
+        <p>Click the cog icon above to enter edit mode and add widgets. Widget builder coming in the next slice.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
