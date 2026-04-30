@@ -207,10 +207,17 @@ _PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 
 % TeX Gyre Heros is the open Helvetica clone, apt-installed in
 % texlive-fonts-recommended on Railway and visually indistinguishable
-% from Helvetica. The multi-script fallback chain routes any non-Latin
-% codepoint to Noto (CJK / Tamil / Devanagari) so a name like "王晓明"
-% or "முத்து" renders correctly inside an otherwise-Latin PDF — no
-% content detection needed; the engine handles it per-glyph.
+% from Helvetica. We reference the .otf files directly via Extension=
+% rather than by display name ("TeX Gyre Heros") because luaotfload's
+% by-name font db isn't reliably populated on Railway's container —
+% kpsewhich finds the file but the name lookup fails. File lookup
+% bypasses luaotfload's database entirely and uses kpsewhich, which
+% works on both apt-installed Debian and tlmgr-installed macOS.
+%
+% The multi-script fallback chain routes any non-Latin codepoint to
+% Noto (CJK / Tamil / Devanagari) so a name like "王晓明" or "முத்து"
+% renders correctly inside an otherwise-Latin PDF — no content
+% detection needed; the engine handles it per-glyph.
 %
 % \IfFontExistsTF guards: if Noto Sans CJK SC isn't installed (local
 % macOS dev), registering the fallback chain corrupts the main font
@@ -224,9 +231,22 @@ _PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
       "Noto Sans Devanagari:script=deva;",
     })
   }
-  \setmainfont{TeX Gyre Heros}[RawFeature={fallback=multilang_fb}]
+  \setmainfont{texgyreheros-regular}[%
+    Extension=.otf,
+    UprightFont=*,
+    ItalicFont=texgyreheros-italic,
+    BoldFont=texgyreheros-bold,
+    BoldItalicFont=texgyreheros-bolditalic,
+    RawFeature={fallback=multilang_fb},
+  ]
 }{%
-  \setmainfont{TeX Gyre Heros}
+  \setmainfont{texgyreheros-regular}[%
+    Extension=.otf,
+    UprightFont=*,
+    ItalicFont=texgyreheros-italic,
+    BoldFont=texgyreheros-bold,
+    BoldItalicFont=texgyreheros-bolditalic,
+  ]
 }
 
 % Brand palette (matches the previous PDF look)

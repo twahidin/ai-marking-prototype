@@ -56,7 +56,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # mhchem extension so what the AI emits renders the same in
         # both places.
         texlive-science \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    # Pre-populate luaotfload's font database so the first PDF compile
+    # in the running container doesn't pay the "discover all fonts" cost.
+    # Also makes by-name font lookups ("TeX Gyre Heros", "Noto Sans CJK SC")
+    # reliable — without this they sometimes fail at runtime even when the
+    # font files are present, because luaotfload's reload-on-miss can race
+    # against the compile and time out. Failure here is non-fatal: file-
+    # path-based \\setmainfont calls in the preamble still work.
+    && (luaotfload-tool --update --force || true)
 
 WORKDIR /app
 
