@@ -2019,6 +2019,76 @@ def teacher_widget_performance_trend():
     return jsonify({'success': True, 'points': points})
 
 
+@app.route('/teacher/insights/widget/submission-rate-trend')
+def teacher_widget_submission_rate_trend():
+    """On-time submission rate per assignment, oldest-first.
+
+    Definition of submitted matches the missed-submissions widget: only
+    submissions in `done` status count (errored / pending submissions
+    don't, since the student needs to resubmit). Denominator is the
+    class roster size at the time the assignment was created — late
+    joiners aren't held against earlier assignments. The latest
+    assignment is flagged when it's still inside the 7-day grace window
+    so the chart can render it as in-progress."""
+    class_id = (request.args.get('class_id') or '').strip()
+    if not class_id:
+        return jsonify({'success': False, 'error': 'class_id required'}), 400
+    teacher, err = _check_class_access_for_teacher(class_id)
+    if err:
+        return err
+
+    asns = (
+        Assignment.query
+        .filter(Assignment.class_id == class_id)
+        .order_by(Assignment.created_at.asc())
+        .all()
+    )
+    if not asns:
+        return jsonify({'success': True, 'points': []})
+
+    students = Student.query.filter_by(class_id=class_id).all()
+    asn_ids = [a.id for a in asns]
+    sub_rows = (
+        Submission.query
+        .filter(Submission.assignment_id.in_(asn_ids))
+        .filter(Submission.is_final.is_(True))
+        .filter(Submission.status == 'done')
+        .all()
+    )
+    done_pairs = {(s.student_id, s.assignment_id) for s in sub_rows}
+
+    now = datetime.now(timezone.utc)
+    grace_cutoff = now - timedelta(days=MISSED_GRACE_DAYS)
+    points = []
+    for a in asns:
+        asn_when = a.created_at
+        if asn_when is not None and asn_when.tzinfo is None:
+            asn_when = asn_when.replace(tzinfo=timezone.utc)
+        # Roster at issue-time: students whose joined-date <= asn.created_at.
+        eligible = []
+        for st in students:
+            joined = st.created_at
+            if joined is not None and joined.tzinfo is None:
+                joined = joined.replace(tzinfo=timezone.utc)
+            if joined is None or asn_when is None or joined <= asn_when:
+                eligible.append(st)
+        if not eligible:
+            continue
+        done = sum(1 for st in eligible if (st.id, a.id) in done_pairs)
+        rate = round(done / len(eligible) * 100, 1)
+        in_progress = (asn_when is not None and asn_when > grace_cutoff)
+        points.append({
+            'asn_id': a.id,
+            'title': a.title or a.subject or 'Untitled',
+            'rate': rate,
+            'done': done,
+            'eligible': len(eligible),
+            'in_progress': in_progress,
+        })
+
+    return jsonify({'success': True, 'points': points})
+
+
 @app.route('/department/insights')
 def department_insights():
     err = _require_insights_access()

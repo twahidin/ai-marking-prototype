@@ -270,9 +270,7 @@ var WIDGET_CATALOG = {
         title: 'Submission rate over time',
         desc: 'On-time submission % per assignment',
         defaults: { w: 8, h: 4, minW: 5, minH: 3 },
-        render: function (body, ctx) {
-            body.innerHTML = '<div class="widget-placeholder">Coming soon — submission rate line chart, latest assignment dotted while &lt; 7 days old.</div>';
-        }
+        render: function (body, ctx) { renderSubmissionRateTrend(body, ctx); }
     },
     encourage: {
         title: 'Students to encourage',
@@ -451,6 +449,105 @@ function setEditMode(on) {
     if (label) label.textContent = on ? 'Done' : 'Edit';
     /* Lock dragging/resizing in view mode. */
     grid.setStatic(!on);
+}
+
+/* =====================================================================
+   Widget: Submission rate over time
+   ===================================================================== */
+async function renderSubmissionRateTrend(body, ctx) {
+    body.innerHTML = '<div class="ms-no-data">Loading…</div>';
+    try {
+        var res = await fetch('/teacher/insights/widget/submission-rate-trend?class_id=' + encodeURIComponent(ctx.classId));
+        var data = await res.json();
+        if (!data || !data.success) {
+            body.innerHTML = '<div class="ms-no-data" style="color:#dc3545;">Could not load.</div>';
+            return;
+        }
+        var pts = data.points || [];
+        if (!pts.length) {
+            body.innerHTML = '<div class="ms-no-data">No assignments with eligible students yet.</div>';
+            return;
+        }
+
+        body.innerHTML = '<div class="chart-wrap"><canvas></canvas></div>';
+        var canvas = body.querySelector('canvas');
+
+        /* Split into a stable line + a dotted "in progress" segment so the
+           latest assignment looks tentative if it's still in the 7-day
+           grace window. We do this by giving the in-progress points a
+           segment-style override. */
+        var data_rates = pts.map(function (p) { return p.rate; });
+        var inProgressIdxs = pts.map(function (p, i) { return p.in_progress ? i : -1; }).filter(function (i) { return i !== -1; });
+
+        new Chart(canvas, {
+            type: 'line',
+            data: {
+                labels: pts.map(function (p) { return p.title; }),
+                datasets: [{
+                    label: 'Submitted %',
+                    data: data_rates,
+                    borderColor: '#28a745',
+                    backgroundColor: 'rgba(40,167,69,0.10)',
+                    fill: true,
+                    pointRadius: pts.length === 1 ? 6 : 4,
+                    pointHoverRadius: 6,
+                    pointBackgroundColor: function (ctx) {
+                        if (!ctx || ctx.dataIndex == null) return '#28a745';
+                        return pts[ctx.dataIndex].in_progress ? '#fff' : '#28a745';
+                    },
+                    pointBorderColor: '#28a745',
+                    pointBorderWidth: function (ctx) {
+                        if (!ctx || ctx.dataIndex == null) return 1;
+                        return pts[ctx.dataIndex].in_progress ? 2 : 1;
+                    },
+                    tension: 0.25,
+                    /* Per-segment dash override: the segment ENDING at an
+                       in-progress point gets a dashed style. */
+                    segment: {
+                        borderDash: function (seg) {
+                            return pts[seg.p1DataIndex] && pts[seg.p1DataIndex].in_progress ? [6, 4] : [];
+                        },
+                        borderColor: function (seg) {
+                            return pts[seg.p1DataIndex] && pts[seg.p1DataIndex].in_progress ? '#7fc18b' : '#28a745';
+                        }
+                    }
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            title: function (items) { return items[0].label; },
+                            label: function (item) {
+                                var p = pts[item.dataIndex];
+                                return p.rate + '% submitted (' + p.done + '/' + p.eligible + ')';
+                            },
+                            afterBody: function (items) {
+                                var p = pts[items[0].dataIndex];
+                                return p.in_progress ? ['In progress (< 7 days old)'] : [];
+                            }
+                        }
+                    }
+                },
+                onClick: function (e, els) {
+                    if (!els.length) return;
+                    var p = pts[els[0].index];
+                    if (p && p.asn_id) window.location.href = '/teacher/assignment/' + p.asn_id;
+                },
+                scales: {
+                    y: { min: 0, max: 100, ticks: { callback: function (v) { return v + '%'; } } },
+                    x: { ticks: { autoSkip: false, maxRotation: 0, minRotation: 0 } }
+                }
+            }
+        });
+    } catch (err) {
+        console.error(err);
+        body.innerHTML = '<div class="ms-no-data" style="color:#dc3545;">Could not load.</div>';
+    }
 }
 
 /* =====================================================================
