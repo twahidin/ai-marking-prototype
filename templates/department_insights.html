@@ -92,16 +92,28 @@
     .pct-mid { background: #fff3cd; color: #856404; font-weight: 600; border-radius: 6px; }
     .pct-low { background: #fde8e8; color: #dc3545; font-weight: 600; border-radius: 6px; }
 
-    /* Insights toggle (mirrored on teacher_insights.html) */
-    .insights-toggle-row { display: flex; justify-content: center; margin-bottom: 24px; }
+    /* Compact insights toolbar — single-row title + toggle (mirrors
+       teacher_insights.html so users see the same chrome on both views). */
+    .insights-toolbar {
+        background: white; border-radius: 14px; padding: 12px 16px;
+        box-shadow: 0 1px 12px rgba(0,0,0,0.06);
+        border: 1px solid rgba(0,0,0,0.04);
+        display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+        margin-bottom: 20px;
+    }
+    .insights-toolbar h1 {
+        font-size: 18px; font-weight: 700; color: #1a1a2e;
+        margin: 0; line-height: 1.2; flex-shrink: 0;
+    }
+    .insights-toolbar .toolbar-subtitle { font-size: 12px; color: #888; }
+    .insights-toolbar .toolbar-spacer { flex: 1; }
     .insights-toggle {
-        display: inline-flex; background: white; border-radius: 999px;
-        box-shadow: 0 1px 6px rgba(0,0,0,0.06); padding: 4px;
-        border: 1px solid rgba(0,0,0,0.05);
+        display: inline-flex; background: #f0f2ff; border-radius: 999px;
+        padding: 3px; border: 1px solid rgba(0,0,0,0.05);
     }
     .insights-toggle a {
-        text-decoration: none; padding: 8px 22px; border-radius: 999px;
-        font-size: 14px; font-weight: 600; color: #666; transition: all 0.15s;
+        text-decoration: none; padding: 6px 16px; border-radius: 999px;
+        font-size: 13px; font-weight: 600; color: #666; transition: all 0.15s;
     }
     .insights-toggle a:hover { color: #333; }
     .insights-toggle a.active { background: #667eea; color: white; }
@@ -110,12 +122,10 @@
 
 {% block body %}
 <div class="dept-page">
-    <div class="dept-page-header animate__animated animate__fadeInDown" style="animation-duration:0.5s;">
+    <div class="insights-toolbar animate__animated animate__fadeIn" style="animation-duration:0.4s;">
         <h1>Department Insights</h1>
-        <p>Performance analytics and reports</p>
-    </div>
-
-    <div class="insights-toggle-row">
+        <span class="toolbar-subtitle">Performance analytics and reports</span>
+        <span class="toolbar-spacer"></span>
         <div class="insights-toggle" role="tablist">
             <a class="active" aria-current="page" role="tab" aria-selected="true">Department</a>
             <a href="/teacher/insights" role="tab">My Class</a>

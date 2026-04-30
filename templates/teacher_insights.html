@@ -5,47 +5,51 @@
 {% block head %}
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack.min.css">
 <style>
-    /* Insights toggle (mirrored on department_insights.html) */
-    .insights-toggle-row { display: flex; justify-content: center; margin-bottom: 24px; }
+    /* Compact insights toolbar — title, class picker, view toggle and edit
+       button all on a single row to claw back vertical space above the
+       widgets. Wraps on narrow viewports so nothing gets hidden. */
+    .insights-toolbar {
+        background: white; border-radius: 14px; padding: 12px 16px;
+        box-shadow: 0 1px 12px rgba(0,0,0,0.06);
+        border: 1px solid rgba(0,0,0,0.04);
+        display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+        margin-bottom: 20px;
+    }
+    .insights-toolbar h1 {
+        font-size: 18px; font-weight: 700; color: #1a1a2e;
+        margin: 0; line-height: 1.2; flex-shrink: 0;
+    }
+    .insights-toolbar .class-picker {
+        padding: 7px 10px; border: 1px solid #e0e0e0; border-radius: 8px;
+        font-size: 13px; outline: none; min-width: 200px;
+        background: white;
+    }
+    .insights-toolbar .class-picker:focus { border-color: #667eea; }
+    .insights-toolbar .toolbar-spacer { flex: 1; }
+
+    /* Segmented insights toggle (used on both teacher and department views) */
     .insights-toggle {
-        display: inline-flex; background: white; border-radius: 999px;
-        box-shadow: 0 1px 6px rgba(0,0,0,0.06); padding: 4px;
-        border: 1px solid rgba(0,0,0,0.05);
+        display: inline-flex; background: #f0f2ff; border-radius: 999px;
+        padding: 3px; border: 1px solid rgba(0,0,0,0.05);
     }
     .insights-toggle a {
-        text-decoration: none; padding: 8px 22px; border-radius: 999px;
-        font-size: 14px; font-weight: 600; color: #666; transition: all 0.15s;
+        text-decoration: none; padding: 6px 16px; border-radius: 999px;
+        font-size: 13px; font-weight: 600; color: #666; transition: all 0.15s;
     }
     .insights-toggle a:hover { color: #333; }
     .insights-toggle a.active { background: #667eea; color: white; }
     .insights-toggle a.disabled { opacity: 0.45; pointer-events: none; }
 
-    /* Class picker bar */
-    .class-picker-bar {
-        background: white; border-radius: 14px; padding: 16px 20px;
-        box-shadow: 0 1px 12px rgba(0,0,0,0.06);
-        border: 1px solid rgba(0,0,0,0.04);
-        display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-        margin-bottom: 24px;
-    }
-    .class-picker-bar label {
-        font-size: 13px; font-weight: 600; color: #555; flex-shrink: 0;
-    }
-    .class-picker-bar select {
-        padding: 8px 14px; border: 2px solid #e0e0e0; border-radius: 8px;
-        font-size: 14px; outline: none; min-width: 220px; flex: 1;
-    }
-    .class-picker-bar select:focus { border-color: #667eea; }
-    .insights-actions { margin-left: auto; display: flex; gap: 10px; }
+    /* Edit-mode + other circular actions */
     .icon-btn {
-        height: 38px; padding: 0 14px; border-radius: 999px;
+        height: 34px; padding: 0 12px; border-radius: 999px;
         border: 1px solid #e0e0e0; background: white; cursor: pointer;
         display: inline-flex; align-items: center; gap: 6px;
         font-size: 13px; font-weight: 600; color: #555; transition: all 0.15s;
     }
     .icon-btn:hover { border-color: #667eea; color: #667eea; }
     .icon-btn.active { background: #667eea; color: white; border-color: #667eea; }
-    .icon-btn .icon { font-size: 16px; }
+    .icon-btn .icon { font-size: 15px; }
 
     /* Empty state */
     .insights-empty-grid {
@@ -239,12 +243,18 @@
 
 {% block body %}
 <div class="dept-page">
-    <div class="dept-page-header animate__animated animate__fadeInDown" style="animation-duration:0.5s;">
+    <div class="insights-toolbar animate__animated animate__fadeIn" style="animation-duration:0.4s;">
         <h1>Insights</h1>
-        <p>{% if selected_class %}{{ selected_class.name }}{% if selected_class.level %} • {{ selected_class.level }}{% endif %}{% else %}Pick a class to start{% endif %}</p>
-    </div>
-
-    <div class="insights-toggle-row">
+        {% if classes %}
+        <select class="class-picker" id="classPicker" onchange="window.location.href='/teacher/insights?class_id=' + encodeURIComponent(this.value)">
+            {% for cls in classes %}
+            <option value="{{ cls.id }}" {% if selected_class and cls.id == selected_class.id %}selected{% endif %}>
+                {{ cls.name }}{% if cls.level %} ({{ cls.level }}){% endif %}
+            </option>
+            {% endfor %}
+        </select>
+        {% endif %}
+        <span class="toolbar-spacer"></span>
         <div class="insights-toggle" role="tablist">
             {% if can_view_dept %}
             <a href="/department/insights" role="tab">Department</a>
@@ -253,26 +263,13 @@
             {% endif %}
             <a class="active" aria-current="page" role="tab" aria-selected="true">My Class</a>
         </div>
+        {% if classes %}
+        <button type="button" class="icon-btn" id="editModeBtn" title="Toggle edit mode">
+            <span class="icon">&#9881;</span>
+            <span id="editModeLabel">Edit</span>
+        </button>
+        {% endif %}
     </div>
-
-    {% if classes %}
-    <div class="class-picker-bar">
-        <label for="classPicker">Class</label>
-        <select id="classPicker" onchange="window.location.href='/teacher/insights?class_id=' + encodeURIComponent(this.value)">
-            {% for cls in classes %}
-            <option value="{{ cls.id }}" {% if selected_class and cls.id == selected_class.id %}selected{% endif %}>
-                {{ cls.name }}{% if cls.level %} ({{ cls.level }}){% endif %}
-            </option>
-            {% endfor %}
-        </select>
-        <div class="insights-actions">
-            <button type="button" class="icon-btn" id="editModeBtn" title="Toggle edit mode">
-                <span class="icon">&#9881;</span>
-                <span id="editModeLabel">Edit</span>
-            </button>
-        </div>
-    </div>
-    {% endif %}
 
     {% if not classes %}
     <div class="insights-empty-grid">
