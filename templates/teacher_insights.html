@@ -72,7 +72,13 @@
     }
     body.edit-mode .grid-stack-item-content {
         outline: 2px dashed #b6bdf0; outline-offset: -2px;
+        cursor: move;
     }
+    /* Restore pointer cursor on the controls inside the tile so the
+       teacher knows × and 🎨 are click targets, not drag handles. */
+    body.edit-mode .widget-color-btn,
+    body.edit-mode .widget-remove,
+    body.edit-mode .swatch { cursor: pointer; }
     .widget-header {
         display: flex; align-items: center; justify-content: space-between;
         gap: 8px; margin-bottom: 10px;
@@ -102,12 +108,18 @@
        backdrop behind the canvas (.chart-wrap rule below) so the graph
        still renders on a clean surface — the pastel only fills the
        margin around it. */
+    /* All seven pastels share the same HSL weight (S 100% / L 92.5%) so
+       they sit together on a dashboard without one looking heavier than
+       the rest. The "red" key now renders as pink — kept the key for
+       backwards-compat with already-saved layouts. */
     .grid-stack-item-content { transition: background 0.2s; }
-    .grid-stack-item[data-color="red"]    > .grid-stack-item-content { background: #FCE0DD; }
-    .grid-stack-item[data-color="yellow"] > .grid-stack-item-content { background: #FFF4D4; }
-    .grid-stack-item[data-color="blue"]   > .grid-stack-item-content { background: #DDE7F8; }
-    .grid-stack-item[data-color="green"]  > .grid-stack-item-content { background: #DCEFDA; }
-    .grid-stack-item[data-color="purple"] > .grid-stack-item-content { background: #E8DEF4; }
+    .grid-stack-item[data-color="red"]    > .grid-stack-item-content { background: #FFD9F5; }
+    .grid-stack-item[data-color="yellow"] > .grid-stack-item-content { background: #FFFFD9; }
+    .grid-stack-item[data-color="blue"]   > .grid-stack-item-content { background: #D9EBFF; }
+    .grid-stack-item[data-color="green"]  > .grid-stack-item-content { background: #D9FFD9; }
+    .grid-stack-item[data-color="purple"] > .grid-stack-item-content { background: #EBD9FF; }
+    .grid-stack-item[data-color="teal"]   > .grid-stack-item-content { background: #D9FFFF; }
+    .grid-stack-item[data-color="orange"] > .grid-stack-item-content { background: #FFEBD9; }
     /* Legacy: layouts saved before the palette swap may still carry
        'black'/'white'. Map them to neutral greys so nothing breaks. */
     .grid-stack-item[data-color="black"]  > .grid-stack-item-content { background: #ECECEC; }
@@ -132,11 +144,13 @@
         display: flex; align-items: center; justify-content: center;
         color: #888; font-size: 13px; line-height: 1;
     }
-    .swatch[data-color="red"]    { background: #FCE0DD; border-color: #F2B8AF; }
-    .swatch[data-color="yellow"] { background: #FFF4D4; border-color: #EBCD79; }
-    .swatch[data-color="blue"]   { background: #DDE7F8; border-color: #ACBFE5; }
-    .swatch[data-color="green"]  { background: #DCEFDA; border-color: #A1CD9C; }
-    .swatch[data-color="purple"] { background: #E8DEF4; border-color: #BBA5DA; }
+    .swatch[data-color="red"]    { background: #FFD9F5; border-color: #E8B5D6; }
+    .swatch[data-color="yellow"] { background: #FFFFD9; border-color: #E8E599; }
+    .swatch[data-color="blue"]   { background: #D9EBFF; border-color: #B5C9E8; }
+    .swatch[data-color="green"]  { background: #D9FFD9; border-color: #99E899; }
+    .swatch[data-color="purple"] { background: #EBD9FF; border-color: #C9B5E8; }
+    .swatch[data-color="teal"]   { background: #D9FFFF; border-color: #99E8E8; }
+    .swatch[data-color="orange"] { background: #FFEBD9; border-color: #E8C999; }
     .swatch.active { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #667eea; }
     .widget-body { flex: 1; min-height: 0; }
     .widget-placeholder { color: #aaa; font-size: 13px; line-height: 1.5; padding: 8px 0; }
@@ -610,10 +624,12 @@ function widgetTileHtml(key) {
                 '<button type="button" class="widget-remove" title="Remove widget" aria-label="Remove widget">&times;</button>' +
                 '<div class="widget-color-pop" role="menu">' +
                     '<button type="button" class="swatch" data-color="" title="No tint" aria-label="No tint"></button>' +
-                    '<button type="button" class="swatch" data-color="red" title="Pastel red" aria-label="Pastel red"></button>' +
+                    '<button type="button" class="swatch" data-color="red" title="Pastel pink" aria-label="Pastel pink"></button>' +
+                    '<button type="button" class="swatch" data-color="orange" title="Pastel orange" aria-label="Pastel orange"></button>' +
                     '<button type="button" class="swatch" data-color="yellow" title="Pastel yellow" aria-label="Pastel yellow"></button>' +
-                    '<button type="button" class="swatch" data-color="blue" title="Pastel blue" aria-label="Pastel blue"></button>' +
                     '<button type="button" class="swatch" data-color="green" title="Pastel green" aria-label="Pastel green"></button>' +
+                    '<button type="button" class="swatch" data-color="teal" title="Pastel teal" aria-label="Pastel teal"></button>' +
+                    '<button type="button" class="swatch" data-color="blue" title="Pastel blue" aria-label="Pastel blue"></button>' +
                     '<button type="button" class="swatch" data-color="purple" title="Pastel purple" aria-label="Pastel purple"></button>' +
                 '</div>' +
             '</div>' +
@@ -1259,9 +1275,15 @@ document.addEventListener('DOMContentLoaded', function () {
         animate: true,
         disableOneColumnMode: false,
         staticGrid: true,         /* start in view mode */
-        handle: '.widget-header',
+        /* No handle restriction — clicking anywhere on the tile body in
+           edit mode starts a drag. The cancel selector below excludes
+           the controls (× / 🎨 / colour swatches) so they keep firing
+           their own click handlers instead of triggering a drag. */
         resizable: { handles: 'all' },   /* drag from any edge or corner */
-        draggable: { scroll: true },     /* auto-scroll the page while dragging */
+        draggable: {
+            scroll: true,
+            cancel: '.widget-color-btn, .widget-remove, .widget-color-pop, .swatch'
+        },
         acceptWidgets: false,
         removable: false
     }, gridEl);
