@@ -195,6 +195,26 @@
     .add-widget-panel h3 {
         font-size: 14px; font-weight: 700; color: #1a1a2e; margin-bottom: 12px;
     }
+    .panel-section { margin-bottom: 20px; }
+    .panel-section:last-child { margin-bottom: 0; }
+    .template-options {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 10px;
+    }
+    .template-option {
+        display: flex; flex-direction: column; gap: 4px;
+        padding: 14px 16px; border: 1px solid #d6dcf5; border-radius: 12px;
+        background: linear-gradient(135deg, #fafbff 0%, #eef0fc 100%);
+        cursor: pointer; transition: all 0.15s; text-align: left; font-family: inherit;
+    }
+    .template-option:hover { border-color: #667eea; transform: translateY(-1px); box-shadow: 0 2px 8px rgba(102,126,234,0.15); }
+    .template-option .opt-title {
+        font-size: 14px; font-weight: 700; color: #1a1a2e;
+        display: flex; align-items: center; gap: 6px;
+    }
+    .template-option .opt-title .opt-icon { font-size: 16px; }
+    .template-option .opt-desc { font-size: 11px; color: #666; line-height: 1.4; }
     .widget-options {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -266,10 +286,16 @@
     {% else %}
 
     <div class="add-widget-panel" id="addWidgetPanel">
-        <h3>Add a widget</h3>
-        <div class="widget-options" id="widgetOptions"></div>
+        <div class="panel-section">
+            <h3>Start from a template</h3>
+            <div class="template-options" id="templateOptions"></div>
+        </div>
+        <div class="panel-section">
+            <h3>Or add a widget</h3>
+            <div class="widget-options" id="widgetOptions"></div>
+        </div>
         <p style="margin-top:12px;font-size:11px;color:#aaa;">
-            Drag tiles to rearrange. Drag the bottom-right corner of a tile to resize. Click ✕ on a tile to remove it.
+            Drag tiles to rearrange. Drag any edge to resize. Click ✕ on a tile to remove it.
         </p>
     </div>
 
@@ -277,7 +303,7 @@
 
     <div class="insights-empty-grid" id="emptyDashboard" style="display:none;">
         <h3>Your dashboard is empty</h3>
-        <p>Click <strong>Edit</strong> above, then pick widgets from the panel that appears.</p>
+        <p>Click <strong>Edit</strong> above and pick a starter template, or add widgets one by one.</p>
     </div>
 
     {% endif %}
@@ -336,6 +362,48 @@ var CLASS_ID = {{ selected_class.id|tojson }};
 var grid = null;
 var saveTimer = null;
 
+/* Starter templates: opinionated layouts that ship as defaults so a
+   first-time teacher never sees an empty dashboard. The 'standard'
+   template is auto-applied if no saved layout exists. Coordinates are
+   on a 12-column grid; cellHeight is 60px. Keep widget keys in sync
+   with WIDGET_CATALOG above. */
+var STARTER_TEMPLATES = [
+    {
+        key: 'standard',
+        label: 'Standard view',
+        icon: '📊',  /* 📊 */
+        desc: 'Broad coverage — performance, who needs help, what to revisit.',
+        layout: [
+            { key: 'performance_trend',  x: 0, y: 0,  w: 12, h: 5 },
+            { key: 'missed_submissions', x: 0, y: 5,  w: 4,  h: 5 },
+            { key: 'consultation',       x: 4, y: 5,  w: 8,  h: 5 },
+            { key: 'weak_questions',     x: 0, y: 10, w: 12, h: 6 }
+        ]
+    },
+    {
+        key: 'pastoral',
+        label: 'Pastoral view',
+        icon: '👥',  /* 👥 */
+        desc: 'For form teachers — focus on people, not scores.',
+        layout: [
+            { key: 'missed_submissions', x: 0, y: 0, w: 6,  h: 5 },
+            { key: 'encourage',          x: 6, y: 0, w: 6,  h: 5 },
+            { key: 'consultation',       x: 0, y: 5, w: 12, h: 5 }
+        ]
+    },
+    {
+        key: 'marking_focus',
+        label: 'Marking-focus view',
+        icon: '✍️',  /* ✍️ */
+        desc: 'Score trend and weak questions only — for academic review.',
+        layout: [
+            { key: 'performance_trend', x: 0, y: 0, w: 12, h: 5 },
+            { key: 'weak_questions',    x: 0, y: 5, w: 12, h: 6 }
+        ]
+    }
+];
+var DEFAULT_TEMPLATE_KEY = 'standard';
+
 function escHtml(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
 
 function buildWidgetOptions() {
@@ -353,6 +421,57 @@ function buildWidgetOptions() {
         btn.addEventListener('click', function () { addWidget(key); });
         container.appendChild(btn);
     });
+}
+
+function buildTemplateOptions() {
+    var container = document.getElementById('templateOptions');
+    if (!container) return;
+    container.innerHTML = '';
+    STARTER_TEMPLATES.forEach(function (tpl) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'template-option';
+        btn.dataset.key = tpl.key;
+        btn.innerHTML =
+            '<span class="opt-title"><span class="opt-icon">' + escHtml(tpl.icon) + '</span>' + escHtml(tpl.label) + '</span>' +
+            '<span class="opt-desc">' + escHtml(tpl.desc) + '</span>';
+        btn.addEventListener('click', function () { applyTemplate(tpl.key); });
+        container.appendChild(btn);
+    });
+}
+
+/* Replace the current grid layout with a template's layout. If the grid
+   already has tiles, we confirm — applying a template is destructive
+   for any custom arrangement they've built. */
+function applyTemplate(key, options) {
+    options = options || {};
+    var tpl = STARTER_TEMPLATES.find(function (t) { return t.key === key; });
+    if (!tpl) return;
+    var hasTiles = grid && grid.engine && grid.engine.nodes.length > 0;
+    if (hasTiles && !options.silent) {
+        if (!confirm('Replace your current dashboard with the "' + tpl.label + '" layout?\n\nYou can always rebuild it from the widget panel.')) return;
+    }
+    grid.removeAll();
+    var items = tpl.layout
+        .filter(function (e) { return e && e.key && WIDGET_CATALOG[e.key]; })
+        .map(function (e) {
+            return { w: e.w, h: e.h, x: e.x, y: e.y, content: widgetTileHtml(e.key) };
+        });
+    if (items.length) {
+        grid.load(items);
+        // grid.load rebuilds DOM nodes; walk and bind each so they render
+        // and pick up the chart-resize observer.
+        grid.engine.nodes.forEach(function (n, i) {
+            var entry = tpl.layout[i];
+            if (entry && entry.key && n.el) {
+                n.el.dataset.widgetKey = entry.key;
+                bindWidget(n.el, entry.key);
+            }
+        });
+    }
+    syncAddPanelDisabled();
+    syncEmptyState();
+    scheduleSave();
 }
 
 function syncAddPanelDisabled() {
@@ -495,6 +614,14 @@ async function loadLayout() {
     var res = await fetch('/teacher/insights/layout?class_id=' + encodeURIComponent(CLASS_ID));
     var data = await res.json();
     var layout = (data && data.layout) || [];
+    /* First-time landing on this class: no saved layout. Drop in the
+       default starter template so the teacher sees something useful
+       instead of an empty grid. The applied template is saved as their
+       new layout — they can edit / swap / clear from there. */
+    if (!layout.length) {
+        applyTemplate(DEFAULT_TEMPLATE_KEY, { silent: true });
+        return;
+    }
     /* GridStack's load() expects items in its own format; build them. */
     var items = layout
         .filter(function (e) { return e && e.key && WIDGET_CATALOG[e.key]; })
@@ -984,6 +1111,7 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     buildWidgetOptions();
+    buildTemplateOptions();
     loadLayout();
 
     document.getElementById('editModeBtn').addEventListener('click', function () {
