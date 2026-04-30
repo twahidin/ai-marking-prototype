@@ -130,6 +130,7 @@
     }
     .ms-celebrate .icon { font-size: 28px; display: block; margin-bottom: 6px; }
     .ms-no-data { color: #888; font-size: 13px; padding: 8px 0; text-align: center; }
+    .ms-grace-note { font-size: 11px; color: #888; margin-top: 8px; line-height: 1.4; }
 
     /* Chart-bearing widgets need their canvas to fill the body. The chart
        wrap is position:relative so the canvas (absolute) can pin to its
@@ -485,15 +486,18 @@ function syncAddPanelDisabled() {
 }
 
 function widgetTileHtml(key) {
+    /* IMPORTANT: do NOT wrap in a `.grid-stack-item-content` here. GridStack
+       creates that wrapper itself and drops `content` inside it. Returning
+       our own wrapper produces nested flex containers where the outer one
+       has flex:1 (from .widget-body via cascade) but the inner one has the
+       intrinsic header height — collapsing the chart area to 0. */
     var w = WIDGET_CATALOG[key];
     return (
-        '<div class="grid-stack-item-content" data-widget-body-wrap>' +
-            '<div class="widget-header">' +
-                '<div class="widget-title">' + escHtml(w.title) + '</div>' +
-                '<button type="button" class="widget-remove" title="Remove widget" aria-label="Remove widget">&times;</button>' +
-            '</div>' +
-            '<div class="widget-body" data-widget-body></div>' +
-        '</div>'
+        '<div class="widget-header">' +
+            '<div class="widget-title">' + escHtml(w.title) + '</div>' +
+            '<button type="button" class="widget-remove" title="Remove widget" aria-label="Remove widget">&times;</button>' +
+        '</div>' +
+        '<div class="widget-body" data-widget-body></div>'
     );
 }
 
@@ -1010,15 +1014,20 @@ async function renderMissedSubmissions(body, ctx) {
             return;
         }
         if (!data.assignments || !data.assignments.length) {
-            body.innerHTML = '<div class="ms-no-data">No assignments older than 7 days yet — nothing to chase.</div>';
+            body.innerHTML = '<div class="ms-no-data">No assignments older than 7 days yet — they’re still inside the grace window. Once one ages past 7 days, missed-submission tracking kicks in.</div>';
             return;
         }
+        var n = data.assignments.length;
+        var assignmentCount = (n === 1) ? 'last assignment' : ('last ' + n + ' assignments');
+        var graceNote = (n < 3)
+            ? '<div class="ms-grace-note">Showing the ' + n + ' assignment' + (n === 1 ? '' : 's') + ' aged past the 7-day grace window. Newer assignments will join the list when they cross that threshold.</div>'
+            : '';
         if (data.all_caught_up) {
             body.innerHTML =
                 '<div class="ms-celebrate">' +
                     '<span class="icon">&#127881;</span>' +
-                    'Everyone’s caught up on the last ' + data.assignments.length + ' assignments' +
-                '</div>';
+                    'Everyone’s caught up on the ' + assignmentCount +
+                '</div>' + graceNote;
             return;
         }
 
@@ -1044,6 +1053,7 @@ async function renderMissedSubmissions(body, ctx) {
         html += '<div class="ms-actions">' +
             '<button type="button" class="ms-btn primary" data-ms-copy>Copy reminder</button>' +
             '</div>';
+        if (graceNote) html += graceNote;
         body.innerHTML = html;
 
         var copyBtn = body.querySelector('[data-ms-copy]');
