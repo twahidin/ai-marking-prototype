@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Preview — {{ item.title or item.subject or 'Bank item' }} — {{ app_title }}{% endblock %}
+
+{% block head %}
+<style>
+    body { background: #f7f7fa; margin: 0; }
+    .review-root { height: 100vh; display: flex; flex-direction: column; }
+    .review-topbar {
+        height: 52px; padding: 0 16px; background: white; border-bottom: 1px solid #e0e0e0;
+        display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+    }
+    .review-topbar .title { font-size: 15px; font-weight: 600; color: #2D2D2D; }
+    .review-topbar .title .muted { color: #888; font-weight: 400; margin-left: 8px; }
+    .review-topbar .close-link {
+        font-size: 13px; color: #667eea; text-decoration: none; padding: 6px 12px; border-radius: 6px;
+    }
+    .review-topbar .close-link:hover { background: #f0f0f0; }
+
+    .review-body { flex: 1; display: flex; min-height: 0; min-width: 0; }
+    .review-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: white; overflow: hidden; }
+    .review-pane-left { flex: 0 0 var(--left-width, 50%); border-right: 0; }
+    .review-pane-right { flex: 1 1 auto; }
+
+    .review-resizer {
+        flex: 0 0 8px; cursor: col-resize; background: #e8e8e8; position: relative;
+        transition: background 0.15s;
+    }
+    .review-resizer:hover, .review-resizer.dragging { background: #c8c8c8; }
+
+    .review-subtoolbar {
+        height: 44px; padding: 0 12px; background: #fafafa; border-bottom: 1px solid #eee;
+        display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+    }
+    .review-subtoolbar button {
+        padding: 6px 12px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 6px;
+        background: white; cursor: pointer;
+    }
+    .review-subtoolbar button:hover { background: #f0f0f0; }
+    .review-subtoolbar .pane-label { font-size: 12px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.3px; margin-right: auto; }
+
+    .review-scroll { flex: 1; overflow: auto; padding: 16px; background: #f0f0f3; min-width: 0; min-height: 0; }
+    .dv-scale-wrap { transform-origin: top center; transition: none; }
+
+    .pane-empty { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px; color: #888; font-size: 14px; text-align: center; background: #f0f0f3; }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="review-root" id="reviewRoot">
+    <div class="review-topbar">
+        <div class="title">
+            Preview<span class="muted">{{ item.title or item.subject or 'Bank item' }}</span>
+        </div>
+        <a href="#" class="close-link" onclick="reviewClose(); return false;">Close ×</a>
+    </div>
+    <div class="review-body" id="reviewBody">
+        <div class="review-pane review-pane-left">
+            {% if has_question_paper %}
+            <div class="review-subtoolbar">
+                <span class="pane-label">Question Paper</span>
+                <button type="button" id="leftZoomOut">−</button>
+                <button type="button" id="leftZoomIn">+</button>
+                <button type="button" id="leftReset">Reset</button>
+                <button type="button" id="leftRotate">⟳ Rotate</button>
+            </div>
+            <div class="review-scroll" id="leftScroll"></div>
+            {% else %}
+            <div class="review-subtoolbar"><span class="pane-label">Question Paper</span></div>
+            <div class="pane-empty">No question paper attached to this bank item.</div>
+            {% endif %}
+        </div>
+        <div class="review-resizer" id="reviewResizer"></div>
+        <div class="review-pane review-pane-right">
+            {% if has_answer_key %}
+            <div class="review-subtoolbar">
+                <span class="pane-label">Answer Key</span>
+                <button type="button" id="rightZoomOut">−</button>
+                <button type="button" id="rightZoomIn">+</button>
+                <button type="button" id="rightReset">Reset</button>
+                <button type="button" id="rightRotate">⟳ Rotate</button>
+            </div>
+            <div class="review-scroll" id="rightScroll"></div>
+            {% elif has_rubrics %}
+            <div class="review-subtoolbar">
+                <span class="pane-label">Rubrics</span>
+                <button type="button" id="rightZoomOut">−</button>
+                <button type="button" id="rightZoomIn">+</button>
+                <button type="button" id="rightReset">Reset</button>
+                <button type="button" id="rightRotate">⟳ Rotate</button>
+            </div>
+            <div class="review-scroll" id="rightScroll"></div>
+            {% else %}
+            <div class="review-subtoolbar"><span class="pane-label">Answer Key</span></div>
+            <div class="pane-empty">No answer key (or rubrics) attached to this bank item.</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.min.mjs" type="module"></script>
+<script type="module">
+    import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.min.mjs';
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs';
+    window.pdfjsLib = pdfjsLib;
+    window.dispatchEvent(new Event('pdfjs-ready'));
+</script>
+<script src="{{ url_for('static', filename='js/document_viewer.js') }}?v={{ static_version }}"></script>
+<script>
+var BANK_ID = {{ item.id|tojson }};
+var HAS_QP = {{ 'true' if has_question_paper else 'false' }};
+var HAS_AK = {{ 'true' if has_answer_key else 'false' }};
+var HAS_RUBRICS = {{ 'true' if has_rubrics else 'false' }};
+
+// --- Resizer (mirrors review.html, but stores under its own key) ---
+(function initResizer() {
+    var body = document.getElementById('reviewBody');
+    var resizer = document.getElementById('reviewResizer');
+    var stored = parseFloat(localStorage.getItem('bank-preview-split-left-width'));
+    if (!isNaN(stored) && stored >= 20 && stored <= 80) {
+        body.style.setProperty('--left-width', stored + '%');
+    }
+    var dragging = false;
+    resizer.addEventListener('mousedown', function (e) {
+        dragging = true;
+        resizer.classList.add('dragging');
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    });
+    window.addEventListener('mousemove', function (e) {
+        if (!dragging) return;
+        var rect = body.getBoundingClientRect();
+        var pct = ((e.clientX - rect.left) / rect.width) * 100;
+        pct = Math.max(20, Math.min(80, pct));
+        body.style.setProperty('--left-width', pct + '%');
+    });
+    window.addEventListener('mouseup', function () {
+        if (!dragging) return;
+        dragging = false;
+        resizer.classList.remove('dragging');
+        document.body.style.userSelect = '';
+        var current = body.style.getPropertyValue('--left-width');
+        if (current) {
+            var num = parseFloat(current);
+            if (!isNaN(num)) localStorage.setItem('bank-preview-split-left-width', num);
+        }
+    });
+})();
+
+function reviewClose() {
+    try { window.close(); } catch (e) {}
+    if (!window.closed) window.location.href = '/bank';
+}
+
+function initLeftViewer() {
+    if (!HAS_QP) return;
+    var leftViewer = DocumentViewer.create(document.getElementById('leftScroll'));
+    leftViewer.loadFromUrl('/bank/' + encodeURIComponent(BANK_ID) + '/file-inline/question_paper');
+    document.getElementById('leftZoomIn').addEventListener('click', function () { leftViewer.zoomIn(); });
+    document.getElementById('leftZoomOut').addEventListener('click', function () { leftViewer.zoomOut(); });
+    document.getElementById('leftReset').addEventListener('click', function () { leftViewer.reset(); });
+    document.getElementById('leftRotate').addEventListener('click', function () { leftViewer.rotate(); });
+}
+
+function initRightViewer() {
+    var rightFile = HAS_AK ? 'answer_key' : (HAS_RUBRICS ? 'rubrics' : null);
+    if (!rightFile) return;
+    var rightViewer = DocumentViewer.create(document.getElementById('rightScroll'));
+    rightViewer.loadFromUrl('/bank/' + encodeURIComponent(BANK_ID) + '/file-inline/' + rightFile);
+    document.getElementById('rightZoomIn').addEventListener('click', function () { rightViewer.zoomIn(); });
+    document.getElementById('rightZoomOut').addEventListener('click', function () { rightViewer.zoomOut(); });
+    document.getElementById('rightReset').addEventListener('click', function () { rightViewer.reset(); });
+    document.getElementById('rightRotate').addEventListener('click', function () { rightViewer.rotate(); });
+}
+
+function initAll() {
+    initLeftViewer();
+    initRightViewer();
+}
+
+if (window.pdfjsLib) initAll();
+else window.addEventListener('pdfjs-ready', initAll);
+</script>
+{% endblock %}

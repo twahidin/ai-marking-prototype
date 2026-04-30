@@ -5407,6 +5407,42 @@ def bank_file_download(bank_id, file_type):
                     headers={'Content-Disposition': f'attachment; filename={file_type}.pdf'})
 
 
+@app.route('/bank/<bank_id>/file-inline/<file_type>')
+def bank_file_inline(bank_id, file_type):
+    """Inline-display version of a bank item's file (used by the preview page)."""
+    if not _is_authenticated():
+        return 'Not authenticated', 401
+    item = AssignmentBank.query.get_or_404(bank_id)
+    file_map = {
+        'question_paper': item.question_paper,
+        'answer_key': item.answer_key,
+        'rubrics': item.rubrics,
+        'reference': item.reference,
+    }
+    data = file_map.get(file_type)
+    if not data:
+        return 'File not found', 404
+    resp = send_file(io.BytesIO(data), mimetype=_detect_mime(data), as_attachment=False)
+    resp.cache_control.private = True
+    resp.cache_control.no_store = True
+    return resp
+
+
+@app.route('/bank/<bank_id>/preview')
+def bank_preview(bank_id):
+    """Split-screen preview of a bank item: question paper (left) vs answer key (right)."""
+    if not _is_authenticated():
+        return redirect(url_for('hub'))
+    item = AssignmentBank.query.get_or_404(bank_id)
+    return render_template(
+        'bank_preview.html',
+        item=item,
+        has_question_paper=bool(item.question_paper),
+        has_answer_key=bool(item.answer_key),
+        has_rubrics=bool(item.rubrics),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Setup Wizard & Settings
 # ---------------------------------------------------------------------------
