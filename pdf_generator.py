@@ -205,25 +205,20 @@ _PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 \usepackage{titlesec}
 \usepackage{ulem}
 
-% TeX Gyre Heros is the open Helvetica clone, apt-installed in
-% texlive-fonts-recommended on Railway and visually indistinguishable
-% from Helvetica. We reference the .otf files directly via Extension=
-% rather than by display name ("TeX Gyre Heros") because luaotfload's
-% by-name font db isn't reliably populated on Railway's container —
-% kpsewhich finds the file but the name lookup fails. File lookup
-% bypasses luaotfload's database entirely and uses kpsewhich, which
-% works on both apt-installed Debian and tlmgr-installed macOS.
+% Noto Sans as the main font — humanist sans-serif similar to Helvetica
+% in feel, reliably resolvable on Railway (apt-installed via fonts-noto
+% to /usr/share/fonts/truetype/noto/, where fontconfig + luaotfload
+% find it by name without DB-rebuild gymnastics). The luaotfload
+% fallback chain routes any non-Latin codepoint to Noto Sans CJK / Tamil
+% / Devanagari, so mixed-script content like "王晓明 — 50%" renders
+% correctly per-glyph without content detection.
 %
-% The multi-script fallback chain routes any non-Latin codepoint to
-% Noto (CJK / Tamil / Devanagari) so a name like "王晓明" or "முத்து"
-% renders correctly inside an otherwise-Latin PDF — no content
-% detection needed; the engine handles it per-glyph.
-%
-% \IfFontExistsTF guards: if Noto Sans CJK SC isn't installed (local
-% macOS dev), registering the fallback chain corrupts the main font
-% load, so we skip the fallback in that case. Production always has
-% Noto via the apt fonts-noto-cjk package.
-\IfFontExistsTF{Noto Sans CJK SC}{%
+% Local-dev fallback: macOS without fonts-noto apt-installed → use
+% Latin Modern Sans (bundled with every TeX Live install, always loads).
+% The multilang_fb registration is skipped on that path because Noto
+% Sans CJK SC isn't there to satisfy it — referencing missing fonts in
+% a fallback chain corrupts the main-font load.
+\IfFontExistsTF{Noto Sans}{%
   \directlua{
     luaotfload.add_fallback("multilang_fb", {
       "Noto Sans CJK SC:script=hani;",
@@ -231,22 +226,9 @@ _PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
       "Noto Sans Devanagari:script=deva;",
     })
   }
-  \setmainfont{texgyreheros-regular}[%
-    Extension=.otf,
-    UprightFont=*,
-    ItalicFont=texgyreheros-italic,
-    BoldFont=texgyreheros-bold,
-    BoldItalicFont=texgyreheros-bolditalic,
-    RawFeature={fallback=multilang_fb},
-  ]
+  \setmainfont{Noto Sans}[RawFeature={fallback=multilang_fb}]
 }{%
-  \setmainfont{texgyreheros-regular}[%
-    Extension=.otf,
-    UprightFont=*,
-    ItalicFont=texgyreheros-italic,
-    BoldFont=texgyreheros-bold,
-    BoldItalicFont=texgyreheros-bolditalic,
-  ]
+  \setmainfont{Latin Modern Sans}
 }
 
 % Brand palette (matches the previous PDF look)
