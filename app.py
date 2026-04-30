@@ -4654,14 +4654,23 @@ def teacher_submission_review(assignment_id, submission_id):
 @app.route('/teacher/assignment/<assignment_id>/delete', methods=['POST'])
 def teacher_delete_assignment(assignment_id):
     from db import FeedbackEdit
+    from sqlalchemy import inspect as sa_inspect, text, bindparam
     asn = Assignment.query.get_or_404(assignment_id)
     err = _check_assignment_ownership(asn)
     if err:
         return err
-    # FeedbackEdit has non-nullable FKs to both assignments.id and submissions.id
-    # with no cascade. Drop those rows first or PostgreSQL rejects the delete
-    # (and the Assignment.submissions cascade) with a foreign-key violation.
+    # Two FK rabbit holes block the Assignment.submissions cascade-delete:
+    #   1. feedback_edit.assignment_id  — model exists, no cascade rule.
+    #   2. feedback_log.submission_id   — model retired but table is still
+    #      live in production with rows from the calibration-bank rollout.
+    # Clear both before the cascade fires.
     FeedbackEdit.query.filter_by(assignment_id=asn.id).delete(synchronize_session=False)
+    sub_ids = [sid for (sid,) in db.session.query(Submission.id)
+               .filter_by(assignment_id=asn.id).all()]
+    if sub_ids and 'feedback_log' in sa_inspect(db.engine).get_table_names():
+        stmt = text('DELETE FROM feedback_log WHERE submission_id IN :sids') \
+            .bindparams(bindparam('sids', expanding=True))
+        db.session.execute(stmt, {'sids': sub_ids})
     db.session.delete(asn)
     db.session.commit()
     return jsonify({'success': True})
