@@ -47,6 +47,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         texlive-lang-cjk \
         texlive-lang-other \
         texlive-pictures \
+        # ulem.sty (\sout strikethrough used in the rubrics errors table)
+        # lives in texlive-plain-generic on Debian — not pulled in by any
+        # of the other texlive-* packages, so add it explicitly.
+        texlive-plain-generic \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
