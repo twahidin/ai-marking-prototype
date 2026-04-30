@@ -39,11 +39,13 @@
         </div>
         <div class="dept-nav-user">
             <span>{{ current_teacher.name }}</span>
-            {% if current_teacher.role in ('hod', 'subject_head', 'owner') %}
+            {% if current_teacher.role in ('hod', 'subject_head', 'owner', 'manager') %}
             <div class="dept-nav-cog" data-cog-menu>
                 <button type="button" class="dept-nav-cog-btn" aria-haspopup="true" aria-expanded="false" aria-label="Settings">&#9881;</button>
                 <div class="dept-nav-cog-menu" role="menu">
+                    {% if current_teacher.role in ('hod', 'subject_head', 'owner') %}
                     <a href="/settings" role="menuitem">Settings</a>
+                    {% endif %}
                     {% if dept_mode and current_teacher.role in ('hod', 'subject_head', 'manager') %}
                     <a href="/department/classes" role="menuitem">Manage</a>
                     {% endif %}

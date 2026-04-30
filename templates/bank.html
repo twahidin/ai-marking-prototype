@@ -28,8 +28,33 @@
     .bank-card {
         background: white; border: 1px solid #e8e8e8; border-radius: 12px; padding: 20px;
         display: flex; flex-direction: column; transition: box-shadow 0.2s;
+        position: relative;
     }
     .bank-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+
+    /* Kebab (3-dot) menu — top-right of each card */
+    .card-menu { position: absolute; top: 10px; right: 10px; }
+    .card-menu-btn {
+        width: 32px; height: 32px; border-radius: 50%; border: none; background: transparent;
+        color: #888; font-size: 20px; line-height: 1; cursor: pointer; padding: 0;
+        display: inline-flex; align-items: center; justify-content: center;
+    }
+    .card-menu-btn:hover { background: #f0f0f0; color: #333; }
+    .card-menu-pop {
+        display: none; position: absolute; top: 36px; right: 0; min-width: 130px;
+        background: white; border: 1px solid #e0e0e0; border-radius: 10px;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.08); padding: 4px; z-index: 10;
+    }
+    .card-menu.open .card-menu-pop { display: block; }
+    .card-menu-pop button {
+        display: block; width: 100%; text-align: left; padding: 8px 12px; border: none;
+        background: transparent; font-size: 13px; color: #333; cursor: pointer; border-radius: 6px;
+    }
+    .card-menu-pop button:hover { background: #f5f5fa; }
+    .card-menu-pop button.danger { color: #dc3545; }
+    .card-menu-pop button.danger:hover { background: #fdecea; }
+    /* Keep the title area from running under the kebab button */
+    .bank-card > div:first-child { padding-right: 36px; }
     .bank-title { font-size: 16px; font-weight: 700; color: #333; margin-bottom: 4px; }
     .bank-subject { font-size: 13px; color: #667eea; font-weight: 600; }
     .bank-meta { font-size: 12px; color: #888; margin-top: 8px; }
@@ -50,6 +75,8 @@
     }
     .btn-sm.use { background: #667eea; color: white; }
     .btn-sm.use:hover { background: #5a6fd6; }
+    .btn-sm.preview { background: #f0f2ff; color: #667eea; text-decoration: none; display: inline-flex; align-items: center; }
+    .btn-sm.preview:hover { background: #e0e3ff; }
     .btn-sm.delete { background: #fdecea; color: #dc3545; }
     .btn-sm.delete:hover { background: #f5c6cb; }
 
@@ -145,7 +172,22 @@
     {% if items %}
     <div class="bank-grid">
         {% for item in items %}
+        {% set can_edit = teacher and teacher.role in ('hod', 'subject_head', 'lead', 'owner') %}
+        {% set can_delete = can_edit or (teacher and item.created_by == teacher.id) %}
         <div class="bank-card">
+            {% if can_edit or can_delete %}
+            <div class="card-menu" data-card-menu>
+                <button type="button" class="card-menu-btn" aria-haspopup="true" aria-expanded="false" aria-label="More actions">⋮</button>
+                <div class="card-menu-pop" role="menu">
+                    {% if can_edit %}
+                    <button type="button" role="menuitem" onclick="openEditModal('{{ item.id }}', '{{ item.title | e }}', '{{ item.subject | e }}', '{{ item.level | e }}', '{{ item.tags | e }}', '{{ (item.review_instructions or '') | e }}', '{{ (item.marking_instructions or '') | e }}'); closeAllCardMenus();">Edit</button>
+                    {% endif %}
+                    {% if can_delete %}
+                    <button type="button" role="menuitem" class="danger" onclick="deleteItem('{{ item.id }}'); closeAllCardMenus();">Delete</button>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
             <div>
                 {% if item.level %}<span class="bank-level">{{ item.level }}</span>{% endif %}
                 <span class="bank-title">{{ item.title or 'Untitled' }}</span>
@@ -168,12 +210,7 @@
             {% endif %}
             <div class="bank-actions">
                 <button class="btn-sm use" onclick="openUseModal('{{ item.id }}', '{{ item.title | e }}')">Use in Class</button>
-                {% if teacher and teacher.role in ('hod', 'subject_head', 'lead', 'owner') %}
-                <button class="btn-sm" style="background:#f0f2ff;color:#667eea;" onclick="openEditModal('{{ item.id }}', '{{ item.title | e }}', '{{ item.subject | e }}', '{{ item.level | e }}', '{{ item.tags | e }}', '{{ (item.review_instructions or '') | e }}', '{{ (item.marking_instructions or '') | e }}')">Edit</button>
-                <button class="btn-sm delete" onclick="deleteItem('{{ item.id }}')">Delete</button>
-                {% elif teacher and item.created_by == teacher.id %}
-                <button class="btn-sm delete" onclick="deleteItem('{{ item.id }}')">Delete</button>
-                {% endif %}
+                <a class="btn-sm preview" href="/bank/{{ item.id }}/preview" target="_blank" rel="noopener">Preview</a>
             </div>
         </div>
         {% endfor %}
@@ -438,5 +475,34 @@ async function saveEdit() {
 document.getElementById('editModal').addEventListener('click', function(e) { if (e.target === this) closeEditModal(); });
 document.getElementById('useModal').addEventListener('click', function(e) { if (e.target === this) closeUseModal(); });
 document.getElementById('bulkModal').addEventListener('click', function(e) { if (e.target === this) closeBulkModal(); });
+
+/* Kebab (3-dot) menu on each card. Only one menu open at a time. */
+function closeAllCardMenus() {
+    document.querySelectorAll('[data-card-menu].open').forEach(function (m) {
+        m.classList.remove('open');
+        var btn = m.querySelector('.card-menu-btn');
+        if (btn) btn.setAttribute('aria-expanded', 'false');
+    });
+}
+document.querySelectorAll('[data-card-menu]').forEach(function (wrap) {
+    var btn = wrap.querySelector('.card-menu-btn');
+    if (!btn) return;
+    btn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        var wasOpen = wrap.classList.contains('open');
+        closeAllCardMenus();
+        if (!wasOpen) {
+            wrap.classList.add('open');
+            btn.setAttribute('aria-expanded', 'true');
+        }
+    });
+});
+document.addEventListener('click', function (ev) {
+    var wrap = ev.target.closest('[data-card-menu]');
+    if (!wrap) closeAllCardMenus();
+});
+document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape') closeAllCardMenus();
+});
 </script>
 {% endblock %}
