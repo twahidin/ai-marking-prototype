@@ -226,6 +226,7 @@
         gap: 10px;
     }
     .widget-option {
+        position: relative;
         display: flex; flex-direction: column; gap: 4px;
         padding: 12px 14px; border: 1px solid #e8e8f0; border-radius: 10px;
         background: #fafbff; cursor: pointer; transition: all 0.15s;
@@ -234,10 +235,22 @@
     .widget-option:hover { border-color: #667eea; background: #f0f2ff; }
     .widget-option .opt-title { font-size: 13px; font-weight: 700; color: #1a1a2e; }
     .widget-option .opt-desc { font-size: 11px; color: #888; line-height: 1.4; }
-    .widget-option:disabled {
-        opacity: 0.5; cursor: not-allowed; background: #f5f5f5;
+    /* Toggle-on state: tile is on the dashboard. Click again to remove. */
+    .widget-option.selected {
+        border-color: #667eea;
+        background: linear-gradient(135deg, #667eea 0%, #5a6fd6 100%);
     }
-    .widget-option:disabled:hover { border-color: #e8e8f0; background: #f5f5f5; }
+    .widget-option.selected .opt-title,
+    .widget-option.selected .opt-desc { color: white; }
+    .widget-option.selected::after {
+        content: '✓';
+        position: absolute; top: 8px; right: 12px;
+        font-size: 14px; font-weight: 700; color: white;
+    }
+    .widget-option.selected:hover {
+        background: linear-gradient(135deg, #5a6fd6 0%, #4f5cc7 100%);
+    }
+    .widget-option.selected:hover::after { content: '×'; font-size: 18px; line-height: 1; }
 </style>
 {% endblock %}
 
@@ -293,7 +306,7 @@
             <div class="widget-options" id="widgetOptions"></div>
         </div>
         <p style="margin-top:12px;font-size:11px;color:#aaa;">
-            Drag tiles to rearrange. Drag any edge to resize. Click ✕ on a tile to remove it.
+            Click a widget chip to add it; click again to remove. Drag tiles to rearrange. Drag any edge to resize.
         </p>
     </div>
 
@@ -318,10 +331,13 @@
    `render` callback is the only widget-specific code; everything else
    (drag, drop, resize, persistence, removal) is generic. */
 var WIDGET_CATALOG = {
+    /* Default sizes are chosen so individually-added widgets pack
+       cleanly: lists are w:6 (pair into a 12-col row), charts are w:12
+       (full-row). Templates can still pin specific dimensions. */
     missed_submissions: {
         title: 'Missed submissions',
         desc: 'Students who haven’t submitted the last 3 assignments',
-        defaults: { w: 4, h: 5, minW: 3, minH: 4 },
+        defaults: { w: 6, h: 5, minW: 3, minH: 4 },
         render: function (body, ctx) { renderMissedSubmissions(body, ctx); }
     },
     consultation: {
@@ -333,13 +349,13 @@ var WIDGET_CATALOG = {
     performance_trend: {
         title: 'Class performance over time',
         desc: 'Average score trend with 25–75 percentile band',
-        defaults: { w: 8, h: 5, minW: 5, minH: 4 },
+        defaults: { w: 12, h: 5, minW: 5, minH: 4 },
         render: function (body, ctx) { renderPerformanceTrend(body, ctx); }
     },
     submission_rate_trend: {
         title: 'Submission rate over time',
         desc: 'On-time submission % per assignment',
-        defaults: { w: 8, h: 5, minW: 5, minH: 4 },
+        defaults: { w: 12, h: 5, minW: 5, minH: 4 },
         render: function (body, ctx) { renderSubmissionRateTrend(body, ctx); }
     },
     encourage: {
@@ -416,9 +432,28 @@ function buildWidgetOptions() {
         btn.innerHTML =
             '<span class="opt-title">' + escHtml(w.title) + '</span>' +
             '<span class="opt-desc">' + escHtml(w.desc) + '</span>';
-        btn.addEventListener('click', function () { addWidget(key); });
+        // Click toggles: add the widget if it's not on the grid, remove it if it is.
+        // Same chip is the on/off switch — much faster than scrolling to the tile
+        // and clicking its × button.
+        btn.addEventListener('click', function () { toggleWidget(key); });
         container.appendChild(btn);
     });
+}
+
+function toggleWidget(key) {
+    var node = grid && grid.engine
+        ? grid.engine.nodes.find(function (n) { return n.el && n.el.dataset.widgetKey === key; })
+        : null;
+    if (node) {
+        grid.removeWidget(node.el);
+        autoArrange();
+    } else {
+        addWidget(key);
+        autoArrange();
+    }
+    syncAddPanelState();
+    syncEmptyState();
+    scheduleSave();
 }
 
 function buildTemplateOptions() {
@@ -472,13 +507,34 @@ function applyTemplate(key, options) {
     scheduleSave();
 }
 
-function syncAddPanelDisabled() {
-    /* If a widget is already on the grid, grey out its "Add" button so it
-       can't be added twice. */
+function syncAddPanelState() {
+    /* Mark each panel option as "selected" if its widget is currently on
+       the grid. Selected options have a filled style + tick mark, and
+       clicking them removes the widget — so the panel doubles as a
+       checklist of what's currently shown. */
     var present = {};
     grid.engine.nodes.forEach(function (n) { if (n.el && n.el.dataset.widgetKey) present[n.el.dataset.widgetKey] = true; });
     document.querySelectorAll('.widget-option').forEach(function (btn) {
-        btn.disabled = !!present[btn.dataset.key];
+        btn.classList.toggle('selected', !!present[btn.dataset.key]);
+    });
+}
+
+/* Backwards-compat alias — older code in this file still calls the
+   old name. Cheaper than touching every callsite. */
+var syncAddPanelDisabled = syncAddPanelState;
+
+/* Tighten the layout after each add/remove so the grid never accumulates
+   empty rows mid-session. compact() pulls every tile up to the topmost
+   slot it'll fit in, then we resize any chart that ended up in a new
+   container size. */
+function autoArrange() {
+    if (!grid) return;
+    try { grid.compact(); } catch (e) {}
+    document.querySelectorAll('.grid-stack-item canvas').forEach(function (canvas) {
+        if (typeof Chart !== 'undefined' && Chart.getChart) {
+            var ch = Chart.getChart(canvas);
+            if (ch) { try { ch.resize(); } catch (e) {} }
+        }
     });
 }
 
@@ -514,7 +570,7 @@ function addWidget(key) {
     });
     el.dataset.widgetKey = key;
     bindWidget(el, key);
-    syncAddPanelDisabled();
+    syncAddPanelState();
     syncEmptyState();
     scheduleSave();
 }
@@ -544,7 +600,8 @@ function bindWidget(el, key) {
         removeBtn.addEventListener('click', function (e) {
             e.stopPropagation();
             grid.removeWidget(el);
-            syncAddPanelDisabled();
+            autoArrange();
+            syncAddPanelState();
             syncEmptyState();
             scheduleSave();
         });
