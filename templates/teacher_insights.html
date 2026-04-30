@@ -135,6 +135,20 @@
     .chart-wrap { position: relative; flex: 1; min-height: 0; }
     .chart-wrap canvas { width: 100% !important; height: 100% !important; }
 
+    /* Widget: Questions to revisit */
+    .wq-group { margin-bottom: 16px; }
+    .wq-group:last-child { margin-bottom: 0; }
+    .wq-group-title { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+    .wq-row {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 10px 12px; border-radius: 8px; background: #fafafa;
+        cursor: pointer; transition: all 0.15s; margin-bottom: 6px;
+    }
+    .wq-row:hover { background: #fdecea; }
+    .wq-row:last-child { margin-bottom: 0; }
+    .wq-qlabel { font-size: 13px; font-weight: 700; color: #1a1a2e; }
+    .wq-rate { font-size: 12px; color: #dc3545; font-weight: 700; }
+
     /* Add-widget panel — appears in edit mode */
     .add-widget-panel {
         display: none;
@@ -284,9 +298,7 @@ var WIDGET_CATALOG = {
         title: 'Questions to revisit',
         desc: 'Worst questions across the latest 3 assignments',
         defaults: { w: 6, h: 6, minW: 4, minH: 4 },
-        render: function (body, ctx) {
-            body.innerHTML = '<div class="widget-placeholder">Coming soon — top 3 worst questions per assignment (latest 3 assignments) with click-through.</div>';
-        }
+        render: function (body, ctx) { renderWeakQuestions(body, ctx); }
     }
 };
 
@@ -449,6 +461,51 @@ function setEditMode(on) {
     if (label) label.textContent = on ? 'Done' : 'Edit';
     /* Lock dragging/resizing in view mode. */
     grid.setStatic(!on);
+}
+
+/* =====================================================================
+   Widget: Questions to revisit (worst questions across latest 3)
+   ===================================================================== */
+async function renderWeakQuestions(body, ctx) {
+    body.innerHTML = '<div class="ms-no-data">Loading…</div>';
+    try {
+        var res = await fetch('/teacher/insights/widget/weak-questions?class_id=' + encodeURIComponent(ctx.classId));
+        var data = await res.json();
+        if (!data || !data.success) {
+            body.innerHTML = '<div class="ms-no-data" style="color:#dc3545;">Could not load.</div>';
+            return;
+        }
+        if (!data.groups || !data.groups.length) {
+            body.innerHTML =
+                '<div class="ms-celebrate">' +
+                    '<span class="icon">&#127881;</span>' +
+                    'No questions flagged for review — class handled the recent assignments well.' +
+                '</div>';
+            return;
+        }
+        var html = '';
+        data.groups.forEach(function (g) {
+            html += '<div class="wq-group">';
+            html += '<div class="wq-group-title">' + escHtml(g.title) + '</div>';
+            g.questions.forEach(function (q) {
+                html += '<div class="wq-row" data-asn="' + escHtml(g.asn_id) + '">';
+                html += '<span class="wq-qlabel">Q' + escHtml(q.qnum) + '</span>';
+                html += '<span class="wq-rate">' + q.wrong_pct + '% need to revisit</span>';
+                html += '</div>';
+            });
+            html += '</div>';
+        });
+        body.innerHTML = html;
+        body.querySelectorAll('.wq-row').forEach(function (row) {
+            row.addEventListener('click', function () {
+                var aid = row.dataset.asn;
+                if (aid) window.location.href = '/teacher/assignment/' + aid;
+            });
+        });
+    } catch (err) {
+        console.error(err);
+        body.innerHTML = '<div class="ms-no-data" style="color:#dc3545;">Could not load.</div>';
+    }
 }
 
 /* =====================================================================

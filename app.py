@@ -2019,6 +2019,103 @@ def teacher_widget_performance_trend():
     return jsonify({'success': True, 'points': points})
 
 
+def _question_wrong(q):
+    """Per-question wrongness used by the weak-questions widget.
+
+    For numeric marks: under half-marks counts as wrong. For status mode:
+    anything other than 'correct' (so partial + incorrect) counts as wrong.
+    Mixed-mode aggregation works because we ask the same question per
+    submission, not across them."""
+    awarded = q.get('marks_awarded')
+    total = q.get('marks_total')
+    if awarded is not None and total:
+        try:
+            return (float(awarded) / float(total)) < 0.5
+        except (TypeError, ValueError, ZeroDivisionError):
+            return q.get('status') != 'correct'
+    return q.get('status') != 'correct'
+
+
+@app.route('/teacher/insights/widget/weak-questions')
+def teacher_widget_weak_questions():
+    """Worst questions across the latest 3 assignments, grouped by assignment.
+
+    Each assignment is gated on >30% of the class roster having submitted —
+    smaller samples are too noisy to act on. Within an assignment, the top
+    3 questions by wrong-rate are returned, but only if their wrong-rate is
+    >= 50%. An assignment with no qualifying questions is dropped."""
+    class_id = (request.args.get('class_id') or '').strip()
+    if not class_id:
+        return jsonify({'success': False, 'error': 'class_id required'}), 400
+    teacher, err = _check_class_access_for_teacher(class_id)
+    if err:
+        return err
+
+    asns = (
+        Assignment.query
+        .filter(Assignment.class_id == class_id)
+        .order_by(Assignment.created_at.desc())
+        .limit(3)
+        .all()
+    )
+    if not asns:
+        return jsonify({'success': True, 'groups': []})
+
+    roster_size = Student.query.filter_by(class_id=class_id).count()
+    if roster_size == 0:
+        return jsonify({'success': True, 'groups': []})
+
+    asn_ids = [a.id for a in asns]
+    sub_rows = (
+        Submission.query
+        .filter(Submission.assignment_id.in_(asn_ids))
+        .filter(Submission.is_final.is_(True))
+        .filter(Submission.status == 'done')
+        .all()
+    )
+    subs_by_asn = {}
+    for s in sub_rows:
+        subs_by_asn.setdefault(s.assignment_id, []).append(s)
+
+    groups = []
+    for a in asns:
+        subs = subs_by_asn.get(a.id, [])
+        # >30% submission gate keeps low-sample assignments off the chart.
+        if (len(subs) / roster_size) <= 0.30:
+            continue
+        q_stats = {}
+        for sub in subs:
+            result = sub.get_result() or {}
+            for i, q in enumerate(result.get('questions') or []):
+                qnum = str(q.get('question_number', q.get('question_num', i + 1)))
+                rec = q_stats.setdefault(qnum, {'total': 0, 'wrong': 0})
+                rec['total'] += 1
+                if _question_wrong(q):
+                    rec['wrong'] += 1
+        ranked = []
+        for qnum, rec in q_stats.items():
+            if rec['total'] <= 0:
+                continue
+            rate = rec['wrong'] / rec['total']
+            if rate >= 0.50:
+                ranked.append({
+                    'qnum': qnum,
+                    'wrong_pct': int(round(rate * 100)),
+                    'wrong_n': rec['wrong'],
+                    'total_n': rec['total'],
+                })
+        ranked.sort(key=lambda r: (-r['wrong_pct'], r['qnum']))
+        ranked = ranked[:3]
+        if ranked:
+            groups.append({
+                'asn_id': a.id,
+                'title': a.title or a.subject or 'Untitled',
+                'questions': ranked,
+            })
+
+    return jsonify({'success': True, 'groups': groups})
+
+
 @app.route('/teacher/insights/widget/submission-rate-trend')
 def teacher_widget_submission_rate_trend():
     """On-time submission rate per assignment, oldest-first.
