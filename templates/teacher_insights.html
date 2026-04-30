@@ -131,9 +131,23 @@
     .ms-celebrate .icon { font-size: 28px; display: block; margin-bottom: 6px; }
     .ms-no-data { color: #888; font-size: 13px; padding: 8px 0; text-align: center; }
 
-    /* Chart-bearing widgets need their canvas to fill the body */
-    .chart-wrap { position: relative; flex: 1; min-height: 0; }
-    .chart-wrap canvas { width: 100% !important; height: 100% !important; }
+    /* Chart-bearing widgets need their canvas to fill the body. The chart
+       wrap is position:relative so the canvas (absolute) can pin to its
+       four edges — that gives Chart.js a definite height when the parent
+       flex column resolves. Without absolute positioning, the canvas
+       feeds Chart.js its own natural height and you get a runaway grow. */
+    .chart-wrap {
+        position: relative;
+        flex: 1 1 auto;
+        min-height: 0;
+        width: 100%;
+    }
+    .chart-wrap canvas {
+        position: absolute !important;
+        top: 0; left: 0; right: 0; bottom: 0;
+        width: 100% !important;
+        height: 100% !important;
+    }
 
     /* Widget: Students to encourage / consult — shared row style */
     .stu-row {
@@ -295,13 +309,13 @@ var WIDGET_CATALOG = {
     performance_trend: {
         title: 'Class performance over time',
         desc: 'Average score trend with 25–75 percentile band',
-        defaults: { w: 8, h: 4, minW: 5, minH: 3 },
+        defaults: { w: 8, h: 5, minW: 5, minH: 4 },
         render: function (body, ctx) { renderPerformanceTrend(body, ctx); }
     },
     submission_rate_trend: {
         title: 'Submission rate over time',
         desc: 'On-time submission % per assignment',
-        defaults: { w: 8, h: 4, minW: 5, minH: 3 },
+        defaults: { w: 8, h: 5, minW: 5, minH: 4 },
         render: function (body, ctx) { renderSubmissionRateTrend(body, ctx); }
     },
     encourage: {
@@ -390,8 +404,20 @@ function bindWidget(el, key) {
     if (!w) return;
     var body = el.querySelector('[data-widget-body]');
     if (body) {
-        try { w.render(body, { classId: CLASS_ID }); }
-        catch (err) { body.innerHTML = '<div class="widget-placeholder" style="color:#dc3545;">Widget failed to render.</div>'; console.error(err); }
+        // Defer one frame so the tile has its final box dimensions before
+        // a Chart.js canvas latches onto them. Without this, charts created
+        // during initial layout-restore can render at 0×0 or with stale
+        // axis sizing and refuse to grow on the next frame.
+        var doRender = function () {
+            try { w.render(body, { classId: CLASS_ID }); }
+            catch (err) {
+                body.innerHTML = '<div class="widget-placeholder" style="color:#dc3545;">Widget failed to render.</div>';
+                console.error(err);
+            }
+        };
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(doRender);
+        else doRender();
+        attachWidgetResizeObserver(body);
     }
     var removeBtn = el.querySelector('.widget-remove');
     if (removeBtn) {
@@ -403,6 +429,31 @@ function bindWidget(el, key) {
             scheduleSave();
         });
     }
+}
+
+/* Track ResizeObservers per body so we don't create duplicates if a widget
+   is re-bound. WeakMap auto-cleans when the body element is garbage
+   collected (e.g. after grid.removeWidget). */
+var _widgetResizeObservers = new WeakMap();
+
+function attachWidgetResizeObserver(body) {
+    if (typeof ResizeObserver === 'undefined') return;
+    if (_widgetResizeObservers.has(body)) return;
+    var ro = new ResizeObserver(function () {
+        // Find any Chart.js canvas inside this body and resize it. If the
+        // user shrinks a tile to its minH, this is what keeps the whole
+        // chart visible — no scrollbar, no clipped axes.
+        body.querySelectorAll('canvas').forEach(function (canvas) {
+            if (typeof Chart !== 'undefined' && Chart.getChart) {
+                var ch = Chart.getChart(canvas);
+                if (ch) {
+                    try { ch.resize(); } catch (e) {}
+                }
+            }
+        });
+    });
+    ro.observe(body);
+    _widgetResizeObservers.set(body, ro);
 }
 
 function syncEmptyState() {
@@ -477,6 +528,20 @@ function setEditMode(on) {
     if (label) label.textContent = on ? 'Done' : 'Edit';
     /* Lock dragging/resizing in view mode. */
     grid.setStatic(!on);
+    /* Exiting edit mode: snap tiles up to remove gaps left by drags so the
+       saved layout is the tidied version, not whatever the teacher last
+       hovered over. compact() works on a non-static grid, so call it
+       BEFORE we flip back to static if you want gaps gone permanently. */
+    if (!on) {
+        try { grid.compact(); } catch (e) {}
+        // After compact, charts may need a final resize to fit their new boxes.
+        document.querySelectorAll('.grid-stack-item canvas').forEach(function (canvas) {
+            if (typeof Chart !== 'undefined' && Chart.getChart) {
+                var ch = Chart.getChart(canvas);
+                if (ch) { try { ch.resize(); } catch (e) {} }
+            }
+        });
+    }
 }
 
 /* =====================================================================
@@ -890,14 +955,33 @@ document.addEventListener('DOMContentLoaded', function () {
         column: 12,
         cellHeight: 60,
         margin: 10,
-        float: false,
+        float: false,             /* tiles pack to the top, no gravity holes */
         animate: true,
         disableOneColumnMode: false,
-        staticGrid: true,    /* start in view mode */
-        handle: '.widget-header'
+        staticGrid: true,         /* start in view mode */
+        handle: '.widget-header',
+        resizable: { handles: 'all' },   /* drag from any edge or corner */
+        draggable: { scroll: true },     /* auto-scroll the page while dragging */
+        acceptWidgets: false,
+        removable: false
     }, gridEl);
 
     grid.on('change', function () { scheduleSave(); });
+
+    /* Whenever a tile resizes, fire its child charts' resize() too. The
+       per-widget ResizeObserver also handles this, but routing GridStack's
+       authoritative event in directly avoids a perceptible flicker. */
+    grid.on('resize resizestop', function (event, el) {
+        if (!el) return;
+        var body = el.querySelector('[data-widget-body]');
+        if (!body) return;
+        body.querySelectorAll('canvas').forEach(function (canvas) {
+            if (typeof Chart !== 'undefined' && Chart.getChart) {
+                var ch = Chart.getChart(canvas);
+                if (ch) { try { ch.resize(); } catch (e) {} }
+            }
+        });
+    });
 
     buildWidgetOptions();
     loadLayout();
