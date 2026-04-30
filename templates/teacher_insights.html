@@ -97,15 +97,21 @@
     .widget-color-btn { background: #f0f0f0; color: #555; font-size: 13px; }
     .widget-color-btn:hover { background: #e0e0e0; }
 
-    /* Bauhaus accent palette: bold primaries on a slim top border so the
-       data still leads but the dashboard reads as colour-coded at a
-       glance. Teachers pick per widget; default is no accent. */
-    .grid-stack-item-content { border-top: 4px solid transparent; transition: border-top-color 0.2s; }
-    .grid-stack-item[data-color="red"]    > .grid-stack-item-content { border-top-color: #E2231A; }
-    .grid-stack-item[data-color="yellow"] > .grid-stack-item-content { border-top-color: #FFC72C; }
-    .grid-stack-item[data-color="blue"]   > .grid-stack-item-content { border-top-color: #1F3A93; }
-    .grid-stack-item[data-color="black"]  > .grid-stack-item-content { border-top-color: #1A1A1A; }
-    .grid-stack-item[data-color="white"]  > .grid-stack-item-content { border-top-color: #E0E0E0; }
+    /* Pastel accent palette: full-tile tinted background, soft enough to
+       keep text + data readable. Chart-bearing widgets pin a white
+       backdrop behind the canvas (.chart-wrap rule below) so the graph
+       still renders on a clean surface — the pastel only fills the
+       margin around it. */
+    .grid-stack-item-content { transition: background 0.2s; }
+    .grid-stack-item[data-color="red"]    > .grid-stack-item-content { background: #FCE0DD; }
+    .grid-stack-item[data-color="yellow"] > .grid-stack-item-content { background: #FFF4D4; }
+    .grid-stack-item[data-color="blue"]   > .grid-stack-item-content { background: #DDE7F8; }
+    .grid-stack-item[data-color="green"]  > .grid-stack-item-content { background: #DCEFDA; }
+    .grid-stack-item[data-color="purple"] > .grid-stack-item-content { background: #E8DEF4; }
+    /* Legacy: layouts saved before the palette swap may still carry
+       'black'/'white'. Map them to neutral greys so nothing breaks. */
+    .grid-stack-item[data-color="black"]  > .grid-stack-item-content { background: #ECECEC; }
+    .grid-stack-item[data-color="white"]  > .grid-stack-item-content { background: white; }
 
     /* Colour picker popover */
     .widget-color-pop {
@@ -126,11 +132,11 @@
         display: flex; align-items: center; justify-content: center;
         color: #888; font-size: 13px; line-height: 1;
     }
-    .swatch[data-color="red"]    { background: #E2231A; border-color: #E2231A; }
-    .swatch[data-color="yellow"] { background: #FFC72C; border-color: #FFC72C; }
-    .swatch[data-color="blue"]   { background: #1F3A93; border-color: #1F3A93; }
-    .swatch[data-color="black"]  { background: #1A1A1A; border-color: #1A1A1A; }
-    .swatch[data-color="white"]  { background: white; border-color: #888; }
+    .swatch[data-color="red"]    { background: #FCE0DD; border-color: #F2B8AF; }
+    .swatch[data-color="yellow"] { background: #FFF4D4; border-color: #EBCD79; }
+    .swatch[data-color="blue"]   { background: #DDE7F8; border-color: #ACBFE5; }
+    .swatch[data-color="green"]  { background: #DCEFDA; border-color: #A1CD9C; }
+    .swatch[data-color="purple"] { background: #E8DEF4; border-color: #BBA5DA; }
     .swatch.active { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #667eea; }
     .widget-body { flex: 1; min-height: 0; }
     .widget-placeholder { color: #aaa; font-size: 13px; line-height: 1.5; padding: 8px 0; }
@@ -182,24 +188,32 @@
        wrap is position:relative so the canvas (absolute) can pin to its
        four edges — that gives Chart.js a definite height when the parent
        flex column resolves. Without absolute positioning, the canvas
-       feeds Chart.js its own natural height and you get a runaway grow. */
+       feeds Chart.js its own natural height and you get a runaway grow.
+       The white background here is what makes pastel-coloured tiles
+       still render the graph on a clean surface (the pastel only shows
+       around the chart island). */
     .chart-wrap {
         position: relative;
         flex: 1 1 auto;
         min-height: 0;
         width: 100%;
+        background: white;
+        border-radius: 8px;
+        padding: 4px;
     }
     .chart-wrap canvas {
         position: absolute !important;
-        top: 0; left: 0; right: 0; bottom: 0;
-        width: 100% !important;
-        height: 100% !important;
+        top: 4px; left: 4px; right: 4px; bottom: 4px;
+        width: calc(100% - 8px) !important;
+        height: calc(100% - 8px) !important;
     }
 
-    /* Widget: Students to encourage / consult — shared row style */
+    /* Widget: Students to encourage / consult — shared row style.
+       Translucent white background so pastel-coloured tiles blend
+       naturally; on a default (white) tile this reads as #fafafa-ish. */
     .stu-row {
         display: flex; flex-direction: column; gap: 4px;
-        padding: 10px 12px; border-radius: 8px; background: #fafafa;
+        padding: 10px 12px; border-radius: 8px; background: rgba(255,255,255,0.55);
         margin-bottom: 8px;
     }
     .stu-row:last-child { margin-bottom: 0; }
@@ -222,7 +236,7 @@
     .wq-group-title { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
     .wq-row {
         display: flex; align-items: center; justify-content: space-between;
-        padding: 10px 12px; border-radius: 8px; background: #fafafa;
+        padding: 10px 12px; border-radius: 8px; background: rgba(255,255,255,0.55);
         cursor: pointer; transition: all 0.15s; margin-bottom: 6px;
     }
     .wq-row:hover { background: #fdecea; }
@@ -595,11 +609,12 @@ function widgetTileHtml(key) {
                 '<button type="button" class="widget-color-btn" title="Accent colour" aria-label="Accent colour">&#127912;</button>' +
                 '<button type="button" class="widget-remove" title="Remove widget" aria-label="Remove widget">&times;</button>' +
                 '<div class="widget-color-pop" role="menu">' +
-                    '<button type="button" class="swatch" data-color="" title="No accent" aria-label="No accent"></button>' +
-                    '<button type="button" class="swatch" data-color="red" title="Bauhaus red" aria-label="Bauhaus red"></button>' +
-                    '<button type="button" class="swatch" data-color="yellow" title="Bauhaus yellow" aria-label="Bauhaus yellow"></button>' +
-                    '<button type="button" class="swatch" data-color="blue" title="Bauhaus blue" aria-label="Bauhaus blue"></button>' +
-                    '<button type="button" class="swatch" data-color="black" title="Bauhaus black" aria-label="Bauhaus black"></button>' +
+                    '<button type="button" class="swatch" data-color="" title="No tint" aria-label="No tint"></button>' +
+                    '<button type="button" class="swatch" data-color="red" title="Pastel red" aria-label="Pastel red"></button>' +
+                    '<button type="button" class="swatch" data-color="yellow" title="Pastel yellow" aria-label="Pastel yellow"></button>' +
+                    '<button type="button" class="swatch" data-color="blue" title="Pastel blue" aria-label="Pastel blue"></button>' +
+                    '<button type="button" class="swatch" data-color="green" title="Pastel green" aria-label="Pastel green"></button>' +
+                    '<button type="button" class="swatch" data-color="purple" title="Pastel purple" aria-label="Pastel purple"></button>' +
                 '</div>' +
             '</div>' +
         '</div>' +
