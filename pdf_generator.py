@@ -1,322 +1,243 @@
 """
-PDF generation for marking feedback and class overview reports.
+PDF generation via LuaLaTeX — proper math typesetting (true fractions,
+matrices, etc.) with native CJK and Tamil through fontspec + Noto fonts.
 
-This module replaces the previous ReportLab + matplotlib-mathtext pipeline
-with a single HTML → PDF flow built on WeasyPrint.
+Compiles a generated .tex string with `lualatex` in a temp dir, returns
+the resulting PDF bytes. The public API is unchanged from the previous
+WeasyPrint module so app.py is not touched:
 
-Why HTML → PDF here:
-  - The browser already renders feedback HTML with MathJax/KaTeX. Producing
-    PDFs from the same shape of HTML keeps the rendering surface unified;
-    we don't maintain a parallel ReportLab template that drifts from the
-    web view.
-  - LaTeX math in AI feedback is converted to plain HTML with <sup>/<sub>
-    tags + Unicode for Greek letters and operators, rather than MathML
-    (WeasyPrint's MathML rendering flattens superscripts to baseline) or
-    rasterised matplotlib images (the old pipeline).
-  - Tamil and CJK come for free as long as Noto fonts are installed at
-    the OS level — handled in the Dockerfile for Railway.
-
-Public API (kept identical to the old module so app.py is unchanged):
   - generate_report_pdf(result, subject='', app_title='AI Feedback Systems') -> bytes
   - generate_overview_pdf(student_results, subject='', app_title='AI Feedback Systems') -> bytes
+
+If lualatex is missing or the compile fails, RuntimeError is raised with
+the last 2KB of the LaTeX log so the failure is debuggable from the
+caller's exception path. Callers can choose to surface this to the user
+or fall back to plain HTML.
 """
 import io
+import os
 import re
-import html as _stdhtml
+import shutil
+import subprocess
+import tempfile
 import logging
 from datetime import datetime, timezone
 from statistics import mean, median, stdev
 
 logger = logging.getLogger(__name__)
 
-# Lazy-import WeasyPrint so a missing system dependency (libpango,
-# fontconfig) yields a clear runtime error instead of a hard import-time
-# crash that takes the whole app down.
-_WEASY_HTML = None
-_WEASY_ERR = None
-
-
-def _get_weasy():
-    """Resolve WeasyPrint's HTML class lazily so import errors surface only
-    when a PDF is actually requested. Returns the HTML class or raises
-    RuntimeError with a useful message."""
-    global _WEASY_HTML, _WEASY_ERR
-    if _WEASY_HTML is not None:
-        return _WEASY_HTML
-    if _WEASY_ERR is not None:
-        raise RuntimeError(_WEASY_ERR)
-    try:
-        from weasyprint import HTML as _HTML
-        _WEASY_HTML = _HTML
-        return _WEASY_HTML
-    except Exception as e:
-        _WEASY_ERR = (
-            'WeasyPrint failed to import: ' + str(e) +
-            '. On Railway this means Pango / fontconfig are missing — '
-            "make sure nixpacks.toml installs them. Locally on macOS, "
-            "run: brew install pango"
-        )
-        raise RuntimeError(_WEASY_ERR)
+LUALATEX_BIN = shutil.which('lualatex') or 'lualatex'
+LUALATEX_TIMEOUT = 60  # seconds
 
 
 # ---------------------------------------------------------------------------
-# Math conversion — LaTeX → HTML <sup>/<sub> + Unicode
+# Text → LaTeX with math preservation
 # ---------------------------------------------------------------------------
 #
-# WeasyPrint's MathML support flattens <msup>/<msub> to plain text in the
-# rendered PDF (e.g. t^3 becomes "t3" with no superscript), so MathML is the
-# wrong abstraction for our use case. School feedback math is overwhelmingly
-# super/subscripts plus the odd Greek letter or operator — all of which
-# render perfectly as ordinary HTML with the right Unicode characters.
-# This regex pass converts the common LaTeX patterns we see in AI feedback.
+# AI-generated feedback is a mix of three things in one string:
+#   1. plain prose ("the student didn't show working...")
+#   2. LaTeX math wrapped in $...$ or $$...$$
+#   3. bare LaTeX-looking fragments without delimiters (e.g. "m s^{-2}",
+#      "t^3", "\frac{a}{b}", "\alpha")
+#
+# Strategy: extract math fragments to opaque placeholders FIRST so the
+# next pass (LaTeX-escape the prose) can't mangle them, then restore.
 
-_GREEK = {
-    'alpha': 'α', 'beta': 'β', 'gamma': 'γ', 'delta': 'δ', 'epsilon': 'ε',
-    'varepsilon': 'ε', 'zeta': 'ζ', 'eta': 'η', 'theta': 'θ', 'vartheta': 'ϑ',
-    'iota': 'ι', 'kappa': 'κ', 'lambda': 'λ', 'mu': 'μ', 'nu': 'ν', 'xi': 'ξ',
-    'omicron': 'ο', 'pi': 'π', 'varpi': 'ϖ', 'rho': 'ρ', 'varrho': 'ϱ',
-    'sigma': 'σ', 'varsigma': 'ς', 'tau': 'τ', 'upsilon': 'υ', 'phi': 'φ',
-    'varphi': 'ϕ', 'chi': 'χ', 'psi': 'ψ', 'omega': 'ω',
-    'Alpha': 'Α', 'Beta': 'Β', 'Gamma': 'Γ', 'Delta': 'Δ', 'Epsilon': 'Ε',
-    'Zeta': 'Ζ', 'Eta': 'Η', 'Theta': 'Θ', 'Iota': 'Ι', 'Kappa': 'Κ',
-    'Lambda': 'Λ', 'Mu': 'Μ', 'Nu': 'Ν', 'Xi': 'Ξ', 'Omicron': 'Ο', 'Pi': 'Π',
-    'Rho': 'Ρ', 'Sigma': 'Σ', 'Tau': 'Τ', 'Upsilon': 'Υ', 'Phi': 'Φ',
-    'Chi': 'Χ', 'Psi': 'Ψ', 'Omega': 'Ω',
-}
-_OPERATORS = {
-    'times': '×', 'cdot': '·', 'div': '÷', 'pm': '±', 'mp': '∓', 'ast': '∗',
-    'le': '≤', 'leq': '≤', 'ge': '≥', 'geq': '≥', 'neq': '≠', 'ne': '≠',
-    'approx': '≈', 'sim': '∼', 'simeq': '≃', 'equiv': '≡', 'cong': '≅',
-    'propto': '∝', 'infty': '∞', 'partial': '∂', 'nabla': '∇',
-    'sum': '∑', 'prod': '∏', 'int': '∫', 'oint': '∮',
-    'to': '→', 'rightarrow': '→', 'longrightarrow': '⟶', 'leftarrow': '←',
-    'longleftarrow': '⟵', 'leftrightarrow': '↔', 'longleftrightarrow': '⟷',
-    'Rightarrow': '⇒', 'Leftarrow': '⇐', 'Leftrightarrow': '⇔',
-    'implies': '⇒', 'iff': '⇔', 'mapsto': '↦',
-    'therefore': '∴', 'because': '∵',
-    'degree': '°', 'circ': '°', 'angle': '∠', 'perp': '⊥', 'parallel': '∥',
-    'in': '∈', 'notin': '∉', 'subset': '⊂', 'supset': '⊃',
-    'subseteq': '⊆', 'supseteq': '⊇', 'cap': '∩', 'cup': '∪',
-    'forall': '∀', 'exists': '∃', 'nexists': '∄', 'emptyset': '∅', 'varnothing': '∅',
-    'cdots': '⋯', 'ldots': '…', 'dots': '…', 'vdots': '⋮', 'ddots': '⋱',
-    'prime': '′', 'hbar': 'ℏ', 'ell': 'ℓ', 'Re': 'ℜ', 'Im': 'ℑ', 'aleph': 'ℵ',
-    'square': '□', 'triangle': '△', 'star': '★',
-    'left': '', 'right': '',  # bracket size hints — strip
-}
-
-
-def _convert_math_tokens(s):
-    """Convert LaTeX math notation inside `s` to HTML + Unicode.
-
-    Handles: \\frac{a}{b}, \\sqrt{x}, ^{...}, _{...}, ^x, _x, Greek letters
-    (\\alpha …), and the common operators (\\times, \\le, \\to, \\degree …).
-    Unknown commands are dropped silently — better an empty space than a
-    raw \\foo leaking into the rendered PDF.
+def _tex_escape(s):
+    """Escape LaTeX special characters in plain prose. Order matters:
+    multi-char escapes are stashed under sentinel chars first so the
+    single-char brace escape doesn't mangle them, then restored.
     """
-    if not s:
-        return s
-    # \frac{a}{b} → (a)/(b). Use parens — a fraction-slash hack with sup/sub
-    # in mid-line text reads worse than the spelled-out (a)/(b).
-    s = re.sub(r'\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}', r'(\1)/(\2)', s)
-    # \sqrt{x} → √(x); \sqrt[n]{x} → ⁿ√(x) — rare in school feedback so
-    # collapse to √(x) and lose the index.
-    s = re.sub(r'\\sqrt\s*\[[^\]]*\]\s*\{([^{}]*)\}', r'√(\1)', s)
-    s = re.sub(r'\\sqrt\s*\{([^{}]*)\}', r'√(\1)', s)
-    # ^{group} / _{group} — one level of nesting is enough for AI feedback
-    s = re.sub(r'\^\{([^{}]+)\}', r'<sup>\1</sup>', s)
-    s = re.sub(r'_\{([^{}]+)\}', r'<sub>\1</sub>', s)
-    # ^x / _x — single token (digit, letter, or signed number)
-    s = re.sub(r'\^(-?\w)', r'<sup>\1</sup>', s)
-    s = re.sub(r'_(-?\w)', r'<sub>\1</sub>', s)
-    # Named commands: greek letters first, then operators
-    def replace_cmd(m):
-        cmd = m.group(1)
-        if cmd in _GREEK:
-            return _GREEK[cmd]
-        if cmd in _OPERATORS:
-            return _OPERATORS[cmd]
-        return ''  # unknown: drop
-    s = re.sub(r'\\([a-zA-Z]+)\s*', replace_cmd, s)
-    # Strip any leftover braces from operator commands like \left{
-    s = s.replace('{', '').replace('}', '')
+    if s is None:
+        return ''
+    s = str(s)
+    s = s.replace('\\', '\x01BSL\x01')
+    s = s.replace('~', '\x01TLD\x01')
+    s = s.replace('^', '\x01CRT\x01')
+    s = s.replace('&', r'\&')
+    s = s.replace('%', r'\%')
+    s = s.replace('$', r'\$')
+    s = s.replace('#', r'\#')
+    s = s.replace('_', r'\_')
+    s = s.replace('{', r'\{')
+    s = s.replace('}', r'\}')
+    s = s.replace('\x01BSL\x01', r'\textbackslash{}')
+    s = s.replace('\x01TLD\x01', r'\textasciitilde{}')
+    s = s.replace('\x01CRT\x01', r'\textasciicircum{}')
     return s
 
 
-def preprocess_math(text):
-    """Convert math-bearing fragments in `text` to HTML + Unicode.
+# Bare-math patterns we'll auto-wrap in \(...\). Order = priority.
+_BARE_MATH_PATTERNS = [
+    re.compile(r'\\frac\s*\{[^{}]*\}\s*\{[^{}]*\}'),
+    re.compile(r'\\sqrt\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}'),
+    re.compile(r'\b\w+(?:\^|_)(?:\{[^{}]*\}|-?\w+)'),
+    # Whitelist of bare LaTeX commands worth escaping into math mode. We
+    # don't auto-wrap *every* \word because false positives in prose
+    # ("the \emph article") would silently disappear.
+    re.compile(
+        r'\\(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|'
+        r'lambda|mu|nu|xi|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|'
+        r'Alpha|Beta|Gamma|Delta|Theta|Lambda|Pi|Sigma|Phi|Omega|'
+        r'le|leq|ge|geq|neq|ne|approx|equiv|sim|propto|infty|partial|'
+        r'sum|prod|int|to|rightarrow|leftarrow|Rightarrow|implies|iff|'
+        r'therefore|because|degree|circ|angle|perp|times|cdot|div|pm|mp|'
+        r'in|notin|subset|supset|cap|cup|forall|exists|emptyset|'
+        r'cdots|ldots|dots|prime|hbar|ell)\b'
+    ),
+]
 
-    First strips `$...$` and `$$...$$` delimiters and converts the inside.
-    Then runs the same conversion on the rest of the string so AI output
-    that omits delimiters (e.g. raw "t^3" or "m s^-2") still renders
-    correctly. The escape-then-substitute order means our generated <sup>
-    and <sub> tags are emitted into already-escaped text and survive.
+
+def _tex_text(s):
+    """Convert AI text to LaTeX-safe content while preserving math.
+
+    Order:
+      1. extract $$...$$ blocks → \\[...\\] (display math)
+      2. extract $...$ blocks → \\(...\\) (inline math)
+      3. extract bare math patterns (\\frac, ^_, named cmds) → \\(...\\)
+      4. LaTeX-escape the remaining prose
+      5. restore all extracted math fragments
     """
-    if not text:
+    if not s:
         return ''
-    text = str(text)
+    s = str(s)
+    placeholders = []
 
-    # Display + inline math first so the delimiters don't end up as
-    # literal $ in the output.
-    text = re.sub(
+    def stash(payload):
+        placeholders.append(payload)
+        return f'\x02M{len(placeholders) - 1}M\x02'
+
+    s = re.sub(
         r'\$\$(.+?)\$\$',
-        lambda m: _convert_math_tokens(m.group(1)),
-        text,
-        flags=re.DOTALL,
+        lambda m: stash(r'\[' + m.group(1).strip() + r'\]'),
+        s, flags=re.DOTALL,
     )
-    text = re.sub(
+    s = re.sub(
         r'(?<!\$)\$(?!\$)((?:[^$\n]|\n)+?)(?<!\$)\$(?!\$)',
-        lambda m: _convert_math_tokens(m.group(1)),
-        text,
+        lambda m: stash(r'\(' + m.group(1).strip() + r'\)'),
+        s,
     )
-    # Catch raw super/subscripts and LaTeX commands the AI emitted without
-    # $ delimiters.
-    text = _convert_math_tokens(text)
-    return text
+    for pat in _BARE_MATH_PATTERNS:
+        s = pat.sub(lambda m: stash(r'\(' + m.group(0) + r'\)'), s)
+
+    s = _tex_escape(s)
+    s = re.sub(r'\x02M(\d+)M\x02', lambda m: placeholders[int(m.group(1))], s)
+    return s
 
 
-def _esc(s):
-    """HTML-escape user / AI text. Always called BEFORE preprocess_math —
-    we escape first, then the math substitution emits trusted <sup>/<sub>
-    markup that must NOT be re-escaped."""
-    return _stdhtml.escape('' if s is None else str(s), quote=False)
-
-
-def _esc_md(s):
-    """Escape, run math substitution, and convert simple newlines to <br>.
-    Used for body fields that may contain $...$ math from the AI output
-    (feedback, improvement, student answers, overall feedback)."""
-    out = preprocess_math(_esc(s))
-    return out.replace('\n', '<br>')
+def _tex_inline(s):
+    """LaTeX-escape a short single-line value (subject, name, etc.) that
+    won't carry math. Newlines collapse to spaces."""
+    if s is None:
+        return ''
+    return _tex_escape(str(s).replace('\n', ' ').replace('\r', ''))
 
 
 # ---------------------------------------------------------------------------
-# Shared CSS
+# LaTeX preamble — shared by report and overview documents
 # ---------------------------------------------------------------------------
-#
-# Font stack walks Latin -> CJK -> Tamil so a single string of mixed text
-# resolves each glyph from the first family that has it. Noto families are
-# the lingua franca on Linux servers; Source Han / AR PL UMing / PingFang
-# are Mac/Windows fallbacks for local development.
 
-_PDF_CSS = """
-@page {
-    size: A4;
-    margin: 1.4cm 1.6cm;
-    @bottom-right {
-        content: counter(page) ' / ' counter(pages);
-        font-size: 8.5pt;
-        color: #888;
-    }
-}
-* { box-sizing: border-box; }
-html, body {
-    /* Sans-serif stack so the PDF reads like the old ReportLab Helvetica
-       output. Apt-installed Liberation/DejaVu/Noto give us the same look
-       on Linux + Railway. CJK and Tamil falls through Noto Sans CJK / Noto
-       Sans Tamil. */
-    font-family: 'Helvetica', 'Arial', 'Liberation Sans', 'DejaVu Sans',
-                 'Noto Sans', 'Noto Sans CJK SC', 'Noto Sans Tamil',
-                 'PingFang SC', 'AR PL UMing CN', sans-serif;
-    font-size: 10.5pt;
-    line-height: 1.55;
-    color: #1a1a2e;
-    margin: 0;
-}
-sup, sub { font-size: 0.75em; line-height: 0; }
-sup { vertical-align: super; }
-sub { vertical-align: sub; }
-h1, h2, h3 { color: #1a1a2e; }
-h1 { font-size: 18pt; margin: 0 0 4pt; }
-h2 {
-    font-size: 13pt; margin: 18pt 0 8pt;
-    padding-bottom: 4pt; border-bottom: 1px solid #d6d6e0;
-}
-h3 { font-size: 11pt; margin: 10pt 0 4pt; }
+_PREAMBLE = r"""\documentclass[11pt,a4paper]{article}
 
-.muted { color: #666; font-size: 9.5pt; }
-hr { border: none; border-top: 1px solid #d6d6e0; margin: 12pt 0; }
+\usepackage[a4paper,top=1.5cm,bottom=1.8cm,left=1.5cm,right=1.5cm]{geometry}
+\usepackage{fontspec}
+\usepackage[table,svgnames,dvipsnames]{xcolor}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins,breakable}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{amsmath,amssymb}
+\usepackage{microtype}
+\usepackage{titlesec}
+\usepackage{ragged2e}
+\usepackage{ulem}
 
-.info-grid {
-    display: grid; grid-template-columns: max-content 1fr max-content 1fr;
-    gap: 4pt 12pt; padding: 8pt 10pt; background: #f4f5fb;
-    border: 1px solid #d6d6e0; border-radius: 4pt; font-size: 9.5pt;
-}
-.info-grid .k { font-weight: bold; color: #444; }
-
-.summary-row {
-    display: flex; justify-content: space-around; align-items: center;
-    margin: 14pt 0; padding: 10pt; background: white;
-    border: 2px solid #4a54c4; border-radius: 6pt;
-    color: #4a54c4; font-weight: bold; font-size: 11pt;
-}
-.summary-row .summary-cell { text-align: center; }
-.summary-row .summary-cell .label { font-size: 8.5pt; color: #777; font-weight: normal; }
-
-.banner {
-    padding: 8pt 12pt; margin: 10pt 0; border-radius: 4pt;
-    border-left: 4px solid; font-size: 10pt; line-height: 1.5;
-}
-.banner.well-done { background: #f0fdf4; border-color: #28a745; }
-.banner.main-gap  { background: #fff8e1; border-color: #e68a00; }
-
-.q-block {
-    page-break-inside: avoid; margin: 10pt 0; border: 1px solid #d6d6e0;
-    border-radius: 4pt; overflow: hidden;
-}
-.q-head {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 7pt 10pt; background: #4a54c4; color: white; font-weight: bold;
-}
-.q-head .status { padding: 2pt 8pt; border-radius: 999pt; font-size: 9pt; }
-.q-head .status.correct           { background: #28a745; }
-.q-head .status.partially_correct { background: #e68a00; }
-.q-head .status.incorrect         { background: #dc3545; }
-.q-body { padding: 0; }
-.q-row { display: grid; grid-template-columns: 26mm 1fr; border-top: 1px solid #ececf2; }
-.q-row:first-child { border-top: none; }
-.q-row .k { padding: 6pt 8pt; background: #f7f8fc; font-weight: bold; font-size: 9.5pt; color: #444; }
-.q-row .v { padding: 6pt 10pt; font-size: 10pt; }
-
-table.errors, table.items, table.scores {
-    width: 100%; border-collapse: collapse; font-size: 9.5pt;
-    margin: 6pt 0 12pt; page-break-inside: auto;
-}
-table.errors th, table.items th, table.scores th {
-    background: #4a54c4; color: white; text-align: left;
-    padding: 6pt 8pt; font-weight: bold; font-size: 9.5pt;
-}
-table.errors td, table.items td, table.scores td {
-    padding: 5pt 8pt; border-bottom: 1px solid #ececf2; vertical-align: top;
-}
-table.errors tr:nth-child(even) td,
-table.items tr:nth-child(even) td,
-table.scores tr:nth-child(even) td { background: #fafbff; }
-.t-center { text-align: center; }
-.diff-easy   { color: #28a745; font-weight: bold; }
-.diff-mod    { color: #e68a00; font-weight: bold; }
-.diff-hard   { color: #dc3545; font-weight: bold; }
-.pct-pass    { color: #28a745; font-weight: bold; }
-.pct-fail    { color: #dc3545; font-weight: bold; }
-.struck      { text-decoration: line-through; color: #c0392b; }
-.fix         { color: #1f7a3e; }
-
-.actions { margin: 6pt 0 12pt; padding-left: 18pt; }
-.actions li { margin-bottom: 3pt; font-size: 10pt; }
-
-.footer {
-    margin-top: 18pt; padding-top: 8pt; border-top: 1px solid #d6d6e0;
-    font-size: 8.5pt; color: #888; text-align: center;
+% Multi-script fallback so a sentence like "测试 தமிழ் F = ma" routes
+% each codepoint to the right Noto family without explicit font-switch
+% groups in the AI text. \IfFontExistsTF guards against environments
+% where Noto isn't installed (e.g. local macOS dev) — we fall back to
+% Helvetica then. Railway's Dockerfile apt-installs Noto via fonts-noto.
+\IfFontExistsTF{Noto Sans}{%
+  \directlua{
+    luaotfload.add_fallback("multilang_fb", {
+      "Noto Sans CJK SC:script=hani;",
+      "Noto Sans Tamil:script=taml;",
+      "Noto Sans Devanagari:script=deva;",
+    })
+  }
+  \setmainfont{Noto Sans}[RawFeature={fallback=multilang_fb}]
+}{%
+  \setmainfont{Helvetica}
 }
 
-code {
-    background: #f3f4f6; padding: 1pt 4pt; border-radius: 2pt;
-    font-family: 'Menlo', 'Consolas', monospace; font-size: 9pt;
+% Brand palette (matches the previous PDF look)
+\definecolor{brandblue}{HTML}{4A54C4}
+\definecolor{brandgreen}{HTML}{28A745}
+\definecolor{brandorange}{HTML}{E68A00}
+\definecolor{brandred}{HTML}{DC3545}
+\definecolor{bggreen}{HTML}{F0FDF4}
+\definecolor{bgorange}{HTML}{FFF8E1}
+\definecolor{bggrey}{HTML}{F4F5FB}
+\definecolor{bordergrey}{HTML}{D6D6E0}
+\definecolor{textmuted}{HTML}{666666}
+
+% Tight spacing — explicit goal: minimise empty space between blocks.
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+\setlist{nosep,leftmargin=1.5em,topsep=2pt,partopsep=0pt}
+\titlespacing*{\section}{0pt}{8pt}{2pt}
+\titlespacing*{\subsection}{0pt}{6pt}{2pt}
+\titleformat{\section}{\bfseries\large\color{black}}{}{0pt}{}[\vspace{-2pt}{\color{bordergrey}\hrule height 0.4pt}]
+\titleformat{\subsection}{\bfseries\normalsize\color{black}}{}{0pt}{}
+
+\renewcommand{\arraystretch}{1.18}
+
+% Per-question card. Title is the brand-blue band with question label
+% on the left and status pill on the right.
+\newtcolorbox{qcard}[2]{%
+  enhanced, breakable, sharp corners=southwest,
+  colback=white, colframe=bordergrey, boxrule=0.4pt, arc=2pt,
+  fonttitle=\bfseries\color{white},
+  colbacktitle=brandblue,
+  title={\strut #1 \hfill #2},
+  toptitle=3pt, bottomtitle=3pt, lefttitle=8pt, righttitle=8pt,
+  before skip=4pt, after skip=4pt,
+  left=8pt, right=8pt, top=3pt, bottom=3pt,
+}
+
+% Banner-style boxes for the well-done / main-gap callouts.
+\newtcolorbox{wellbanner}{
+  colback=bggreen, colframe=brandgreen, boxrule=0pt,
+  leftrule=4pt, arc=2pt, sharp corners=east,
+  before skip=4pt, after skip=4pt, top=3pt, bottom=3pt, left=8pt, right=8pt,
+}
+\newtcolorbox{gapbanner}{
+  colback=bgorange, colframe=brandorange, boxrule=0pt,
+  leftrule=4pt, arc=2pt, sharp corners=east,
+  before skip=4pt, after skip=4pt, top=3pt, bottom=3pt, left=8pt, right=8pt,
+}
+
+% Stacked label/value cell for the summary row. #1 = width fraction (e.g.
+% 0.32 for three cells, 0.24 for four), #2 = label, #3 = value.
+\newcommand{\summarycell}[3]{%
+  \begin{minipage}[c]{#1\linewidth}\centering
+    {\small\color{textmuted} #2}\par\vspace{1pt}
+    {\Large\bfseries\color{brandblue} #3}
+  \end{minipage}%
+}
+
+% Footer
+\newcommand{\pdffooter}[1]{%
+  \par\vspace{8pt}{\color{bordergrey}\hrule height 0.4pt}\par\vspace{4pt}%
+  {\centering\color{textmuted}\small Generated by #1\par}%
 }
 """
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Body builders
 # ---------------------------------------------------------------------------
 
 _STATUS_LABEL = {
@@ -324,80 +245,149 @@ _STATUS_LABEL = {
     'partially_correct': 'Partial',
     'incorrect': 'Incorrect',
 }
+_STATUS_COLOR = {
+    'correct': 'brandgreen',
+    'partially_correct': 'brandorange',
+    'incorrect': 'brandred',
+}
 
 
-def _status_class(status):
-    """Map a status string to one of our three CSS classes; default to
-    'incorrect' so unknown statuses surface in red rather than vanish."""
-    return status if status in _STATUS_LABEL else 'incorrect'
+def _build_info_grid(rows):
+    """Return TeX for a 4-column key/value grid (label, value, label, value).
+    `rows` is a list of (label, value) tuples; we pair them two per row."""
+    cells = []
+    pairs = list(rows)
+    while pairs:
+        l1, v1 = pairs.pop(0)
+        if pairs:
+            l2, v2 = pairs.pop(0)
+        else:
+            l2, v2 = '', ''
+        cells.append(f'\\textbf{{{_tex_inline(l1)}:}} & {_tex_inline(v1)} & '
+                     f'\\textbf{{{_tex_inline(l2)}{":" if l2 else ""}}} & {_tex_inline(v2)} \\\\')
+    body = '\n'.join(cells)
+    return (
+        r'\noindent\rowcolors{1}{bggrey}{bggrey}' + '\n'
+        r'\begin{tabularx}{\linewidth}{@{\hspace{6pt}}>{\bfseries}p{2.4cm} X >{\bfseries}p{2.0cm} X@{\hspace{6pt}}}' + '\n'
+        + body + '\n'
+        r'\end{tabularx}'
+    )
 
 
-def _render_html_to_pdf(html_str):
-    """Convert a fully-assembled HTML string to PDF bytes."""
-    HTML = _get_weasy()
-    return HTML(string=html_str).write_pdf()
+def _build_summary_row(items):
+    """Inline summary box with N centered stacked cells. items = list of
+    (label, value). Uses \\summarycell minipages so each cell can carry a
+    two-line label/value stack — tabularx cells can't host \\\\ for
+    intra-cell line breaks."""
+    n = max(1, len(items))
+    # Each cell takes ~1/n of the line minus the inter-cell gap; 0.93/n is
+    # tight enough that \hfill spreads 3-4 cells evenly without overflow.
+    width = round(0.93 / n, 3)
+    cells = []
+    for lbl, val in items:
+        cells.append(rf'\summarycell{{{width}}}{{{_tex_inline(lbl)}}}{{{_tex_inline(val)}}}')
+    body = r'\hfill '.join(cells)
+    return (
+        r'\begin{tcolorbox}[colback=white, colframe=brandblue, boxrule=1pt,'
+        r' arc=4pt, top=6pt, bottom=6pt, left=8pt, right=8pt,'
+        r' before skip=8pt, after skip=8pt]' + '\n'
+        + body + '\n'
+        r'\end{tcolorbox}'
+    )
+
+
+def _build_qcard(label, status_key, marks_text, rows):
+    """One per-question / per-criterion card. `rows` = list of (key, value)."""
+    color = _STATUS_COLOR.get(status_key, 'brandred')
+    status_label = _STATUS_LABEL.get(status_key, 'Incorrect')
+    pill_text = status_label + (marks_text or '')
+    pill = (
+        rf'\colorbox{{{color}}}{{\color{{white}}\bfseries\strut~{_tex_inline(pill_text)}~}}'
+    )
+    body_rows = []
+    for k, v in rows:
+        if v is None or v == '':
+            continue
+        body_rows.append(rf'{_tex_inline(k)} & {_tex_text(v)} \\')
+    body = '\n'.join(body_rows)
+    return (
+        rf'\begin{{qcard}}{{{_tex_inline(label)}}}{{{pill}}}' + '\n'
+        r'\renewcommand{\arraystretch}{1.2}' + '\n'
+        r'\begin{tabularx}{\linewidth}{@{}>{\bfseries\color{textmuted}\raggedright\arraybackslash}p{2.4cm}@{\hspace{8pt}} X@{}}' + '\n'
+        + body + '\n'
+        r'\end{tabularx}' + '\n'
+        r'\end{qcard}'
+    )
 
 
 # ---------------------------------------------------------------------------
-# generate_report_pdf — per-submission feedback report
+# generate_report_pdf
 # ---------------------------------------------------------------------------
 
 def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
-    """Generate a per-submission feedback PDF.
-
-    Args:
-        result: Dict from mark_script() with `questions`, `overall_feedback`,
-            optional `errors`, `recommended_actions`, `well_done`,
-            `main_gap`, `assign_type`, `provider_label`, etc.
-        subject: Subject string for the header.
-        app_title: App title for the report heading.
-
-    Returns:
-        bytes — the rendered PDF.
-    """
+    """Build a single-submission feedback report and return its PDF bytes."""
     questions = result.get('questions', []) or []
     is_rubrics = result.get('assign_type') == 'rubrics'
     has_marks = any(q.get('marks_awarded') is not None for q in questions)
 
-    # --- Summary ---
+    now = datetime.now(timezone.utc).strftime('%d %B %Y, %H:%M UTC')
+    provider_label = result.get('provider_label', result.get('provider', 'AI'))
+
+    # Header info grid
+    info = _build_info_grid([
+        ('Subject', subject or 'General'),
+        ('Date', now),
+        ('AI Provider', provider_label),
+    ])
+
+    # Summary row
     if has_marks:
         ta = sum((q.get('marks_awarded') or 0) for q in questions)
         tp = sum((q.get('marks_total') or 0) for q in questions)
         pct = round(ta / tp * 100) if tp > 0 else 0
-        summary_html = (
-            f'<div class="summary-cell"><div class="label">Score</div>{ta} / {tp}</div>'
-            f'<div class="summary-cell"><div class="label">Percentage</div>{pct}%</div>'
-            f'<div class="summary-cell"><div class="label">Questions</div>{len(questions)}</div>'
-        )
+        summary = _build_summary_row([
+            ('Score', f'{ta} / {tp}'),
+            # Pass raw '%'; _tex_inline escapes it once into \%. Pre-escaping
+            # here would feed '\%' into _tex_inline, which would then escape
+            # the backslash too and emit "\textbackslash{}\%".
+            ('Percentage', f'{pct}%'),
+            ('Questions', str(len(questions))),
+        ])
     else:
         counts = {'correct': 0, 'partially_correct': 0, 'incorrect': 0}
         for q in questions:
-            counts[_status_class(q.get('status', 'incorrect'))] = (
-                counts.get(_status_class(q.get('status', 'incorrect')), 0) + 1
-            )
-        summary_html = (
-            f'<div class="summary-cell"><div class="label">Correct</div>{counts["correct"]}</div>'
-            f'<div class="summary-cell"><div class="label">Partial</div>{counts["partially_correct"]}</div>'
-            f'<div class="summary-cell"><div class="label">Incorrect</div>{counts["incorrect"]}</div>'
-            f'<div class="summary-cell"><div class="label">Total</div>{len(questions)}</div>'
+            k = q.get('status', 'incorrect')
+            if k in counts:
+                counts[k] += 1
+        summary = _build_summary_row([
+            ('Correct', str(counts['correct'])),
+            ('Partial', str(counts['partially_correct'])),
+            ('Incorrect', str(counts['incorrect'])),
+            ('Total', str(len(questions))),
+        ])
+
+    # Banners
+    banners = []
+    if result.get('well_done'):
+        banners.append(
+            r'\begin{wellbanner}\textbf{$\checkmark$ Well done:} ' +
+            _tex_text(result['well_done']) + r'\end{wellbanner}'
+        )
+    if result.get('main_gap'):
+        banners.append(
+            r'\begin{gapbanner}\textbf{$\rightarrow$ Main gap:} ' +
+            _tex_text(result['main_gap']) + r'\end{gapbanner}'
         )
 
-    # --- Banners ---
-    banners = ''
-    if result.get('well_done'):
-        banners += f'<div class="banner well-done"><strong>✓ Well done:</strong> {_esc_md(result["well_done"])}</div>'
-    if result.get('main_gap'):
-        banners += f'<div class="banner main-gap"><strong>→ Main gap:</strong> {_esc_md(result["main_gap"])}</div>'
-
-    # --- Per-question / per-criterion blocks ---
+    # Per-question cards
     section_title = 'Rubric Criteria Feedback' if is_rubrics else 'Question-by-Question Feedback'
     item_label = 'Criterion' if is_rubrics else 'Question'
     ans_label = 'Assessment' if is_rubrics else 'Student Answer'
     ref_label = 'Band Descriptor' if is_rubrics else 'Correct Answer'
 
-    q_blocks = []
+    cards = []
     for q in questions:
-        status = _status_class(q.get('status', 'incorrect'))
+        status = q.get('status', 'incorrect')
         marks_text = ''
         if q.get('marks_awarded') is not None:
             mt = q.get('marks_total')
@@ -407,119 +397,86 @@ def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
         criterion_name = q.get('criterion_name', '')
         band_info = q.get('band', '')
         if is_rubrics and criterion_name:
-            head_left = _esc(criterion_name)
+            label = criterion_name
             if band_info:
-                head_left += f' — <span style="font-weight:normal">{_esc(band_info)}</span>'
+                label += f' — {band_info}'
         else:
-            head_left = f'{item_label} {_esc(q.get("question_num", "?"))}'
+            label = f'{item_label} {q.get("question_num", "?")}'
 
-        rows_html = []
-        rows_html.append(f'<div class="q-row"><div class="k">{ans_label}</div><div class="v">{_esc_md(q.get("student_answer", "N/A"))}</div></div>')
-        rows_html.append(f'<div class="q-row"><div class="k">{ref_label}</div><div class="v">{_esc_md(q.get("correct_answer", "N/A"))}</div></div>')
-        if q.get('feedback'):
-            rows_html.append(f'<div class="q-row"><div class="k">Feedback</div><div class="v">{_esc_md(q["feedback"])}</div></div>')
-        if q.get('improvement'):
-            rows_html.append(f'<div class="q-row"><div class="k">Improvement</div><div class="v">{_esc_md(q["improvement"])}</div></div>')
+        rows = [
+            (ans_label, q.get('student_answer', 'N/A')),
+            (ref_label, q.get('correct_answer', 'N/A')),
+            ('Feedback', q.get('feedback', '')),
+            ('Improvement', q.get('improvement', '')),
+        ]
         if q.get('correction_prompt'):
-            rows_html.append(f'<div class="q-row"><div class="k">Try this</div><div class="v"><em>{_esc_md(q["correction_prompt"])}</em></div></div>')
+            rows.append(('Try this', q['correction_prompt']))
+        cards.append(_build_qcard(label, status, marks_text, rows))
 
-        q_blocks.append(
-            f'<div class="q-block">'
-            f'<div class="q-head">'
-            f'<span>{head_left}</span>'
-            f'<span class="status {status}">{_STATUS_LABEL.get(status, "Incorrect")}{marks_text}</span>'
-            f'</div>'
-            f'<div class="q-body">{"".join(rows_html)}</div>'
-            f'</div>'
-        )
-
-    # --- Errors table (rubrics mode) ---
-    errors_html = ''
+    # Errors table (rubrics only). ulem is loaded in the preamble; we just
+    # use \sout here to strike through the original text.
     errors = result.get('errors') or []
+    err_block = ''
     if errors:
-        rows = []
+        rows_tex = []
         for err in errors:
-            rows.append(
-                '<tr>'
-                f'<td>{_esc(err.get("type", "")).upper()}</td>'
-                f'<td>{_esc(err.get("location", ""))}</td>'
-                f'<td><span class="struck">{_esc_md(err.get("original", ""))}</span></td>'
-                f'<td><span class="fix">{_esc_md(err.get("correction", ""))}</span></td>'
-                '</tr>'
-            )
-        errors_html = (
-            f'<h2>Line-by-Line Errors ({len(errors)})</h2>'
-            '<table class="errors">'
-            '<thead><tr><th>Type</th><th>Location</th><th>Original</th><th>Correction</th></tr></thead>'
-            f'<tbody>{"".join(rows)}</tbody>'
-            '</table>'
+            etype = _tex_inline(err.get('type', '')).upper()
+            loc = _tex_inline(err.get('location', ''))
+            orig = r'\sout{' + _tex_text(err.get('original', '')) + r'}'
+            corr = r'\textcolor{brandgreen}{' + _tex_text(err.get('correction', '')) + r'}'
+            rows_tex.append(rf'{etype} & {loc} & {orig} & {corr} \\')
+        err_block = (
+            rf'\section*{{Line-by-Line Errors ({len(errors)})}}' + '\n'
+            r'\rowcolors{2}{bggrey}{white}' + '\n'
+            r'\begin{tabularx}{\linewidth}{@{}>{\bfseries\small}p{2cm} >{\small}p{2.5cm} >{\small}X >{\small}X@{}}' + '\n'
+            r'\rowcolor{brandblue}\color{white}\textbf{Type} & '
+            r'\color{white}\textbf{Location} & '
+            r'\color{white}\textbf{Original} & '
+            r'\color{white}\textbf{Correction} \\' + '\n'
+            + '\n'.join(rows_tex) + '\n'
+            r'\end{tabularx}'
         )
 
-    # --- Overall + actions ---
-    overall_html = f'<h2>Overall Feedback</h2><p>{_esc_md(result.get("overall_feedback", "No overall feedback provided."))}</p>'
+    # Overall + recommended actions
+    overall_tex = _tex_text(result.get('overall_feedback', 'No overall feedback provided.'))
     actions = result.get('recommended_actions') or []
+    actions_block = ''
     if actions:
-        items = ''.join(f'<li>{_esc_md(a)}</li>' for a in actions)
-        overall_html += f'<h3>Recommended Actions</h3><ol class="actions">{items}</ol>'
+        items = '\n'.join(rf'\item {_tex_text(a)}' for a in actions)
+        actions_block = (
+            r'\subsection*{Recommended Actions}' + '\n'
+            r'\begin{enumerate}' + '\n' + items + '\n' + r'\end{enumerate}'
+        )
 
-    # --- Header info grid ---
-    now = datetime.now(timezone.utc).strftime('%d %B %Y, %H:%M UTC')
-    provider_label = _esc(result.get('provider_label', result.get('provider', 'AI')))
-    info_html = (
-        '<div class="info-grid">'
-        f'<div class="k">Subject:</div><div>{_esc(subject or "General")}</div>'
-        f'<div class="k">Date:</div><div>{now}</div>'
-        f'<div class="k">AI Provider:</div><div>{provider_label}</div>'
-        '<div></div><div></div>'
-        '</div>'
-    )
+    title = _tex_inline(f'{app_title} Report' if app_title else 'AI Marking Report')
 
-    title = _esc(f'{app_title} Report' if app_title else 'AI Marking Report')
-    html_doc = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>{title}</title>
-<style>{_PDF_CSS}</style>
-</head>
-<body>
-<h1 style="text-align:center">{title}</h1>
-{info_html}
-<div class="summary-row">{summary_html}</div>
-{banners}
-<h2>{section_title}</h2>
-{"".join(q_blocks)}
-{errors_html}
-<hr>
-{overall_html}
-<div class="footer">Generated by {_esc(app_title or "AI Feedback Systems")}</div>
-</body>
-</html>"""
+    body = '\n'.join([
+        rf'\begin{{center}}{{\Huge\bfseries {title}}}\end{{center}}',
+        info,
+        summary,
+        '\n'.join(banners),
+        rf'\section*{{{section_title}}}',
+        '\n'.join(cards),
+        err_block,
+        r'\section*{Overall Feedback}',
+        overall_tex,
+        actions_block,
+        rf'\pdffooter{{{_tex_inline(app_title or "AI Feedback Systems")}}}',
+    ])
 
-    return _render_html_to_pdf(html_doc)
+    tex = _PREAMBLE + r'\begin{document}' + '\n' + body + '\n' + r'\end{document}' + '\n'
+    return _compile_tex_to_pdf(tex, jobname='report')
 
 
 # ---------------------------------------------------------------------------
-# generate_overview_pdf — class overview + item analysis
+# generate_overview_pdf
 # ---------------------------------------------------------------------------
 
 def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Systems'):
-    """Generate a class overview PDF: stats summary, score distribution,
-    item analysis, weak-area callouts, and a ranked individual scores
-    table.
-
-    Args:
-        student_results: List of {'name', 'index', 'result'} dicts where
-            `result` is a mark_script() output dict.
-        subject: Subject string for the header.
-        app_title: App title for the report heading.
-
-    Returns:
-        bytes — the rendered PDF.
-    """
+    """Class-overview PDF: stats, score distribution, item analysis, weak
+    areas, individual scores."""
     valid = [sr for sr in student_results if sr.get('result') and not sr['result'].get('error')]
 
-    # --- Per-student totals ---
     scores = []
     has_marks = False
     for sr in valid:
@@ -538,7 +495,14 @@ def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Sy
             scores.append({'name': sr.get('name', ''), 'index': sr.get('index', ''),
                            'awarded': correct, 'possible': total, 'pct': pct})
 
-    # --- Class summary ---
+    now = datetime.now(timezone.utc).strftime('%d %B %Y, %H:%M UTC')
+    info = _build_info_grid([
+        ('Subject', subject or 'General'),
+        ('Date', now),
+        ('Total Students', str(len(student_results))),
+    ])
+
+    # Class summary (mean / median / etc.)
     summary_block = ''
     if scores:
         pcts = [s['pct'] for s in scores]
@@ -550,35 +514,44 @@ def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Sy
         pass_count = sum(1 for p in pcts if p >= 50)
         pass_rate = round(pass_count / len(pcts) * 100)
 
+        stat_rows = (
+            r'\rowcolor{brandblue}\color{white}\textbf{Mean} & '
+            r'\color{white}\textbf{Median} & '
+            r'\color{white}\textbf{Highest} & '
+            r'\color{white}\textbf{Lowest} & '
+            r'\color{white}\textbf{Std Dev} & '
+            r'\color{white}\textbf{Pass Rate} \\'
+            '\n'
+            rf'{avg_pct}\% & {med_pct}\% & {high_pct}\% & {low_pct}\% & {std_pct}\% & '
+            rf'{pass_rate}\% ({pass_count}/{len(scores)}) \\'
+        )
         summary_block = (
-            '<table class="items">'
-            '<thead><tr>'
-            '<th class="t-center">Mean</th><th class="t-center">Median</th>'
-            '<th class="t-center">Highest</th><th class="t-center">Lowest</th>'
-            '<th class="t-center">Std Dev</th><th class="t-center">Pass Rate</th>'
-            '</tr></thead><tbody><tr>'
-            f'<td class="t-center">{avg_pct}%</td>'
-            f'<td class="t-center">{med_pct}%</td>'
-            f'<td class="t-center">{high_pct}%</td>'
-            f'<td class="t-center">{low_pct}%</td>'
-            f'<td class="t-center">{std_pct}%</td>'
-            f'<td class="t-center">{pass_rate}% ({pass_count}/{len(scores)})</td>'
-            '</tr></tbody></table>'
+            r'\section*{Class Summary}' + '\n'
+            r'\begin{tabularx}{\linewidth}{@{}>{\centering\arraybackslash}X >{\centering\arraybackslash}X >{\centering\arraybackslash}X >{\centering\arraybackslash}X >{\centering\arraybackslash}X >{\centering\arraybackslash}X@{}}' + '\n'
+            + stat_rows + '\n'
+            r'\end{tabularx}'
         )
 
-        bands = [('0-24%', 0, 24), ('25-49%', 25, 49), ('50-74%', 50, 74), ('75-100%', 75, 100)]
+        # Score distribution bands. The labels use \% (escaped percent)
+        # because any unescaped % in LaTeX starts a comment that eats the
+        # rest of the line — including the \\ row terminator.
+        bands = [(r'0--24\%', 0, 24), (r'25--49\%', 25, 49),
+                 (r'50--74\%', 50, 74), (r'75--100\%', 75, 100)]
         band_counts = [sum(1 for p in pcts if lo <= p <= hi) for _, lo, hi in bands]
-        summary_block += (
-            '<h3>Score Distribution</h3>'
-            '<table class="items">'
-            '<thead><tr>' + ''.join(f'<th class="t-center">{b[0]}</th>' for b in bands) + '</tr></thead>'
-            '<tbody><tr>' + ''.join(f'<td class="t-center">{c}</td>' for c in band_counts) + '</tr></tbody>'
-            '</table>'
+        band_header = ' & '.join(rf'\rowcolor{{brandblue}}\color{{white}}\textbf{{{b[0]}}}' if i == 0 else
+                                 rf'\color{{white}}\textbf{{{b[0]}}}' for i, b in enumerate(bands))
+        band_row = ' & '.join(str(c) for c in band_counts) + r' \\'
+        summary_block += '\n' + (
+            r'\subsection*{Score Distribution}' + '\n'
+            r'\begin{tabularx}{\linewidth}{@{}>{\centering\arraybackslash}X >{\centering\arraybackslash}X >{\centering\arraybackslash}X >{\centering\arraybackslash}X@{}}' + '\n'
+            + band_header + r' \\' + '\n'
+            + band_row + '\n'
+            r'\end{tabularx}'
         )
     else:
-        summary_block = '<p>No scored results available.</p>'
+        summary_block = r'\section*{Class Summary}' + '\nNo scored results available.'
 
-    # --- Item analysis ---
+    # Item analysis
     question_stats = {}
     for sr in valid:
         for q in sr['result'].get('questions', []) or []:
@@ -609,7 +582,7 @@ def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Sy
             key=lambda x: (int(x['num']) if str(x['num']).isdigit() else 999, str(x['num'])),
         )
         is_rubrics = any(qs['criterion_name'] for qs in sorted_qs)
-        q_label = 'Criterion' if is_rubrics else 'Q#'
+        q_label = 'Criterion' if is_rubrics else 'Q\\#'
 
         rows = []
         for qs in sorted_qs:
@@ -617,29 +590,51 @@ def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Sy
             pct_correct = round(qs['correct'] / n * 100)
             difficulty = pct_correct
             diff_label = 'Easy' if difficulty >= 70 else ('Moderate' if difficulty >= 40 else 'Hard')
-            diff_class = 'diff-easy' if difficulty >= 70 else ('diff-mod' if difficulty >= 40 else 'diff-hard')
+            diff_color = 'brandgreen' if difficulty >= 70 else ('brandorange' if difficulty >= 40 else 'brandred')
 
             q_name = qs['criterion_name'] if (is_rubrics and qs['criterion_name']) else str(qs['num'])
             cells = [
-                f'<td>{_esc(q_name)}</td>',
-                f'<td class="t-center">{qs["correct"]} ({pct_correct}%)</td>',
-                f'<td class="t-center">{qs["partial"]} ({round(qs["partial"]/n*100)}%)</td>',
-                f'<td class="t-center">{qs["incorrect"]} ({round(qs["incorrect"]/n*100)}%)</td>',
+                _tex_inline(q_name),
+                f'{qs["correct"]} ({pct_correct}\\%)',
+                f'{qs["partial"]} ({round(qs["partial"]/n*100)}\\%)',
+                f'{qs["incorrect"]} ({round(qs["incorrect"]/n*100)}\\%)',
             ]
             if has_marks:
-                avg_marks = round(qs['marks_sum'] / n, 1)
-                cells.append(f'<td class="t-center">{avg_marks}</td>')
-                cells.append(f'<td class="t-center">{qs["marks_max"]}</td>')
-            cells.append(f'<td class="t-center {diff_class}">{diff_label} ({difficulty}%)</td>')
-            rows.append(f'<tr>{"".join(cells)}</tr>')
+                cells.append(str(round(qs['marks_sum'] / n, 1)))
+                cells.append(str(qs['marks_max']))
+            cells.append(rf'\textcolor{{{diff_color}}}{{\textbf{{{diff_label}}} ({difficulty}\%)}}')
+            rows.append(' & '.join(cells) + r' \\')
 
         if has_marks:
-            head = f'<tr><th>{q_label}</th><th class="t-center">Correct</th><th class="t-center">Partial</th><th class="t-center">Incorrect</th><th class="t-center">Avg Marks</th><th class="t-center">Max</th><th class="t-center">Difficulty</th></tr>'
+            cols = r'@{}>{\bfseries}p{3cm} >{\centering\arraybackslash}p{1.6cm} >{\centering\arraybackslash}p{1.6cm} >{\centering\arraybackslash}p{1.6cm} >{\centering\arraybackslash}p{1.5cm} >{\centering\arraybackslash}p{1.2cm} >{\centering\arraybackslash}X@{}'
+            head = (
+                r'\rowcolor{brandblue}'
+                rf'\color{{white}}\textbf{{{q_label}}} & '
+                r'\color{white}\textbf{Correct} & '
+                r'\color{white}\textbf{Partial} & '
+                r'\color{white}\textbf{Incorrect} & '
+                r'\color{white}\textbf{Avg} & '
+                r'\color{white}\textbf{Max} & '
+                r'\color{white}\textbf{Difficulty} \\'
+            )
         else:
-            head = f'<tr><th>{q_label}</th><th class="t-center">Correct</th><th class="t-center">Partial</th><th class="t-center">Incorrect</th><th class="t-center">Difficulty</th></tr>'
-        item_block = f'<table class="items"><thead>{head}</thead><tbody>{"".join(rows)}</tbody></table>'
+            cols = r'@{}>{\bfseries}p{3.5cm} >{\centering\arraybackslash}p{2cm} >{\centering\arraybackslash}p{2cm} >{\centering\arraybackslash}p{2cm} >{\centering\arraybackslash}X@{}'
+            head = (
+                r'\rowcolor{brandblue}'
+                rf'\color{{white}}\textbf{{{q_label}}} & '
+                r'\color{white}\textbf{Correct} & '
+                r'\color{white}\textbf{Partial} & '
+                r'\color{white}\textbf{Incorrect} & '
+                r'\color{white}\textbf{Difficulty} \\'
+            )
+        item_block = (
+            r'\section*{Item Analysis}' + '\n'
+            r'\rowcolors{2}{bggrey}{white}' + '\n'
+            rf'\begin{{tabularx}}{{\linewidth}}{{{cols}}}' + '\n'
+            + head + '\n' + '\n'.join(rows) + '\n'
+            r'\end{tabularx}'
+        )
 
-        # Weak areas (< 40% correct)
         weak = [qs for qs in sorted_qs if (qs['correct'] / max(qs['total'], 1) * 100) < 40]
         if weak:
             lines = []
@@ -647,72 +642,115 @@ def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Sy
                 q_name = qs['criterion_name'] if (is_rubrics and qs['criterion_name']) else f'Question {qs["num"]}'
                 pct = round(qs['correct'] / max(qs['total'], 1) * 100)
                 lines.append(
-                    f'<li><strong>{_esc(q_name)}</strong> — only {pct}% of students answered correctly '
-                    f'({qs["incorrect"]} incorrect, {qs["partial"]} partially correct out of {qs["total"]})</li>'
+                    rf'\item \textbf{{{_tex_inline(q_name)}}} — only {pct}\% correct '
+                    rf'({qs["incorrect"]} incorrect, {qs["partial"]} partial of {qs["total"]})'
                 )
-            weak_block = '<h3>Areas Needing Attention</h3><ul class="actions">' + ''.join(lines) + '</ul>'
+            weak_block = (
+                r'\subsection*{Areas Needing Attention}' + '\n'
+                r'\begin{itemize}' + '\n' + '\n'.join(lines) + '\n' + r'\end{itemize}'
+            )
 
-    # --- Individual scores ranked ---
+    # Individual scores ranked
     score_block = ''
     if scores:
         sorted_scores = sorted(scores, key=lambda x: x['pct'], reverse=True)
         rows = []
         for rank, s in enumerate(sorted_scores, 1):
-            pct_class = 'pct-pass' if s['pct'] >= 50 else 'pct-fail'
+            pct_color = 'brandgreen' if s['pct'] >= 50 else 'brandred'
             rows.append(
-                '<tr>'
-                f'<td class="t-center">{rank}</td>'
-                f'<td>{_esc(s["index"])}</td>'
-                f'<td>{_esc(s["name"])}</td>'
-                f'<td class="t-center">{s["awarded"]}/{s["possible"]}</td>'
-                f'<td class="t-center {pct_class}">{s["pct"]}%</td>'
-                '</tr>'
+                rf'{rank} & {_tex_inline(s["index"])} & {_tex_inline(s["name"])} & '
+                rf'{s["awarded"]}/{s["possible"]} & '
+                rf'\textcolor{{{pct_color}}}{{\textbf{{{s["pct"]}\%}}}} \\'
             )
         score_block = (
-            '<table class="scores">'
-            '<thead><tr><th class="t-center">Rank</th><th>Index</th><th>Name</th>'
-            '<th class="t-center">Score</th><th class="t-center">%</th></tr></thead>'
-            f'<tbody>{"".join(rows)}</tbody></table>'
+            r'\section*{Individual Scores}' + '\n'
+            r'\rowcolors{2}{bggrey}{white}' + '\n'
+            r'\begin{tabularx}{\linewidth}{@{}>{\centering\arraybackslash}p{1cm} >{\centering\arraybackslash}p{2cm} X >{\centering\arraybackslash}p{2cm} >{\centering\arraybackslash}p{2cm}@{}}' + '\n'
+            r'\rowcolor{brandblue}'
+            r'\color{white}\textbf{Rank} & \color{white}\textbf{Index} & '
+            r'\color{white}\textbf{Name} & \color{white}\textbf{Score} & '
+            r'\color{white}\textbf{\%} \\' + '\n'
+            + '\n'.join(rows) + '\n'
+            r'\end{tabularx}'
         )
 
-    # --- Header info ---
-    now = datetime.now(timezone.utc).strftime('%d %B %Y, %H:%M UTC')
-    info_html = (
-        '<div class="info-grid">'
-        f'<div class="k">Subject:</div><div>{_esc(subject or "General")}</div>'
-        f'<div class="k">Date:</div><div>{now}</div>'
-        f'<div class="k">Total Students:</div><div>{len(student_results)}</div>'
-        '<div></div><div></div>'
-        '</div>'
-    )
+    # Use raw '&' here; _tex_inline escapes it once. Pre-escaping would
+    # feed '\&' into the escaper and produce '\textbackslash{}\&'.
+    title = _tex_inline(f'{app_title} — Class Overview & Item Analysis')
 
-    title = _esc(f'{app_title} — Class Overview & Item Analysis')
-    html_doc = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>{title}</title>
-<style>{_PDF_CSS}</style>
-</head>
-<body>
-<h1 style="text-align:center">{title}</h1>
-{info_html}
-<h2>Class Summary</h2>
-{summary_block}
-<h2>Item Analysis</h2>
-{item_block or "<p>No item statistics available.</p>"}
-{weak_block}
-<h2>Individual Scores</h2>
-{score_block or "<p>No scored students.</p>"}
-<div class="footer">Generated by {_esc(app_title or "AI Feedback Systems")}</div>
-</body>
-</html>"""
+    body = '\n\n'.join(filter(None, [
+        rf'\begin{{center}}{{\Huge\bfseries {title}}}\end{{center}}',
+        info,
+        summary_block,
+        item_block,
+        weak_block,
+        score_block,
+        rf'\pdffooter{{{_tex_inline(app_title or "AI Feedback Systems")}}}',
+    ]))
 
-    return _render_html_to_pdf(html_doc)
+    tex = _PREAMBLE + r'\begin{document}' + '\n' + body + '\n' + r'\end{document}' + '\n'
+    return _compile_tex_to_pdf(tex, jobname='overview')
 
 
-# Backwards-compat shim for any caller importing the old helper.
+# ---------------------------------------------------------------------------
+# Compile helper
+# ---------------------------------------------------------------------------
+
+def _compile_tex_to_pdf(tex_str, jobname='report'):
+    """Compile a .tex string to PDF via lualatex. Returns bytes; raises
+    RuntimeError on failure with the last 2KB of the LaTeX log so callers
+    can debug without trawling production logs."""
+    with tempfile.TemporaryDirectory(prefix='aimark_tex_') as tmpdir:
+        tex_path = os.path.join(tmpdir, f'{jobname}.tex')
+        with open(tex_path, 'w', encoding='utf-8') as f:
+            f.write(tex_str)
+        try:
+            proc = subprocess.run(
+                [
+                    LUALATEX_BIN,
+                    '-interaction=nonstopmode',
+                    '-halt-on-error',
+                    '-output-directory', tmpdir,
+                    tex_path,
+                ],
+                capture_output=True,
+                timeout=LUALATEX_TIMEOUT,
+                cwd=tmpdir,
+            )
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                f"lualatex not found at {LUALATEX_BIN!r}. "
+                "On Linux install texlive-luatex; on macOS install BasicTeX or MacTeX."
+            ) from e
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"lualatex timed out after {LUALATEX_TIMEOUT}s")
+
+        pdf_path = os.path.join(tmpdir, f'{jobname}.pdf')
+        if not os.path.exists(pdf_path):
+            log_tail = ''
+            log_path = os.path.join(tmpdir, f'{jobname}.log')
+            if os.path.exists(log_path):
+                try:
+                    with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+                        log_tail = f.read()[-2000:]
+                except Exception:
+                    pass
+            stderr_tail = (proc.stderr or b'').decode('utf-8', errors='replace')[-500:]
+            logger.error(
+                "lualatex compile failed (rc=%s).\nLog tail:\n%s\nStderr:\n%s",
+                proc.returncode, log_tail, stderr_tail,
+            )
+            raise RuntimeError(
+                f"lualatex compile failed (rc={proc.returncode}). "
+                f"Log tail:\n{log_tail[-800:]}"
+            )
+
+        with open(pdf_path, 'rb') as f:
+            return f.read()
+
+
+# Backwards-compat shim — older callers (none currently) imported this.
 def clean_for_pdf(text):  # noqa: D401
-    """Legacy helper kept so callers outside this module that imported
-    `clean_for_pdf` keep working. The HTML pipeline never needs it."""
-    return _esc(text)
+    """Legacy helper. The new pipeline doesn't need it; we return an
+    inline-escaped string for any caller that still imports it."""
+    return _tex_inline(text)

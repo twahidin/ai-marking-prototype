@@ -1,39 +1,49 @@
 # Image used by Railway when this Dockerfile is present in the repo. We
-# moved off Nixpacks because WeasyPrint's ctypes lookup of libgobject /
-# libpango was failing on Nix's hashed store paths — apt installs those
-# libraries to the standard /usr/lib/x86_64-linux-gnu where dlopen finds
-# them without any LD_LIBRARY_PATH gymnastics.
+# generate PDFs by compiling LaTeX with lualatex (proper math typography
+# via amsmath, fontspec for Noto-CJK + Noto-Tamil), so the runtime needs
+# TeX Live's lualatex, the latex-extra package set (tcolorbox, tabularx,
+# enumitem, ulem, microtype, titlesec) and Noto fonts.
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DEBIAN_FRONTEND=noninteractive
 
-# System libraries:
-#  - libpango / libcairo / libharfbuzz / libfontconfig / libgdk-pixbuf →
-#    WeasyPrint's HTML→PDF rendering pipeline
-#  - shared-mime-info → mimetype detection used by Pango
-#  - fonts-noto + noto-cjk + noto-extra → Tamil + Chinese + Japanese +
-#    Korean glyphs available natively, no per-app font shipping
-#  - poppler-utils → pdf2image (used on the OpenAI / Qwen marking path)
-#  - libheif1 → pillow-heif decoder for HEIC student uploads
+# System libraries split into two apt-get calls so the (much larger) TeX
+# Live layer caches independently of the small font + utility layer.
+# Total uncompressed image footprint: ~1.5–2 GB. Build time on Railway:
+# 4–6 minutes for a fresh build, ~30s when both layers cache.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libpango-1.0-0 \
-        libpangoft2-1.0-0 \
-        libharfbuzz0b \
-        libfontconfig1 \
-        libcairo2 \
-        libgdk-pixbuf-2.0-0 \
-        libffi-dev \
-        shared-mime-info \
+        # Fonts that lualatex picks up by name via fontspec
         fonts-noto \
         fonts-noto-cjk \
+        fonts-noto-cjk-extra \
         fonts-noto-color-emoji \
         fonts-noto-extra \
+        fonts-noto-mono \
+        # pdf2image (OpenAI / Qwen marking path)
         poppler-utils \
+        # pillow-heif decoder for HEIC student uploads
         libheif1 \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && fc-cache -f
+    && fc-cache -fv
+
+# TeX Live: lualatex binary plus the package collection that backs
+# tcolorbox / tabularx / fontspec / amsmath / enumitem / titlesec / ulem.
+# texlive-luatex pulls in the engine + scheme. texlive-latex-extra and
+# texlive-fontsextra cover the boxes / tables / decorative packages.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        texlive-luatex \
+        texlive-latex-recommended \
+        texlive-latex-extra \
+        texlive-fonts-recommended \
+        texlive-fonts-extra \
+        texlive-lang-cjk \
+        texlive-lang-other \
+        texlive-pictures \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -45,5 +55,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Railway injects $PORT at runtime; shell form expands it. One worker +
-# many threads matches the Procfile we used pre-Docker.
+# many threads matches the original Procfile.
 CMD gunicorn -w 1 --threads 100 --timeout 300 --bind "0.0.0.0:$PORT" app:app
