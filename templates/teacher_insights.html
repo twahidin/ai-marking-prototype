@@ -135,6 +135,26 @@
     .chart-wrap { position: relative; flex: 1; min-height: 0; }
     .chart-wrap canvas { width: 100% !important; height: 100% !important; }
 
+    /* Widget: Students to encourage / consult — shared row style */
+    .stu-row {
+        display: flex; flex-direction: column; gap: 4px;
+        padding: 10px 12px; border-radius: 8px; background: #fafafa;
+        margin-bottom: 8px;
+    }
+    .stu-row:last-child { margin-bottom: 0; }
+    .stu-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .stu-name { font-size: 13px; font-weight: 700; color: #1a1a2e; }
+    .stu-badges { display: inline-flex; gap: 4px; }
+    .stu-badge {
+        font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+        text-transform: uppercase; letter-spacing: 0.3px;
+    }
+    .stu-badge.improving { background: #e0f6e9; color: #1f7a3e; }
+    .stu-badge.consistent { background: #e8eaff; color: #4a54c4; }
+    .stu-badge.quick { background: #fff7e0; color: #a06e0e; }
+    .stu-badge.struggling { background: #fde8e8; color: #b03035; }
+    .stu-line { font-size: 12px; color: #555; line-height: 1.45; }
+
     /* Widget: Questions to revisit */
     .wq-group { margin-bottom: 16px; }
     .wq-group:last-child { margin-bottom: 0; }
@@ -290,9 +310,7 @@ var WIDGET_CATALOG = {
         title: 'Students to encourage',
         desc: 'Top 5 improvers / consistent / quick submitters',
         defaults: { w: 6, h: 5, minW: 4, minH: 4 },
-        render: function (body, ctx) {
-            body.innerHTML = '<div class="widget-placeholder">Coming soon — improvers, consistent top performers, and quick submitters with one-line praise hints.</div>';
-        }
+        render: function (body, ctx) { renderEncourage(body, ctx); }
     },
     weak_questions: {
         title: 'Questions to revisit',
@@ -461,6 +479,49 @@ function setEditMode(on) {
     if (label) label.textContent = on ? 'Done' : 'Edit';
     /* Lock dragging/resizing in view mode. */
     grid.setStatic(!on);
+}
+
+/* =====================================================================
+   Widget: Students to encourage
+   ===================================================================== */
+var ENCOURAGE_BADGE_LABELS = {
+    improving: '📈 Improving',
+    consistent: '🏆 Consistent',
+    quick: '⚡ Quick'
+};
+
+async function renderEncourage(body, ctx) {
+    body.innerHTML = '<div class="ms-no-data">Loading…</div>';
+    try {
+        var res = await fetch('/teacher/insights/widget/encourage?class_id=' + encodeURIComponent(ctx.classId));
+        var data = await res.json();
+        if (!data || !data.success) {
+            body.innerHTML = '<div class="ms-no-data" style="color:#dc3545;">Could not load.</div>';
+            return;
+        }
+        if (!data.students || !data.students.length) {
+            body.innerHTML = '<div class="ms-no-data">No standout students surfacing this round — they may need fresh prompts.</div>';
+            return;
+        }
+        var html = '';
+        data.students.forEach(function (s) {
+            html += '<div class="stu-row">';
+            html += '<div class="stu-row-head">';
+            html += '<span class="stu-name">' + escHtml(s.name) + '</span>';
+            html += '<span class="stu-badges">';
+            (s.badges || []).forEach(function (b) {
+                var label = ENCOURAGE_BADGE_LABELS[b] || b;
+                html += '<span class="stu-badge ' + escHtml(b) + '">' + escHtml(label) + '</span>';
+            });
+            html += '</span></div>';
+            html += '<div class="stu-line">' + escHtml(s.one_liner) + '</div>';
+            html += '</div>';
+        });
+        body.innerHTML = html;
+    } catch (err) {
+        console.error(err);
+        body.innerHTML = '<div class="ms-no-data" style="color:#dc3545;">Could not load.</div>';
+    }
 }
 
 /* =====================================================================

@@ -2019,6 +2019,131 @@ def teacher_widget_performance_trend():
     return jsonify({'success': True, 'points': points})
 
 
+@app.route('/teacher/insights/widget/encourage')
+def teacher_widget_encourage():
+    """Top 5 students to encourage, ranked by badge count + signal strength.
+
+    Three badges, all heuristic, no AI:
+      📈 Improving — last - first >= +10pp across last 4 assignments
+                     (requires 4 scored submissions in that window)
+      🏆 Consistent — avg >= 80% across last 3 AND no score < 70%
+      ⚡ Quick      — submitted within 24h of release on 2 of last 3
+
+    A student with multiple badges ranks above one with a single badge;
+    within the same badge count we sort by signal strength (climb size,
+    then average, then speed)."""
+    class_id = (request.args.get('class_id') or '').strip()
+    if not class_id:
+        return jsonify({'success': False, 'error': 'class_id required'}), 400
+    teacher, err = _check_class_access_for_teacher(class_id)
+    if err:
+        return err
+
+    asns_desc = (
+        Assignment.query
+        .filter(Assignment.class_id == class_id)
+        .order_by(Assignment.created_at.desc())
+        .limit(4)
+        .all()
+    )
+    if not asns_desc:
+        return jsonify({'success': True, 'students': []})
+    asns_4 = list(reversed(asns_desc))           # oldest first within last 4
+    asns_3 = asns_4[-3:] if len(asns_4) >= 3 else asns_4
+
+    students = Student.query.filter_by(class_id=class_id).all()
+    asn_ids = [a.id for a in asns_4]
+    sub_rows = (
+        Submission.query
+        .filter(Submission.assignment_id.in_(asn_ids))
+        .filter(Submission.is_final.is_(True))
+        .filter(Submission.status == 'done')
+        .all()
+    )
+    sub_by_pair = {(s.student_id, s.assignment_id): s for s in sub_rows}
+
+    def _hours_to_submit(sub, asn):
+        if not sub or not sub.submitted_at or not asn.created_at:
+            return None
+        sa = sub.submitted_at
+        aw = asn.created_at
+        if sa.tzinfo is None: sa = sa.replace(tzinfo=timezone.utc)
+        if aw.tzinfo is None: aw = aw.replace(tzinfo=timezone.utc)
+        return max(0.0, (sa - aw).total_seconds() / 3600.0)
+
+    evaluations = []
+    asns_3_set = {a.id for a in asns_3}
+
+    for st in students:
+        scores_4, scores_3, hours_3 = [], [], []
+        for a in asns_4:
+            sub = sub_by_pair.get((st.id, a.id))
+            pct = _submission_percent(sub) if sub else None
+            scores_4.append(pct)
+            if a.id in asns_3_set:
+                scores_3.append(pct)
+                hours_3.append(_hours_to_submit(sub, a))
+
+        badges = []
+        # Improving — needs all 4 scores present and a +10pp gain.
+        if len(asns_4) >= 4 and all(s is not None for s in scores_4):
+            climb = scores_4[-1] - scores_4[0]
+            if climb >= 10:
+                badges.append({'kind': 'improving', 'first': scores_4[0],
+                               'last': scores_4[-1], 'climb': climb})
+
+        # Consistent — needs all 3 scores present in last 3.
+        if len(scores_3) >= 3 and all(s is not None for s in scores_3):
+            avg3 = sum(scores_3) / len(scores_3)
+            if avg3 >= 80 and all(s >= 70 for s in scores_3):
+                badges.append({'kind': 'consistent', 'avg': avg3})
+
+        # Quick — 24h on 2-of-3 in last 3.
+        if len(hours_3) >= 3:
+            quicks = [h for h in hours_3 if h is not None and h <= 24]
+            if len(quicks) >= 2:
+                badges.append({'kind': 'quick', 'count': len(quicks),
+                               'avg_hrs': sum(quicks) / len(quicks)})
+
+        if not badges:
+            continue
+
+        # One-line praise, prioritised improving > consistent > quick.
+        kinds = {b['kind']: b for b in badges}
+        if 'improving' in kinds:
+            b = kinds['improving']
+            line = ('Up from ' + str(int(round(b['first']))) + '% to '
+                    + str(int(round(b['last']))) + '% over last 4 — recognise the climb.')
+        elif 'consistent' in kinds:
+            b = kinds['consistent']
+            line = ('Avg ' + str(round(b['avg'], 1))
+                    + '% across last 3 with low variance — solid work, worth a public shout-out.')
+        else:
+            b = kinds['quick']
+            line = ('Submitted within ' + str(int(round(b['avg_hrs'])))
+                    + ' hrs of release on recent assignments — appreciate the diligence.')
+
+        # Sort key: more badges first; tiebreaker = primary badge's signal.
+        if 'improving' in kinds:
+            tie = -kinds['improving']['climb']
+        elif 'consistent' in kinds:
+            tie = -kinds['consistent']['avg']
+        else:
+            tie = kinds['quick']['avg_hrs']
+        evaluations.append({
+            'name': st.name,
+            'badges': [b['kind'] for b in badges],
+            'one_liner': line,
+            '_sort': (-len(badges), tie, st.name),
+        })
+
+    evaluations.sort(key=lambda e: e['_sort'])
+    top5 = evaluations[:5]
+    for e in top5:
+        e.pop('_sort', None)
+    return jsonify({'success': True, 'students': top5})
+
+
 def _question_wrong(q):
     """Per-question wrongness used by the weak-questions widget.
 
