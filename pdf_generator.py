@@ -198,19 +198,6 @@ _PREAMBLE = r"""\documentclass[11pt,a4paper]{article}
 
 \renewcommand{\arraystretch}{1.18}
 
-% Per-question card. Title is the brand-blue band with question label
-% on the left and status pill on the right.
-\newtcolorbox{qcard}[2]{%
-  enhanced, breakable, sharp corners=southwest,
-  colback=white, colframe=bordergrey, boxrule=0.4pt, arc=2pt,
-  fonttitle=\bfseries\color{white},
-  colbacktitle=brandblue,
-  title={\strut #1 \hfill #2},
-  toptitle=3pt, bottomtitle=3pt, lefttitle=8pt, righttitle=8pt,
-  before skip=4pt, after skip=4pt,
-  left=8pt, right=8pt, top=3pt, bottom=3pt,
-}
-
 % Banner-style boxes for the well-done / main-gap callouts.
 \newtcolorbox{wellbanner}{
   colback=bggreen, colframe=brandgreen, boxrule=0pt,
@@ -301,26 +288,53 @@ def _build_summary_row(items):
 
 
 def _build_qcard(label, status_key, marks_text, rows):
-    """One per-question / per-criterion card. `rows` = list of (key, value)."""
+    """One per-question / per-criterion card, matching the old PDF layout:
+
+      [ brand-blue band: label                    | status colour: status pill ]
+      | Student Answer (bggrey, bold)             | <answer text>             |
+      |-------------------------------------------+---------------------------|
+      | Correct Answer (bggrey, bold)             | ...                       |
+      |-------------------------------------------+---------------------------|
+      | Feedback (bggrey, bold)                   | ...                       |
+      |-------------------------------------------+---------------------------|
+      | Improvement (bggrey, bold)                | ...                       |
+
+    Header is a separate (no-border) tabular with a 70/30 split to keep
+    the pill comfortably sized regardless of label length. Body is a
+    tabularx with grey \\hline separators between rows and \\arrayrulecolor
+    set to bordergrey for the outer border too. No tcolorbox wrapper —
+    the table's own borders give us the card outline."""
     color = _STATUS_COLOR.get(status_key, 'brandred')
     status_label = _STATUS_LABEL.get(status_key, 'Incorrect')
     pill_text = status_label + (marks_text or '')
-    pill = (
-        rf'\colorbox{{{color}}}{{\color{{white}}\bfseries\strut~{_tex_inline(pill_text)}~}}'
-    )
+
     body_rows = []
     for k, v in rows:
         if v is None or v == '':
             continue
         body_rows.append(rf'{_tex_inline(k)} & {_tex_text(v)} \\')
-    body = '\n'.join(body_rows)
+    if not body_rows:
+        body = r'\multicolumn{2}{|l|}{\itshape (no detail)} \\' + '\n' + r'\hline'
+    else:
+        body = ('\n' + r'\hline' + '\n').join(body_rows) + '\n' + r'\hline'
+
     return (
-        rf'\begin{{qcard}}{{{_tex_inline(label)}}}{{{pill}}}' + '\n'
-        r'\renewcommand{\arraystretch}{1.2}' + '\n'
-        r'\begin{tabularx}{\linewidth}{@{}>{\bfseries\color{textmuted}\raggedright\arraybackslash}p{2.4cm}@{\hspace{8pt}} X@{}}' + '\n'
+        r'\par\noindent' + '\n'
+        r'{\setlength{\fboxsep}{6pt}%' + '\n'
+        r'\colorbox{brandblue}{%' + '\n'
+        r'  \rule[-3pt]{0pt}{16pt}\bfseries\color{white}%' + '\n'
+        rf'  \makebox[\dimexpr 0.70\linewidth-2\fboxsep][l]{{{_tex_inline(label)}}}%' + '\n'
+        r'}'
+        rf'\colorbox{{{color}}}{{%' + '\n'
+        r'  \rule[-3pt]{0pt}{16pt}\bfseries\color{white}%' + '\n'
+        rf'  \makebox[\dimexpr 0.30\linewidth-2\fboxsep][c]{{{_tex_inline(pill_text)}}}%' + '\n'
+        r'}}\par\nointerlineskip' + '\n'
+        r'{\arrayrulecolor{bordergrey}\setlength{\arrayrulewidth}{0.4pt}%' + '\n'
+        r'\renewcommand{\arraystretch}{1.15}%' + '\n'
+        r'\begin{tabularx}{\linewidth}{|>{\columncolor{bggrey}\bfseries}p{3cm}|X|}' + '\n'
         + body + '\n'
-        r'\end{tabularx}' + '\n'
-        r'\end{qcard}'
+        r'\end{tabularx}}' + '\n'
+        r'\vspace{6pt}' + '\n'
     )
 
 
