@@ -4653,10 +4653,15 @@ def teacher_submission_review(assignment_id, submission_id):
 
 @app.route('/teacher/assignment/<assignment_id>/delete', methods=['POST'])
 def teacher_delete_assignment(assignment_id):
+    from db import FeedbackEdit
     asn = Assignment.query.get_or_404(assignment_id)
     err = _check_assignment_ownership(asn)
     if err:
         return err
+    # FeedbackEdit has non-nullable FKs to both assignments.id and submissions.id
+    # with no cascade. Drop those rows first or PostgreSQL rejects the delete
+    # (and the Assignment.submissions cascade) with a foreign-key violation.
+    FeedbackEdit.query.filter_by(assignment_id=asn.id).delete(synchronize_session=False)
     db.session.delete(asn)
     db.session.commit()
     return jsonify({'success': True})
