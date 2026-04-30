@@ -488,9 +488,17 @@ def _generate_report_pdf_impl(result, subject, app_title, assignment_name):
         rows = [
             (ans_label, q.get('student_answer', 'N/A')),
             (ref_label, q.get('correct_answer', 'N/A')),
-            ('Feedback', q.get('feedback', '')),
-            ('Improvement', q.get('improvement', '')),
         ]
+        # Suppress Feedback / Improvement on correct questions —
+        # matches master's behaviour and avoids cluttering the PDF
+        # with "Excellent work!"-type filler that the AI sometimes
+        # emits even when nothing actionable is needed. Partial /
+        # incorrect questions still get both rows whenever the AI
+        # provided text; _build_qcard's per-row empty check then
+        # drops any that came back blank.
+        if status != 'correct':
+            rows.append(('Feedback', q.get('feedback', '')))
+            rows.append(('Improvement', q.get('improvement', '')))
         # `correction_prompt` ("Try this") intentionally not rendered in
         # the PDF — kept on the data shape but no row in the report.
         cards.append(_build_qcard(label, status, marks_text, rows))
