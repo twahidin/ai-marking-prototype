@@ -15,7 +15,7 @@ import io
 
 from ai_marking import mark_script, get_available_providers, PROVIDERS, generate_exemplar_analysis, explain_criterion, evaluate_correction
 from pdf_generator import generate_report_pdf, generate_overview_pdf
-from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig
+from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig, TeacherDashboardLayout
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1733,6 +1733,76 @@ def teacher_insights():
         demo_mode=is_demo_mode(),
         dept_mode=is_dept_mode(),
     )
+
+
+def _check_class_access_for_teacher(class_id):
+    """Authorise the current teacher to read/write dashboards for class_id.
+
+    Senior roles (HOD/SH/Lead/Owner) can address any class; everyone else
+    must be on the class's TeacherClass roster. Returns (teacher, error)."""
+    if not _is_authenticated():
+        return None, (jsonify({'success': False, 'error': 'Not authenticated'}), 401)
+    teacher = _current_teacher()
+    if not teacher:
+        return None, (jsonify({'success': False, 'error': 'Not authenticated'}), 401)
+    if teacher.role in ROLES_CAN_VIEW_INSIGHTS:
+        return teacher, None
+    tc = TeacherClass.query.filter_by(teacher_id=teacher.id, class_id=class_id).first()
+    if not tc:
+        return None, (jsonify({'success': False, 'error': 'Class not in your roster'}), 403)
+    return teacher, None
+
+
+@app.route('/teacher/insights/layout', methods=['GET'])
+def teacher_insights_layout_get():
+    """Return the saved dashboard layout for (current teacher, class_id).
+    Empty list means no widgets yet — that's the expected first-load state."""
+    class_id = (request.args.get('class_id') or '').strip()
+    if not class_id:
+        return jsonify({'success': False, 'error': 'class_id required'}), 400
+    teacher, err = _check_class_access_for_teacher(class_id)
+    if err:
+        return err
+    row = TeacherDashboardLayout.query.filter_by(
+        teacher_id=teacher.id, class_id=class_id
+    ).first()
+    layout = []
+    if row and row.layout_json:
+        try:
+            parsed = json.loads(row.layout_json)
+            if isinstance(parsed, list):
+                layout = parsed
+        except (json.JSONDecodeError, TypeError):
+            layout = []
+    return jsonify({'success': True, 'layout': layout})
+
+
+@app.route('/teacher/insights/layout', methods=['PUT'])
+def teacher_insights_layout_put():
+    """Upsert the dashboard layout for (current teacher, class_id)."""
+    data = request.get_json(silent=True) or {}
+    class_id = (data.get('class_id') or '').strip()
+    layout = data.get('layout')
+    if not class_id:
+        return jsonify({'success': False, 'error': 'class_id required'}), 400
+    if not isinstance(layout, list):
+        return jsonify({'success': False, 'error': 'layout must be a list'}), 400
+    teacher, err = _check_class_access_for_teacher(class_id)
+    if err:
+        return err
+    row = TeacherDashboardLayout.query.filter_by(
+        teacher_id=teacher.id, class_id=class_id
+    ).first()
+    payload = json.dumps(layout)
+    if row:
+        row.layout_json = payload
+    else:
+        row = TeacherDashboardLayout(
+            teacher_id=teacher.id, class_id=class_id, layout_json=payload
+        )
+        db.session.add(row)
+    db.session.commit()
+    return jsonify({'success': True})
 
 
 @app.route('/department/insights')

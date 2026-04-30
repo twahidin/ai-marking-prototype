@@ -528,3 +528,26 @@ class CategorisationCorrection(db.Model):
     __table_args__ = (
         db.Index('ix_cat_corr_assignment_subject', 'assignment_id', 'subject_family'),
     )
+
+
+class TeacherDashboardLayout(db.Model):
+    """Per-(teacher, class) widget layout for the My Class insights page.
+
+    layout_json is a list of {key, x, y, w, h} dicts emitted by GridStack;
+    we don't validate its internal shape here so future widgets can extend
+    it without a migration. The unique constraint guarantees one layout
+    per (teacher, class) pair so we can upsert without searching."""
+    __tablename__ = 'teacher_dashboard_layout'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    teacher_id = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=False, index=True)
+    class_id = db.Column(db.String(36), db.ForeignKey('classes.id'), nullable=False, index=True)
+    layout_json = db.Column(db.Text, nullable=False, default='[]')
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint('teacher_id', 'class_id', name='uq_dashboard_teacher_class'),
+    )

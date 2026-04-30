@@ -3,8 +3,9 @@
 {% block title %}My Class Insights - {{ app_title }}{% endblock %}
 
 {% block head %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack.min.css">
 <style>
-    /* Shared insights toggle (also rendered on department_insights.html) */
+    /* Insights toggle (mirrored on department_insights.html) */
     .insights-toggle-row { display: flex; justify-content: center; margin-bottom: 24px; }
     .insights-toggle {
         display: inline-flex; background: white; border-radius: 999px;
@@ -37,16 +38,16 @@
     .class-picker-bar select:focus { border-color: #667eea; }
     .insights-actions { margin-left: auto; display: flex; gap: 10px; }
     .icon-btn {
-        width: 38px; height: 38px; border-radius: 50%;
+        height: 38px; padding: 0 14px; border-radius: 999px;
         border: 1px solid #e0e0e0; background: white; cursor: pointer;
-        display: inline-flex; align-items: center; justify-content: center;
-        font-size: 18px; color: #555; transition: all 0.15s;
+        display: inline-flex; align-items: center; gap: 6px;
+        font-size: 13px; font-weight: 600; color: #555; transition: all 0.15s;
     }
     .icon-btn:hover { border-color: #667eea; color: #667eea; }
-    .icon-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
     .icon-btn.active { background: #667eea; color: white; border-color: #667eea; }
+    .icon-btn .icon { font-size: 16px; }
 
-    /* Empty / placeholder state for the widget grid */
+    /* Empty state */
     .insights-empty-grid {
         background: white; border-radius: 14px; padding: 80px 24px;
         box-shadow: 0 1px 12px rgba(0,0,0,0.06);
@@ -55,6 +56,69 @@
     }
     .insights-empty-grid h3 { color: #333; margin-bottom: 6px; font-size: 16px; }
     .insights-empty-grid p { font-size: 13px; line-height: 1.6; margin: 0 auto; max-width: 460px; }
+
+    /* GridStack overrides — match the rest of the app's card aesthetic */
+    .grid-stack { background: transparent; }
+    .grid-stack-item-content {
+        background: white; border-radius: 14px; padding: 18px 20px;
+        box-shadow: 0 1px 12px rgba(0,0,0,0.06);
+        border: 1px solid rgba(0,0,0,0.04);
+        overflow: auto;
+        display: flex; flex-direction: column;
+    }
+    body.edit-mode .grid-stack-item-content {
+        outline: 2px dashed #b6bdf0; outline-offset: -2px;
+    }
+    .widget-header {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 8px; margin-bottom: 10px;
+    }
+    .widget-title { font-size: 14px; font-weight: 700; color: #1a1a2e; }
+    .widget-info {
+        display: inline-flex; width: 16px; height: 16px; border-radius: 50%;
+        background: #eef0fb; color: #667eea; font-size: 11px; font-weight: 700;
+        align-items: center; justify-content: center; cursor: help; margin-left: 6px;
+    }
+    .widget-remove {
+        display: none; width: 24px; height: 24px; border-radius: 50%;
+        background: #fdecea; color: #dc3545; border: none; font-size: 14px;
+        cursor: pointer; align-items: center; justify-content: center;
+    }
+    body.edit-mode .widget-remove { display: inline-flex; }
+    .widget-remove:hover { background: #f5b7b1; }
+    .widget-body { flex: 1; min-height: 0; }
+    .widget-placeholder { color: #aaa; font-size: 13px; line-height: 1.5; padding: 8px 0; }
+
+    /* Add-widget panel — appears in edit mode */
+    .add-widget-panel {
+        display: none;
+        background: white; border-radius: 14px; padding: 20px;
+        box-shadow: 0 1px 12px rgba(0,0,0,0.06);
+        border: 1px solid rgba(0,0,0,0.04);
+        margin-bottom: 20px;
+    }
+    body.edit-mode .add-widget-panel { display: block; }
+    .add-widget-panel h3 {
+        font-size: 14px; font-weight: 700; color: #1a1a2e; margin-bottom: 12px;
+    }
+    .widget-options {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+        gap: 10px;
+    }
+    .widget-option {
+        display: flex; flex-direction: column; gap: 4px;
+        padding: 12px 14px; border: 1px solid #e8e8f0; border-radius: 10px;
+        background: #fafbff; cursor: pointer; transition: all 0.15s;
+        text-align: left; font-family: inherit;
+    }
+    .widget-option:hover { border-color: #667eea; background: #f0f2ff; }
+    .widget-option .opt-title { font-size: 13px; font-weight: 700; color: #1a1a2e; }
+    .widget-option .opt-desc { font-size: 11px; color: #888; line-height: 1.4; }
+    .widget-option:disabled {
+        opacity: 0.5; cursor: not-allowed; background: #f5f5f5;
+    }
+    .widget-option:disabled:hover { border-color: #e8e8f0; background: #f5f5f5; }
 </style>
 {% endblock %}
 
@@ -65,7 +129,6 @@
         <p>{% if selected_class %}{{ selected_class.name }}{% if selected_class.level %} • {{ selected_class.level }}{% endif %}{% else %}Pick a class to start{% endif %}</p>
     </div>
 
-    {# --- Insights tab toggle --- #}
     <div class="insights-toggle-row">
         <div class="insights-toggle" role="tablist">
             {% if can_view_dept %}
@@ -88,7 +151,10 @@
             {% endfor %}
         </select>
         <div class="insights-actions">
-            <button type="button" class="icon-btn" id="editModeBtn" disabled title="Edit dashboard (coming soon)">&#9881;</button>
+            <button type="button" class="icon-btn" id="editModeBtn" title="Toggle edit mode">
+                <span class="icon">&#9881;</span>
+                <span id="editModeLabel">Edit</span>
+            </button>
         </div>
     </div>
     {% endif %}
@@ -101,13 +167,272 @@
     {% elif not selected_class %}
     <div class="insights-empty-grid">
         <h3>Pick a class to get started</h3>
-        <p>Use the class selector above. Each class gets its own dashboard — you can add and arrange the widgets that matter most for your teaching.</p>
+        <p>Use the class selector above. Each class gets its own dashboard.</p>
     </div>
     {% else %}
-    <div class="insights-empty-grid" id="widgetGrid">
-        <h3>Your dashboard is empty</h3>
-        <p>Click the cog icon above to enter edit mode and add widgets. Widget builder coming in the next slice.</p>
+
+    <div class="add-widget-panel" id="addWidgetPanel">
+        <h3>Add a widget</h3>
+        <div class="widget-options" id="widgetOptions"></div>
+        <p style="margin-top:12px;font-size:11px;color:#aaa;">
+            Drag tiles to rearrange. Drag the bottom-right corner of a tile to resize. Click ✕ on a tile to remove it.
+        </p>
     </div>
+
+    <div class="grid-stack" id="dashboardGrid"></div>
+
+    <div class="insights-empty-grid" id="emptyDashboard" style="display:none;">
+        <h3>Your dashboard is empty</h3>
+        <p>Click <strong>Edit</strong> above, then pick widgets from the panel that appears.</p>
+    </div>
+
     {% endif %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+{% if selected_class %}
+<script src="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack-all.js"></script>
+<script>
+/* Catalog of available widgets. Add a new entry here when implementing a
+   new widget — the renderer + add-panel pick it up automatically. The
+   `render` callback is the only widget-specific code; everything else
+   (drag, drop, resize, persistence, removal) is generic. */
+var WIDGET_CATALOG = {
+    missed_submissions: {
+        title: 'Missed submissions',
+        desc: 'Students who haven’t submitted the last 3 assignments',
+        defaults: { w: 4, h: 5, minW: 3, minH: 4 },
+        render: function (body, ctx) {
+            body.innerHTML = '<div class="widget-placeholder">Coming soon — list of students who haven’t submitted the last 3 assignments.</div>';
+        }
+    },
+    consultation: {
+        title: 'Students to consult',
+        desc: 'Top 5 students worth checking in with',
+        defaults: { w: 6, h: 5, minW: 4, minH: 4 },
+        render: function (body, ctx) {
+            body.innerHTML = '<div class="widget-placeholder">Coming soon — top 5 students by struggle signal, with a one-line consultation hint.</div>';
+        }
+    },
+    performance_trend: {
+        title: 'Class performance over time',
+        desc: 'Average score trend with 25–75 percentile band',
+        defaults: { w: 8, h: 4, minW: 5, minH: 3 },
+        render: function (body, ctx) {
+            body.innerHTML = '<div class="widget-placeholder">Coming soon — class average line chart with shaded percentile band.</div>';
+        }
+    },
+    submission_rate_trend: {
+        title: 'Submission rate over time',
+        desc: 'On-time submission % per assignment',
+        defaults: { w: 8, h: 4, minW: 5, minH: 3 },
+        render: function (body, ctx) {
+            body.innerHTML = '<div class="widget-placeholder">Coming soon — submission rate line chart, latest assignment dotted while &lt; 7 days old.</div>';
+        }
+    },
+    encourage: {
+        title: 'Students to encourage',
+        desc: 'Top 5 improvers / consistent / quick submitters',
+        defaults: { w: 6, h: 5, minW: 4, minH: 4 },
+        render: function (body, ctx) {
+            body.innerHTML = '<div class="widget-placeholder">Coming soon — improvers, consistent top performers, and quick submitters with one-line praise hints.</div>';
+        }
+    },
+    weak_questions: {
+        title: 'Questions to revisit',
+        desc: 'Worst questions across the latest 3 assignments',
+        defaults: { w: 6, h: 6, minW: 4, minH: 4 },
+        render: function (body, ctx) {
+            body.innerHTML = '<div class="widget-placeholder">Coming soon — top 3 worst questions per assignment (latest 3 assignments) with click-through.</div>';
+        }
+    }
+};
+
+var CLASS_ID = {{ selected_class.id|tojson }};
+var grid = null;
+var saveTimer = null;
+
+function escHtml(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+
+function buildWidgetOptions() {
+    var container = document.getElementById('widgetOptions');
+    container.innerHTML = '';
+    Object.keys(WIDGET_CATALOG).forEach(function (key) {
+        var w = WIDGET_CATALOG[key];
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'widget-option';
+        btn.dataset.key = key;
+        btn.innerHTML =
+            '<span class="opt-title">' + escHtml(w.title) + '</span>' +
+            '<span class="opt-desc">' + escHtml(w.desc) + '</span>';
+        btn.addEventListener('click', function () { addWidget(key); });
+        container.appendChild(btn);
+    });
+}
+
+function syncAddPanelDisabled() {
+    /* If a widget is already on the grid, grey out its "Add" button so it
+       can't be added twice. */
+    var present = {};
+    grid.engine.nodes.forEach(function (n) { if (n.el && n.el.dataset.widgetKey) present[n.el.dataset.widgetKey] = true; });
+    document.querySelectorAll('.widget-option').forEach(function (btn) {
+        btn.disabled = !!present[btn.dataset.key];
+    });
+}
+
+function widgetTileHtml(key) {
+    var w = WIDGET_CATALOG[key];
+    return (
+        '<div class="grid-stack-item-content" data-widget-body-wrap>' +
+            '<div class="widget-header">' +
+                '<div class="widget-title">' + escHtml(w.title) + '</div>' +
+                '<button type="button" class="widget-remove" title="Remove widget" aria-label="Remove widget">&times;</button>' +
+            '</div>' +
+            '<div class="widget-body" data-widget-body></div>' +
+        '</div>'
+    );
+}
+
+function addWidget(key) {
+    var w = WIDGET_CATALOG[key];
+    if (!w) return;
+    /* Don't add twice */
+    var existing = grid.engine.nodes.find(function (n) { return n.el && n.el.dataset.widgetKey === key; });
+    if (existing) return;
+    var el = grid.addWidget({
+        w: w.defaults.w,
+        h: w.defaults.h,
+        minW: w.defaults.minW,
+        minH: w.defaults.minH,
+        autoPosition: true,
+        content: widgetTileHtml(key)
+    });
+    el.dataset.widgetKey = key;
+    bindWidget(el, key);
+    syncAddPanelDisabled();
+    syncEmptyState();
+    scheduleSave();
+}
+
+function bindWidget(el, key) {
+    var w = WIDGET_CATALOG[key];
+    if (!w) return;
+    var body = el.querySelector('[data-widget-body]');
+    if (body) {
+        try { w.render(body, { classId: CLASS_ID }); }
+        catch (err) { body.innerHTML = '<div class="widget-placeholder" style="color:#dc3545;">Widget failed to render.</div>'; console.error(err); }
+    }
+    var removeBtn = el.querySelector('.widget-remove');
+    if (removeBtn) {
+        removeBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            grid.removeWidget(el);
+            syncAddPanelDisabled();
+            syncEmptyState();
+            scheduleSave();
+        });
+    }
+}
+
+function syncEmptyState() {
+    var empty = document.getElementById('emptyDashboard');
+    if (!empty) return;
+    empty.style.display = grid.engine.nodes.length === 0 ? '' : 'none';
+}
+
+function currentLayout() {
+    /* Save just (key, x, y, w, h) — we control the full schema. GridStack's
+       built-in save() includes a lot of internal state we don't need. */
+    return grid.engine.nodes.map(function (n) {
+        return {
+            key: n.el.dataset.widgetKey,
+            x: n.x, y: n.y, w: n.w, h: n.h
+        };
+    }).filter(function (e) { return !!e.key; });
+}
+
+function scheduleSave() {
+    /* Coalesce save calls — drag/resize fires many times. */
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveLayout, 600);
+}
+
+async function saveLayout() {
+    saveTimer = null;
+    var layout = currentLayout();
+    try {
+        await fetch('/teacher/insights/layout', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ class_id: CLASS_ID, layout: layout })
+        });
+    } catch (e) { console.error('Save layout failed', e); }
+}
+
+async function loadLayout() {
+    var res = await fetch('/teacher/insights/layout?class_id=' + encodeURIComponent(CLASS_ID));
+    var data = await res.json();
+    var layout = (data && data.layout) || [];
+    /* GridStack's load() expects items in its own format; build them. */
+    var items = layout
+        .filter(function (e) { return e && e.key && WIDGET_CATALOG[e.key]; })
+        .map(function (e) {
+            return {
+                w: e.w, h: e.h, x: e.x, y: e.y,
+                content: widgetTileHtml(e.key)
+            };
+        });
+    if (items.length) {
+        grid.load(items);
+        /* GridStack.load doesn't expose the elements after creation in a
+           handy iterable, so re-walk the engine and bind. */
+        grid.engine.nodes.forEach(function (n, i) {
+            var entry = layout[i];
+            if (entry && entry.key && n.el) {
+                n.el.dataset.widgetKey = entry.key;
+                bindWidget(n.el, entry.key);
+            }
+        });
+    }
+    syncAddPanelDisabled();
+    syncEmptyState();
+}
+
+function setEditMode(on) {
+    document.body.classList.toggle('edit-mode', on);
+    var btn = document.getElementById('editModeBtn');
+    var label = document.getElementById('editModeLabel');
+    btn.classList.toggle('active', on);
+    if (label) label.textContent = on ? 'Done' : 'Edit';
+    /* Lock dragging/resizing in view mode. */
+    grid.setStatic(!on);
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    var gridEl = document.getElementById('dashboardGrid');
+    if (!gridEl) return;
+    grid = GridStack.init({
+        column: 12,
+        cellHeight: 60,
+        margin: 10,
+        float: false,
+        animate: true,
+        disableOneColumnMode: false,
+        staticGrid: true,    /* start in view mode */
+        handle: '.widget-header'
+    }, gridEl);
+
+    grid.on('change', function () { scheduleSave(); });
+
+    buildWidgetOptions();
+    loadLayout();
+
+    document.getElementById('editModeBtn').addEventListener('click', function () {
+        setEditMode(!document.body.classList.contains('edit-mode'));
+    });
+});
+</script>
+{% endif %}
 {% endblock %}
