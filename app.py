@@ -1094,7 +1094,12 @@ def download_pdf(job_id):
     if not job or job['status'] != 'done':
         return jsonify({'success': False, 'error': 'No results available'}), 404
 
-    pdf_bytes = generate_report_pdf(job['result'], subject=job.get('subject', ''), app_title=get_app_title())
+    pdf_bytes = generate_report_pdf(
+        job['result'],
+        subject=job.get('subject', ''),
+        app_title=get_app_title(),
+        assignment_name=job.get('assignment_name', '') or job.get('title', ''),
+    )
 
     return send_file(
         io.BytesIO(pdf_bytes),
@@ -4145,7 +4150,12 @@ def bulk_download(job_id):
         for item in job['results']:
             if item['result'].get('error'):
                 continue
-            pdf_bytes = generate_report_pdf(item['result'], subject=job.get('subject', ''), app_title=get_app_title())
+            pdf_bytes = generate_report_pdf(
+                item['result'],
+                subject=job.get('subject', ''),
+                app_title=get_app_title(),
+                assignment_name=job.get('assignment_name', '') or job.get('title', ''),
+            )
             safe_name = item['name'].replace('/', '_').replace('\\', '_')
             zf.writestr(f"{item['index']}_{safe_name}_report.pdf", pdf_bytes)
     buf.seek(0)
@@ -4171,7 +4181,12 @@ def bulk_overview(job_id):
         {'name': item['name'], 'index': item['index'], 'result': item['result']}
         for item in job['results']
     ]
-    pdf_bytes = generate_overview_pdf(student_results, subject=job.get('subject', ''), app_title=get_app_title())
+    pdf_bytes = generate_overview_pdf(
+        student_results,
+        subject=job.get('subject', ''),
+        app_title=get_app_title(),
+        assignment_name=job.get('assignment_name', '') or job.get('title', ''),
+    )
 
     return send_file(
         io.BytesIO(pdf_bytes),
@@ -5377,7 +5392,10 @@ def teacher_download_all(assignment_id):
             student = Student.query.get(sub.student_id)
             if not student:
                 continue
-            pdf_bytes = generate_report_pdf(result, subject=asn.subject, app_title=get_app_title())
+            pdf_bytes = generate_report_pdf(
+                result, subject=asn.subject, app_title=get_app_title(),
+                assignment_name=asn.title or '',
+            )
             safe_name = student.name.replace('/', '_').replace('\\', '_')
             zf.writestr(f"{student.index_number}_{safe_name}_report.pdf", pdf_bytes)
     buf.seek(0)
@@ -5408,7 +5426,10 @@ def teacher_overview(assignment_id):
             'result': result,
         })
 
-    pdf_bytes = generate_overview_pdf(student_results, subject=asn.subject, app_title=get_app_title())
+    pdf_bytes = generate_overview_pdf(
+        student_results, subject=asn.subject, app_title=get_app_title(),
+        assignment_name=asn.title or '',
+    )
 
     return send_file(
         io.BytesIO(pdf_bytes),
@@ -7393,7 +7414,11 @@ def download_submission_pdf(assignment_id, submission_id):
         return jsonify({'success': False, 'error': 'Feedback not yet released by the teacher'}), 403
     result = sub.get_result()
     subject = asn.subject if asn else ''
-    pdf_bytes = generate_report_pdf(result, subject=subject, app_title=get_app_title())
+    asn_title = (asn.title if asn else '') or ''
+    pdf_bytes = generate_report_pdf(
+        result, subject=subject, app_title=get_app_title(),
+        assignment_name=asn_title,
+    )
 
     return send_file(
         io.BytesIO(pdf_bytes),

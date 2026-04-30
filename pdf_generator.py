@@ -3,16 +3,23 @@ PDF generation via LuaLaTeX — proper math typesetting (true fractions,
 matrices, etc.) with native CJK and Tamil through fontspec + Noto fonts.
 
 Compiles a generated .tex string with `lualatex` in a temp dir, returns
-the resulting PDF bytes. The public API is unchanged from the previous
-WeasyPrint module so app.py is not touched:
+the resulting PDF bytes. Public API:
 
-  - generate_report_pdf(result, subject='', app_title='AI Feedback Systems') -> bytes
-  - generate_overview_pdf(student_results, subject='', app_title='AI Feedback Systems') -> bytes
+  - generate_report_pdf(result, subject='', app_title='AI Feedback Systems',
+                        assignment_name='') -> bytes
+  - generate_overview_pdf(student_results, subject='', app_title='...',
+                          assignment_name='') -> bytes
+
+Each function memoises its output in an in-process LRU cache keyed on the
+SHA-256 of (kind, result, subject, app_title, assignment_name). Repeat
+downloads of the same submission within a single container's lifetime
+return the cached PDF bytes in milliseconds. The cache is bounded
+(_PDF_CACHE_MAX entries) to keep RSS predictable; on overflow the
+least-recently-used entry is evicted.
 
 If lualatex is missing or the compile fails, RuntimeError is raised with
 the last 2KB of the LaTeX log so the failure is debuggable from the
-caller's exception path. Callers can choose to surface this to the user
-or fall back to plain HTML.
+caller's exception path.
 """
 import io
 import os
@@ -21,6 +28,10 @@ import shutil
 import subprocess
 import tempfile
 import logging
+import hashlib
+import json as _json
+import threading
+from collections import OrderedDict
 from datetime import datetime, timezone
 from statistics import mean, median, stdev
 
@@ -28,6 +39,45 @@ logger = logging.getLogger(__name__)
 
 LUALATEX_BIN = shutil.which('lualatex') or 'lualatex'
 LUALATEX_TIMEOUT = 60  # seconds
+
+# In-process PDF cache. OrderedDict gives O(1) LRU via move_to_end /
+# popitem(last=False). Capped at 200 entries — at our typical 80-150 KB
+# per PDF that's ~25-30 MB of RSS, which is small relative to gunicorn's
+# baseline. A redeploy resets the cache, which is also when rendering
+# code may have changed, so that's the right invalidation cadence too.
+_PDF_CACHE_MAX = 200
+_PDF_CACHE = OrderedDict()
+_PDF_CACHE_LOCK = threading.Lock()
+
+
+def _cache_key(kind, *parts):
+    """SHA-256 over a sentinel-separated stream of stringified parts.
+    Sentinel is required so that ('ab', 'c') and ('a', 'bc') hash
+    differently. Dicts are JSON-encoded with sorted keys for stable
+    output across Python versions."""
+    h = hashlib.sha256(kind.encode('utf-8'))
+    for p in parts:
+        if isinstance(p, (dict, list)):
+            p = _json.dumps(p, sort_keys=True, default=str, ensure_ascii=False)
+        h.update(b'\x00')
+        h.update(('' if p is None else str(p)).encode('utf-8'))
+    return h.hexdigest()
+
+
+def _cache_get(key):
+    with _PDF_CACHE_LOCK:
+        if key in _PDF_CACHE:
+            _PDF_CACHE.move_to_end(key)
+            return _PDF_CACHE[key]
+    return None
+
+
+def _cache_put(key, pdf_bytes):
+    with _PDF_CACHE_LOCK:
+        _PDF_CACHE[key] = pdf_bytes
+        _PDF_CACHE.move_to_end(key)
+        while len(_PDF_CACHE) > _PDF_CACHE_MAX:
+            _PDF_CACHE.popitem(last=False)
 
 
 # ---------------------------------------------------------------------------
@@ -137,33 +187,36 @@ def _tex_inline(s):
 # LaTeX preamble — shared by report and overview documents
 # ---------------------------------------------------------------------------
 
-_PREAMBLE = r"""\documentclass[11pt,a4paper]{article}
+_PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 
 \usepackage[a4paper,top=1.5cm,bottom=1.8cm,left=1.5cm,right=1.5cm]{geometry}
 \usepackage{fontspec}
 \usepackage[table,svgnames,dvipsnames]{xcolor}
-\usepackage{tcolorbox}
-\tcbuselibrary{skins,breakable}
 \usepackage{tabularx}
 \usepackage{array}
+\usepackage{colortbl}
 \usepackage{booktabs}
 \usepackage{enumitem}
 \usepackage{amsmath,amssymb}
-% mhchem mirrors the KaTeX mhchem extension we load in base.html, so
-% \ce{H_2O} / \pu{1.5 mol/L} render the same way in the browser AND
-% the PDF. Provided by texlive-science on Debian.
+% mhchem mirrors the KaTeX mhchem extension loaded in base.html, so
+% \ce{H_2O} / \pu{1.5 mol/L} render identically in the browser and PDF.
+% Provided by texlive-science on Debian.
 \usepackage[version=4]{mhchem}
-\usepackage{microtype}
 \usepackage{titlesec}
-\usepackage{ragged2e}
 \usepackage{ulem}
 
-% Multi-script fallback so a sentence like "测试 தமிழ் F = ma" routes
-% each codepoint to the right Noto family without explicit font-switch
-% groups in the AI text. \IfFontExistsTF guards against environments
-% where Noto isn't installed (e.g. local macOS dev) — we fall back to
-% Helvetica then. Railway's Dockerfile apt-installs Noto via fonts-noto.
-\IfFontExistsTF{Noto Sans}{%
+% TeX Gyre Heros is the open Helvetica clone, apt-installed in
+% texlive-fonts-recommended on Railway and visually indistinguishable
+% from Helvetica. The multi-script fallback chain routes any non-Latin
+% codepoint to Noto (CJK / Tamil / Devanagari) so a name like "王晓明"
+% or "முத்து" renders correctly inside an otherwise-Latin PDF — no
+% content detection needed; the engine handles it per-glyph.
+%
+% \IfFontExistsTF guards: if Noto Sans CJK SC isn't installed (local
+% macOS dev), registering the fallback chain corrupts the main font
+% load, so we skip the fallback in that case. Production always has
+% Noto via the apt fonts-noto-cjk package.
+\IfFontExistsTF{Noto Sans CJK SC}{%
   \directlua{
     luaotfload.add_fallback("multilang_fb", {
       "Noto Sans CJK SC:script=hani;",
@@ -171,9 +224,9 @@ _PREAMBLE = r"""\documentclass[11pt,a4paper]{article}
       "Noto Sans Devanagari:script=deva;",
     })
   }
-  \setmainfont{Noto Sans}[RawFeature={fallback=multilang_fb}]
+  \setmainfont{TeX Gyre Heros}[RawFeature={fallback=multilang_fb}]
 }{%
-  \setmainfont{Helvetica}
+  \setmainfont{TeX Gyre Heros}
 }
 
 % Brand palette (matches the previous PDF look)
@@ -198,31 +251,13 @@ _PREAMBLE = r"""\documentclass[11pt,a4paper]{article}
 
 \renewcommand{\arraystretch}{1.18}
 
-% Banner-style boxes for the well-done / main-gap callouts.
-\newtcolorbox{wellbanner}{
-  colback=bggreen, colframe=brandgreen, boxrule=0pt,
-  leftrule=4pt, arc=2pt, sharp corners=east,
-  before skip=4pt, after skip=4pt, top=3pt, bottom=3pt, left=8pt, right=8pt,
-}
-\newtcolorbox{gapbanner}{
-  colback=bgorange, colframe=brandorange, boxrule=0pt,
-  leftrule=4pt, arc=2pt, sharp corners=east,
-  before skip=4pt, after skip=4pt, top=3pt, bottom=3pt, left=8pt, right=8pt,
-}
-
-% Stacked label/value cell for the summary row. #1 = width fraction (e.g.
-% 0.32 for three cells, 0.24 for four), #2 = label, #3 = value.
+% Stacked label/value cell for the summary row. #1 = width fraction,
+% #2 = label, #3 = value. Used inside a fcolorbox-bordered minipage.
 \newcommand{\summarycell}[3]{%
   \begin{minipage}[c]{#1\linewidth}\centering
     {\small\color{textmuted} #2}\par\vspace{1pt}
     {\Large\bfseries\color{brandblue} #3}
   \end{minipage}%
-}
-
-% Footer
-\newcommand{\pdffooter}[1]{%
-  \par\vspace{8pt}{\color{bordergrey}\hrule height 0.4pt}\par\vspace{4pt}%
-  {\centering\color{textmuted}\small Generated by #1\par}%
 }
 """
 
@@ -266,24 +301,23 @@ def _build_info_grid(rows):
 
 
 def _build_summary_row(items):
-    """Inline summary box with N centered stacked cells. items = list of
-    (label, value). Uses \\summarycell minipages so each cell can carry a
-    two-line label/value stack — tabularx cells can't host \\\\ for
-    intra-cell line breaks."""
+    """Summary box with N centered stacked cells.
+
+    Switched from tcolorbox to \\fcolorbox so the preamble can drop the
+    tcolorbox package (~300-500ms shaved off every compile)."""
     n = max(1, len(items))
-    # Each cell takes ~1/n of the line minus the inter-cell gap; 0.93/n is
-    # tight enough that \hfill spreads 3-4 cells evenly without overflow.
     width = round(0.93 / n, 3)
     cells = []
     for lbl, val in items:
         cells.append(rf'\summarycell{{{width}}}{{{_tex_inline(lbl)}}}{{{_tex_inline(val)}}}')
     body = r'\hfill '.join(cells)
     return (
-        r'\begin{tcolorbox}[colback=white, colframe=brandblue, boxrule=1pt,'
-        r' arc=4pt, top=6pt, bottom=6pt, left=8pt, right=8pt,'
-        r' before skip=8pt, after skip=8pt]' + '\n'
+        r'\par\noindent' + '\n'
+        r'{\setlength{\fboxsep}{8pt}\setlength{\fboxrule}{1pt}%' + '\n'
+        r'\fcolorbox{brandblue}{white}{%' + '\n'
+        r'\begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule}' + '\n'
         + body + '\n'
-        r'\end{tcolorbox}'
+        r'\end{minipage}}}\par' + '\n'
     )
 
 
@@ -318,6 +352,8 @@ def _build_qcard(label, status_key, marks_text, rows):
     else:
         body = ('\n' + r'\hline' + '\n').join(body_rows) + '\n' + r'\hline'
 
+    # Labels: regular weight on bggrey background — the column shading
+    # provides enough visual separation without bold.
     return (
         r'\par\noindent' + '\n'
         r'{\setlength{\fboxsep}{6pt}%' + '\n'
@@ -331,7 +367,7 @@ def _build_qcard(label, status_key, marks_text, rows):
         r'}}\par\nointerlineskip' + '\n'
         r'{\arrayrulecolor{bordergrey}\setlength{\arrayrulewidth}{0.4pt}%' + '\n'
         r'\renewcommand{\arraystretch}{1.15}%' + '\n'
-        r'\begin{tabularx}{\linewidth}{|>{\columncolor{bggrey}\bfseries}p{3cm}|X|}' + '\n'
+        r'\begin{tabularx}{\linewidth}{|>{\columncolor{bggrey}}p{3cm}|X|}' + '\n'
         + body + '\n'
         r'\end{tabularx}}' + '\n'
         r'\vspace{6pt}' + '\n'
@@ -342,20 +378,31 @@ def _build_qcard(label, status_key, marks_text, rows):
 # generate_report_pdf
 # ---------------------------------------------------------------------------
 
-def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
-    """Build a single-submission feedback report and return its PDF bytes."""
+def generate_report_pdf(result, subject='', app_title='AI Feedback Systems',
+                        assignment_name=''):
+    """Build a single-submission feedback report and return its PDF bytes.
+    Memoised on (kind, result, subject, app_title, assignment_name)."""
+    cache_key = _cache_key('report', result, subject, app_title, assignment_name)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    pdf = _generate_report_pdf_impl(result, subject, app_title, assignment_name)
+    _cache_put(cache_key, pdf)
+    return pdf
+
+
+def _generate_report_pdf_impl(result, subject, app_title, assignment_name):
     questions = result.get('questions', []) or []
     is_rubrics = result.get('assign_type') == 'rubrics'
     has_marks = any(q.get('marks_awarded') is not None for q in questions)
 
     now = datetime.now(timezone.utc).strftime('%d %B %Y, %H:%M UTC')
-    provider_label = result.get('provider_label', result.get('provider', 'AI'))
 
-    # Header info grid
+    # Header info grid: Subject + Date on row 1, Assignment on row 2.
     info = _build_info_grid([
         ('Subject', subject or 'General'),
         ('Date', now),
-        ('AI Provider', provider_label),
+        ('Assignment', assignment_name or '—'),
     ])
 
     # Summary row
@@ -384,18 +431,33 @@ def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
             ('Total', str(len(questions))),
         ])
 
-    # Banners
+    # Banners — tabular with a 4pt coloured left rule + tinted background.
+    # Replaces the old tcolorbox-based wellbanner / gapbanner so we can
+    # drop tcolorbox from the preamble (~300-500ms saved per compile).
     banners = []
+
+    def _banner(rule_color, bg_color, prefix_tex, body_text):
+        return (
+            r'\par\noindent' + '\n'
+            rf'{{\arrayrulecolor{{{rule_color}}}\setlength{{\arrayrulewidth}}{{4pt}}%' + '\n'
+            r'\renewcommand{\arraystretch}{1.15}%' + '\n'
+            r'\begin{tabular}{|@{\hspace{8pt}}p{\dimexpr\linewidth-4pt-2\tabcolsep-8pt}@{}}' + '\n'
+            rf'\rowcolor{{{bg_color}}} {prefix_tex} ' + _tex_text(body_text) + r' \\' + '\n'
+            r'\end{tabular}}\par' + '\n'
+        )
+
     if result.get('well_done'):
-        banners.append(
-            r'\begin{wellbanner}\textbf{$\checkmark$ Well done:} ' +
-            _tex_text(result['well_done']) + r'\end{wellbanner}'
-        )
+        banners.append(_banner(
+            'brandgreen', 'bggreen',
+            r'\textbf{$\checkmark$ Well done:}',
+            result['well_done'],
+        ))
     if result.get('main_gap'):
-        banners.append(
-            r'\begin{gapbanner}\textbf{$\rightarrow$ Main gap:} ' +
-            _tex_text(result['main_gap']) + r'\end{gapbanner}'
-        )
+        banners.append(_banner(
+            'brandorange', 'bgorange',
+            r'\textbf{$\rightarrow$ Main gap:}',
+            result['main_gap'],
+        ))
 
     # Per-question cards
     section_title = 'Rubric Criteria Feedback' if is_rubrics else 'Question-by-Question Feedback'
@@ -427,8 +489,8 @@ def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
             ('Feedback', q.get('feedback', '')),
             ('Improvement', q.get('improvement', '')),
         ]
-        if q.get('correction_prompt'):
-            rows.append(('Try this', q['correction_prompt']))
+        # `correction_prompt` ("Try this") intentionally not rendered in
+        # the PDF — kept on the data shape but no row in the report.
         cards.append(_build_qcard(label, status, marks_text, rows))
 
     # Errors table (rubrics only). ulem is loaded in the preamble; we just
@@ -466,10 +528,9 @@ def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
             r'\begin{enumerate}' + '\n' + items + '\n' + r'\end{enumerate}'
         )
 
-    title = _tex_inline(f'{app_title} Report' if app_title else 'AI Marking Report')
-
+    # No top title and no bottom footer — the PDF starts directly with
+    # the info grid (Subject / Date / Assignment) per current design.
     body = '\n'.join([
-        rf'\begin{{center}}{{\Huge\bfseries {title}}}\end{{center}}',
         info,
         summary,
         '\n'.join(banners),
@@ -479,7 +540,6 @@ def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
         r'\section*{Overall Feedback}',
         overall_tex,
         actions_block,
-        rf'\pdffooter{{{_tex_inline(app_title or "AI Feedback Systems")}}}',
     ])
 
     tex = _PREAMBLE + r'\begin{document}' + '\n' + body + '\n' + r'\end{document}' + '\n'
@@ -490,9 +550,24 @@ def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
 # generate_overview_pdf
 # ---------------------------------------------------------------------------
 
-def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Systems'):
-    """Class-overview PDF: stats, score distribution, item analysis, weak
-    areas, individual scores."""
+def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Systems',
+                          assignment_name=''):
+    """Class-overview PDF. Memoised on the result + assignment metadata."""
+    cache_key = _cache_key(
+        'overview',
+        # student_results already carries unique submission ids + result
+        # blobs; encoding the whole list is cheap relative to a compile.
+        student_results, subject, app_title, assignment_name,
+    )
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    pdf = _generate_overview_pdf_impl(student_results, subject, app_title, assignment_name)
+    _cache_put(cache_key, pdf)
+    return pdf
+
+
+def _generate_overview_pdf_impl(student_results, subject, app_title, assignment_name):
     valid = [sr for sr in student_results if sr.get('result') and not sr['result'].get('error')]
 
     scores = []
@@ -517,6 +592,7 @@ def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Sy
     info = _build_info_grid([
         ('Subject', subject or 'General'),
         ('Date', now),
+        ('Assignment', assignment_name or '—'),
         ('Total Students', str(len(student_results))),
     ])
 
@@ -692,18 +768,14 @@ def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Sy
             r'\end{tabularx}'
         )
 
-    # Use raw '&' here; _tex_inline escapes it once. Pre-escaping would
-    # feed '\&' into the escaper and produce '\textbackslash{}\&'.
-    title = _tex_inline(f'{app_title} — Class Overview & Item Analysis')
-
+    # No top title and no bottom footer — the PDF starts with the info
+    # grid and ends after the individual-scores table.
     body = '\n\n'.join(filter(None, [
-        rf'\begin{{center}}{{\Huge\bfseries {title}}}\end{{center}}',
         info,
         summary_block,
         item_block,
         weak_block,
         score_block,
-        rf'\pdffooter{{{_tex_inline(app_title or "AI Feedback Systems")}}}',
     ]))
 
     tex = _PREAMBLE + r'\begin{document}' + '\n' + body + '\n' + r'\end{document}' + '\n'
