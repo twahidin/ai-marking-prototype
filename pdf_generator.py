@@ -2,17 +2,19 @@
 PDF generation for marking feedback and class overview reports.
 
 This module replaces the previous ReportLab + matplotlib-mathtext pipeline
-with a single HTML → PDF flow built on WeasyPrint and latex2mathml.
+with a single HTML → PDF flow built on WeasyPrint.
 
 Why HTML → PDF here:
   - The browser already renders feedback HTML with MathJax/KaTeX. Producing
     PDFs from the same shape of HTML keeps the rendering surface unified;
     we don't maintain a parallel ReportLab template that drifts from the
     web view.
-  - WeasyPrint reads native MathML, so latex2mathml gives us scalable
-    vector math without a Node.js renderer or rasterised images.
+  - LaTeX math in AI feedback is converted to plain HTML with <sup>/<sub>
+    tags + Unicode for Greek letters and operators, rather than MathML
+    (WeasyPrint's MathML rendering flattens superscripts to baseline) or
+    rasterised matplotlib images (the old pipeline).
   - Tamil and CJK come for free as long as Noto fonts are installed at
-    the OS level — handled in `nixpacks.toml` for Railway.
+    the OS level — handled in the Dockerfile for Railway.
 
 Public API (kept identical to the old module so app.py is unchanged):
   - generate_report_pdf(result, subject='', app_title='AI Feedback Systems') -> bytes
@@ -27,16 +29,9 @@ from statistics import mean, median, stdev
 
 logger = logging.getLogger(__name__)
 
-# Lazy-import WeasyPrint and latex2mathml so a missing system dependency
-# (libpango, fontconfig) yields a clear runtime error instead of a hard
-# import-time crash that takes the whole app down.
-try:
-    import latex2mathml.converter as _l2mc
-    _LATEX2MATHML_OK = True
-except Exception as _e:
-    _LATEX2MATHML_OK = False
-    logger.warning(f"latex2mathml unavailable, math will fall back to <code>: {_e}")
-
+# Lazy-import WeasyPrint so a missing system dependency (libpango,
+# fontconfig) yields a clear runtime error instead of a hard import-time
+# crash that takes the whole app down.
 _WEASY_HTML = None
 _WEASY_ERR = None
 
@@ -65,50 +60,124 @@ def _get_weasy():
 
 
 # ---------------------------------------------------------------------------
-# Math conversion
+# Math conversion — LaTeX → HTML <sup>/<sub> + Unicode
 # ---------------------------------------------------------------------------
+#
+# WeasyPrint's MathML support flattens <msup>/<msub> to plain text in the
+# rendered PDF (e.g. t^3 becomes "t3" with no superscript), so MathML is the
+# wrong abstraction for our use case. School feedback math is overwhelmingly
+# super/subscripts plus the odd Greek letter or operator — all of which
+# render perfectly as ordinary HTML with the right Unicode characters.
+# This regex pass converts the common LaTeX patterns we see in AI feedback.
 
-def _latex_to_mathml(latex, display=False):
-    """Convert one LaTeX fragment to MathML. Falls back to <code>$...$</code>
-    if the converter isn't available or trips on a malformed fragment."""
-    delim = '$$' if display else '$'
-    if not _LATEX2MATHML_OK:
-        return f'<code>{delim}{_esc(latex)}{delim}</code>'
-    try:
-        return _l2mc.convert(latex, display='block' if display else 'inline')
-    except Exception as e:
-        logger.debug(f"latex2mathml conversion failed for {latex[:60]!r}: {e}")
-        return f'<code>{delim}{_esc(latex)}{delim}</code>'
+_GREEK = {
+    'alpha': 'α', 'beta': 'β', 'gamma': 'γ', 'delta': 'δ', 'epsilon': 'ε',
+    'varepsilon': 'ε', 'zeta': 'ζ', 'eta': 'η', 'theta': 'θ', 'vartheta': 'ϑ',
+    'iota': 'ι', 'kappa': 'κ', 'lambda': 'λ', 'mu': 'μ', 'nu': 'ν', 'xi': 'ξ',
+    'omicron': 'ο', 'pi': 'π', 'varpi': 'ϖ', 'rho': 'ρ', 'varrho': 'ϱ',
+    'sigma': 'σ', 'varsigma': 'ς', 'tau': 'τ', 'upsilon': 'υ', 'phi': 'φ',
+    'varphi': 'ϕ', 'chi': 'χ', 'psi': 'ψ', 'omega': 'ω',
+    'Alpha': 'Α', 'Beta': 'Β', 'Gamma': 'Γ', 'Delta': 'Δ', 'Epsilon': 'Ε',
+    'Zeta': 'Ζ', 'Eta': 'Η', 'Theta': 'Θ', 'Iota': 'Ι', 'Kappa': 'Κ',
+    'Lambda': 'Λ', 'Mu': 'Μ', 'Nu': 'Ν', 'Xi': 'Ξ', 'Omicron': 'Ο', 'Pi': 'Π',
+    'Rho': 'Ρ', 'Sigma': 'Σ', 'Tau': 'Τ', 'Upsilon': 'Υ', 'Phi': 'Φ',
+    'Chi': 'Χ', 'Psi': 'Ψ', 'Omega': 'Ω',
+}
+_OPERATORS = {
+    'times': '×', 'cdot': '·', 'div': '÷', 'pm': '±', 'mp': '∓', 'ast': '∗',
+    'le': '≤', 'leq': '≤', 'ge': '≥', 'geq': '≥', 'neq': '≠', 'ne': '≠',
+    'approx': '≈', 'sim': '∼', 'simeq': '≃', 'equiv': '≡', 'cong': '≅',
+    'propto': '∝', 'infty': '∞', 'partial': '∂', 'nabla': '∇',
+    'sum': '∑', 'prod': '∏', 'int': '∫', 'oint': '∮',
+    'to': '→', 'rightarrow': '→', 'longrightarrow': '⟶', 'leftarrow': '←',
+    'longleftarrow': '⟵', 'leftrightarrow': '↔', 'longleftrightarrow': '⟷',
+    'Rightarrow': '⇒', 'Leftarrow': '⇐', 'Leftrightarrow': '⇔',
+    'implies': '⇒', 'iff': '⇔', 'mapsto': '↦',
+    'therefore': '∴', 'because': '∵',
+    'degree': '°', 'circ': '°', 'angle': '∠', 'perp': '⊥', 'parallel': '∥',
+    'in': '∈', 'notin': '∉', 'subset': '⊂', 'supset': '⊃',
+    'subseteq': '⊆', 'supseteq': '⊇', 'cap': '∩', 'cup': '∪',
+    'forall': '∀', 'exists': '∃', 'nexists': '∄', 'emptyset': '∅', 'varnothing': '∅',
+    'cdots': '⋯', 'ldots': '…', 'dots': '…', 'vdots': '⋮', 'ddots': '⋱',
+    'prime': '′', 'hbar': 'ℏ', 'ell': 'ℓ', 'Re': 'ℜ', 'Im': 'ℑ', 'aleph': 'ℵ',
+    'square': '□', 'triangle': '△', 'star': '★',
+    'left': '', 'right': '',  # bracket size hints — strip
+}
+
+
+def _convert_math_tokens(s):
+    """Convert LaTeX math notation inside `s` to HTML + Unicode.
+
+    Handles: \\frac{a}{b}, \\sqrt{x}, ^{...}, _{...}, ^x, _x, Greek letters
+    (\\alpha …), and the common operators (\\times, \\le, \\to, \\degree …).
+    Unknown commands are dropped silently — better an empty space than a
+    raw \\foo leaking into the rendered PDF.
+    """
+    if not s:
+        return s
+    # \frac{a}{b} → (a)/(b). Use parens — a fraction-slash hack with sup/sub
+    # in mid-line text reads worse than the spelled-out (a)/(b).
+    s = re.sub(r'\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}', r'(\1)/(\2)', s)
+    # \sqrt{x} → √(x); \sqrt[n]{x} → ⁿ√(x) — rare in school feedback so
+    # collapse to √(x) and lose the index.
+    s = re.sub(r'\\sqrt\s*\[[^\]]*\]\s*\{([^{}]*)\}', r'√(\1)', s)
+    s = re.sub(r'\\sqrt\s*\{([^{}]*)\}', r'√(\1)', s)
+    # ^{group} / _{group} — one level of nesting is enough for AI feedback
+    s = re.sub(r'\^\{([^{}]+)\}', r'<sup>\1</sup>', s)
+    s = re.sub(r'_\{([^{}]+)\}', r'<sub>\1</sub>', s)
+    # ^x / _x — single token (digit, letter, or signed number)
+    s = re.sub(r'\^(-?\w)', r'<sup>\1</sup>', s)
+    s = re.sub(r'_(-?\w)', r'<sub>\1</sub>', s)
+    # Named commands: greek letters first, then operators
+    def replace_cmd(m):
+        cmd = m.group(1)
+        if cmd in _GREEK:
+            return _GREEK[cmd]
+        if cmd in _OPERATORS:
+            return _OPERATORS[cmd]
+        return ''  # unknown: drop
+    s = re.sub(r'\\([a-zA-Z]+)\s*', replace_cmd, s)
+    # Strip any leftover braces from operator commands like \left{
+    s = s.replace('{', '').replace('}', '')
+    return s
 
 
 def preprocess_math(text):
-    """Replace $$...$$ (display) and $...$ (inline) with MathML.
+    """Convert math-bearing fragments in `text` to HTML + Unicode.
 
-    Display math is matched first so the inline regex doesn't consume the
-    $$ delimiters. Inline uses lookbehind / lookahead to skip the literal
-    $$ pairs left over by the display pass."""
+    First strips `$...$` and `$$...$$` delimiters and converts the inside.
+    Then runs the same conversion on the rest of the string so AI output
+    that omits delimiters (e.g. raw "t^3" or "m s^-2") still renders
+    correctly. The escape-then-substitute order means our generated <sup>
+    and <sub> tags are emitted into already-escaped text and survive.
+    """
     if not text:
         return ''
     text = str(text)
 
+    # Display + inline math first so the delimiters don't end up as
+    # literal $ in the output.
     text = re.sub(
         r'\$\$(.+?)\$\$',
-        lambda m: _latex_to_mathml(m.group(1).strip(), display=True),
+        lambda m: _convert_math_tokens(m.group(1)),
         text,
         flags=re.DOTALL,
     )
     text = re.sub(
         r'(?<!\$)\$(?!\$)((?:[^$\n]|\n)+?)(?<!\$)\$(?!\$)',
-        lambda m: _latex_to_mathml(m.group(1).strip(), display=False),
+        lambda m: _convert_math_tokens(m.group(1)),
         text,
     )
+    # Catch raw super/subscripts and LaTeX commands the AI emitted without
+    # $ delimiters.
+    text = _convert_math_tokens(text)
     return text
 
 
 def _esc(s):
     """HTML-escape user / AI text. Always called BEFORE preprocess_math —
-    the math substitution emits trusted MathML markup that must survive,
-    so we escape first then run the math regex over the escaped string."""
+    we escape first, then the math substitution emits trusted <sup>/<sub>
+    markup that must NOT be re-escaped."""
     return _stdhtml.escape('' if s is None else str(s), quote=False)
 
 
@@ -141,15 +210,21 @@ _PDF_CSS = """
 }
 * { box-sizing: border-box; }
 html, body {
-    font-family: 'Noto Serif', 'Noto Sans', 'Noto Serif CJK SC',
-                 'Noto Sans CJK SC', 'Noto Sans Tamil', 'Noto Serif Tamil',
-                 'Source Han Serif SC', 'PingFang SC', 'AR PL UMing CN',
-                 'Helvetica', sans-serif;
+    /* Sans-serif stack so the PDF reads like the old ReportLab Helvetica
+       output. Apt-installed Liberation/DejaVu/Noto give us the same look
+       on Linux + Railway. CJK and Tamil falls through Noto Sans CJK / Noto
+       Sans Tamil. */
+    font-family: 'Helvetica', 'Arial', 'Liberation Sans', 'DejaVu Sans',
+                 'Noto Sans', 'Noto Sans CJK SC', 'Noto Sans Tamil',
+                 'PingFang SC', 'AR PL UMing CN', sans-serif;
     font-size: 10.5pt;
     line-height: 1.55;
     color: #1a1a2e;
     margin: 0;
 }
+sup, sub { font-size: 0.75em; line-height: 0; }
+sup { vertical-align: super; }
+sub { vertical-align: sub; }
 h1, h2, h3 { color: #1a1a2e; }
 h1 { font-size: 18pt; margin: 0 0 4pt; }
 h2 {
@@ -233,8 +308,6 @@ table.scores tr:nth-child(even) td { background: #fafbff; }
     font-size: 8.5pt; color: #888; text-align: center;
 }
 
-math { font-family: 'STIX Two Math', 'Cambria Math', 'Latin Modern Math', serif; }
-math[display="block"] { display: block; text-align: center; margin: 4pt 0; }
 code {
     background: #f3f4f6; padding: 1pt 4pt; border-radius: 2pt;
     font-family: 'Menlo', 'Consolas', monospace; font-size: 9pt;
