@@ -15,6 +15,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Total uncompressed image footprint: ~1.5–2 GB. Build time on Railway:
 # 4–6 minutes for a fresh build, ~30s when both layers cache.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        # fontconfig must be explicit because the font packages list it
+        # only as a "Recommends", which --no-install-recommends skips —
+        # without it `fc-cache` doesn't exist and this RUN aborts with 127
+        fontconfig \
         # Fonts that lualatex picks up by name via fontspec
         fonts-noto \
         fonts-noto-cjk \
