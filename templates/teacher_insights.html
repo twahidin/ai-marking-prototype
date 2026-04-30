@@ -83,13 +83,55 @@
         background: #eef0fb; color: #667eea; font-size: 11px; font-weight: 700;
         align-items: center; justify-content: center; cursor: help; margin-left: 6px;
     }
+    .widget-controls { position: relative; display: inline-flex; gap: 4px; align-items: center; }
+    .widget-color-btn,
     .widget-remove {
         display: none; width: 24px; height: 24px; border-radius: 50%;
-        background: #fdecea; color: #dc3545; border: none; font-size: 14px;
-        cursor: pointer; align-items: center; justify-content: center;
+        border: none; font-size: 14px; cursor: pointer;
+        align-items: center; justify-content: center; padding: 0;
     }
+    body.edit-mode .widget-color-btn,
     body.edit-mode .widget-remove { display: inline-flex; }
+    .widget-remove { background: #fdecea; color: #dc3545; }
     .widget-remove:hover { background: #f5b7b1; }
+    .widget-color-btn { background: #f0f0f0; color: #555; font-size: 13px; }
+    .widget-color-btn:hover { background: #e0e0e0; }
+
+    /* Bauhaus accent palette: bold primaries on a slim top border so the
+       data still leads but the dashboard reads as colour-coded at a
+       glance. Teachers pick per widget; default is no accent. */
+    .grid-stack-item-content { border-top: 4px solid transparent; transition: border-top-color 0.2s; }
+    .grid-stack-item[data-color="red"]    > .grid-stack-item-content { border-top-color: #E2231A; }
+    .grid-stack-item[data-color="yellow"] > .grid-stack-item-content { border-top-color: #FFC72C; }
+    .grid-stack-item[data-color="blue"]   > .grid-stack-item-content { border-top-color: #1F3A93; }
+    .grid-stack-item[data-color="black"]  > .grid-stack-item-content { border-top-color: #1A1A1A; }
+    .grid-stack-item[data-color="white"]  > .grid-stack-item-content { border-top-color: #E0E0E0; }
+
+    /* Colour picker popover */
+    .widget-color-pop {
+        display: none; position: absolute; top: 30px; right: 0;
+        background: white; border: 1px solid #e0e0e0; border-radius: 10px;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.10); padding: 6px;
+        gap: 6px; z-index: 100; align-items: center;
+    }
+    .widget-color-pop.open { display: inline-flex; }
+    .swatch {
+        width: 22px; height: 22px; border: 2px solid #ddd; border-radius: 50%;
+        cursor: pointer; padding: 0; position: relative; transition: transform 0.1s;
+    }
+    .swatch:hover { transform: scale(1.12); }
+    .swatch[data-color=""]       { background: white; border-color: #ccc; }
+    .swatch[data-color=""]::after {
+        content: '∅'; position: absolute; inset: 0;
+        display: flex; align-items: center; justify-content: center;
+        color: #888; font-size: 13px; line-height: 1;
+    }
+    .swatch[data-color="red"]    { background: #E2231A; border-color: #E2231A; }
+    .swatch[data-color="yellow"] { background: #FFC72C; border-color: #FFC72C; }
+    .swatch[data-color="blue"]   { background: #1F3A93; border-color: #1F3A93; }
+    .swatch[data-color="black"]  { background: #1A1A1A; border-color: #1A1A1A; }
+    .swatch[data-color="white"]  { background: white; border-color: #888; }
+    .swatch.active { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #667eea; }
     .widget-body { flex: 1; min-height: 0; }
     .widget-placeholder { color: #aaa; font-size: 13px; line-height: 1.5; padding: 8px 0; }
 
@@ -498,11 +540,12 @@ function applyTemplate(key, options) {
             var entry = tpl.layout[i];
             if (entry && entry.key && n.el) {
                 n.el.dataset.widgetKey = entry.key;
+                if (entry.color) n.el.dataset.color = entry.color;
                 bindWidget(n.el, entry.key);
             }
         });
     }
-    syncAddPanelDisabled();
+    syncAddPanelState();
     syncEmptyState();
     scheduleSave();
 }
@@ -548,7 +591,17 @@ function widgetTileHtml(key) {
     return (
         '<div class="widget-header">' +
             '<div class="widget-title">' + escHtml(w.title) + '</div>' +
-            '<button type="button" class="widget-remove" title="Remove widget" aria-label="Remove widget">&times;</button>' +
+            '<div class="widget-controls">' +
+                '<button type="button" class="widget-color-btn" title="Accent colour" aria-label="Accent colour">&#127912;</button>' +
+                '<button type="button" class="widget-remove" title="Remove widget" aria-label="Remove widget">&times;</button>' +
+                '<div class="widget-color-pop" role="menu">' +
+                    '<button type="button" class="swatch" data-color="" title="No accent" aria-label="No accent"></button>' +
+                    '<button type="button" class="swatch" data-color="red" title="Bauhaus red" aria-label="Bauhaus red"></button>' +
+                    '<button type="button" class="swatch" data-color="yellow" title="Bauhaus yellow" aria-label="Bauhaus yellow"></button>' +
+                    '<button type="button" class="swatch" data-color="blue" title="Bauhaus blue" aria-label="Bauhaus blue"></button>' +
+                    '<button type="button" class="swatch" data-color="black" title="Bauhaus black" aria-label="Bauhaus black"></button>' +
+                '</div>' +
+            '</div>' +
         '</div>' +
         '<div class="widget-body" data-widget-body></div>'
     );
@@ -606,6 +659,43 @@ function bindWidget(el, key) {
             scheduleSave();
         });
     }
+    setupColorPicker(el);
+}
+
+function setupColorPicker(el) {
+    var btn = el.querySelector('.widget-color-btn');
+    var pop = el.querySelector('.widget-color-pop');
+    if (!btn || !pop) return;
+
+    function highlightActive() {
+        var current = el.dataset.color || '';
+        pop.querySelectorAll('.swatch').forEach(function (s) {
+            s.classList.toggle('active', (s.dataset.color || '') === current);
+        });
+    }
+    highlightActive();
+
+    btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        // Close any other open colour popovers — only one at a time.
+        document.querySelectorAll('.widget-color-pop.open').forEach(function (p) {
+            if (p !== pop) p.classList.remove('open');
+        });
+        pop.classList.toggle('open');
+        highlightActive();
+    });
+
+    pop.querySelectorAll('.swatch').forEach(function (s) {
+        s.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var color = s.dataset.color || '';
+            if (color) el.dataset.color = color;
+            else delete el.dataset.color;
+            highlightActive();
+            pop.classList.remove('open');
+            scheduleSave();
+        });
+    });
 }
 
 /* Track ResizeObservers per body so we don't create duplicates if a widget
@@ -640,13 +730,16 @@ function syncEmptyState() {
 }
 
 function currentLayout() {
-    /* Save just (key, x, y, w, h) — we control the full schema. GridStack's
-       built-in save() includes a lot of internal state we don't need. */
+    /* Save (key, x, y, w, h, color) — GridStack's built-in save() includes
+       a lot of internal state we don't need; this keeps payloads small
+       and the schema explicit. */
     return grid.engine.nodes.map(function (n) {
-        return {
+        var entry = {
             key: n.el.dataset.widgetKey,
             x: n.x, y: n.y, w: n.w, h: n.h
         };
+        if (n.el.dataset.color) entry.color = n.el.dataset.color;
+        return entry;
     }).filter(function (e) { return !!e.key; });
 }
 
@@ -697,11 +790,12 @@ async function loadLayout() {
             var entry = layout[i];
             if (entry && entry.key && n.el) {
                 n.el.dataset.widgetKey = entry.key;
+                if (entry.color) n.el.dataset.color = entry.color;
                 bindWidget(n.el, entry.key);
             }
         });
     }
-    syncAddPanelDisabled();
+    syncAddPanelState();
     syncEmptyState();
 }
 
@@ -1180,6 +1274,21 @@ document.addEventListener('DOMContentLoaded', function () {
 
     document.getElementById('editModeBtn').addEventListener('click', function () {
         setEditMode(!document.body.classList.contains('edit-mode'));
+    });
+
+    /* Close any open colour popover when clicking outside it. */
+    document.addEventListener('click', function (e) {
+        if (e.target.closest('.widget-color-pop, .widget-color-btn')) return;
+        document.querySelectorAll('.widget-color-pop.open').forEach(function (p) {
+            p.classList.remove('open');
+        });
+    });
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') {
+            document.querySelectorAll('.widget-color-pop.open').forEach(function (p) {
+                p.classList.remove('open');
+            });
+        }
     });
 });
 </script>
