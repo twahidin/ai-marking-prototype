@@ -320,6 +320,7 @@
         <div style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;display:flex;gap:10px;flex-wrap:wrap;">
             <button class="upload-btn" onclick="openEditModal()" style="padding:8px 20px;font-size:13px;">Edit Assignment</button>
             <button class="upload-btn" onclick="openShareModal()" style="padding:8px 20px;font-size:13px;">Share to Assignment Bank</button>
+            <button class="upload-btn" type="button" onclick="deleteAssignment()" style="padding:8px 20px;font-size:13px;background:#fff;color:#c0392b;border-color:#c0392b;margin-left:auto;">Delete Assignment</button>
             {% if not assignment.show_results %}
             <button class="upload-btn" type="button" onclick="issueAiFeedback()" style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border-color:#28a745;">Issue AI Feedback</button>
             {% endif %}
@@ -1240,6 +1241,23 @@ function pollRemarkStatus(submissionId) {
         }
         pollRemarkStatus(submissionId);
     }, 3000);
+}
+
+// --- Delete Assignment (from this class only; bank copy is unaffected) ---
+async function deleteAssignment() {
+    var label = {{ (assignment.title or assignment.subject or 'this assignment') | tojson }};
+    if (!confirm('Delete "' + label + '" from this class?\n\nStudent submissions for this assignment will also be removed. This will NOT delete it from the assignment bank.\n\nThis cannot be undone.')) return;
+    try {
+        var res = await fetch('/teacher/assignment/{{ assignment.id }}/delete', { method: 'POST' });
+        var data = await res.json();
+        if (data.success) {
+            window.location.href = '/dashboard';
+        } else {
+            alert(data.error || 'Failed to delete assignment.');
+        }
+    } catch (err) {
+        alert('Connection error. Please try again.');
+    }
 }
 
 // --- Share to Bank ---
