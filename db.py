@@ -100,6 +100,25 @@ def _migrate_add_columns(app):
                     db.session.execute(text("ALTER TABLE students ALTER COLUMN assignment_id DROP NOT NULL"))
                     db.session.commit()
                     logger.info('Made assignment_id nullable on students table')
+            if 'created_at' not in columns:
+                # Used by the missed-submissions widget to ignore late joiners
+                # for assignments that pre-date them. Backfill legacy rows
+                # with the parent class's created_at — the best proxy we have
+                # for "when this student joined the class". Per the schema-
+                # evolution policy: lazy-fill via the model default, plus
+                # this one-shot idempotent backfill on every boot.
+                db.session.execute(text('ALTER TABLE students ADD COLUMN created_at TIMESTAMP'))
+                db.session.commit()
+                db.session.execute(text(
+                    'UPDATE students SET created_at = ('
+                    'SELECT created_at FROM classes WHERE classes.id = students.class_id'
+                    ') WHERE created_at IS NULL AND class_id IS NOT NULL'
+                ))
+                db.session.execute(text(
+                    "UPDATE students SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"
+                ))
+                db.session.commit()
+                logger.info('Added students.created_at and backfilled from classes')
         if 'teachers' in inspector.get_table_names():
             columns = [c['name'] for c in inspector.get_columns('teachers')]
             if 'is_active' not in columns:
@@ -363,6 +382,7 @@ class Student(db.Model):
     assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=True, index=True)
     index_number = db.Column(db.String(50), nullable=False)
     name = db.Column(db.String(200), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     submissions = db.relationship('Submission', backref='student', lazy=True, cascade='all, delete-orphan')
 

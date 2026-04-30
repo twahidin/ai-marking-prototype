@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for, Response, abort, make_response
 import io
 
@@ -1803,6 +1803,119 @@ def teacher_insights_layout_put():
         db.session.add(row)
     db.session.commit()
     return jsonify({'success': True})
+
+
+# ---------------------------------------------------------------------------
+# My Class insights — per-widget data endpoints
+# ---------------------------------------------------------------------------
+
+# An assignment must have been live for at least this long before it counts
+# toward the "missed submissions" tally. Otherwise a brand-new assignment
+# would make every student look behind on day one.
+MISSED_GRACE_DAYS = 7
+
+
+def _missed_submissions_payload(class_id):
+    """Compute the missed-submissions widget data for a class.
+
+    Returns a dict with keys: assignments (newest first), groups (one per
+    missed-count bucket, descending), all_caught_up. Empty `assignments`
+    means there's nothing aged past the grace window yet.
+    """
+    cls = Class.query.get(class_id)
+    if not cls:
+        return {'assignments': [], 'groups': [], 'all_caught_up': True}
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=MISSED_GRACE_DAYS)
+    # Assignments older than the grace window, newest first, max 3.
+    asns = (
+        Assignment.query
+        .filter(Assignment.class_id == class_id)
+        .filter(Assignment.created_at <= cutoff)
+        .order_by(Assignment.created_at.desc())
+        .limit(3)
+        .all()
+    )
+    if not asns:
+        return {'assignments': [], 'groups': [], 'all_caught_up': True}
+
+    # Iterate in display order (newest first). Each student gets a parallel
+    # `dots` list of bools where True = missed that assignment.
+    students = Student.query.filter_by(class_id=class_id).order_by(Student.name).all()
+    asn_ids = [a.id for a in asns]
+
+    # Pull every relevant submission in one query, indexed by (student_id, asn_id).
+    sub_rows = (
+        Submission.query
+        .filter(Submission.assignment_id.in_(asn_ids))
+        .filter(Submission.is_final.is_(True))
+        .all()
+    )
+    sub_by_pair = {}
+    for s in sub_rows:
+        sub_by_pair[(s.student_id, s.assignment_id)] = s
+
+    rows = []
+    for st in students:
+        dots = []
+        for a in asns:
+            # Late joiner — wasn't on the roster when the assignment was
+            # issued. Don't count it against them.
+            joined = st.created_at
+            if joined is not None and joined.tzinfo is None:
+                joined = joined.replace(tzinfo=timezone.utc)
+            asn_when = a.created_at
+            if asn_when is not None and asn_when.tzinfo is None:
+                asn_when = asn_when.replace(tzinfo=timezone.utc)
+            if joined is not None and asn_when is not None and joined > asn_when:
+                dots.append(False)
+                continue
+            sub = sub_by_pair.get((st.id, a.id))
+            # Missed = no submission, or any non-`done` status (errored
+            # submissions are missed because the student needs to resubmit).
+            missed = (sub is None) or (sub.status != 'done')
+            dots.append(missed)
+        missed_count = sum(1 for d in dots if d)
+        if missed_count > 0:
+            rows.append({'name': st.name, 'dots': dots, 'missed_count': missed_count})
+
+    # Group descending by missed_count for the "Missed all 3 / 2 of 3 / 1 of 3" headers.
+    rows.sort(key=lambda r: (-r['missed_count'], r['name']))
+    groups = {}
+    for r in rows:
+        groups.setdefault(r['missed_count'], []).append({'name': r['name'], 'dots': r['dots']})
+
+    n = len(asns)
+    group_list = []
+    for missed_count in sorted(groups.keys(), reverse=True):
+        if missed_count == n:
+            label = 'Missed all ' + str(n)
+        else:
+            label = 'Missed ' + str(missed_count) + ' of ' + str(n)
+        group_list.append({
+            'label': label,
+            'missed_count': missed_count,
+            'students': groups[missed_count],
+        })
+
+    return {
+        'assignments': [{'id': a.id, 'title': a.title or a.subject or 'Untitled', 'classroom_code': a.classroom_code} for a in asns],
+        'groups': group_list,
+        'all_caught_up': len(rows) == 0,
+    }
+
+
+@app.route('/teacher/insights/widget/missed-submissions')
+def teacher_widget_missed_submissions():
+    class_id = (request.args.get('class_id') or '').strip()
+    if not class_id:
+        return jsonify({'success': False, 'error': 'class_id required'}), 400
+    teacher, err = _check_class_access_for_teacher(class_id)
+    if err:
+        return err
+    payload = _missed_submissions_payload(class_id)
+    payload['success'] = True
+    return jsonify(payload)
 
 
 @app.route('/department/insights')

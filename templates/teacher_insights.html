@@ -89,6 +89,48 @@
     .widget-body { flex: 1; min-height: 0; }
     .widget-placeholder { color: #aaa; font-size: 13px; line-height: 1.5; padding: 8px 0; }
 
+    /* Widget: Missed submissions */
+    .ms-group { margin-bottom: 14px; }
+    .ms-group:last-child { margin-bottom: 0; }
+    .ms-group-header {
+        display: flex; align-items: center; gap: 6px;
+        font-size: 11px; font-weight: 700; color: #888;
+        text-transform: uppercase; letter-spacing: 0.5px;
+        margin-bottom: 6px;
+    }
+    .ms-group-header .ms-tip {
+        display: inline-flex; width: 14px; height: 14px; border-radius: 50%;
+        background: #eef0fb; color: #667eea; font-size: 10px; font-weight: 700;
+        align-items: center; justify-content: center; cursor: help;
+    }
+    .ms-row {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 6px 0; border-bottom: 1px solid #f5f5f5; font-size: 13px;
+    }
+    .ms-row:last-child { border-bottom: none; }
+    .ms-name { color: #1a1a2e; }
+    .ms-dots { display: inline-flex; gap: 4px; flex-shrink: 0; }
+    .ms-dot {
+        width: 10px; height: 10px; border-radius: 50%;
+        border: 1.5px solid #c9cdd9; background: white;
+    }
+    .ms-dot.missed { background: #dc3545; border-color: #dc3545; }
+    .ms-actions { display: flex; gap: 8px; margin-top: 12px; }
+    .ms-btn {
+        flex: 1; padding: 8px 14px; border: 1px solid #d0d4e2; background: white;
+        border-radius: 8px; font-size: 12px; font-weight: 600; color: #555;
+        cursor: pointer; transition: all 0.15s;
+    }
+    .ms-btn:hover { border-color: #667eea; color: #667eea; background: #f0f2ff; }
+    .ms-btn.primary { background: #667eea; color: white; border-color: #667eea; }
+    .ms-btn.primary:hover { background: #5a6fd6; color: white; }
+    .ms-celebrate {
+        text-align: center; padding: 24px 8px; color: #28a745;
+        font-size: 14px; font-weight: 600;
+    }
+    .ms-celebrate .icon { font-size: 28px; display: block; margin-bottom: 6px; }
+    .ms-no-data { color: #888; font-size: 13px; padding: 8px 0; text-align: center; }
+
     /* Add-widget panel — appears in edit mode */
     .add-widget-panel {
         display: none;
@@ -203,9 +245,7 @@ var WIDGET_CATALOG = {
         title: 'Missed submissions',
         desc: 'Students who haven’t submitted the last 3 assignments',
         defaults: { w: 4, h: 5, minW: 3, minH: 4 },
-        render: function (body, ctx) {
-            body.innerHTML = '<div class="widget-placeholder">Coming soon — list of students who haven’t submitted the last 3 assignments.</div>';
-        }
+        render: function (body, ctx) { renderMissedSubmissions(body, ctx); }
     },
     consultation: {
         title: 'Students to consult',
@@ -408,6 +448,84 @@ function setEditMode(on) {
     if (label) label.textContent = on ? 'Done' : 'Edit';
     /* Lock dragging/resizing in view mode. */
     grid.setStatic(!on);
+}
+
+/* =====================================================================
+   Widget: Missed submissions
+   ===================================================================== */
+async function renderMissedSubmissions(body, ctx) {
+    body.innerHTML = '<div class="ms-no-data">Loading…</div>';
+    try {
+        var res = await fetch('/teacher/insights/widget/missed-submissions?class_id=' + encodeURIComponent(ctx.classId));
+        var data = await res.json();
+        if (!data || !data.success) {
+            body.innerHTML = '<div class="ms-no-data" style="color:#dc3545;">Could not load.</div>';
+            return;
+        }
+        if (!data.assignments || !data.assignments.length) {
+            body.innerHTML = '<div class="ms-no-data">No assignments older than 7 days yet — nothing to chase.</div>';
+            return;
+        }
+        if (data.all_caught_up) {
+            body.innerHTML =
+                '<div class="ms-celebrate">' +
+                    '<span class="icon">&#127881;</span>' +
+                    'Everyone’s caught up on the last ' + data.assignments.length + ' assignments' +
+                '</div>';
+            return;
+        }
+
+        var html = '';
+        data.groups.forEach(function (g) {
+            html += '<div class="ms-group">';
+            html += '<div class="ms-group-header">' +
+                escHtml(g.label) +
+                ' <span class="ms-tip" title="Each dot is one of the last ' + data.assignments.length + ' assignments. A filled dot ● means the student hasn’t submitted it (or their submission errored and needs resubmission). Empty dot ○ means submitted.">?</span>' +
+                '</div>';
+            g.students.forEach(function (st) {
+                html += '<div class="ms-row">';
+                html += '<span class="ms-name">' + escHtml(st.name) + '</span>';
+                html += '<span class="ms-dots">';
+                st.dots.forEach(function (missed) {
+                    html += '<span class="ms-dot' + (missed ? ' missed' : '') + '"></span>';
+                });
+                html += '</span></div>';
+            });
+            html += '</div>';
+        });
+
+        html += '<div class="ms-actions">' +
+            '<button type="button" class="ms-btn primary" data-ms-copy>Copy reminder</button>' +
+            '</div>';
+        body.innerHTML = html;
+
+        var copyBtn = body.querySelector('[data-ms-copy]');
+        if (copyBtn) {
+            copyBtn.addEventListener('click', function () {
+                var lines = ['Reminder — please submit the following assignments:', ''];
+                data.groups.forEach(function (g) {
+                    g.students.forEach(function (st) {
+                        var titles = [];
+                        st.dots.forEach(function (missed, i) {
+                            if (missed) titles.push(data.assignments[i].title);
+                        });
+                        lines.push('• ' + st.name + ' — ' + titles.join(', '));
+                    });
+                });
+                var text = lines.join('\n');
+                navigator.clipboard.writeText(text).then(function () {
+                    var orig = copyBtn.textContent;
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(function () { copyBtn.textContent = orig; }, 1500);
+                }).catch(function () {
+                    copyBtn.textContent = 'Copy failed';
+                });
+            });
+        }
+    } catch (err) {
+        console.error(err);
+        body.innerHTML = '<div class="ms-no-data" style="color:#dc3545;">Could not load.</div>';
+    }
 }
 
 document.addEventListener('DOMContentLoaded', function () {
