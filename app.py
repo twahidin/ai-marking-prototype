@@ -2019,6 +2019,190 @@ def teacher_widget_performance_trend():
     return jsonify({'success': True, 'points': points})
 
 
+# Stoplists for the consultation widget's bigram concept-stuck detection.
+# These keep generic AI-feedback chatter ("show working", "be specific") out
+# of the bigram count so what surfaces is actual subject-matter language.
+_CONSULT_GENERIC_BIGRAMS = {
+    'show working', 'be specific', 'include units', 'explain reasoning',
+    'more detail', 'your answer', 'the question', 'make sure', 'you need',
+    'good attempt', 'well done', 'next time', 'try to', 'remember to',
+    'you should', 'see notes', 'review concept', 'go through', 'should be',
+    'is not', 'does not', 'this is', 'this question', 'that you', 'in order',
+    'at least', 'as well', 'be sure', 'in the', 'is the', 'of the',
+    'for the', 'to the', 'on the', 'with the', 'and the',
+}
+_CONSULT_STOPWORDS = {
+    'the', 'a', 'an', 'and', 'or', 'but', 'if', 'in', 'on', 'at', 'to', 'of',
+    'for', 'with', 'you', 'your', 'this', 'that', 'is', 'are', 'was', 'were',
+    'be', 'been', 'being', 'has', 'have', 'had', 'do', 'does', 'did', 'will',
+    'would', 'can', 'could', 'should', 'shall', 'may', 'might', 'must',
+    'i', 'we', 'they', 'he', 'she', 'it', 'as', 'so', 'than', 'then',
+    'when', 'where', 'how', 'why', 'what', 'which', 'who', 'whom', 'whose',
+    'these', 'those', 'there', 'here', 'all', 'any', 'some', 'no', 'not',
+    'too', 'very', 'just', 'about', 'over', 'under', 'into', 'through',
+    'from', 'by', 'up', 'down', 'out', 'off', 'one', 'two', 'three',
+    'also', 'because', 'before', 'after', 'between', 'during', 'while',
+    'such', 'each', 'every', 'other', 'another', 'same',
+}
+_CONSULT_NOISE_TOKENS = {
+    'student', 'students', 'answer', 'answers', 'work', 'working', 'attempt',
+    'good', 'partial', 'incorrect', 'correct', 'point', 'points', 'mark',
+    'marks', 'question', 'questions', 'response', 'next', 'time', 'review',
+    'note', 'notes', 'detail', 'details', 'specific', 'general', 'show',
+    'sure', 'try', 'remember', 'consider', 'need',
+}
+
+
+def _consult_bigrams(text):
+    """Tokenise feedback text and emit subject-matter bigrams.
+
+    Bigrams are after stopword removal, so "balance equations carefully"
+    (input "make sure you balance equations carefully") yields "balance
+    equations" — the actual concept handle. Generic-feedback phrases and
+    bigrams whose either word is a noise token are filtered out."""
+    if not text:
+        return []
+    text = text.lower()
+    text = re.sub(r"[^a-z\s'-]", ' ', text)
+    tokens = [t.strip("'-") for t in text.split() if t]
+    tokens = [t for t in tokens if t and t not in _CONSULT_STOPWORDS]
+    out = []
+    for i in range(len(tokens) - 1):
+        bg = tokens[i] + ' ' + tokens[i + 1]
+        if bg in _CONSULT_GENERIC_BIGRAMS:
+            continue
+        if tokens[i] in _CONSULT_NOISE_TOKENS or tokens[i + 1] in _CONSULT_NOISE_TOKENS:
+            continue
+        out.append(bg)
+    return out
+
+
+def _consult_wrong_text(sub):
+    """Concatenate improvement (or feedback) text from every wrong question
+    on a single submission. Empty string when nothing wrong or no submission."""
+    if not sub or sub.status != 'done':
+        return ''
+    pieces = []
+    result = sub.get_result() or {}
+    for q in result.get('questions') or []:
+        if not _question_wrong(q):
+            continue
+        text = q.get('improvement') or q.get('feedback') or ''
+        if text:
+            pieces.append(text)
+    return '\n'.join(pieces)
+
+
+@app.route('/teacher/insights/widget/consultation')
+def teacher_widget_consultation():
+    """Top 5 students worth checking in with, ranked by severity.
+
+    Triggers (any one fires):
+      • avg < 50% across last 3 assignments
+      • bottom 15% of class by avg
+      • same bigram appears in 2+ of last 3 wrong-feedback texts
+        (concept-stuck signal — surfaces a "stuck on X" hint)
+
+    Severity ordering: lower avg = more severe; concept-stuck adds a small
+    boost so two students at the same score show the diagnostically richer
+    one first."""
+    class_id = (request.args.get('class_id') or '').strip()
+    if not class_id:
+        return jsonify({'success': False, 'error': 'class_id required'}), 400
+    teacher, err = _check_class_access_for_teacher(class_id)
+    if err:
+        return err
+
+    asns = (
+        Assignment.query
+        .filter(Assignment.class_id == class_id)
+        .order_by(Assignment.created_at.desc())
+        .limit(3)
+        .all()
+    )
+    if not asns:
+        return jsonify({'success': True, 'students': []})
+
+    students = Student.query.filter_by(class_id=class_id).all()
+    asn_ids = [a.id for a in asns]
+    sub_rows = (
+        Submission.query
+        .filter(Submission.assignment_id.in_(asn_ids))
+        .filter(Submission.is_final.is_(True))
+        .filter(Submission.status == 'done')
+        .all()
+    )
+    sub_by_pair = {(s.student_id, s.assignment_id): s for s in sub_rows}
+
+    # Per-student avg over whatever scored submissions exist in the window.
+    student_avgs = {}
+    for st in students:
+        scores = []
+        for a in asns:
+            sub = sub_by_pair.get((st.id, a.id))
+            pct = _submission_percent(sub) if sub else None
+            if pct is not None:
+                scores.append(pct)
+        if scores:
+            student_avgs[st.id] = sum(scores) / len(scores)
+
+    if not student_avgs:
+        return jsonify({'success': True, 'students': []})
+
+    # Bottom 15% by avg — relative trigger.
+    sorted_avgs = sorted(student_avgs.values())
+    # cutoff_idx is the score AT which "bottom 15%" tops out
+    cutoff_idx = max(0, int(len(sorted_avgs) * 0.15) - 1)
+    bottom_15_threshold = sorted_avgs[cutoff_idx]
+
+    candidates = []
+    for st in students:
+        avg = student_avgs.get(st.id)
+        if avg is None:
+            continue
+        absolute_low = avg < 50
+        relative_low = avg <= bottom_15_threshold
+
+        per_asn_bigram_sets = []
+        for a in asns:
+            sub = sub_by_pair.get((st.id, a.id))
+            if sub:
+                per_asn_bigram_sets.append(set(_consult_bigrams(_consult_wrong_text(sub))))
+        bigram_counts = {}
+        for bgset in per_asn_bigram_sets:
+            for bg in bgset:
+                bigram_counts[bg] = bigram_counts.get(bg, 0) + 1
+        repeated = [bg for bg, c in bigram_counts.items() if c >= 2]
+        primary_bigram = max(repeated, key=len) if repeated else None
+        concept_stuck = bool(primary_bigram)
+
+        if not (absolute_low or relative_low or concept_stuck):
+            continue
+
+        if primary_bigram:
+            line = ('Avg ' + str(int(round(avg))) + '% — repeatedly stuck on "'
+                    + primary_bigram + '" (in 2+ of last 3 assignments). Worth a quick review.')
+        else:
+            line = ('Avg ' + str(int(round(avg))) + '% across last 3 — consistently low. Worth a check-in.')
+
+        # Severity score: lower avg = more severe (so 100-avg). Concept-stuck
+        # gets a small additive boost so it acts as a tiebreaker without
+        # outweighing a genuinely lower score.
+        severity = (100 - avg) + (5 if concept_stuck else 0)
+        candidates.append({
+            'name': st.name,
+            'avg': round(avg, 1),
+            'one_liner': line,
+            '_severity': severity,
+        })
+
+    candidates.sort(key=lambda c: (-c['_severity'], c['name']))
+    top5 = candidates[:5]
+    for c in top5:
+        c.pop('_severity', None)
+    return jsonify({'success': True, 'students': top5})
+
+
 @app.route('/teacher/insights/widget/encourage')
 def teacher_widget_encourage():
     """Top 5 students to encourage, ranked by badge count + signal strength.

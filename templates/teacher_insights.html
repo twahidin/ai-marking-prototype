@@ -290,9 +290,7 @@ var WIDGET_CATALOG = {
         title: 'Students to consult',
         desc: 'Top 5 students worth checking in with',
         defaults: { w: 6, h: 5, minW: 4, minH: 4 },
-        render: function (body, ctx) {
-            body.innerHTML = '<div class="widget-placeholder">Coming soon — top 5 students by struggle signal, with a one-line consultation hint.</div>';
-        }
+        render: function (body, ctx) { renderConsultation(body, ctx); }
     },
     performance_trend: {
         title: 'Class performance over time',
@@ -479,6 +477,39 @@ function setEditMode(on) {
     if (label) label.textContent = on ? 'Done' : 'Edit';
     /* Lock dragging/resizing in view mode. */
     grid.setStatic(!on);
+}
+
+/* =====================================================================
+   Widget: Students to consult (struggling signal)
+   ===================================================================== */
+async function renderConsultation(body, ctx) {
+    body.innerHTML = '<div class="ms-no-data">Loading…</div>';
+    try {
+        var res = await fetch('/teacher/insights/widget/consultation?class_id=' + encodeURIComponent(ctx.classId));
+        var data = await res.json();
+        if (!data || !data.success) {
+            body.innerHTML = '<div class="ms-no-data" style="color:#dc3545;">Could not load.</div>';
+            return;
+        }
+        if (!data.students || !data.students.length) {
+            body.innerHTML = '<div class="ms-no-data">Nobody’s flagged this round — keep an eye out anyway 👀</div>';
+            return;
+        }
+        var html = '';
+        data.students.forEach(function (s) {
+            html += '<div class="stu-row">';
+            html += '<div class="stu-row-head">';
+            html += '<span class="stu-name">' + escHtml(s.name) + '</span>';
+            html += '<span class="stu-badges"><span class="stu-badge struggling">' + (s.avg != null ? (s.avg + '%') : 'low') + '</span></span>';
+            html += '</div>';
+            html += '<div class="stu-line">' + escHtml(s.one_liner) + '</div>';
+            html += '</div>';
+        });
+        body.innerHTML = html;
+    } catch (err) {
+        console.error(err);
+        body.innerHTML = '<div class="ms-no-data" style="color:#dc3545;">Could not load.</div>';
+    }
 }
 
 /* =====================================================================
