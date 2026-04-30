@@ -51,6 +51,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # lives in texlive-plain-generic on Debian — not pulled in by any
         # of the other texlive-* packages, so add it explicitly.
         texlive-plain-generic \
+        # mhchem (\ce{H_2O} for chemistry markup) lives in
+        # texlive-science. We mirror it on the browser via KaTeX's
+        # mhchem extension so what the AI emits renders the same in
+        # both places.
+        texlive-science \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

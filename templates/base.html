@@ -7,13 +7,46 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v={{ static_version }}">
     {% block head %}{% endblock %}
+
+    <!-- Math rendering: KaTeX. Stricter parser than MathJax (so what the
+         browser accepts also compiles in our LuaLaTeX PDF generator),
+         ~10x faster on render. mhchem extension handles \ce{} and \pu{}
+         for chemistry. Shim below keeps the existing MathJax.typesetPromise
+         call sites in templates / feedback_render.js working unchanged. -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/mhchem.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+            onload="window.__renderKatex && window.__renderKatex(document.body);"></script>
     <script>
-    MathJax = {
-        tex: { inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']] },
-        startup: { typeset: false }
-    };
+    (function () {
+        var KATEX_OPTS = {
+            delimiters: [
+                {left: '$$', right: '$$', display: true},
+                {left: '\\[', right: '\\]', display: true},
+                {left: '$',  right: '$',  display: false},
+                {left: '\\(', right: '\\)', display: false}
+            ],
+            throwOnError: false,    // render bad LaTeX as red text, don't abort the whole element
+            errorColor: '#cc0000',
+            strict: 'ignore',        // accept what we accept; mismatches go to errorColor
+            trust: false             // disallow \href / \htmlClass — AI output is untrusted
+        };
+        window.__renderKatex = function (root) {
+            if (!root || typeof renderMathInElement !== 'function') return;
+            try { renderMathInElement(root, KATEX_OPTS); } catch (e) {}
+        };
+        // MathJax-API shim so legacy call sites keep working without edits.
+        window.MathJax = {
+            typesetPromise: function (roots) {
+                var els = (roots && roots.length) ? roots : [document.body];
+                els.forEach(function (el) { window.__renderKatex(el); });
+                return Promise.resolve();
+            }
+        };
+    })();
     </script>
-    <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
+
     <script src="{{ url_for('static', filename='js/latex_autocomplete.js') }}?v={{ static_version }}"></script>
     <script src="{{ url_for('static', filename='js/subject_autocomplete.js') }}?v={{ static_version }}" defer></script>
 </head>

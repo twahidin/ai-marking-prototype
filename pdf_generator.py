@@ -149,6 +149,10 @@ _PREAMBLE = r"""\documentclass[11pt,a4paper]{article}
 \usepackage{booktabs}
 \usepackage{enumitem}
 \usepackage{amsmath,amssymb}
+% mhchem mirrors the KaTeX mhchem extension we load in base.html, so
+% \ce{H_2O} / \pu{1.5 mol/L} render the same way in the browser AND
+% the PDF. Provided by texlive-science on Debian.
+\usepackage[version=4]{mhchem}
 \usepackage{microtype}
 \usepackage{titlesec}
 \usepackage{ragged2e}
