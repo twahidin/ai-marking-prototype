@@ -1918,6 +1918,107 @@ def teacher_widget_missed_submissions():
     return jsonify(payload)
 
 
+def _submission_percent(sub):
+    """Convert a `done` submission's result into a 0-100 percent.
+
+    Returns None when the submission isn't markable (no questions, all
+    marks_total zero, or it errored). Used by both the performance trend
+    and other widgets that aggregate scores."""
+    if not sub or sub.status != 'done':
+        return None
+    result = sub.get_result()
+    if result.get('error'):
+        return None
+    questions = result.get('questions', [])
+    if not questions:
+        return None
+    has_marks = any(q.get('marks_awarded') is not None for q in questions)
+    if has_marks:
+        total_a = sum((q.get('marks_awarded') or 0) for q in questions)
+        total_p = sum((q.get('marks_total') or 0) for q in questions)
+        if total_p <= 0:
+            return None
+        return round(total_a / total_p * 100, 1)
+    # status-mode fallback: not used by performance widget (which excludes
+    # status-mode assignments) but kept for callers that don't filter.
+    correct = sum(1 for q in questions if q.get('status') == 'correct')
+    return round(correct / len(questions) * 100, 1) if questions else None
+
+
+def _percentile(sorted_values, q):
+    """Linear-interpolation percentile (q in [0,100]) on a presorted list."""
+    if not sorted_values:
+        return None
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    rank = (q / 100.0) * (len(sorted_values) - 1)
+    low_idx = int(rank)
+    frac = rank - low_idx
+    if low_idx + 1 >= len(sorted_values):
+        return sorted_values[-1]
+    return sorted_values[low_idx] + frac * (sorted_values[low_idx + 1] - sorted_values[low_idx])
+
+
+@app.route('/teacher/insights/widget/performance-trend')
+def teacher_widget_performance_trend():
+    """Per-assignment class average + 25-75 percentile band, oldest-first.
+
+    Status-mode assignments are excluded — their correct/partial/incorrect
+    scores aren't comparable to numeric marks on a single y-axis."""
+    class_id = (request.args.get('class_id') or '').strip()
+    if not class_id:
+        return jsonify({'success': False, 'error': 'class_id required'}), 400
+    teacher, err = _check_class_access_for_teacher(class_id)
+    if err:
+        return err
+
+    asns = (
+        Assignment.query
+        .filter(Assignment.class_id == class_id)
+        .filter(Assignment.scoring_mode == 'marks')
+        .order_by(Assignment.created_at.asc())
+        .all()
+    )
+    if not asns:
+        return jsonify({'success': True, 'points': []})
+
+    asn_ids = [a.id for a in asns]
+    sub_rows = (
+        Submission.query
+        .filter(Submission.assignment_id.in_(asn_ids))
+        .filter(Submission.is_final.is_(True))
+        .filter(Submission.status == 'done')
+        .all()
+    )
+    subs_by_asn = {}
+    for s in sub_rows:
+        subs_by_asn.setdefault(s.assignment_id, []).append(s)
+
+    points = []
+    for a in asns:
+        scores = []
+        for s in subs_by_asn.get(a.id, []):
+            pct = _submission_percent(s)
+            if pct is not None:
+                scores.append(pct)
+        if not scores:
+            # Skip assignments with no markable submissions — they'd only
+            # confuse the chart with a hole.
+            continue
+        scores.sort()
+        avg = round(sum(scores) / len(scores), 1)
+        points.append({
+            'asn_id': a.id,
+            'title': a.title or a.subject or 'Untitled',
+            'avg': avg,
+            'p25': round(_percentile(scores, 25), 1),
+            'p75': round(_percentile(scores, 75), 1),
+            'n': len(scores),
+        })
+
+    return jsonify({'success': True, 'points': points})
+
+
 @app.route('/department/insights')
 def department_insights():
     err = _require_insights_access()

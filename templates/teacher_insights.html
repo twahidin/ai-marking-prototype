@@ -131,6 +131,10 @@
     .ms-celebrate .icon { font-size: 28px; display: block; margin-bottom: 6px; }
     .ms-no-data { color: #888; font-size: 13px; padding: 8px 0; text-align: center; }
 
+    /* Chart-bearing widgets need their canvas to fill the body */
+    .chart-wrap { position: relative; flex: 1; min-height: 0; }
+    .chart-wrap canvas { width: 100% !important; height: 100% !important; }
+
     /* Add-widget panel — appears in edit mode */
     .add-widget-panel {
         display: none;
@@ -235,6 +239,7 @@
 {% block scripts %}
 {% if selected_class %}
 <script src="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack-all.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script>
 /* Catalog of available widgets. Add a new entry here when implementing a
    new widget — the renderer + add-panel pick it up automatically. The
@@ -259,9 +264,7 @@ var WIDGET_CATALOG = {
         title: 'Class performance over time',
         desc: 'Average score trend with 25–75 percentile band',
         defaults: { w: 8, h: 4, minW: 5, minH: 3 },
-        render: function (body, ctx) {
-            body.innerHTML = '<div class="widget-placeholder">Coming soon — class average line chart with shaded percentile band.</div>';
-        }
+        render: function (body, ctx) { renderPerformanceTrend(body, ctx); }
     },
     submission_rate_trend: {
         title: 'Submission rate over time',
@@ -448,6 +451,112 @@ function setEditMode(on) {
     if (label) label.textContent = on ? 'Done' : 'Edit';
     /* Lock dragging/resizing in view mode. */
     grid.setStatic(!on);
+}
+
+/* =====================================================================
+   Widget: Class performance over time
+   ===================================================================== */
+async function renderPerformanceTrend(body, ctx) {
+    body.innerHTML = '<div class="ms-no-data">Loading…</div>';
+    try {
+        var res = await fetch('/teacher/insights/widget/performance-trend?class_id=' + encodeURIComponent(ctx.classId));
+        var data = await res.json();
+        if (!data || !data.success) {
+            body.innerHTML = '<div class="ms-no-data" style="color:#dc3545;">Could not load.</div>';
+            return;
+        }
+        var pts = data.points || [];
+        if (!pts.length) {
+            body.innerHTML = '<div class="ms-no-data">No marks-mode assignments with marked submissions yet.</div>';
+            return;
+        }
+
+        body.innerHTML = '<div class="chart-wrap"><canvas></canvas></div>';
+        var canvas = body.querySelector('canvas');
+        var labels = pts.map(function (p) { return p.title; });
+        var avgs = pts.map(function (p) { return p.avg; });
+        var p25s = pts.map(function (p) { return p.p25; });
+        var p75s = pts.map(function (p) { return p.p75; });
+
+        new Chart(canvas, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: '75th percentile',
+                        data: p75s,
+                        borderColor: 'rgba(102,126,234,0.0)',
+                        backgroundColor: 'rgba(102,126,234,0.18)',
+                        fill: '+1',                /* fill down to next dataset (p25) */
+                        pointRadius: 0,
+                        tension: 0.25,
+                        order: 2
+                    },
+                    {
+                        label: '25th percentile',
+                        data: p25s,
+                        borderColor: 'rgba(102,126,234,0.0)',
+                        backgroundColor: 'rgba(102,126,234,0.18)',
+                        pointRadius: 0,
+                        tension: 0.25,
+                        order: 3
+                    },
+                    {
+                        label: 'Class average',
+                        data: avgs,
+                        borderColor: '#667eea',
+                        backgroundColor: '#667eea',
+                        borderWidth: 2.5,
+                        pointRadius: pts.length === 1 ? 6 : 4,
+                        pointHoverRadius: 6,
+                        tension: 0.25,
+                        order: 1
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: {
+                        labels: {
+                            filter: function (li) { return li.text === 'Class average'; }
+                        }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            title: function (items) { return items[0].label; },
+                            label: function (item) {
+                                var p = pts[item.dataIndex];
+                                if (item.dataset.label === 'Class average') {
+                                    return 'Avg ' + p.avg + '% (' + p.n + ' marked)';
+                                }
+                                return item.dataset.label + ': ' + item.parsed.y + '%';
+                            },
+                            afterBody: function (items) {
+                                var p = pts[items[0].dataIndex];
+                                return ['25-75 spread: ' + p.p25 + '–' + p.p75 + '%'];
+                            }
+                        }
+                    }
+                },
+                onClick: function (e, els) {
+                    if (!els.length) return;
+                    var p = pts[els[0].index];
+                    if (p && p.asn_id) window.location.href = '/teacher/assignment/' + p.asn_id;
+                },
+                scales: {
+                    y: { min: 0, max: 100, ticks: { callback: function (v) { return v + '%'; } } },
+                    x: { ticks: { autoSkip: false, maxRotation: 0, minRotation: 0 } }
+                }
+            }
+        });
+    } catch (err) {
+        console.error(err);
+        body.innerHTML = '<div class="ms-no-data" style="color:#dc3545;">Could not load.</div>';
+    }
 }
 
 /* =====================================================================
