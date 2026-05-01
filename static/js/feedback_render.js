@@ -494,7 +494,7 @@
                 var ruby = ev.target && ev.target.closest ? ev.target.closest('ruby') : null;
                 if (ruby && el.contains(ruby)) {
                     ev.stopPropagation();
-                    openRubyPopover(state, el.getAttribute('data-field'), ruby);
+                    openRubyPopover(state, el.getAttribute('data-field'), { rubyEl: ruby });
                     return;
                 }
                 beginTextEdit(state, el, el.getAttribute('data-field'));
@@ -520,15 +520,28 @@
         closeRubyPopover();
     }
 
-    function openRubyPopover(state, field, rubyEl) {
+    function openRubyPopover(state, field, opts) {
+        // Two callers: clicking an existing <ruby> (opts.rubyEl provided)
+        // or the "+ 拼音" affordance after selecting plain Chinese in the
+        // textarea (opts.oldWord + opts.anchorRect provided). Same UI both
+        // ways — the server endpoint treats "add" and "edit" identically.
+        opts = opts || {};
         closeRubyPopover();
-        // Extract base + pinyin from the ruby element. Cloning lets us
-        // strip the <rt> safely without disturbing the live DOM.
-        var clone = rubyEl.cloneNode(true);
-        var rtClone = clone.querySelector('rt');
-        var oldPinyin = rtClone ? (rtClone.textContent || '').trim() : '';
-        if (rtClone) rtClone.remove();
-        var oldWord = (clone.textContent || '').trim();
+
+        var oldWord, oldPinyin, positionRect;
+        if (opts.rubyEl) {
+            var clone = opts.rubyEl.cloneNode(true);
+            var rtClone = clone.querySelector('rt');
+            oldPinyin = rtClone ? (rtClone.textContent || '').trim() : '';
+            if (rtClone) rtClone.remove();
+            oldWord = (clone.textContent || '').trim();
+            positionRect = opts.rubyEl.getBoundingClientRect();
+        } else {
+            oldWord = (opts.oldWord || '').trim();
+            oldPinyin = (opts.oldPinyin || '').trim();
+            positionRect = opts.anchorRect || { top: 0, left: 0, bottom: 0 };
+        }
+        if (!oldWord) return;
 
         var pop = document.createElement('div');
         pop.className = 'fb-ruby-edit-pop';
@@ -547,23 +560,23 @@
         document.body.appendChild(pop);
         rubyPopover = pop;
 
-        // Position below the ruby
-        var rect = rubyEl.getBoundingClientRect();
-        pop.style.top = (rect.bottom + window.scrollY + 6) + 'px';
-        pop.style.left = (rect.left + window.scrollX) + 'px';
+        // Position below the anchor.
+        pop.style.top = (positionRect.bottom + window.scrollY + 6) + 'px';
+        pop.style.left = (positionRect.left + window.scrollX) + 'px';
 
         var zhI = pop.querySelector('.fb-ruby-zh');
         var pyI = pop.querySelector('.fb-ruby-py');
         zhI.value = oldWord;
         pyI.value = oldPinyin;
-        // Focus pinyin first since that's the more common edit
-        pyI.focus(); pyI.select();
+        // For "edit existing" focus pinyin (more common edit). For "add
+        // new" the pinyin field is empty so focus it for typing.
+        pyI.focus();
+        if (oldPinyin) pyI.select();
 
         pop.querySelector('.fb-ruby-save').addEventListener('click', function () {
             saveRubyEdit(state, field, oldWord, zhI.value.trim(), pyI.value.trim());
         });
         pop.querySelector('.fb-ruby-cancel').addEventListener('click', closeRubyPopover);
-        // Enter saves; Escape cancels.
         pop.addEventListener('keydown', function (ev) {
             if (ev.key === 'Enter') {
                 ev.preventDefault();
@@ -801,7 +814,92 @@
         textarea.addEventListener('mousedown', function (e) { e.stopPropagation(); });
 
         el.innerHTML = '';
+        // The element holding the textarea becomes the relative parent for
+        // the floating "+ 拼音" affordance.
+        el.style.position = 'relative';
         el.appendChild(textarea);
+
+        // ------------------------------------------------------------------
+        // "+ 拼音" affordance: appears when the teacher selects Chinese
+        // characters inside the textarea, lets them add pinyin to a word
+        // that wasn't auto-annotated. Only meaningful on assignments where
+        // pinyin annotation is enabled (state.questions carry _html fields
+        // when the assignment's pinyin_mode != 'off') — otherwise we still
+        // show the button on selection, the server validates and rejects.
+        var addPinyinBtn = document.createElement('button');
+        addPinyinBtn.type = 'button';
+        addPinyinBtn.className = 'fb-add-pinyin-btn';
+        addPinyinBtn.textContent = '＋ 拼音';
+        addPinyinBtn.style.cssText =
+            'position: absolute; top: 6px; right: 6px;' +
+            'padding: 6px 12px; min-height: 30px;' +
+            'background: #5b6cf0; color: white;' +
+            'border: none; border-radius: 6px;' +
+            'font-size: 13px; font-weight: 600; cursor: pointer;' +
+            'box-shadow: 0 2px 8px rgba(0,0,0,0.18);' +
+            'opacity: 0; transform: scale(0.85); pointer-events: none;' +
+            'transition: opacity 0.12s, transform 0.12s;' +
+            'z-index: 20;';
+        el.appendChild(addPinyinBtn);
+
+        var CJK_CHECK = /[一-鿿]/;
+
+        function updateAddPinyinBtn() {
+            var sel = textarea.value
+                .substring(textarea.selectionStart, textarea.selectionEnd)
+                .trim();
+            if (sel && CJK_CHECK.test(sel)) {
+                addPinyinBtn.dataset.word = sel;
+                addPinyinBtn.style.opacity = '1';
+                addPinyinBtn.style.transform = 'scale(1)';
+                addPinyinBtn.style.pointerEvents = 'auto';
+            } else {
+                addPinyinBtn.dataset.word = '';
+                addPinyinBtn.style.opacity = '0';
+                addPinyinBtn.style.transform = 'scale(0.85)';
+                addPinyinBtn.style.pointerEvents = 'none';
+            }
+        }
+        textarea.addEventListener('select', updateAddPinyinBtn);
+        textarea.addEventListener('mouseup', updateAddPinyinBtn);
+        textarea.addEventListener('keyup', updateAddPinyinBtn);
+
+        // Don't blur the textarea when pressing the button (would commit).
+        addPinyinBtn.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+        addPinyinBtn.addEventListener('click', async function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            var word = (addPinyinBtn.dataset.word || '').trim();
+            if (!word) return;
+            // Commit the prose first so any unsaved edits land before the
+            // override is applied. After commit the field re-renders out of
+            // edit mode; we then float the popover anchored at that field.
+            submitted = true;            // block blur-driven re-commit
+            textarea.removeEventListener('blur', commit);
+            var newVal = textarea.value;
+            var calibrate = !!(cb && cb.checked);
+            try {
+                if (newVal !== currentValue || calibrate !== initialCalibrate) {
+                    await saveTextField(state, field, newVal, calibrate);
+                } else {
+                    if (field === 'overall') renderShell(state); else renderQuestion(state);
+                }
+            } catch (e) {
+                if (field === 'overall') renderShell(state); else renderQuestion(state);
+            }
+            // After re-render the field's display element has the same
+            // data-field attribute. Anchor the popover to that element's
+            // top-left so it floats just below the field.
+            var anchorEl = document.querySelector('[data-field="' + field + '"]');
+            var anchorRect = anchorEl ? anchorEl.getBoundingClientRect() : {
+                top: 0, left: 0, bottom: 0,
+            };
+            openRubyPopover(state, field, {
+                oldWord: word,
+                oldPinyin: '',
+                anchorRect: anchorRect,
+            });
+        });
 
         // Calibration-bank checkbox — only on feedback / improvement text fields.
         // Pre-checked when this field already has an active calibration row,
