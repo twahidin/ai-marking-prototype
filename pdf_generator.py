@@ -283,21 +283,30 @@ _PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 \usepackage{ulem}
 
 % Custom \ruby{base}{annotation}: paints the annotation centred above
-% the base using \rlap + \smash so it claims no horizontal space and
-% no vertical space — adjacent characters render exactly where they
-% would without the ruby. The base is measured into \rubytmpbox so the
-% overlay is exactly the base's width, regardless of pinyin length.
-% Avoids the tabular-based version's habit of clipping the character
-% immediately after each ruby in narrow table cells.
+% the base. The block is sized to the WIDER of base or annotation so
+% adjacent rubies never overlap horizontally — when pinyin is wider
+% than the underlying CJK glyph (e.g. "zhōng" over "中") the base gets
+% a small horizontal padding instead of letting the annotation collide
+% with neighbouring rubies. The annotation itself is rendered with
+% \rlap+\smash so it claims zero vertical space; the line height bump
+% comes from the document-level \linespread.
 \definecolor{rubypy}{HTML}{5B6CF0}
 \newsavebox{\rubytmpbox}
+\newsavebox{\rubypybox}
+\newlength{\rubymaxwd}
 \newcommand{\ruby}[2]{%
   \sbox{\rubytmpbox}{#1}%
-  \makebox[\wd\rubytmpbox][c]{%
+  \sbox{\rubypybox}{\scriptsize\textit{#2}}%
+  \ifdim\wd\rubypybox>\wd\rubytmpbox
+    \setlength{\rubymaxwd}{\wd\rubypybox}%
+  \else
+    \setlength{\rubymaxwd}{\wd\rubytmpbox}%
+  \fi
+  \makebox[\rubymaxwd][c]{%
     \rlap{%
       \smash{%
         \raisebox{0.95em}{%
-          \makebox[\wd\rubytmpbox][c]{%
+          \makebox[\rubymaxwd][c]{%
             \scriptsize\textcolor{rubypy}{\textit{#2}}%
           }%
         }%
