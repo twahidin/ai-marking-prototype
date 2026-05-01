@@ -2350,6 +2350,77 @@ def _question_wrong(q):
     return q.get('status') != 'correct'
 
 
+def _norm_qpart(s):
+    """Normalise a question_part / question_num to a comparable key.
+    'Q6c(iii)' -> '6ciii', '6c iii' -> '6ciii', '  6 ' -> '6'."""
+    if s is None:
+        return ''
+    t = re.sub(r'[^a-z0-9]', '', str(s).lower())
+    if t.startswith('q'):
+        t = t[1:]
+    return t
+
+
+def _first_qpart(s):
+    """When the AI says a question_part spans multiple questions
+    ('6c / 6d', '6c and 6d'), keep the first recognisable part for matching."""
+    if s is None:
+        return ''
+    parts = re.split(r'[\/,]| and |\s+&\s+', str(s), flags=re.IGNORECASE)
+    for p in parts:
+        n = _norm_qpart(p)
+        if n:
+            return n
+    return ''
+
+
+def _compute_area_wrong_rates(assignment_id, areas):
+    """For each area, compute the wrong-rate across this assignment's done
+    submissions by matching the area's `question_part` against each submission's
+    per-question `question_num` (same wrong-definition as the weak-questions
+    widget). Returns a list aligned to `areas` of {'pct': int|None}.
+    pct is None when no matching question was found in any submission."""
+    norms = [_first_qpart((a or {}).get('question_part') or '') for a in (areas or [])]
+    if not any(norms):
+        return [{'pct': None} for _ in (areas or [])]
+    subs = (
+        Submission.query
+        .filter_by(assignment_id=assignment_id, status='done', is_final=True)
+        .all()
+    )
+    counts = {n: {'total': 0, 'wrong': 0} for n in norms if n}
+    for sub in subs:
+        result = sub.get_result() or {}
+        for i, q in enumerate(result.get('questions') or []):
+            key = _norm_qpart(q.get('question_number', q.get('question_num', i + 1)))
+            rec = counts.get(key)
+            if rec is None:
+                continue
+            rec['total'] += 1
+            if _question_wrong(q):
+                rec['wrong'] += 1
+    out = []
+    for n in norms:
+        rec = counts.get(n) if n else None
+        if not rec or rec['total'] <= 0:
+            out.append({'pct': None})
+        else:
+            out.append({'pct': int(round(rec['wrong'] * 100 / rec['total']))})
+    return out
+
+
+def _area_display_order(area_rates):
+    """Sort indices: areas with a pct first (descending), then None at the end.
+    Stable on original index."""
+    indexed = list(enumerate(area_rates or []))
+    indexed.sort(key=lambda t: (
+        0 if t[1].get('pct') is not None else 1,
+        -(t[1].get('pct') or 0),
+        t[0],
+    ))
+    return [i for i, _ in indexed]
+
+
 @app.route('/teacher/insights/widget/weak-questions')
 def teacher_widget_weak_questions():
     """Worst questions across the latest 3 assignments, grouped by assignment.
@@ -5479,6 +5550,8 @@ def teacher_exemplars_page(assignment_id):
             analysis = json.loads(asn.exemplar_analysis_json)
         except Exception:
             analysis = None
+    area_rates = []
+    area_order = []
     if analysis and isinstance(analysis.get('areas'), list):
         ids = set()
         for area in analysis['areas']:
@@ -5494,6 +5567,8 @@ def teacher_exemplars_page(assignment_id):
                 .all()
             )
             student_names = {sub.id: st.name for (sub, st) in rows}
+        area_rates = _compute_area_wrong_rates(asn.id, analysis['areas'])
+        area_order = _area_display_order(area_rates)
 
     return render_template(
         'exemplars.html',
@@ -5505,6 +5580,8 @@ def teacher_exemplars_page(assignment_id):
         analysis=analysis,
         analyzed_at=asn.exemplar_analyzed_at,
         student_names=student_names,
+        area_rates=area_rates,
+        area_order=area_order,
     )
 
 
@@ -5645,11 +5722,16 @@ def teacher_exemplars_generate(assignment_id):
     )
     student_names = {sub.id: st.name for (sub, st) in rows}
 
+    area_rates = _compute_area_wrong_rates(asn.id, areas_out)
+    area_order = _area_display_order(area_rates)
+
     return jsonify({
         'success': True,
         'analysis': sanitised,
         'student_names': student_names,
         'analyzed_at': asn.exemplar_analyzed_at.isoformat(),
+        'area_rates': area_rates,
+        'area_order': area_order,
     })
 
 

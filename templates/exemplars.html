@@ -6,11 +6,14 @@
     .ex-root { max-width: 1200px; margin: 0 auto; padding: 20px; }
     .ex-back { font-size: 13px; color: #667eea; text-decoration: none; }
     .ex-back:hover { text-decoration: underline; }
-    .ex-header-card { background: white; border-radius: 12px; padding: 20px 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); margin: 12px 0 16px; }
-    .ex-header-card h2 { margin: 0 0 4px; font-size: 20px; }
-    .ex-header-card .meta { font-size: 13px; color: #888; }
-    .ex-header-card .actions { margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .ex-gen-btn { padding: 10px 18px; border: none; border-radius: 8px; background: #667eea; color: white; font-size: 14px; font-weight: 600; cursor: pointer; }
+    .ex-header-card { background: white; border-radius: 12px; padding: 14px 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); margin: 12px 0 16px; }
+    .ex-header-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .ex-header-row h2 { margin: 0; font-size: 20px; flex: 1 1 auto; min-width: 0; }
+    .ex-header-row .ex-gen-btn { flex: 0 0 auto; margin-left: auto; }
+    .ex-header-card .meta { font-size: 13px; color: #888; margin-top: 6px; line-height: 1.45; word-break: break-word; }
+    .ex-header-card .meta .ex-gen-note { color: #888; }
+    .ex-header-card .meta .ex-gen-note::before { content: ' · '; color: #ccc; }
+    .ex-gen-btn { padding: 9px 16px; border: none; border-radius: 8px; background: #667eea; color: white; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; }
     .ex-gen-btn:hover { background: #5a6fd6; }
     .ex-gen-btn:disabled { background: #bbb; cursor: not-allowed; }
     .ex-gen-note { font-size: 12px; color: #888; }
@@ -18,15 +21,22 @@
 
     .ex-areas-card { background: white; border-radius: 12px; padding: 20px 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); margin-bottom: 16px; }
     .ex-areas-card h3 { margin: 0 0 12px; font-size: 15px; color: #555; text-transform: uppercase; letter-spacing: 0.3px; }
-    .ex-area-btns { display: flex; flex-wrap: wrap; gap: 10px; }
+    .ex-area-btns { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    @media (max-width: 720px) { .ex-area-btns { grid-template-columns: 1fr; } }
     .ex-area-btn {
-        padding: 10px 14px; border: 1px solid #d8d8dc; border-radius: 10px; background: white;
-        text-align: left; font-size: 13px; cursor: pointer; color: #2D2D2D; max-width: 380px;
+        position: relative;
+        padding: 10px 56px 10px 14px; border: 1px solid #d8d8dc; border-radius: 10px; background: white;
+        text-align: left; font-size: 13px; cursor: pointer; color: #2D2D2D;
         transition: border-color 0.15s, background 0.15s;
     }
     .ex-area-btn:hover { border-color: #667eea; background: #f7f8ff; }
     .ex-area-btn.active { border-color: #667eea; background: #eef1ff; }
     .ex-area-btn .qp { color: #667eea; font-weight: 700; margin-right: 6px; }
+    .ex-area-btn .ex-pct {
+        position: absolute; top: 8px; right: 10px;
+        font-size: 12px; font-weight: 700; color: #c0392b;
+        background: #fdecea; border-radius: 999px; padding: 2px 8px; line-height: 1.4;
+    }
     .ex-empty { padding: 40px 20px; text-align: center; color: #888; font-size: 14px; font-style: italic; }
 
     .ex-view-card { background: white; border-radius: 12px; padding: 20px 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); min-height: 300px; }
@@ -57,20 +67,14 @@
     <a class="ex-back" href="/teacher/assignment/{{ assignment.id }}">&larr; Back to Assignment</a>
 
     <div class="ex-header-card">
-        <h2>Exemplar Analysis</h2>
-        <div class="meta">
-            {{ assignment.title or assignment.subject or 'Assignment' }} — {{ done_count }} of {{ total_students }} students done ({{ gate_pct }}%)
-            {% if analyzed_at %} · Last generated {{ analyzed_at.strftime('%d %b %Y, %H:%M') }}{% endif %}
-        </div>
-        <div class="actions">
+        <div class="ex-header-row">
+            <h2>Exemplar Analysis</h2>
             <button id="exGenBtn" class="ex-gen-btn" type="button" {% if not can_generate %}disabled title="At least 20% of the class must have done submissions before generating (currently {{ gate_pct }}%)."{% endif %}>
                 {% if analysis %}Regenerate{% else %}Generate Analysis{% endif %}
             </button>
-            {% if not can_generate %}
-            <span class="ex-gen-note">At least 20% of the class must have done submissions (currently {{ gate_pct }}%).</span>
-            {% else %}
-            <span class="ex-gen-note">Generation may take 10–30 seconds.</span>
-            {% endif %}
+        </div>
+        <div class="meta">
+            {{ assignment.title or assignment.subject or 'Assignment' }} — {{ done_count }} of {{ total_students }} students done ({{ gate_pct }}%){% if analyzed_at %} · Last generated {{ analyzed_at.strftime('%d %b %Y, %H:%M') }}{% endif %}{% if not can_generate %}<span class="ex-gen-note">At least 20% of the class must have done submissions.</span>{% else %}<span class="ex-gen-note">Generation may take 10–30 seconds.</span>{% endif %}
         </div>
         <div id="exError" class="ex-error"></div>
     </div>
@@ -79,11 +83,13 @@
         <h3>Areas for Analysis</h3>
         <div id="exAreaBtns" class="ex-area-btns">
             {% if analysis and analysis.areas %}
-                {% for area in analysis.areas %}
-                <button class="ex-area-btn" type="button" data-idx="{{ loop.index0 }}"><span class="qp">{{ area.question_part }}</span>{{ area.label }}</button>
+                {% for i in area_order %}
+                {% set area = analysis.areas[i] %}
+                {% set rate = area_rates[i] %}
+                <button class="ex-area-btn" type="button" data-idx="{{ i }}"><span class="qp">{{ area.question_part }}</span>{{ area.label }}<span class="ex-pct">{% if rate.pct is not none %}{{ rate.pct }}%{% else %}—{% endif %}</span></button>
                 {% endfor %}
             {% else %}
-                <div class="ex-empty" style="flex:1;">No analysis yet. Click {% if can_generate %}<strong>Generate Analysis</strong>{% else %}Generate Analysis (disabled){% endif %} above.</div>
+                <div class="ex-empty" style="grid-column: 1 / -1;">No analysis yet. Click {% if can_generate %}<strong>Generate Analysis</strong>{% else %}Generate Analysis (disabled){% endif %} above.</div>
             {% endif %}
         </div>
     </div>
@@ -109,9 +115,42 @@
 var EX_ASSIGNMENT_ID = '{{ assignment.id }}';
 var exAnalysis = {{ (analysis or {'areas': []}) | tojson }};
 var exStudentNames = {{ student_names | tojson }};
+var exAreaRates = {{ area_rates | tojson }};
+var exAreaOrder = {{ area_order | tojson }};
 var exViewers = [];
 
 function exEsc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+
+function exPctHtml(rate) {
+    if (rate && rate.pct !== null && rate.pct !== undefined) {
+        return '<span class="ex-pct">' + rate.pct + '%</span>';
+    }
+    return '<span class="ex-pct">&mdash;</span>';
+}
+
+function exRenderAreaButtons() {
+    var btns = document.getElementById('exAreaBtns');
+    if (!btns) return;
+    var areas = exAnalysis.areas || [];
+    if (!areas.length) {
+        btns.innerHTML = '<div class="ex-empty" style="grid-column: 1 / -1;">No analysis yet.</div>';
+        return;
+    }
+    var order = (exAreaOrder && exAreaOrder.length) ? exAreaOrder : areas.map(function (_, i) { return i; });
+    var html = '';
+    order.forEach(function (i) {
+        var area = areas[i];
+        if (!area) return;
+        var rate = (exAreaRates && exAreaRates[i]) || { pct: null };
+        html +=
+            '<button class="ex-area-btn" type="button" data-idx="' + i + '">' +
+                '<span class="qp">' + exEsc(area.question_part) + '</span>' + exEsc(area.label) +
+                exPctHtml(rate) +
+            '</button>';
+    });
+    btns.innerHTML = html;
+    wireAreaButtons();
+}
 
 function destroyTileViewers() {
     exViewers = [];  // module has no destroy; replacing DOM below drops references
@@ -167,15 +206,17 @@ function tileHtml(ex, slot) {
     );
 }
 
-function mountTile(slot, ex) {
+async function mountTile(slot, ex) {
     if (!ex) return;
     var scroll = document.getElementById('exTile-' + slot);
     if (!scroll) return;
-    var url = '/teacher/assignment/' + EX_ASSIGNMENT_ID + '/submission/' + ex.submission_id + '/script/page/' + ex.page_index;
+    var manifestUrl = '/teacher/assignment/' + EX_ASSIGNMENT_ID + '/submission/' + ex.submission_id + '/script/manifest';
+    var pageUrlBuilder = function (idx) {
+        return '/teacher/assignment/' + EX_ASSIGNMENT_ID + '/submission/' + ex.submission_id + '/script/page/' + idx;
+    };
     var viewer = DocumentViewer.create(scroll);
-    viewer.loadFromUrl(url);
     exViewers.push(viewer);
-    // Wire the per-tile toolbar
+    // Wire the per-tile toolbar (does not depend on load completing)
     var tile = scroll.closest('.ex-tile');
     if (tile) {
         tile.querySelectorAll('.ex-tile-toolbar button').forEach(function (btn) {
@@ -187,6 +228,25 @@ function mountTile(slot, ex) {
                 else if (act === 'rotate') viewer.rotate();
             });
         });
+    }
+    try {
+        await viewer.loadFromManifest(manifestUrl, pageUrlBuilder);
+    } catch (e) {
+        return;
+    }
+    // After all pages are appended to .dv-scale-wrap, jump to the page the
+    // AI flagged for this exemplar. Each manifest entry produces one canvas
+    // (PDF page) or one img, so child index aligns with page_index in the
+    // common case. Teachers can still scroll/zoom/rotate freely afterwards.
+    var wrap = scroll.querySelector('.dv-scale-wrap');
+    if (!wrap) return;
+    var idx = (ex.page_index === undefined || ex.page_index === null) ? 0 : ex.page_index;
+    var target = wrap.children[idx];
+    if (target && typeof target.scrollIntoView === 'function') {
+        // Use scrollTop on the container rather than scrollIntoView so the
+        // outer page doesn't jump when many tiles try to scroll at once.
+        var top = target.offsetTop;
+        scroll.scrollTop = Math.max(0, top - 4);
     }
 }
 
@@ -221,13 +281,9 @@ async function generateAnalysis() {
         }
         exAnalysis = data.analysis;
         exStudentNames = data.student_names || {};
-        var btns = document.getElementById('exAreaBtns');
-        var html = '';
-        exAnalysis.areas.forEach(function (area, i) {
-            html += '<button class="ex-area-btn" type="button" data-idx="' + i + '"><span class="qp">' + exEsc(area.question_part) + '</span>' + exEsc(area.label) + '</button>';
-        });
-        btns.innerHTML = html;
-        wireAreaButtons();
+        exAreaRates = data.area_rates || (exAnalysis.areas || []).map(function () { return { pct: null }; });
+        exAreaOrder = data.area_order || (exAnalysis.areas || []).map(function (_, i) { return i; });
+        exRenderAreaButtons();
         document.getElementById('exView').innerHTML = '<div class="ex-empty">Select an area to analyse.</div>';
         btn.textContent = 'Regenerate';
         btn.disabled = false;
