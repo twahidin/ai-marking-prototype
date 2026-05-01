@@ -749,7 +749,7 @@ function renderResults(result) {
     }
 
     var oh = '';
-    if (result.overall_feedback) oh += '<div class="overall-box"><h3>Overall Feedback</h3><p>' + esc(result.overall_feedback) + '</p></div>';
+    if (result.overall_feedback || result.overall_feedback_html) oh += '<div class="overall-box"><h3>Overall Feedback</h3><p>' + (result.overall_feedback_html || esc(result.overall_feedback)) + '</p></div>';
     if (errHtml) oh += errHtml;
     var actions = result.recommended_actions || [];
     if (actions.length) {
@@ -783,10 +783,10 @@ function renderQuestion() {
     var bandInfo = (isRubrics && q.band) ? '<span style="font-size:12px;color:#667eea;font-weight:600;margin-left:8px;">' + esc(q.band) + '</span>' : '';
 
     var html = '<div class="q-card"><div class="q-card-header"><span class="q-num">' + esc(headerLabel) + bandInfo + '</span>' + badge + '</div><div class="q-card-body">' +
-        '<div class="q-field"><div class="q-field-label">' + ansLabel + '</div><div class="q-field-value">' + esc(q.student_answer || 'N/A') + '</div></div>' +
-        '<div class="q-field"><div class="q-field-label">' + refLabel + '</div><div class="q-field-value">' + esc(q.correct_answer || 'N/A') + '</div></div>';
-    if (q.feedback) html += '<div class="q-field"><div class="q-field-label">Feedback</div><div class="q-field-value feedback">' + esc(q.feedback) + '</div></div>';
-    if (q.improvement) html += '<div class="q-field"><div class="q-field-label">Suggested Improvement</div><div class="q-field-value improvement">' + esc(q.improvement) + '</div></div>';
+        '<div class="q-field"><div class="q-field-label">' + ansLabel + '</div><div class="q-field-value">' + (q.student_answer_html || esc(q.student_answer || 'N/A')) + '</div></div>' +
+        '<div class="q-field"><div class="q-field-label">' + refLabel + '</div><div class="q-field-value">' + (q.correct_answer_html || esc(q.correct_answer || 'N/A')) + '</div></div>';
+    if (q.feedback || q.feedback_html) html += '<div class="q-field"><div class="q-field-label">Feedback</div><div class="q-field-value feedback">' + (q.feedback_html || esc(q.feedback)) + '</div></div>';
+    if (q.improvement || q.improvement_html) html += '<div class="q-field"><div class="q-field-label">Suggested Improvement</div><div class="q-field-value improvement">' + (q.improvement_html || esc(q.improvement)) + '</div></div>';
     html += '</div></div>';
     document.getElementById('qCardContainer').innerHTML = html;
 

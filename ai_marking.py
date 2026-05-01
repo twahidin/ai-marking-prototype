@@ -1127,7 +1127,7 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
                 subject='', rubrics_pages=None, reference_pages=None,
                 review_instructions='', marking_instructions='',
                 model=None, assign_type='short_answer', scoring_mode='status', total_marks='',
-                session_keys=None, calibration_block=''):
+                session_keys=None, calibration_block='', pinyin_mode='off'):
     """
     Mark a student script using AI vision.
 
@@ -1187,6 +1187,23 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
         prov_config = PROVIDERS.get(provider, {})
         model_label = prov_config.get('models', {}).get(model_name, model_name)
         result['provider_label'] = f"{prov_config.get('label', provider)} — {model_label}"
+
+        # Pinyin annotation: when the assignment is Chinese AND the teacher
+        # opted in via Assignment.pinyin_mode, add ruby-annotated HTML
+        # siblings ('feedback_html', 'improvement_html', etc.) alongside
+        # the raw Chinese fields. Templates render the _html version when
+        # present and fall back to the raw text otherwise — old submissions
+        # are unaffected.
+        if pinyin_mode and pinyin_mode != 'off':
+            from subjects import resolve_subject_key
+            if resolve_subject_key(subject or '') == 'chinese':
+                try:
+                    from pinyin_annotate import annotate_result_for_pinyin
+                    annotate_result_for_pinyin(result, pinyin_mode)
+                    result['pinyin_mode'] = pinyin_mode
+                except Exception as _e:
+                    logger.warning(f'pinyin annotation skipped: {_e}')
+
         return result
 
     except Exception as e:

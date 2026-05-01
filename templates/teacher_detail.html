@@ -621,8 +621,20 @@
                        class="subject-autocomplete"
                        autocomplete="off"
                        value="{{ assignment.subject or '' }}"
-                       data-subject-options='{{ canonical_subjects|tojson }}'>
+                       data-subject-options='{{ canonical_subjects|tojson }}'
+                       oninput="updateEditPinyinVis()"
+                       onchange="updateEditPinyinVis()">
             </div>
+        </div>
+
+        <!-- Hanyu Pinyin (Chinese subject only). Hidden unless subject resolves to chinese. -->
+        <div class="edit-form-group" id="editPinyinGroup" style="display:none;">
+            <label for="editPinyinMode">Show Pinyin (Chinese only)</label>
+            <select id="editPinyinMode">
+                <option value="off" {% if (assignment.pinyin_mode or 'off') == 'off' %}selected{% endif %}>Off (no pinyin)</option>
+                <option value="vocab" {% if assignment.pinyin_mode == 'vocab' %}selected{% endif %}>Vocab-only — HSK 4 and above</option>
+                <option value="full" {% if assignment.pinyin_mode == 'full' %}selected{% endif %}>Full — every character</option>
+            </select>
         </div>
 
         <div class="edit-form-row">
@@ -1443,6 +1455,7 @@ function updateEditModelOptions(initial) {
 function openEditModal() {
     populateEditProviderModel();
     document.getElementById('editErrorMsg').style.display = 'none';
+    updateEditPinyinVis();
     document.getElementById('editModal').classList.add('active');
 }
 
@@ -1452,6 +1465,17 @@ function closeEditModal() {
         const url = new URL(window.location);
         url.searchParams.delete('edit');
         window.history.replaceState({}, '', url.pathname + (url.search || ''));
+    }
+}
+
+function updateEditPinyinVis() {
+    var v = (document.getElementById('editSubject').value || '').trim().toLowerCase();
+    var isChinese = ['chinese', 'higher chinese', 'chinese language', 'cl', 'hcl', '中文'].indexOf(v) !== -1;
+    var grp = document.getElementById('editPinyinGroup');
+    if (grp) grp.style.display = isChinese ? '' : 'none';
+    if (!isChinese) {
+        var sel = document.getElementById('editPinyinMode');
+        if (sel) sel.value = 'off';
     }
 }
 
@@ -1474,6 +1498,7 @@ async function submitEdit() {
     fd.append('max_drafts', document.getElementById('editMaxDrafts').value);
     fd.append('review_instructions', document.getElementById('editReviewInstructions').value);
     fd.append('marking_instructions', document.getElementById('editMarkingInstructions').value);
+    fd.append('pinyin_mode', (document.getElementById('editPinyinMode') || {}).value || 'off');
 
     const qp = document.getElementById('editQuestionPaper');
     if (qp && qp.files.length) fd.append('question_paper', qp.files[0]);

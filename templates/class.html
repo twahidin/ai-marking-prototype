@@ -124,7 +124,21 @@
                 <input type="text" class="form-input subject-autocomplete" id="teacherSubject"
                        autocomplete="off"
                        placeholder="Pick or type — Mathematics, Physics, English…"
-                       data-subject-options='{{ canonical_subjects|tojson }}'>
+                       data-subject-options='{{ canonical_subjects|tojson }}'
+                       oninput="updatePinyinVis()"
+                       onchange="updatePinyinVis()">
+            </div>
+
+            <!-- Hanyu Pinyin (Chinese subjects only). Hidden until the
+                 subject input resolves to one of the chinese aliases. -->
+            <div class="form-group" id="teacherPinyinGroup" style="display:none;">
+                <label for="teacherPinyinMode">Show Pinyin (Chinese only)</label>
+                <select class="form-input" id="teacherPinyinMode" style="padding:12px;">
+                    <option value="off">Off (no pinyin)</option>
+                    <option value="vocab">Vocab-only — HSK 4 and above</option>
+                    <option value="full">Full — every character</option>
+                </select>
+                <p style="font-size:12px;color:#888;margin-top:4px;">Pinyin is generated automatically and can be edited inline on the feedback view.</p>
             </div>
 
             <div class="form-group">
@@ -416,6 +430,20 @@ function updateTeacherModelSelect() {
 /* =====================================================================
 Assignment type / marks
    ===================================================================== */
+function updatePinyinVis() {
+    // Show the Pinyin dropdown only when the subject input resolves to
+    // Chinese. Match the same alias set used by subjects.resolve_subject_key
+    // server-side (chinese, higher chinese, chinese language, cl, hcl, 中文).
+    var v = (document.getElementById('teacherSubject').value || '').trim().toLowerCase();
+    var isChinese = ['chinese', 'higher chinese', 'chinese language', 'cl', 'hcl', '中文'].indexOf(v) !== -1;
+    var grp = document.getElementById('teacherPinyinGroup');
+    if (grp) grp.style.display = isChinese ? '' : 'none';
+    if (!isChinese) {
+        var sel = document.getElementById('teacherPinyinMode');
+        if (sel) sel.value = 'off';
+    }
+}
+
 function updateTeacherAssignType() {
     const t = document.querySelector('input[name="teacher_assign_type"]:checked')?.value;
     document.getElementById('teacherShortAnswerOptions').style.display = t === 'rubrics' ? 'none' : 'block';
@@ -529,6 +557,9 @@ async function createAssignment() {
     fd.append('max_drafts', document.getElementById('max_drafts').value);
     fd.append('review_instructions', document.getElementById('teacher_review_instructions').value);
     fd.append('marking_instructions', document.getElementById('teacher_marking_instructions').value);
+    // pinyin_mode is only meaningful for Chinese subjects; the input
+    // is hidden otherwise. Server-side also gates on subject_family.
+    fd.append('pinyin_mode', document.getElementById('teacherPinyinMode').value || 'off');
 
     // Add to bank
     if (document.getElementById('teacherAddToBank').checked) {

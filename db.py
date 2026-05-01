@@ -196,6 +196,16 @@ def _migrate_add_columns(app):
                 db.session.execute(text('ALTER TABLE assignments ADD COLUMN subject_family VARCHAR(40)'))
                 db.session.commit()
                 logger.info('Added subject_family column to assignments table')
+            if 'pinyin_mode' not in columns:
+                # Default 'off' so legacy rows don't suddenly start emitting
+                # pinyin on next render. Teachers opt-in per assignment via
+                # the form dropdown — only meaningful for chinese subject.
+                db.session.execute(text(
+                    "ALTER TABLE assignments ADD COLUMN pinyin_mode VARCHAR(10) "
+                    "DEFAULT 'off' NOT NULL"
+                ))
+                db.session.commit()
+                logger.info('Added pinyin_mode column to assignments table')
         # feedback_edit super-set columns. The table may exist on prod from
         # an older feed_forward_beta or staging deploy with a partial column
         # set; SELECTs blow up with "column does not exist" if the model
@@ -386,6 +396,12 @@ class Assignment(db.Model):
     needs_remark = db.Column(db.Boolean, default=False, nullable=False)
     exemplar_analysis_json = db.Column(db.Text)
     exemplar_analyzed_at = db.Column(db.DateTime)
+    # Hanyu pinyin annotation mode for Chinese-subject feedback. Only takes
+    # effect when subject resolves to the chinese family. Values:
+    #   'off'   — no pinyin (default; matches pre-feature behaviour)
+    #   'vocab' — annotate HSK 4+ words only
+    #   'full'  — annotate every CJK character
+    pinyin_mode = db.Column(db.String(10), default='off', nullable=False)
 
     students = db.relationship('Student', backref='assignment', lazy=True, cascade='all, delete-orphan')
 

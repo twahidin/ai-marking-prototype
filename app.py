@@ -666,7 +666,8 @@ def _resolve_api_keys(assignment):
 def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pages,
                     script_pages, subject, rubrics_pages, reference_pages,
                     review_instructions, marking_instructions,
-                    assign_type, scoring_mode, total_marks, session_keys):
+                    assign_type, scoring_mode, total_marks, session_keys,
+                    pinyin_mode='off'):
     """Background thread for AI marking."""
     try:
         result = mark_script(
@@ -684,6 +685,7 @@ def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pa
             scoring_mode=scoring_mode,
             total_marks=total_marks,
             session_keys=session_keys,
+            pinyin_mode=pinyin_mode,
         )
         jobs[job_id]['result'] = result
         jobs[job_id]['status'] = 'error' if result.get('error') else 'done'
@@ -3924,7 +3926,8 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                          rubrics_pages, reference_pages, student_scripts, students,
                          subject, review_instructions, marking_instructions,
                          assign_type, scoring_mode, total_marks, session_keys,
-                         assignment_id=None, student_id_map=None, submission_id_map=None):
+                         assignment_id=None, student_id_map=None, submission_id_map=None,
+                         pinyin_mode='off'):
     """Background thread for bulk marking — marks each student sequentially."""
     results = []
     total = len(students)
@@ -3954,6 +3957,7 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                     scoring_mode=scoring_mode,
                     total_marks=total_marks,
                     session_keys=session_keys,
+                    pinyin_mode=pinyin_mode,
                 )
             except Exception as e:
                 logger.error(f"Bulk job {job_id}, student {student['name']} failed: {e}")
@@ -4214,11 +4218,20 @@ def bulk_mark():
 
     thread = threading.Thread(
         target=run_bulk_marking_job,
-        args=(job_id, asn.provider, asn.model, question_paper_pages, answer_key_pages,
-              rubrics_pages, reference_pages, student_scripts, students_to_mark,
-              asn.subject, asn.review_instructions, asn.marking_instructions,
-              asn.assign_type, asn.scoring_mode, asn.total_marks, session_keys,
-              assignment_id, student_id_map, submission_id_map),
+        kwargs={
+            'job_id': job_id, 'provider': asn.provider, 'model': asn.model,
+            'question_paper_pages': question_paper_pages, 'answer_key_pages': answer_key_pages,
+            'rubrics_pages': rubrics_pages, 'reference_pages': reference_pages,
+            'student_scripts': student_scripts, 'students': students_to_mark,
+            'subject': asn.subject,
+            'review_instructions': asn.review_instructions,
+            'marking_instructions': asn.marking_instructions,
+            'assign_type': asn.assign_type, 'scoring_mode': asn.scoring_mode,
+            'total_marks': asn.total_marks, 'session_keys': session_keys,
+            'assignment_id': assignment_id, 'student_id_map': student_id_map,
+            'submission_id_map': submission_id_map,
+            'pinyin_mode': getattr(asn, 'pinyin_mode', 'off'),
+        },
         daemon=True
     )
     thread.start()
@@ -4433,6 +4446,7 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
                 total_marks=asn.total_marks,
                 session_keys=_resolve_api_keys(asn),
                 calibration_block=calibration_block,
+                pinyin_mode=getattr(asn, 'pinyin_mode', 'off'),
             )
 
             # Safety net: in marks mode, every question must have marks_total.
@@ -5129,6 +5143,16 @@ def teacher_create():
     if provider not in api_keys:
         return jsonify({'success': False, 'error': 'Selected provider has no API key'}), 400
 
+    # Pinyin mode is only meaningful for Chinese subjects. Server-side,
+    # validate against the allowed values and zero it out for non-Chinese
+    # subjects so we don't store accidental UI state.
+    raw_pinyin = (request.form.get('pinyin_mode', 'off') or 'off').lower()
+    if raw_pinyin not in ('off', 'vocab', 'full'):
+        raw_pinyin = 'off'
+    from subjects import resolve_subject_key
+    if resolve_subject_key(request.form.get('subject', '')) != 'chinese':
+        raw_pinyin = 'off'
+
     asn = Assignment(
         id=str(uuid.uuid4()),
         classroom_code=_generate_classroom_code(),
@@ -5150,6 +5174,7 @@ def teacher_create():
         reference=ref_bytes,
         class_id=class_id,
         teacher_id=teacher_obj.id if teacher_obj else None,
+        pinyin_mode=raw_pinyin,
     )
     # Only store user-provided keys
     user_keys = {}
@@ -5250,6 +5275,13 @@ def teacher_edit(assignment_id):
     new_max_drafts = _parse_max_drafts(request.form.get('max_drafts')) if request.form.get('max_drafts') is not None else asn.max_drafts
     new_review = request.form.get('review_instructions', asn.review_instructions or '')
     new_marking = request.form.get('marking_instructions', asn.marking_instructions or '')
+    # pinyin_mode: validate, then zero-out for non-Chinese subjects.
+    new_pinyin = (request.form.get('pinyin_mode', asn.pinyin_mode or 'off') or 'off').lower()
+    if new_pinyin not in ('off', 'vocab', 'full'):
+        new_pinyin = 'off'
+    from subjects import resolve_subject_key as _rsk
+    if _rsk(new_subject) != 'chinese':
+        new_pinyin = 'off'
 
     # File handling: new upload replaces; empty input keeps existing.
     def _maybe_read(field_name):
@@ -5293,6 +5325,7 @@ def teacher_edit(assignment_id):
     asn.marking_instructions = new_marking
     asn.provider = new_provider
     asn.model = new_model
+    asn.pinyin_mode = new_pinyin
     if qp_changed:
         asn.question_paper = qp_bytes
     if ak_changed:

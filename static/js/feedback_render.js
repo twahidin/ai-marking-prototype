@@ -90,6 +90,19 @@
         return esc(preprocessMath(String(s)));
     }
 
+    // Prefer the server-provided `<key>_html` field if it's a non-empty
+    // string. That field carries pinyin-annotated <ruby> markup for
+    // Chinese assignments and is already HTML-safe (text portions are
+    // pre-escaped by pinyin_annotate.py). Falls back to escMath on the
+    // raw text for everything else (English, math, no-pinyin Chinese).
+    function rawOrHtml(obj, key) {
+        if (!obj) return '';
+        var html = obj[key + '_html'];
+        if (typeof html === 'string' && html.length) return html;
+        var raw = obj[key];
+        return escMath(raw || '');
+    }
+
     function deriveStatus(marksAwarded, marksTotal) {
         if (marksAwarded == null || marksTotal == null || marksTotal <= 0) return null;
         var ratio = marksAwarded / marksTotal;
@@ -147,6 +160,7 @@
             assignType: result.assign_type || 'short_answer',
             recommended: result.recommended_actions || [],
             overall: result.overall_feedback || '',
+            overallHtml: result.overall_feedback_html || '',
             currentQ: 0,
             containerEl: containerEl,
             prefix: prefix,
@@ -250,8 +264,9 @@
                 '</p>' +
             '</div>';
         }
-        if (state.overall) {
-            return '<div class="fb-overall-box"><h4>Overall Feedback</h4><p>' + escMath(state.overall) + '</p></div>';
+        if (state.overall || state.overallHtml) {
+            var body = state.overallHtml || escMath(state.overall);
+            return '<div class="fb-overall-box"><h4>Overall Feedback</h4><p>' + body + '</p></div>';
         }
         return '';
     }
@@ -324,6 +339,9 @@
 
         var fbBlock, impBlock;
         if (state.editable) {
+            // Editable view shows the *raw* text inside contenteditable so
+            // teachers edit prose, not the ruby markup. Pinyin annotations
+            // are re-applied after the save round-trip.
             var fbContent = q.feedback ? escMath(q.feedback) : '<span class="fb-placeholder">Click to add feedback…</span>';
             var impContent = q.improvement ? escMath(q.improvement) : '<span class="fb-placeholder">Click to add suggested improvement…</span>';
             fbBlock = '<div class="fb-q-field"><div class="fb-q-field-label">Feedback <small style="color:#bbb;font-weight:400;">(click to edit)</small></div>' +
@@ -333,8 +351,8 @@
                 '<div class="fb-q-field-value improvement fb-editable" data-field="improvement">' + impContent +
                 '<span class="edit-hint">✎ edit</span></div></div>';
         } else {
-            fbBlock = q.feedback ? '<div class="fb-q-field"><div class="fb-q-field-label">Feedback</div><div class="fb-q-field-value feedback">' + escMath(q.feedback) + '</div></div>' : '';
-            impBlock = q.improvement ? '<div class="fb-q-field"><div class="fb-q-field-label">Suggested Improvement</div><div class="fb-q-field-value improvement">' + escMath(q.improvement) + '</div></div>' : '';
+            fbBlock = (q.feedback || q.feedback_html) ? '<div class="fb-q-field"><div class="fb-q-field-label">Feedback</div><div class="fb-q-field-value feedback">' + rawOrHtml(q, 'feedback') + '</div></div>' : '';
+            impBlock = (q.improvement || q.improvement_html) ? '<div class="fb-q-field"><div class="fb-q-field-label">Suggested Improvement</div><div class="fb-q-field-value improvement">' + rawOrHtml(q, 'improvement') + '</div></div>' : '';
         }
 
         // Category line: muted, contenteditable annotation in the form
@@ -369,8 +387,8 @@
                 '<span id="' + state.prefix + 'StatusBadgeWrap">' + badge + '</span>' +
             '</div>' +
             '<div class="fb-q-card-body">' +
-                '<div class="fb-q-field"><div class="fb-q-field-label">' + ansLabel + '</div><div class="fb-q-field-value">' + escMath(q.student_answer || 'N/A') + '</div></div>' +
-                '<div class="fb-q-field"><div class="fb-q-field-label">' + refLabel + '</div><div class="fb-q-field-value">' + escMath(q.correct_answer || 'N/A') + '</div></div>' +
+                '<div class="fb-q-field"><div class="fb-q-field-label">' + ansLabel + '</div><div class="fb-q-field-value">' + (q.student_answer_html || escMath(q.student_answer || 'N/A')) + '</div></div>' +
+                '<div class="fb-q-field"><div class="fb-q-field-label">' + refLabel + '</div><div class="fb-q-field-value">' + (q.correct_answer_html || escMath(q.correct_answer || 'N/A')) + '</div></div>' +
                 catBlock +
                 fbBlock +
                 impBlock +
