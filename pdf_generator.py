@@ -279,12 +279,23 @@ _PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 \usepackage[version=4]{mhchem}
 \usepackage{titlesec}
 \usepackage{ulem}
-% Ruby annotations for hanyu pinyin above CJK characters. Ships in
-% texlive-latex-extra (already installed for tcolorbox / tabularx /
-% titlesec). \ruby{base}{annotation} renders the annotation centred
-% above the base text with reasonable kerning across LuaLaTeX + Noto
-% Sans CJK; we pre-generate the pinyin via pypinyin in pinyin_annotate.py.
-\usepackage{ruby}
+
+% Custom \ruby{base}{annotation}: stacks the annotation in tiny italic
+% blue above the base text using a single-cell tabular wrapped in \mbox.
+% Self-contained — avoids depending on ruby.sty, which isn't in the
+% Debian texlive-latex-extra package we install. Pinyin itself is
+% pre-generated via pypinyin in pinyin_annotate.py; this command just
+% renders one base/annotation pair above the line. The \mbox prevents
+% the multi-character base from being split mid-word.
+\definecolor{rubypy}{HTML}{5B6CF0}
+\newcommand{\ruby}[2]{%
+  \mbox{%
+    \begin{tabular}[b]{@{}c@{}}%
+      \scriptsize\textcolor{rubypy}{\textit{#2}}\\[-1pt]%
+      #1%
+    \end{tabular}%
+  }%
+}
 
 % Noto Sans as the main font — humanist sans-serif similar to Helvetica
 % in feel, reliably resolvable on Railway (apt-installed via fonts-noto
