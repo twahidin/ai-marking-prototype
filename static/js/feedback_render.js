@@ -103,6 +103,57 @@
         return escMath(raw || '');
     }
 
+    // ------------------------------------------------------------------
+    // Numbered-pinyin → toned-pinyin converter. Lets teachers type
+    // "cheng2yu3" and have it auto-convert to "chéngyǔ" on the fly.
+    // 'v' / 'V' is the standard substitute for ü on keyboards without
+    // the diaeresis. Tone 5 is neutral (digit dropped, no mark).
+    // ------------------------------------------------------------------
+    var PY_TONE_MARKS = {
+        'a': ['ā','á','ǎ','à'], 'e': ['ē','é','ě','è'],
+        'i': ['ī','í','ǐ','ì'], 'o': ['ō','ó','ǒ','ò'],
+        'u': ['ū','ú','ǔ','ù'], 'ü': ['ǖ','ǘ','ǚ','ǜ'],
+        'A': ['Ā','Á','Ǎ','À'], 'E': ['Ē','É','Ě','È'],
+        'I': ['Ī','Í','Ǐ','Ì'], 'O': ['Ō','Ó','Ǒ','Ò'],
+        'U': ['Ū','Ú','Ǔ','Ù'], 'Ü': ['Ǖ','Ǘ','Ǚ','Ǜ'],
+    };
+    var PY_VOWELS = /[aeiouüAEIOUÜ]/;
+
+    function applyPyTone(syllable, tone) {
+        // Replace v→ü first (common on QWERTY keyboards).
+        syllable = syllable.replace(/v/g, 'ü').replace(/V/g, 'Ü');
+        if (tone < 1 || tone > 4) return syllable;
+        // Pinyin tone-placement rules:
+        //   1. If 'a' is present, mark on 'a'.
+        //   2. Else if 'e' is present, mark on 'e'.
+        //   3. Else if 'o' is present, mark on 'o'.
+        //   4. Else the LAST vowel in the syllable.
+        var pos = syllable.search(/[aA]/);
+        if (pos < 0) pos = syllable.search(/[eE]/);
+        if (pos < 0) pos = syllable.search(/[oO]/);
+        if (pos < 0) {
+            for (var i = syllable.length - 1; i >= 0; i--) {
+                if (PY_VOWELS.test(syllable[i])) { pos = i; break; }
+            }
+        }
+        if (pos < 0) return syllable;
+        var ch = syllable[pos];
+        var toned = PY_TONE_MARKS[ch];
+        if (!toned) return syllable;
+        return syllable.slice(0, pos) + toned[tone - 1] + syllable.slice(pos + 1);
+    }
+
+    function numPyToToneMarks(input) {
+        if (!input) return '';
+        return String(input).replace(/([a-zA-ZüÜvV]+)([1-5])/g, function (m, syl, n) {
+            var tone = parseInt(n, 10);
+            if (tone === 5) {
+                return syl.replace(/v/g, 'ü').replace(/V/g, 'Ü');
+            }
+            return applyPyTone(syl, tone);
+        });
+    }
+
     function deriveStatus(marksAwarded, marksTotal) {
         if (marksAwarded == null || marksTotal == null || marksTotal <= 0) return null;
         var ratio = marksAwarded / marksTotal;
@@ -554,9 +605,10 @@
             '<label style="font-size:11px;color:#777;">中文</label>' +
             '<input class="fb-ruby-zh" style="font-size:16px; padding:4px 8px; border:1px solid #d8d8dc; border-radius:5px; min-width:80px;">' +
             '<label style="font-size:11px;color:#777;">拼音</label>' +
-            '<input class="fb-ruby-py" style="font-size:13px; padding:4px 8px; border:1px solid #d8d8dc; border-radius:5px; color:#5b6cf0; min-width:120px;">' +
+            '<input class="fb-ruby-py" style="font-size:13px; padding:4px 8px; border:1px solid #d8d8dc; border-radius:5px; color:#5b6cf0; min-width:140px;" placeholder="cheng2yu3 → chéngyǔ">' +
             '<button type="button" class="fb-ruby-save" style="font-size:12px; padding:5px 10px; border:none; border-radius:5px; background:#5b6cf0; color:white; cursor:pointer; font-weight:600;">Save</button>' +
-            '<button type="button" class="fb-ruby-cancel" style="font-size:12px; padding:5px 10px; border:none; border-radius:5px; background:#e8e8ec; color:#555; cursor:pointer;">Cancel</button>';
+            '<button type="button" class="fb-ruby-cancel" style="font-size:12px; padding:5px 10px; border:none; border-radius:5px; background:#e8e8ec; color:#555; cursor:pointer;">Cancel</button>' +
+            '<div style="flex:1 1 100%; font-size:11px; color:#888; margin-top:2px;">Tip: type <code>cheng2yu3</code> → <code style="color:#5b6cf0">chéngyǔ</code> (1=ā 2=á 3=ǎ 4=à 5=neutral, v=ü)</div>';
         document.body.appendChild(pop);
         rubyPopover = pop;
 
@@ -572,6 +624,23 @@
         // new" the pinyin field is empty so focus it for typing.
         pyI.focus();
         if (oldPinyin) pyI.select();
+
+        // Numbered pinyin → tone marks. Convert as the teacher types so
+        // they get instant visual feedback after every digit. Cursor is
+        // restored after the substitution so typing keeps flowing.
+        pyI.addEventListener('input', function () {
+            if (!/[1-5vV]/.test(pyI.value)) return;
+            var prev = pyI.value;
+            var caret = pyI.selectionStart;
+            var converted = numPyToToneMarks(prev);
+            if (converted === prev) return;
+            pyI.value = converted;
+            // Best-effort cursor restoration: shift left by however many
+            // chars the conversion shrank the string by.
+            var shift = prev.length - converted.length;
+            var newCaret = Math.max(0, caret - shift);
+            pyI.setSelectionRange(newCaret, newCaret);
+        });
 
         pop.querySelector('.fb-ruby-save').addEventListener('click', function () {
             saveRubyEdit(state, field, oldWord, zhI.value.trim(), pyI.value.trim());
