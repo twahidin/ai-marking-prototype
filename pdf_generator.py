@@ -218,10 +218,16 @@ def _tex_text(s):
     # Ruby first — it must run before any escape pass so the < > inside the
     # tags don't get mangled. Inside a ruby, the base and the pinyin are
     # short bits of text/escapes; we LaTeX-escape each side then wrap.
+    # Append \penalty 0 so the line-breaker has a hook right after each
+    # ruby block — without this, runs of "ruby + CJK + ruby + CJK ..."
+    # become one unbreakable atom and the line overflows the right margin.
     def ruby_to_tex(m):
         base = _html_unescape(m.group(1)).strip()
         pinyin = _html_unescape(m.group(2)).strip()
-        return r'\ruby{' + _cjk_breakable(_tex_escape(base)) + r'}{' + _tex_escape(pinyin) + r'}'
+        return (
+            r'\ruby{' + _cjk_breakable(_tex_escape(base)) + r'}{' +
+            _tex_escape(pinyin) + r'}\penalty 0 '
+        )
     s = _RUBY_RE.sub(lambda m: stash(ruby_to_tex(m)), s)
 
     # Strip any stray inline single-word tags the AI may have left in
@@ -283,13 +289,11 @@ _PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 \usepackage{ulem}
 
 % Custom \ruby{base}{annotation}: paints the annotation centred above
-% the base. The block is sized to the WIDER of base or annotation so
-% adjacent rubies never overlap horizontally — when pinyin is wider
-% than the underlying CJK glyph (e.g. "zhōng" over "中") the base gets
-% a small horizontal padding instead of letting the annotation collide
-% with neighbouring rubies. The annotation itself is rendered with
-% \rlap+\smash so it claims zero vertical space; the line height bump
-% comes from the document-level \linespread.
+% the base. The block is sized to the WIDER of base or annotation
+% PLUS 3pt of horizontal breathing room so adjacent rubies have a
+% visible gap between their pinyin labels. The annotation itself is
+% rendered with \rlap+\smash so it claims zero vertical space; line
+% height comes from the document-level \linespread.
 \definecolor{rubypy}{HTML}{5B6CF0}
 \newsavebox{\rubytmpbox}
 \newsavebox{\rubypybox}
@@ -302,6 +306,7 @@ _PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
   \else
     \setlength{\rubymaxwd}{\wd\rubytmpbox}%
   \fi
+  \addtolength{\rubymaxwd}{3pt}% breathing room so neighbours don't kiss
   \makebox[\rubymaxwd][c]{%
     \rlap{%
       \smash{%
