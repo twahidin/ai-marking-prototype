@@ -67,6 +67,19 @@ DEMO_MODELS = {
 # Initialize database
 init_db(app)
 
+# Warm jieba's dictionary in a background thread so the first Chinese mark
+# after a deploy doesn't pay the ~400ms-cold load cost on the request path.
+# Soft-fails if pypinyin/jieba aren't installed yet (e.g. layered deploys).
+def _warm_pinyin_libs():
+    try:
+        from pinyin_annotate import annotate
+        annotate('你好世界', mode='vocab')
+        logger.info('pinyin libs (jieba + pypinyin) warmed at boot')
+    except Exception as _e:
+        logger.warning(f'pinyin warmup skipped: {_e}')
+
+threading.Thread(target=_warm_pinyin_libs, daemon=True).start()
+
 # ---------------------------------------------------------------------------
 # Auto-persist FLASK_SECRET_KEY in DB so Railway deployments need zero env vars
 # ---------------------------------------------------------------------------
@@ -6383,6 +6396,20 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                     q['status'] = 'partially_correct'
                 else:
                     q['status'] = 'incorrect'
+
+    # Re-derive pinyin _html siblings from the (possibly edited) raw text so
+    # the next render reflects the teacher's prose changes. No-op for
+    # non-Chinese assignments and when pinyin_mode is 'off'.
+    pmode = getattr(asn, 'pinyin_mode', 'off') or 'off'
+    if pmode != 'off':
+        try:
+            from subjects import resolve_subject_key
+            if resolve_subject_key(asn.subject or '') == 'chinese':
+                from pinyin_annotate import annotate_result_for_pinyin
+                annotate_result_for_pinyin(result, pmode)
+                result['pinyin_mode'] = pmode
+        except Exception as _e:
+            logger.warning(f'pinyin re-annotation on edit skipped: {_e}')
 
     sub.set_result(result)
     db.session.commit()
