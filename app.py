@@ -5289,7 +5289,8 @@ def teacher_edit(assignment_id):
     new_review = request.form.get('review_instructions', asn.review_instructions or '')
     new_marking = request.form.get('marking_instructions', asn.marking_instructions or '')
     # pinyin_mode: validate, then zero-out for non-Chinese subjects.
-    new_pinyin = (request.form.get('pinyin_mode', asn.pinyin_mode or 'off') or 'off').lower()
+    prior_pinyin = (asn.pinyin_mode or 'off')
+    new_pinyin = (request.form.get('pinyin_mode', prior_pinyin) or 'off').lower()
     if new_pinyin not in ('off', 'vocab', 'full'):
         new_pinyin = 'off'
     from subjects import resolve_subject_key as _rsk
@@ -5377,11 +5378,65 @@ def teacher_edit(assignment_id):
         logger.error(f"Failed to save edits for assignment {assignment_id}: {e}")
         return jsonify({'success': False, 'error': 'Failed to save changes. Please try again.'}), 500
 
+    # If pinyin_mode flipped (off→on, on→off, or between vocab/full), re-derive
+    # the *_html siblings on every existing submission's result_json so the
+    # change shows up immediately on the feedback view + PDF, without forcing
+    # the teacher to re-mark every student. Idempotent and safe to skip on
+    # any single submission — we just log and move on.
+    pinyin_changed = (prior_pinyin != new_pinyin)
+    if pinyin_changed:
+        try:
+            from pinyin_annotate import annotate_result_for_pinyin
+            subs_done = (
+                Submission.query
+                .filter_by(assignment_id=asn.id)
+                .filter(Submission.result_json.isnot(None))
+                .all()
+            )
+            updated = 0
+            for sub_iter in subs_done:
+                try:
+                    res = sub_iter.get_result()
+                    if not isinstance(res, dict) or res.get('error'):
+                        continue
+                    if new_pinyin == 'off':
+                        # Strip every *_html sibling so the renderer falls
+                        # back to plain text (and any in-process PDF cache
+                        # entries get a fresh key from the dict change).
+                        keys_to_drop = [k for k in list(res.keys()) if k.endswith('_html')]
+                        for k in keys_to_drop:
+                            res.pop(k, None)
+                        for q in (res.get('questions') or []):
+                            if not isinstance(q, dict):
+                                continue
+                            for k in [k for k in list(q.keys()) if k.endswith('_html')]:
+                                q.pop(k, None)
+                        res.pop('pinyin_mode', None)
+                    else:
+                        annotate_result_for_pinyin(res, new_pinyin)
+                        res['pinyin_mode'] = new_pinyin
+                    sub_iter.set_result(res)
+                    updated += 1
+                except Exception as _re:
+                    logger.warning(
+                        f'pinyin re-annotation skipped for sub {sub_iter.id}: {_re}'
+                    )
+            if updated:
+                db.session.commit()
+            logger.info(
+                f"Re-annotated {updated} submission(s) for assignment "
+                f"{asn.id} after pinyin_mode change {prior_pinyin}→{new_pinyin}"
+            )
+        except Exception as _e:
+            db.session.rollback()
+            logger.warning(f'pinyin sweep on assignment edit skipped: {_e}')
+
     return jsonify({
         'success': True,
         'major_change': major_change,
         'needs_remark': asn.needs_remark,
         'last_edited_at': asn.last_edited_at.isoformat(),
+        'pinyin_resweep': pinyin_changed,
     })
 
 
