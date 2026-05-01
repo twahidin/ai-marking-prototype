@@ -159,12 +159,14 @@ _STRAY_TAG_RE = re.compile(r'<[a-z][a-z0-9]*>', re.IGNORECASE)
 
 
 def _cjk_breakable(s):
-    """Insert a discardable glue node (\\hspace{0pt}) after each CJK
-    character, giving LuaLaTeX line-break opportunities mid-string. Without
-    this, a 60-char Chinese sentence becomes one unbreakable atom and
-    overflows narrow table columns."""
+    """Insert an explicit \\penalty 0 after each CJK character, giving
+    LuaLaTeX a no-cost break opportunity mid-string. Earlier we used
+    \\hspace{0pt} but the resulting zero-width glue wasn't always picked
+    up by the line-breaker — long Chinese paragraphs (e.g. Overall
+    Feedback) still overflowed the right margin. \\penalty 0 is an
+    unambiguous "you may break here" marker that the breaker honours."""
     return _CJK_RANGE.sub(
-        lambda m: ''.join(c + r'\hspace{0pt}' for c in m.group(1)),
+        lambda m: ''.join(c + r'\penalty 0 ' for c in m.group(1)),
         s,
     )
 
@@ -653,7 +655,17 @@ def _generate_report_pdf_impl(result, subject, app_title, assignment_name):
         actions_block,
     ])
 
-    tex = _PREAMBLE + r'\begin{document}' + '\n' + body + '\n' + r'\end{document}' + '\n'
+    # Bump line spacing for documents that carry pinyin annotations — the
+    # ruby overlay sits ~0.95em above each base, so single-spaced lines
+    # have the pinyin colliding with the line directly above. 1.45× gives
+    # the annotation room to breathe without making the report feel airy.
+    has_pinyin = (
+        (result.get('pinyin_mode') and result.get('pinyin_mode') != 'off')
+        or any(k.endswith('_html') for k in result.keys())
+    )
+    linespread = r'\linespread{1.45}\selectfont' + '\n' if has_pinyin else ''
+
+    tex = _PREAMBLE + r'\begin{document}' + '\n' + linespread + body + '\n' + r'\end{document}' + '\n'
     return _compile_tex_to_pdf(tex, jobname='report')
 
 

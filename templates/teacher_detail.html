@@ -632,7 +632,8 @@
             <label for="editPinyinMode">Show Pinyin (Chinese only)</label>
             <select id="editPinyinMode">
                 <option value="off" {% if (assignment.pinyin_mode or 'off') == 'off' %}selected{% endif %}>Off (no pinyin)</option>
-                <option value="vocab" {% if assignment.pinyin_mode == 'vocab' %}selected{% endif %}>Vocab-only — HSK 4 and above</option>
+                <option value="vocab" {% if assignment.pinyin_mode == 'vocab' %}selected{% endif %}>Vocab — HSK 4 and above</option>
+                <option value="advanced" {% if assignment.pinyin_mode == 'advanced' %}selected{% endif %}>Advanced — chengyu, 4-char idioms, HSK 6 only</option>
                 <option value="full" {% if assignment.pinyin_mode == 'full' %}selected{% endif %}>Full — every character</option>
             </select>
         </div>

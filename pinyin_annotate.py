@@ -4,11 +4,18 @@ Public surface:
     annotate(text, mode='vocab', hsk_threshold=4) -> str
 
 Modes:
-    'off'   — return text unchanged.
-    'vocab' — annotate only words at or above `hsk_threshold` (default
-              HSK 4+) as ruby tags. Words below threshold and any non-CJK
-              (Latin, digits, punctuation, math) pass through untouched.
-    'full'  — annotate every CJK character with pinyin.
+    'off'      — return text unchanged.
+    'vocab'    — annotate only words at HSK 4 or above as ruby tags. Words
+                 below threshold and any non-CJK (Latin, digits, punctuation,
+                 math) pass through untouched. Default scaffolding for
+                 secondary Chinese students.
+    'advanced' — HSK 6 only, plus any compound of 4+ Chinese characters
+                 (catches 成语 / 4-char idioms / fixed expressions whose
+                 components are individually common but whose combined
+                 meaning is figurative). Tighter than 'vocab' — best for
+                 stronger readers who only need help on the genuinely
+                 hard stuff.
+    'full'     — annotate every CJK character with pinyin.
 
 Production callers should run AI Chinese feedback through this AFTER the
 mother-tongue prompt switch produces native-language fields, and BEFORE
@@ -100,6 +107,31 @@ def _word_meets_threshold(word, threshold, annotate_unknown):
     return annotate_unknown
 
 
+def _word_meets_advanced(word, annotate_unknown):
+    """'advanced' mode rules: HSK 6 OR length ≥ 4 (idiom-shaped) OR off-list
+    with at least one rare character. Designed for secondary students who
+    only need scaffolding on the genuinely hard vocabulary — chengyu, fixed
+    expressions, advanced compounds — not common 2-char HSK 4-5 words."""
+    if len(word) >= 4:
+        # Almost always an idiom or fixed-expression at this length. Even
+        # if every component is common, the combined meaning usually isn't.
+        return True
+    level = _hsk_map().get(word)
+    if level is not None:
+        return level >= 6
+    # Single off-list character is almost always a particle / fragment
+    # (们, 之, 矣, 焉) that jieba split out from a compound. Skip it —
+    # annotating particles is noise that doesn't help the student.
+    if len(word) == 1:
+        return False
+    # Off-list 2-3 char compound: only annotate if at least one component
+    # is itself uncommon. Skip if every char is HSK 1-5.
+    char_levels = [_hsk_map().get(c) for c in word]
+    if char_levels and all(l is not None and l < 6 for l in char_levels):
+        return False
+    return annotate_unknown
+
+
 def _toned_pinyin_for(word):
     """Pinyin string for a word, with tone marks. Multi-syllable words
     join with no separator (e.g. 句子 → 'jùzi'), matching textbook
@@ -147,8 +179,8 @@ def annotate(text, mode='vocab', hsk_threshold=4, annotate_unknown=True,
         return ''
     if mode == 'off':
         return html.escape(text)
-    if mode not in ('vocab', 'full'):
-        raise ValueError("mode must be 'off', 'vocab', or 'full'")
+    if mode not in ('vocab', 'advanced', 'full'):
+        raise ValueError("mode must be 'off', 'vocab', 'advanced', or 'full'")
 
     overrides = overrides or {}
 
@@ -173,8 +205,9 @@ def annotate(text, mode='vocab', hsk_threshold=4, annotate_unknown=True,
                 py = overrides.get(ch) or _toned_pinyin_for(ch)
                 out.append(_ruby(ch, py))
             return
-        # 'vocab' mode: segment, look up HSK level, annotate if ≥ threshold
-        # OR a teacher has set a pinyin override for that exact word.
+        # 'vocab' / 'advanced' modes: segment with jieba, look up HSK
+        # level, annotate words that pass the chosen filter or have a
+        # teacher override.
         for word in jieba.cut(chunk, HMM=True):
             if not word:
                 continue
@@ -184,7 +217,11 @@ def annotate(text, mode='vocab', hsk_threshold=4, annotate_unknown=True,
             if word in overrides:
                 out.append(_ruby(word, overrides[word]))
                 continue
-            if _word_meets_threshold(word, hsk_threshold, annotate_unknown):
+            if mode == 'advanced':
+                should = _word_meets_advanced(word, annotate_unknown)
+            else:
+                should = _word_meets_threshold(word, hsk_threshold, annotate_unknown)
+            if should:
                 out.append(_ruby(word, _toned_pinyin_for(word)))
             else:
                 out.append(html.escape(word))

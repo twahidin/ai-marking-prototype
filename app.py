@@ -5160,7 +5160,7 @@ def teacher_create():
     # validate against the allowed values and zero it out for non-Chinese
     # subjects so we don't store accidental UI state.
     raw_pinyin = (request.form.get('pinyin_mode', 'off') or 'off').lower()
-    if raw_pinyin not in ('off', 'vocab', 'full'):
+    if raw_pinyin not in ('off', 'vocab', 'advanced', 'full'):
         raw_pinyin = 'off'
     from subjects import resolve_subject_key
     if resolve_subject_key(request.form.get('subject', '')) != 'chinese':
@@ -5291,7 +5291,7 @@ def teacher_edit(assignment_id):
     # pinyin_mode: validate, then zero-out for non-Chinese subjects.
     prior_pinyin = (asn.pinyin_mode or 'off')
     new_pinyin = (request.form.get('pinyin_mode', prior_pinyin) or 'off').lower()
-    if new_pinyin not in ('off', 'vocab', 'full'):
+    if new_pinyin not in ('off', 'vocab', 'advanced', 'full'):
         new_pinyin = 'off'
     from subjects import resolve_subject_key as _rsk
     if _rsk(new_subject) != 'chinese':
