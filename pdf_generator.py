@@ -290,10 +290,13 @@ _PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 
 % Custom \ruby{base}{annotation}: paints the annotation centred above
 % the base. The block is sized to the WIDER of base or annotation
-% PLUS 3pt of horizontal breathing room so adjacent rubies have a
-% visible gap between their pinyin labels. The annotation itself is
-% rendered with \rlap+\smash so it claims zero vertical space; line
-% height comes from the document-level \linespread.
+% PLUS 6pt of horizontal breathing room (3pt each side of the pinyin
+% once it's centred). This matters most in vocab / advanced modes,
+% where a ruby's wide pinyin sits next to a non-ruby Chinese character
+% that has zero padding of its own — without enough margin the pinyin
+% visually kisses the next char. The annotation itself is rendered
+% with \rlap+\smash so it claims zero vertical space; line height
+% comes from the document-level \linespread.
 \definecolor{rubypy}{HTML}{5B6CF0}
 \newsavebox{\rubytmpbox}
 \newsavebox{\rubypybox}
@@ -306,7 +309,7 @@ _PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
   \else
     \setlength{\rubymaxwd}{\wd\rubytmpbox}%
   \fi
-  \addtolength{\rubymaxwd}{3pt}% breathing room so neighbours don't kiss
+  \addtolength{\rubymaxwd}{6pt}% breathing room (3pt each side once centred)
   \makebox[\rubymaxwd][c]{%
     \rlap{%
       \smash{%
