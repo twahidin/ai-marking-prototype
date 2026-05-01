@@ -1,547 +1,589 @@
+"""
+PDF generation via LuaLaTeX — proper math typesetting (true fractions,
+matrices, etc.) with native CJK and Tamil through fontspec + Noto fonts.
+
+Compiles a generated .tex string with `lualatex` in a temp dir, returns
+the resulting PDF bytes. Public API:
+
+  - generate_report_pdf(result, subject='', app_title='AI Feedback Systems',
+                        assignment_name='') -> bytes
+  - generate_overview_pdf(student_results, subject='', app_title='...',
+                          assignment_name='') -> bytes
+
+Each function memoises its output in an in-process LRU cache keyed on the
+SHA-256 of (kind, result, subject, app_title, assignment_name). Repeat
+downloads of the same submission within a single container's lifetime
+return the cached PDF bytes in milliseconds. The cache is bounded
+(_PDF_CACHE_MAX entries) to keep RSS predictable; on overflow the
+least-recently-used entry is evicted.
+
+If lualatex is missing or the compile fails, RuntimeError is raised with
+the last 2KB of the LaTeX log so the failure is debuggable from the
+caller's exception path.
+"""
 import io
 import os
 import re
-import hashlib
-import logging
+import shutil
+import subprocess
 import tempfile
+import logging
+import hashlib
+import json as _json
+import threading
+from collections import OrderedDict
 from datetime import datetime, timezone
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import cm
-from reportlab.lib.colors import HexColor, black, white
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+from statistics import mean, median, stdev
 
 logger = logging.getLogger(__name__)
 
-# --- LaTeX → inline PNG rendering for PDF reports ---
-# Teacher / AI feedback may contain LaTeX in $...$ or $$...$$ delimiters. We
-# render each math segment to a small PNG via matplotlib.mathtext and embed it
-# inline in ReportLab Paragraphs via <img src="..."/>. Plain text segments are
-# XML-escaped and passed through unchanged. Matplotlib is lazy-imported so an
-# environment without it falls back to the old Unicode-approximation path.
+LUALATEX_BIN = shutil.which('lualatex') or 'lualatex'
+LUALATEX_TIMEOUT = 60  # seconds
 
-_MATH_TMPDIR = None
-_MATH_CACHE = {}  # math_tex -> filesystem path of rendered PNG
-_MATPLOTLIB_OK = None  # tri-state: None = unprobed, True/False = probed
-
-
-def _matplotlib_available():
-    global _MATPLOTLIB_OK
-    if _MATPLOTLIB_OK is not None:
-        return _MATPLOTLIB_OK
-    try:
-        import matplotlib  # noqa: F401
-        matplotlib.use('Agg')
-        from matplotlib import mathtext  # noqa: F401
-        _MATPLOTLIB_OK = True
-    except Exception as e:
-        logger.warning(f"matplotlib unavailable, PDF math falls back to Unicode: {e}")
-        _MATPLOTLIB_OK = False
-    return _MATPLOTLIB_OK
+# In-process PDF cache. OrderedDict gives O(1) LRU via move_to_end /
+# popitem(last=False). Capped at 200 entries — at our typical 80-150 KB
+# per PDF that's ~25-30 MB of RSS, which is small relative to gunicorn's
+# baseline. A redeploy resets the cache, which is also when rendering
+# code may have changed, so that's the right invalidation cadence too.
+_PDF_CACHE_MAX = 200
+_PDF_CACHE = OrderedDict()
+_PDF_CACHE_LOCK = threading.Lock()
 
 
-def _ensure_math_tmpdir():
-    global _MATH_TMPDIR
-    if _MATH_TMPDIR is None or not os.path.isdir(_MATH_TMPDIR):
-        _MATH_TMPDIR = tempfile.mkdtemp(prefix='aimark_math_')
-    return _MATH_TMPDIR
+def _cache_key(kind, *parts):
+    """SHA-256 over a sentinel-separated stream of stringified parts.
+    Sentinel is required so that ('ab', 'c') and ('a', 'bc') hash
+    differently. Dicts are JSON-encoded with sorted keys for stable
+    output across Python versions."""
+    h = hashlib.sha256(kind.encode('utf-8'))
+    for p in parts:
+        if isinstance(p, (dict, list)):
+            p = _json.dumps(p, sort_keys=True, default=str, ensure_ascii=False)
+        h.update(b'\x00')
+        h.update(('' if p is None else str(p)).encode('utf-8'))
+    return h.hexdigest()
 
 
-def _render_math_to_png(math_tex, fontsize=11):
-    """Render a single math snippet to a PNG and return its path. Caches per unique tex string."""
-    cached = _MATH_CACHE.get(math_tex)
-    if cached and os.path.isfile(cached):
-        return cached
-    if not _matplotlib_available():
-        return None
-    try:
-        from matplotlib import mathtext
-        tmpdir = _ensure_math_tmpdir()
-        h = hashlib.sha1(math_tex.encode('utf-8')).hexdigest()[:16]
-        path = os.path.join(tmpdir, f'eq_{h}.png')
-        # math_to_image needs the text wrapped in $...$ (it strips its own delimiters)
-        mathtext.math_to_image(f'${math_tex}$', path, dpi=200, prop=dict(size=fontsize))
-        _MATH_CACHE[math_tex] = path
-        return path
-    except Exception as e:
-        logger.warning(f"Failed to render LaTeX '{math_tex}': {e}")
-        return None
+def _cache_get(key):
+    with _PDF_CACHE_LOCK:
+        if key in _PDF_CACHE:
+            _PDF_CACHE.move_to_end(key)
+            return _PDF_CACHE[key]
+    return None
 
 
-def _split_text_and_math(text):
-    """Yield (kind, content) tuples where kind is 'text' or 'math'.
+def _cache_put(key, pdf_bytes):
+    with _PDF_CACHE_LOCK:
+        _PDF_CACHE[key] = pdf_bytes
+        _PDF_CACHE.move_to_end(key)
+        while len(_PDF_CACHE) > _PDF_CACHE_MAX:
+            _PDF_CACHE.popitem(last=False)
 
-    Handles both $...$ inline and $$...$$ display math. Unbalanced delimiters
-    fall through as text so bad input never crashes the PDF.
+
+# ---------------------------------------------------------------------------
+# Text → LaTeX with math preservation
+# ---------------------------------------------------------------------------
+#
+# AI-generated feedback is a mix of three things in one string:
+#   1. plain prose ("the student didn't show working...")
+#   2. LaTeX math wrapped in $...$ or $$...$$
+#   3. bare LaTeX-looking fragments without delimiters (e.g. "m s^{-2}",
+#      "t^3", "\frac{a}{b}", "\alpha")
+#
+# Strategy: extract math fragments to opaque placeholders FIRST so the
+# next pass (LaTeX-escape the prose) can't mangle them, then restore.
+
+def _tex_escape(s):
+    """Escape LaTeX special characters in plain prose. Order matters:
+    multi-char escapes are stashed under sentinel chars first so the
+    single-char brace escape doesn't mangle them, then restored.
     """
-    i, n = 0, len(text)
-    while i < n:
-        if text[i:i + 2] == '$$':
-            end = text.find('$$', i + 2)
-            if end == -1:
-                yield ('text', text[i:])
-                return
-            yield ('math', text[i + 2:end])
-            i = end + 2
-        elif text[i] == '$':
-            end = text.find('$', i + 1)
-            if end == -1:
-                yield ('text', text[i:])
-                return
-            yield ('math', text[i + 1:end])
-            i = end + 1
-        else:
-            nxt = text.find('$', i)
-            if nxt == -1:
-                yield ('text', text[i:])
-                return
-            yield ('text', text[i:nxt])
-            i = nxt
-
-
-def render_latex_for_pdf(text, fontsize=11, img_height=14):
-    """Return ReportLab Paragraph markup with inline math rendered as PNGs.
-
-    For fields known to contain LaTeX (feedback, improvement, overall_feedback,
-    student_answer, correct_answer). Falls back to clean_for_pdf's Unicode
-    approximation when matplotlib isn't available or a specific equation fails.
-    """
-    if not text:
+    if s is None:
         return ''
-    text = str(text)
-    # Fast path: no $ at all → defer to the Unicode-approximation helper.
-    if '$' not in text:
-        return clean_for_pdf(text)
-    if not _matplotlib_available():
-        return clean_for_pdf(text)
+    s = str(s)
+    s = s.replace('\\', '\x01BSL\x01')
+    s = s.replace('~', '\x01TLD\x01')
+    s = s.replace('^', '\x01CRT\x01')
+    s = s.replace('&', r'\&')
+    s = s.replace('%', r'\%')
+    s = s.replace('$', r'\$')
+    s = s.replace('#', r'\#')
+    s = s.replace('_', r'\_')
+    s = s.replace('{', r'\{')
+    s = s.replace('}', r'\}')
+    s = s.replace('\x01BSL\x01', r'\textbackslash{}')
+    s = s.replace('\x01TLD\x01', r'\textasciitilde{}')
+    s = s.replace('\x01CRT\x01', r'\textasciicircum{}')
+    return s
 
-    out = []
-    for kind, content in _split_text_and_math(text):
-        if kind == 'text':
-            # XML-escape for ReportLab; keep newlines as <br/>.
-            safe = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            safe = safe.replace('\n', '<br/>')
-            out.append(safe)
-        else:
-            png_path = _render_math_to_png(content, fontsize=fontsize)
-            if png_path:
-                # Embed as inline image. Height in points; ReportLab scales width proportionally.
-                out.append(f'<img src="{png_path}" valign="middle" height="{img_height}"/>')
-            else:
-                # Render failed — fall back to the Unicode-approximation for just this snippet.
-                out.append(clean_for_pdf(f'${content}$'))
-    return ''.join(out)
 
-# Colors
-PRIMARY_COLOR = HexColor('#667eea')
-SUCCESS_COLOR = HexColor('#28a745')
-DANGER_COLOR = HexColor('#dc3545')
-WARNING_COLOR = HexColor('#f0ad4e')
-TEXT_COLOR = HexColor('#333333')
-LIGHT_GRAY = HexColor('#f8f9fa')
-BORDER_COLOR = HexColor('#dee2e6')
+# Bare-math patterns we'll auto-wrap in \(...\). Order = priority.
+_BARE_MATH_PATTERNS = [
+    re.compile(r'\\frac\s*\{[^{}]*\}\s*\{[^{}]*\}'),
+    re.compile(r'\\sqrt\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}'),
+    re.compile(r'\b\w+(?:\^|_)(?:\{[^{}]*\}|-?\w+)'),
+    # Whitelist of bare LaTeX commands worth escaping into math mode. We
+    # don't auto-wrap *every* \word because false positives in prose
+    # ("the \emph article") would silently disappear.
+    re.compile(
+        r'\\(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|'
+        r'lambda|mu|nu|xi|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|'
+        r'Alpha|Beta|Gamma|Delta|Theta|Lambda|Pi|Sigma|Phi|Omega|'
+        r'le|leq|ge|geq|neq|ne|approx|equiv|sim|propto|infty|partial|'
+        r'sum|prod|int|to|rightarrow|leftarrow|Rightarrow|implies|iff|'
+        r'therefore|because|degree|circ|angle|perp|times|cdot|div|pm|mp|'
+        r'in|notin|subset|supset|cap|cup|forall|exists|emptyset|'
+        r'cdots|ldots|dots|prime|hbar|ell)\b'
+    ),
+]
 
-STATUS_COLORS = {
-    'correct': SUCCESS_COLOR,
-    'partially_correct': WARNING_COLOR,
-    'incorrect': DANGER_COLOR,
+
+def _tex_text(s):
+    """Convert AI text to LaTeX-safe content while preserving math.
+
+    Order:
+      1. extract $$...$$ blocks → \\[...\\] (display math)
+      2. extract $...$ blocks → \\(...\\) (inline math)
+      3. extract bare math patterns (\\frac, ^_, named cmds) → \\(...\\)
+      4. LaTeX-escape the remaining prose
+      5. restore all extracted math fragments
+    """
+    if not s:
+        return ''
+    s = str(s)
+    placeholders = []
+
+    def stash(payload):
+        placeholders.append(payload)
+        return f'\x02M{len(placeholders) - 1}M\x02'
+
+    s = re.sub(
+        r'\$\$(.+?)\$\$',
+        lambda m: stash(r'\[' + m.group(1).strip() + r'\]'),
+        s, flags=re.DOTALL,
+    )
+    s = re.sub(
+        r'(?<!\$)\$(?!\$)((?:[^$\n]|\n)+?)(?<!\$)\$(?!\$)',
+        lambda m: stash(r'\(' + m.group(1).strip() + r'\)'),
+        s,
+    )
+    for pat in _BARE_MATH_PATTERNS:
+        s = pat.sub(lambda m: stash(r'\(' + m.group(0) + r'\)'), s)
+
+    s = _tex_escape(s)
+    s = re.sub(r'\x02M(\d+)M\x02', lambda m: placeholders[int(m.group(1))], s)
+    return s
+
+
+def _tex_inline(s):
+    """LaTeX-escape a short single-line value (subject, name, etc.) that
+    won't carry math. Newlines collapse to spaces."""
+    if s is None:
+        return ''
+    return _tex_escape(str(s).replace('\n', ' ').replace('\r', ''))
+
+
+# ---------------------------------------------------------------------------
+# LaTeX preamble — shared by report and overview documents
+# ---------------------------------------------------------------------------
+
+_PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
+
+\usepackage[a4paper,top=1.5cm,bottom=1.8cm,left=1.5cm,right=1.5cm]{geometry}
+\usepackage{fontspec}
+\usepackage[table,svgnames,dvipsnames]{xcolor}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{colortbl}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{amsmath,amssymb}
+% mhchem mirrors the KaTeX mhchem extension loaded in base.html, so
+% \ce{H_2O} / \pu{1.5 mol/L} render identically in the browser and PDF.
+% Provided by texlive-science on Debian.
+\usepackage[version=4]{mhchem}
+\usepackage{titlesec}
+\usepackage{ulem}
+
+% Noto Sans as the main font — humanist sans-serif similar to Helvetica
+% in feel, reliably resolvable on Railway (apt-installed via fonts-noto
+% to /usr/share/fonts/truetype/noto/, where fontconfig + luaotfload
+% find it by name without DB-rebuild gymnastics). The luaotfload
+% fallback chain routes any non-Latin codepoint to Noto Sans CJK / Tamil
+% / Devanagari, so mixed-script content like "王晓明 — 50%" renders
+% correctly per-glyph without content detection.
+%
+% Local-dev fallback: macOS without fonts-noto apt-installed → use
+% Latin Modern Sans (bundled with every TeX Live install, always loads).
+% The multilang_fb registration is skipped on that path because Noto
+% Sans CJK SC isn't there to satisfy it — referencing missing fonts in
+% a fallback chain corrupts the main-font load.
+\IfFontExistsTF{Noto Sans}{%
+  \directlua{
+    luaotfload.add_fallback("multilang_fb", {
+      "Noto Sans CJK SC:script=hani;",
+      "Noto Sans Tamil:script=taml;",
+      "Noto Sans Devanagari:script=deva;",
+    })
+  }
+  \setmainfont{Noto Sans}[RawFeature={fallback=multilang_fb}]
+}{%
+  \setmainfont{Latin Modern Sans}
 }
 
-STATUS_LABELS = {
+% Brand palette (matches the previous PDF look)
+\definecolor{brandblue}{HTML}{4A54C4}
+\definecolor{brandgreen}{HTML}{28A745}
+\definecolor{brandorange}{HTML}{E68A00}
+\definecolor{brandred}{HTML}{DC3545}
+\definecolor{bggreen}{HTML}{F0FDF4}
+\definecolor{bgorange}{HTML}{FFF8E1}
+\definecolor{bggrey}{HTML}{F4F5FB}
+\definecolor{bordergrey}{HTML}{D6D6E0}
+\definecolor{textmuted}{HTML}{666666}
+
+% Tight spacing — explicit goal: minimise empty space between blocks.
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+\setlist{nosep,leftmargin=1.5em,topsep=2pt,partopsep=0pt}
+\titlespacing*{\section}{0pt}{8pt}{2pt}
+\titlespacing*{\subsection}{0pt}{6pt}{2pt}
+\titleformat{\section}{\bfseries\large\color{black}}{}{0pt}{}[\vspace{-2pt}{\color{bordergrey}\hrule height 0.4pt}]
+\titleformat{\subsection}{\bfseries\normalsize\color{black}}{}{0pt}{}
+
+\renewcommand{\arraystretch}{1.18}
+
+% Stacked label/value cell for the summary row. #1 = width fraction,
+% #2 = label, #3 = value. Used inside a fcolorbox-bordered minipage.
+\newcommand{\summarycell}[3]{%
+  \begin{minipage}[c]{#1\linewidth}\centering
+    {\small\color{textmuted} #2}\par\vspace{1pt}
+    {\Large\bfseries\color{brandblue} #3}
+  \end{minipage}%
+}
+"""
+
+
+# ---------------------------------------------------------------------------
+# Body builders
+# ---------------------------------------------------------------------------
+
+_STATUS_LABEL = {
     'correct': 'Correct',
-    'partially_correct': 'Partially Correct',
+    'partially_correct': 'Partial',
     'incorrect': 'Incorrect',
 }
+_STATUS_COLOR = {
+    'correct': 'brandgreen',
+    'partially_correct': 'brandorange',
+    'incorrect': 'brandred',
+}
 
 
-def clean_for_pdf(text):
-    """Convert LaTeX math to readable Unicode and XML-escape for ReportLab."""
-    if not text:
-        return ''
-    text = str(text)
-
-    # Remove $$ and $ delimiters
-    text = text.replace('$$', '')
-    text = re.sub(r'\$([^$]+)\$', r'\1', text)
-    text = text.replace('$', '')
-
-    # Common LaTeX -> Unicode
-    replacements = {
-        '\\frac': lambda m: f'({m.group(1)})/({m.group(2)})',
-        '\\times': '\u00d7', '\\cdot': '\u00b7', '\\div': '\u00f7',
-        '\\pm': '\u00b1', '\\leq': '\u2264', '\\le': '\u2264',
-        '\\geq': '\u2265', '\\ge': '\u2265', '\\neq': '\u2260',
-        '\\approx': '\u2248', '\\infty': '\u221e', '\\pi': '\u03c0',
-        '\\theta': '\u03b8', '\\alpha': '\u03b1', '\\beta': '\u03b2',
-        '\\gamma': '\u03b3', '\\delta': '\u03b4', '\\sigma': '\u03c3',
-        '\\mu': '\u03bc', '\\therefore': '\u2234', '\\rightarrow': '\u2192',
-        '\\to': '\u2192', '\\Rightarrow': '\u21d2', '\\implies': '\u21d2',
-        '\\sum': '\u03a3', '\\int': '\u222b', '\\sqrt': '\u221a',
-        '\\degree': '\u00b0', '\\circ': '\u00b0', '\\angle': '\u2220',
-        '\\triangle': '\u25b3', '\\perp': '\u22a5',
-    }
-
-    # Handle \\frac{a}{b} specially
-    text = re.sub(r'\\frac\{([^}]*)\}\{([^}]*)\}', r'(\1)/(\2)', text)
-    text = re.sub(r'\\sqrt\{([^}]*)\}', '\u221a(\\1)', text)
-
-    for cmd, repl in replacements.items():
-        if not callable(repl):
-            text = text.replace(cmd, repl)
-
-    # Remove remaining backslash commands
-    text = re.sub(r'\\[a-zA-Z]+', '', text)
-    # Remove curly braces
-    text = text.replace('{', '').replace('}', '')
-
-    # XML-escape for ReportLab
-    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-
-    return text
-
-
-def get_styles():
-    styles = getSampleStyleSheet()
-
-    styles.add(ParagraphStyle(
-        name='Title_Custom', parent=styles['Title'],
-        fontSize=22, textColor=PRIMARY_COLOR, spaceAfter=20,
-        alignment=TA_CENTER, fontName='Helvetica-Bold'
-    ))
-    styles.add(ParagraphStyle(
-        name='Heading_Custom', parent=styles['Heading1'],
-        fontSize=14, textColor=PRIMARY_COLOR, spaceBefore=15,
-        spaceAfter=10, fontName='Helvetica-Bold'
-    ))
-    styles.add(ParagraphStyle(
-        name='Body_Custom', parent=styles['Normal'],
-        fontSize=10, textColor=TEXT_COLOR, alignment=TA_JUSTIFY,
-        spaceAfter=6, leading=14
-    ))
-    styles.add(ParagraphStyle(
-        name='TableCell', parent=styles['Normal'],
-        fontSize=9, textColor=TEXT_COLOR, leading=12
-    ))
-    styles.add(ParagraphStyle(
-        name='TableHeader', parent=styles['Normal'],
-        fontSize=9, textColor=white, fontName='Helvetica-Bold',
-        alignment=TA_CENTER
-    ))
-    styles.add(ParagraphStyle(
-        name='Footer', parent=styles['Normal'],
-        fontSize=8, textColor=HexColor('#888888'), alignment=TA_CENTER
-    ))
-
-    return styles
-
-
-def generate_report_pdf(result, subject='', app_title='AI Feedback Systems'):
-    """
-    Generate a PDF feedback report from marking results.
-
-    Args:
-        result: Dict from mark_script() with questions, overall_feedback, etc.
-        subject: Subject name for the header
-        app_title: Application title for the report header
-
-    Returns:
-        PDF content as bytes
-    """
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer, pagesize=A4,
-        rightMargin=1.5 * cm, leftMargin=1.5 * cm,
-        topMargin=1.5 * cm, bottomMargin=1.5 * cm
+def _build_info_grid(rows):
+    """Return TeX for a 4-column key/value grid (label, value, label, value).
+    `rows` is a list of (label, value) tuples; we pair them two per row."""
+    cells = []
+    pairs = list(rows)
+    while pairs:
+        l1, v1 = pairs.pop(0)
+        if pairs:
+            l2, v2 = pairs.pop(0)
+        else:
+            l2, v2 = '', ''
+        cells.append(f'\\textbf{{{_tex_inline(l1)}:}} & {_tex_inline(v1)} & '
+                     f'\\textbf{{{_tex_inline(l2)}{":" if l2 else ""}}} & {_tex_inline(v2)} \\\\')
+    body = '\n'.join(cells)
+    return (
+        r'\noindent\rowcolors{1}{bggrey}{bggrey}' + '\n'
+        r'\begin{tabularx}{\linewidth}{@{\hspace{6pt}}>{\bfseries}p{2.4cm} X >{\bfseries}p{2.0cm} X@{\hspace{6pt}}}' + '\n'
+        + body + '\n'
+        r'\end{tabularx}'
     )
 
-    styles = get_styles()
-    story = []
 
-    # Title
-    report_title = f"{app_title} Report" if app_title else "AI Marking Report"
-    story.append(Paragraph(report_title, styles['Title_Custom']))
-    story.append(Spacer(1, 5))
+def _build_summary_row(items):
+    """Summary box with N centered stacked cells.
 
-    # Info box
-    cell = styles['TableCell']
-    bold_cell = ParagraphStyle('InfoBold', parent=cell, fontName='Helvetica-Bold')
+    Switched from tcolorbox to \\fcolorbox so the preamble can drop the
+    tcolorbox package (~300-500ms shaved off every compile)."""
+    n = max(1, len(items))
+    width = round(0.93 / n, 3)
+    cells = []
+    for lbl, val in items:
+        cells.append(rf'\summarycell{{{width}}}{{{_tex_inline(lbl)}}}{{{_tex_inline(val)}}}')
+    body = r'\hfill '.join(cells)
+    return (
+        r'\par\noindent' + '\n'
+        r'{\setlength{\fboxsep}{8pt}\setlength{\fboxrule}{1pt}%' + '\n'
+        r'\fcolorbox{brandblue}{white}{%' + '\n'
+        r'\begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule}' + '\n'
+        + body + '\n'
+        r'\end{minipage}}}\par' + '\n'
+    )
 
-    now = datetime.now(timezone.utc).strftime('%d %B %Y, %H:%M UTC')
-    provider_label = result.get('provider_label', result.get('provider', 'AI'))
 
-    info_data = [
-        [Paragraph('Subject:', bold_cell), Paragraph(clean_for_pdf(subject or 'General'), cell),
-         Paragraph('Date:', bold_cell), Paragraph(now, cell)],
-        [Paragraph('AI Provider:', bold_cell), Paragraph(clean_for_pdf(provider_label), cell),
-         Paragraph('', bold_cell), Paragraph('', cell)],
-    ]
+def _build_qcard(label, status_key, marks_text, rows):
+    """One per-question / per-criterion card, matching the old PDF layout:
 
-    info_table = Table(info_data, colWidths=[2.5 * cm, 5.5 * cm, 2.5 * cm, 5.5 * cm])
-    info_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), LIGHT_GRAY),
-        ('BOX', (0, 0), (-1, -1), 1, BORDER_COLOR),
-        ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
-        ('PADDING', (0, 0), (-1, -1), 6),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-    ]))
-    story.append(info_table)
-    story.append(Spacer(1, 15))
+      [ brand-blue band: label                    | status colour: status pill ]
+      | Student Answer (bggrey, bold)             | <answer text>             |
+      |-------------------------------------------+---------------------------|
+      | Correct Answer (bggrey, bold)             | ...                       |
+      |-------------------------------------------+---------------------------|
+      | Feedback (bggrey, bold)                   | ...                       |
+      |-------------------------------------------+---------------------------|
+      | Improvement (bggrey, bold)                | ...                       |
 
-    # Summary bar
-    questions = result.get('questions', [])
+    Header is a separate (no-border) tabular with a 70/30 split to keep
+    the pill comfortably sized regardless of label length. Body is a
+    tabularx with grey \\hline separators between rows and \\arrayrulecolor
+    set to bordergrey for the outer border too. No tcolorbox wrapper —
+    the table's own borders give us the card outline."""
+    color = _STATUS_COLOR.get(status_key, 'brandred')
+    status_label = _STATUS_LABEL.get(status_key, 'Incorrect')
+    pill_text = status_label + (marks_text or '')
+
+    body_rows = []
+    for k, v in rows:
+        if v is None or v == '':
+            continue
+        body_rows.append(rf'{_tex_inline(k)} & {_tex_text(v)} \\')
+    if not body_rows:
+        body = r'\multicolumn{2}{|l|}{\itshape (no detail)} \\' + '\n' + r'\hline'
+    else:
+        body = ('\n' + r'\hline' + '\n').join(body_rows) + '\n' + r'\hline'
+
+    # Labels: regular weight on bggrey background — the column shading
+    # provides enough visual separation without bold.
+    return (
+        r'\par\noindent' + '\n'
+        r'{\setlength{\fboxsep}{6pt}%' + '\n'
+        r'\colorbox{brandblue}{%' + '\n'
+        r'  \rule[-3pt]{0pt}{16pt}\bfseries\color{white}%' + '\n'
+        rf'  \makebox[\dimexpr 0.70\linewidth-2\fboxsep][l]{{{_tex_inline(label)}}}%' + '\n'
+        r'}'
+        rf'\colorbox{{{color}}}{{%' + '\n'
+        r'  \rule[-3pt]{0pt}{16pt}\bfseries\color{white}%' + '\n'
+        rf'  \makebox[\dimexpr 0.30\linewidth-2\fboxsep][c]{{{_tex_inline(pill_text)}}}%' + '\n'
+        r'}}\par\nointerlineskip' + '\n'
+        r'{\arrayrulecolor{bordergrey}\setlength{\arrayrulewidth}{0.4pt}%' + '\n'
+        r'\renewcommand{\arraystretch}{1.15}%' + '\n'
+        r'\begin{tabularx}{\linewidth}{|>{\columncolor{bggrey}}p{3cm}|X|}' + '\n'
+        + body + '\n'
+        r'\end{tabularx}}' + '\n'
+        r'\vspace{6pt}' + '\n'
+    )
+
+
+# ---------------------------------------------------------------------------
+# generate_report_pdf
+# ---------------------------------------------------------------------------
+
+def generate_report_pdf(result, subject='', app_title='AI Feedback Systems',
+                        assignment_name=''):
+    """Build a single-submission feedback report and return its PDF bytes.
+    Memoised on (kind, result, subject, app_title, assignment_name)."""
+    cache_key = _cache_key('report', result, subject, app_title, assignment_name)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    pdf = _generate_report_pdf_impl(result, subject, app_title, assignment_name)
+    _cache_put(cache_key, pdf)
+    return pdf
+
+
+def _generate_report_pdf_impl(result, subject, app_title, assignment_name):
+    questions = result.get('questions', []) or []
+    is_rubrics = result.get('assign_type') == 'rubrics'
     has_marks = any(q.get('marks_awarded') is not None for q in questions)
 
-    if has_marks:
-        total_awarded = sum((q.get('marks_awarded') or 0) for q in questions)
-        total_possible = sum((q.get('marks_total') or 0) for q in questions)
-        pct = round(total_awarded / total_possible * 100) if total_possible > 0 else 0
+    now = datetime.now(timezone.utc).strftime('%d %B %Y, %H:%M UTC')
 
-        summary_data = [[
-            Paragraph(f"<b>Score: {total_awarded} / {total_possible}</b>", styles['TableCell']),
-            Paragraph(f"<b>{pct}%</b>", styles['TableCell']),
-            Paragraph(f"<b>Questions: {len(questions)}</b>", styles['TableCell']),
-        ]]
-        summary_table = Table(summary_data, colWidths=[5.33 * cm, 5.33 * cm, 5.33 * cm])
-        summary_table.setStyle(TableStyle([
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('PADDING', (0, 0), (-1, -1), 10),
-            ('BOX', (0, 0), (-1, -1), 2, PRIMARY_COLOR),
-            ('TEXTCOLOR', (0, 0), (-1, -1), PRIMARY_COLOR),
-            ('BACKGROUND', (0, 0), (-1, -1), white),
-        ]))
+    # Header info grid: Subject + Date on row 1, Assignment on row 2.
+    info = _build_info_grid([
+        ('Subject', subject or 'General'),
+        ('Date', now),
+        ('Assignment', assignment_name or '—'),
+    ])
+
+    # Summary row
+    if has_marks:
+        ta = sum((q.get('marks_awarded') or 0) for q in questions)
+        tp = sum((q.get('marks_total') or 0) for q in questions)
+        pct = round(ta / tp * 100) if tp > 0 else 0
+        summary = _build_summary_row([
+            ('Score', f'{ta} / {tp}'),
+            # Pass raw '%'; _tex_inline escapes it once into \%. Pre-escaping
+            # here would feed '\%' into _tex_inline, which would then escape
+            # the backslash too and emit "\textbackslash{}\%".
+            ('Percentage', f'{pct}%'),
+            ('Questions', str(len(questions))),
+        ])
     else:
         counts = {'correct': 0, 'partially_correct': 0, 'incorrect': 0}
         for q in questions:
-            status = q.get('status', 'incorrect')
-            if status in counts:
-                counts[status] += 1
+            k = q.get('status', 'incorrect')
+            if k in counts:
+                counts[k] += 1
+        summary = _build_summary_row([
+            ('Correct', str(counts['correct'])),
+            ('Partial', str(counts['partially_correct'])),
+            ('Incorrect', str(counts['incorrect'])),
+            ('Total', str(len(questions))),
+        ])
 
-        summary_data = [[
-            Paragraph(f"<b>Correct: {counts['correct']}</b>", styles['TableCell']),
-            Paragraph(f"<b>Partially Correct: {counts['partially_correct']}</b>", styles['TableCell']),
-            Paragraph(f"<b>Incorrect: {counts['incorrect']}</b>", styles['TableCell']),
-            Paragraph(f"<b>Total: {len(questions)}</b>", styles['TableCell']),
-        ]]
-        summary_table = Table(summary_data, colWidths=[4 * cm, 4 * cm, 4 * cm, 4 * cm])
-        summary_table.setStyle(TableStyle([
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('PADDING', (0, 0), (-1, -1), 10),
-            ('BOX', (0, 0), (-1, -1), 2, PRIMARY_COLOR),
-            ('TEXTCOLOR', (0, 0), (0, 0), SUCCESS_COLOR),
-            ('TEXTCOLOR', (1, 0), (1, 0), WARNING_COLOR),
-            ('TEXTCOLOR', (2, 0), (2, 0), DANGER_COLOR),
-            ('TEXTCOLOR', (3, 0), (3, 0), PRIMARY_COLOR),
-            ('BACKGROUND', (0, 0), (-1, -1), white),
-        ]))
+    # Banners — tabular with a 4pt coloured left rule + tinted background.
+    # Replaces the old tcolorbox-based wellbanner / gapbanner so we can
+    # drop tcolorbox from the preamble (~300-500ms saved per compile).
+    banners = []
 
-    story.append(summary_table)
-    story.append(Spacer(1, 20))
+    def _banner(rule_color, bg_color, prefix_tex, body_text):
+        return (
+            r'\par\noindent' + '\n'
+            rf'{{\arrayrulecolor{{{rule_color}}}\setlength{{\arrayrulewidth}}{{4pt}}%' + '\n'
+            r'\renewcommand{\arraystretch}{1.15}%' + '\n'
+            r'\begin{tabular}{|@{\hspace{8pt}}p{\dimexpr\linewidth-4pt-2\tabcolsep-8pt}@{}}' + '\n'
+            rf'\rowcolor{{{bg_color}}} {prefix_tex} ' + _tex_text(body_text) + r' \\' + '\n'
+            r'\end{tabular}}\par' + '\n'
+        )
 
-    # Per-question/criterion details
-    is_rubrics = result.get('assign_type') == 'rubrics'
-    section_title = "Rubric Criteria Feedback" if is_rubrics else "Question-by-Question Feedback"
-    item_label = "Criterion" if is_rubrics else "Question"
-    ans_label = "Assessment" if is_rubrics else "Student Answer"
-    ref_label = "Band Descriptor" if is_rubrics else "Correct Answer"
+    if result.get('well_done'):
+        banners.append(_banner(
+            'brandgreen', 'bggreen',
+            r'\textbf{$\checkmark$ Well done:}',
+            result['well_done'],
+        ))
+    if result.get('main_gap'):
+        banners.append(_banner(
+            'brandorange', 'bgorange',
+            r'\textbf{$\rightarrow$ Main gap:}',
+            result['main_gap'],
+        ))
 
-    story.append(Paragraph(section_title, styles['Heading_Custom']))
-    story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
-    story.append(Spacer(1, 10))
+    # Per-question cards
+    section_title = 'Rubric Criteria Feedback' if is_rubrics else 'Question-by-Question Feedback'
+    item_label = 'Criterion' if is_rubrics else 'Question'
+    ans_label = 'Assessment' if is_rubrics else 'Student Answer'
+    ref_label = 'Band Descriptor' if is_rubrics else 'Correct Answer'
 
+    cards = []
     for q in questions:
-        q_num = q.get('question_num', '?')
         status = q.get('status', 'incorrect')
-        status_label = STATUS_LABELS.get(status, status)
-        status_color = STATUS_COLORS.get(status, DANGER_COLOR)
-
-        # Question header with status (and marks if available)
         marks_text = ''
         if q.get('marks_awarded') is not None:
-            mt_val = q.get('marks_total')
-            marks_text = f" ({q['marks_awarded']}/{mt_val if mt_val is not None else '?'})"
-        # Use criterion_name if available (rubrics mode)
+            mt = q.get('marks_total')
+            mt_str = str(mt) if mt is not None else '?'
+            marks_text = f' ({q["marks_awarded"]}/{mt_str})'
+
         criterion_name = q.get('criterion_name', '')
         band_info = q.get('band', '')
         if is_rubrics and criterion_name:
-            header_left = f"<b>{clean_for_pdf(criterion_name)}</b>"
+            label = criterion_name
             if band_info:
-                header_left += f" — {clean_for_pdf(band_info)}"
+                label += f' — {band_info}'
         else:
-            header_left = f"<b>{item_label} {q_num}</b>"
+            label = f'{item_label} {q.get("question_num", "?")}'
 
-        header_data = [[
-            Paragraph(header_left, ParagraphStyle('QH', parent=styles['TableCell'], textColor=white)),
-            Paragraph(f"<b>{status_label}{marks_text}</b>", ParagraphStyle('QS', parent=styles['TableCell'], textColor=white, alignment=TA_CENTER)),
-        ]]
-        header_table = Table(header_data, colWidths=[12 * cm, 4 * cm])
-        header_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (0, 0), PRIMARY_COLOR),
-            ('BACKGROUND', (1, 0), (1, 0), status_color),
-            ('PADDING', (0, 0), (-1, -1), 8),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ]))
-        story.append(header_table)
+        rows = [
+            (ans_label, q.get('student_answer', 'N/A')),
+            (ref_label, q.get('correct_answer', 'N/A')),
+        ]
+        # Suppress Feedback / Improvement on correct questions —
+        # matches master's behaviour and avoids cluttering the PDF
+        # with "Excellent work!"-type filler that the AI sometimes
+        # emits even when nothing actionable is needed. Partial /
+        # incorrect questions still get both rows whenever the AI
+        # provided text; _build_qcard's per-row empty check then
+        # drops any that came back blank.
+        if status != 'correct':
+            rows.append(('Feedback', q.get('feedback', '')))
+            rows.append(('Improvement', q.get('improvement', '')))
+        # `correction_prompt` ("Try this") intentionally not rendered in
+        # the PDF — kept on the data shape but no row in the report.
+        cards.append(_build_qcard(label, status, marks_text, rows))
 
-        # Details
-        detail_rows = []
-
-        student_ans = render_latex_for_pdf(q.get('student_answer', 'N/A'))
-        correct_ans = render_latex_for_pdf(q.get('correct_answer', 'N/A'))
-        feedback = render_latex_for_pdf(q.get('feedback', ''))
-        improvement = render_latex_for_pdf(q.get('improvement', ''))
-
-        detail_rows.append([
-            Paragraph(f'<b>{ans_label}</b>', bold_cell),
-            Paragraph(student_ans, cell)
-        ])
-        detail_rows.append([
-            Paragraph(f'<b>{ref_label}</b>', bold_cell),
-            Paragraph(correct_ans, cell)
-        ])
-        if feedback:
-            detail_rows.append([
-                Paragraph('<b>Feedback</b>', bold_cell),
-                Paragraph(feedback, cell)
-            ])
-        if improvement:
-            detail_rows.append([
-                Paragraph('<b>Improvement</b>', bold_cell),
-                Paragraph(improvement, cell)
-            ])
-
-        detail_table = Table(detail_rows, colWidths=[3.5 * cm, 12.5 * cm])
-        detail_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, -1), LIGHT_GRAY),
-            ('BOX', (0, 0), (-1, -1), 1, BORDER_COLOR),
-            ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
-            ('PADDING', (0, 0), (-1, -1), 6),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ]))
-        story.append(detail_table)
-        story.append(Spacer(1, 12))
-
-    # Line-by-line errors (rubrics mode)
-    errors = result.get('errors', [])
+    # Errors table (rubrics only). ulem is loaded in the preamble; we just
+    # use \sout here to strike through the original text.
+    errors = result.get('errors') or []
+    err_block = ''
     if errors:
-        story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
-        story.append(Spacer(1, 10))
-        story.append(Paragraph(f"Line-by-Line Errors ({len(errors)})", styles['Heading_Custom']))
-        story.append(Spacer(1, 6))
-
-        error_header = [[
-            Paragraph('<b>Type</b>', styles['TableHeader']),
-            Paragraph('<b>Location</b>', styles['TableHeader']),
-            Paragraph('<b>Original</b>', styles['TableHeader']),
-            Paragraph('<b>Correction</b>', styles['TableHeader']),
-        ]]
-        error_rows = error_header
+        rows_tex = []
         for err in errors:
-            error_rows.append([
-                Paragraph(clean_for_pdf(err.get('type', '')).upper(), cell),
-                Paragraph(clean_for_pdf(err.get('location', '')), cell),
-                Paragraph(clean_for_pdf(err.get('original', '')), cell),
-                Paragraph(clean_for_pdf(err.get('correction', '')), cell),
-            ])
+            etype = _tex_inline(err.get('type', '')).upper()
+            loc = _tex_inline(err.get('location', ''))
+            orig = r'\sout{' + _tex_text(err.get('original', '')) + r'}'
+            corr = r'\textcolor{brandgreen}{' + _tex_text(err.get('correction', '')) + r'}'
+            rows_tex.append(rf'{etype} & {loc} & {orig} & {corr} \\')
+        err_block = (
+            rf'\section*{{Line-by-Line Errors ({len(errors)})}}' + '\n'
+            r'\rowcolors{2}{bggrey}{white}' + '\n'
+            r'\begin{tabularx}{\linewidth}{@{}>{\bfseries\small}p{2cm} >{\small}p{2.5cm} >{\small}X >{\small}X@{}}' + '\n'
+            r'\rowcolor{brandblue}\color{white}\textbf{Type} & '
+            r'\color{white}\textbf{Location} & '
+            r'\color{white}\textbf{Original} & '
+            r'\color{white}\textbf{Correction} \\' + '\n'
+            + '\n'.join(rows_tex) + '\n'
+            r'\end{tabularx}'
+        )
 
-        error_table = Table(error_rows, colWidths=[2.5 * cm, 3.5 * cm, 5 * cm, 5 * cm])
-        error_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), PRIMARY_COLOR),
-            ('TEXTCOLOR', (0, 0), (-1, 0), white),
-            ('BACKGROUND', (0, 1), (-1, -1), LIGHT_GRAY),
-            ('BOX', (0, 0), (-1, -1), 1, BORDER_COLOR),
-            ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
-            ('PADDING', (0, 0), (-1, -1), 6),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ]))
-        story.append(error_table)
-        story.append(Spacer(1, 15))
-
-    # Overall feedback
-    story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
-    story.append(Spacer(1, 10))
-    story.append(Paragraph("Overall Feedback", styles['Heading_Custom']))
-
-    overall = render_latex_for_pdf(result.get('overall_feedback', 'No overall feedback provided.'))
-    story.append(Paragraph(overall, styles['Body_Custom']))
-    story.append(Spacer(1, 15))
-
-    # Recommended actions
-    actions = result.get('recommended_actions', [])
+    # Overall + recommended actions
+    overall_tex = _tex_text(result.get('overall_feedback', 'No overall feedback provided.'))
+    actions = result.get('recommended_actions') or []
+    actions_block = ''
     if actions:
-        story.append(Paragraph("Recommended Actions", styles['Heading_Custom']))
-        for i, action in enumerate(actions, 1):
-            story.append(Paragraph(f"{i}. {render_latex_for_pdf(action)}", styles['Body_Custom']))
-        story.append(Spacer(1, 15))
+        items = '\n'.join(rf'\item {_tex_text(a)}' for a in actions)
+        actions_block = (
+            r'\subsection*{Recommended Actions}' + '\n'
+            r'\begin{enumerate}' + '\n' + items + '\n' + r'\end{enumerate}'
+        )
 
-    # Footer
-    story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
-    story.append(Spacer(1, 10))
-    story.append(Paragraph("Generated by AI Marking Demo", styles['Footer']))
+    # No top title and no bottom footer — the PDF starts directly with
+    # the info grid (Subject / Date / Assignment) per current design.
+    body = '\n'.join([
+        info,
+        summary,
+        '\n'.join(banners),
+        rf'\section*{{{section_title}}}',
+        '\n'.join(cards),
+        err_block,
+        r'\section*{Overall Feedback}',
+        overall_tex,
+        actions_block,
+    ])
 
-    doc.build(story)
-    return buffer.getvalue()
+    tex = _PREAMBLE + r'\begin{document}' + '\n' + body + '\n' + r'\end{document}' + '\n'
+    return _compile_tex_to_pdf(tex, jobname='report')
 
 
-def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Systems'):
-    """
-    Generate a class overview PDF with item analysis.
+# ---------------------------------------------------------------------------
+# generate_overview_pdf
+# ---------------------------------------------------------------------------
 
-    Args:
-        student_results: List of dicts with {name, index, result} where result
-                        is the marking result dict (with questions, etc.)
-        subject: Subject name for the header
-        app_title: Application title for the report header
-
-    Returns:
-        PDF content as bytes
-    """
-    from statistics import mean, median, stdev
-
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer, pagesize=A4,
-        rightMargin=1.5 * cm, leftMargin=1.5 * cm,
-        topMargin=1.5 * cm, bottomMargin=1.5 * cm
+def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Systems',
+                          assignment_name=''):
+    """Class-overview PDF. Memoised on the result + assignment metadata."""
+    cache_key = _cache_key(
+        'overview',
+        # student_results already carries unique submission ids + result
+        # blobs; encoding the whole list is cheap relative to a compile.
+        student_results, subject, app_title, assignment_name,
     )
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    pdf = _generate_overview_pdf_impl(student_results, subject, app_title, assignment_name)
+    _cache_put(cache_key, pdf)
+    return pdf
 
-    styles = get_styles()
-    story = []
 
-    # Title
-    story.append(Paragraph(f"{app_title} — Class Overview &amp; Item Analysis", styles['Title_Custom']))
-    story.append(Spacer(1, 5))
+def _generate_overview_pdf_impl(student_results, subject, app_title, assignment_name):
+    valid = [sr for sr in student_results if sr.get('result') and not sr['result'].get('error')]
 
-    cell = styles['TableCell']
-    bold_cell = ParagraphStyle('InfoBold', parent=cell, fontName='Helvetica-Bold')
-
-    now = datetime.now(timezone.utc).strftime('%d %B %Y, %H:%M UTC')
-    info_data = [
-        [Paragraph('Subject:', bold_cell), Paragraph(clean_for_pdf(subject or 'General'), cell),
-         Paragraph('Date:', bold_cell), Paragraph(now, cell)],
-        [Paragraph('Total Students:', bold_cell), Paragraph(str(len(student_results)), cell),
-         Paragraph('', bold_cell), Paragraph('', cell)],
-    ]
-    info_table = Table(info_data, colWidths=[2.5 * cm, 5.5 * cm, 2.5 * cm, 5.5 * cm])
-    info_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), LIGHT_GRAY),
-        ('BOX', (0, 0), (-1, -1), 1, BORDER_COLOR),
-        ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
-        ('PADDING', (0, 0), (-1, -1), 6),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-    ]))
-    story.append(info_table)
-    story.append(Spacer(1, 20))
-
-    # --- Collect scores ---
-    valid_results = [sr for sr in student_results if sr.get('result') and not sr['result'].get('error')]
-    scores = []  # (name, index, total_awarded, total_possible, pct)
+    scores = []
     has_marks = False
-
-    for sr in valid_results:
-        questions = sr['result'].get('questions', [])
+    for sr in valid:
+        questions = sr['result'].get('questions', []) or []
         if any(q.get('marks_awarded') is not None for q in questions):
             has_marks = True
             ta = sum((q.get('marks_awarded') or 0) for q in questions)
@@ -556,11 +598,16 @@ def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Sy
             scores.append({'name': sr.get('name', ''), 'index': sr.get('index', ''),
                            'awarded': correct, 'possible': total, 'pct': pct})
 
-    # --- Class Summary ---
-    story.append(Paragraph("Class Summary", styles['Heading_Custom']))
-    story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
-    story.append(Spacer(1, 10))
+    now = datetime.now(timezone.utc).strftime('%d %B %Y, %H:%M UTC')
+    info = _build_info_grid([
+        ('Subject', subject or 'General'),
+        ('Date', now),
+        ('Assignment', assignment_name or '—'),
+        ('Total Students', str(len(student_results))),
+    ])
 
+    # Class summary (mean / median / etc.)
+    summary_block = ''
     if scores:
         pcts = [s['pct'] for s in scores]
         avg_pct = round(mean(pcts), 1)
@@ -571,80 +618,54 @@ def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Sy
         pass_count = sum(1 for p in pcts if p >= 50)
         pass_rate = round(pass_count / len(pcts) * 100)
 
-        stat_header = ['Mean', 'Median', 'Highest', 'Lowest', 'Std Dev', 'Pass Rate']
-        stat_values = [f'{avg_pct}%', f'{med_pct}%', f'{high_pct}%', f'{low_pct}%',
-                       f'{std_pct}%', f'{pass_rate}% ({pass_count}/{len(scores)})']
+        stat_rows = (
+            r'\rowcolor{brandblue}\color{white}\textbf{Mean} & '
+            r'\color{white}\textbf{Median} & '
+            r'\color{white}\textbf{Highest} & '
+            r'\color{white}\textbf{Lowest} & '
+            r'\color{white}\textbf{Std Dev} & '
+            r'\color{white}\textbf{Pass Rate} \\'
+            '\n'
+            rf'{avg_pct}\% & {med_pct}\% & {high_pct}\% & {low_pct}\% & {std_pct}\% & '
+            rf'{pass_rate}\% ({pass_count}/{len(scores)}) \\'
+        )
+        summary_block = (
+            r'\section*{Class Summary}' + '\n'
+            r'\begin{tabularx}{\linewidth}{@{}>{\centering\arraybackslash}X >{\centering\arraybackslash}X >{\centering\arraybackslash}X >{\centering\arraybackslash}X >{\centering\arraybackslash}X >{\centering\arraybackslash}X@{}}' + '\n'
+            + stat_rows + '\n'
+            r'\end{tabularx}'
+        )
 
-        stat_data = [
-            [Paragraph(f'<b>{h}</b>', styles['TableHeader']) for h in stat_header],
-            [Paragraph(v, ParagraphStyle('StatVal', parent=cell, alignment=TA_CENTER)) for v in stat_values],
-        ]
-        stat_table = Table(stat_data, colWidths=[2.67 * cm] * 6)
-        stat_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), PRIMARY_COLOR),
-            ('BACKGROUND', (0, 1), (-1, 1), white),
-            ('BOX', (0, 0), (-1, -1), 1, BORDER_COLOR),
-            ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
-            ('PADDING', (0, 0), (-1, -1), 8),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ]))
-        story.append(stat_table)
-        story.append(Spacer(1, 10))
-
-        # Score distribution bands
-        bands = [('0-24%', 0, 24), ('25-49%', 25, 49), ('50-74%', 50, 74), ('75-100%', 75, 100)]
-        band_counts = []
-        for label, lo, hi in bands:
-            count = sum(1 for p in pcts if lo <= p <= hi)
-            band_counts.append(count)
-
-        dist_data = [
-            [Paragraph(f'<b>{b[0]}</b>', styles['TableHeader']) for b in bands],
-            [Paragraph(str(c), ParagraphStyle('DistVal', parent=cell, alignment=TA_CENTER))
-             for c in band_counts],
-        ]
-        story.append(Spacer(1, 5))
-        story.append(Paragraph("Score Distribution", ParagraphStyle(
-            'DistTitle', parent=styles['Body_Custom'], fontName='Helvetica-Bold', fontSize=11)))
-        dist_table = Table(dist_data, colWidths=[4 * cm] * 4)
-        dist_colors = [DANGER_COLOR, WARNING_COLOR, HexColor('#5cb85c'), SUCCESS_COLOR]
-        dist_style = [
-            ('BOX', (0, 0), (-1, -1), 1, BORDER_COLOR),
-            ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
-            ('PADDING', (0, 0), (-1, -1), 8),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('BACKGROUND', (0, 1), (-1, 1), white),
-        ]
-        for i, color in enumerate(dist_colors):
-            dist_style.append(('BACKGROUND', (i, 0), (i, 0), color))
-        dist_table.setStyle(TableStyle(dist_style))
-        story.append(dist_table)
+        # Score distribution bands. The labels use \% (escaped percent)
+        # because any unescaped % in LaTeX starts a comment that eats the
+        # rest of the line — including the \\ row terminator.
+        bands = [(r'0--24\%', 0, 24), (r'25--49\%', 25, 49),
+                 (r'50--74\%', 50, 74), (r'75--100\%', 75, 100)]
+        band_counts = [sum(1 for p in pcts if lo <= p <= hi) for _, lo, hi in bands]
+        band_header = ' & '.join(rf'\rowcolor{{brandblue}}\color{{white}}\textbf{{{b[0]}}}' if i == 0 else
+                                 rf'\color{{white}}\textbf{{{b[0]}}}' for i, b in enumerate(bands))
+        band_row = ' & '.join(str(c) for c in band_counts) + r' \\'
+        summary_block += '\n' + (
+            r'\subsection*{Score Distribution}' + '\n'
+            r'\begin{tabularx}{\linewidth}{@{}>{\centering\arraybackslash}X >{\centering\arraybackslash}X >{\centering\arraybackslash}X >{\centering\arraybackslash}X@{}}' + '\n'
+            + band_header + r' \\' + '\n'
+            + band_row + '\n'
+            r'\end{tabularx}'
+        )
     else:
-        story.append(Paragraph("No scored results available.", styles['Body_Custom']))
+        summary_block = r'\section*{Class Summary}' + '\nNo scored results available.'
 
-    story.append(Spacer(1, 20))
-
-    # --- Item Analysis ---
-    story.append(Paragraph("Item Analysis", styles['Heading_Custom']))
-    story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
-    story.append(Spacer(1, 10))
-
-    # Collect per-question stats
-    question_stats = {}  # q_num -> {correct, partial, incorrect, total, marks_sum, marks_max}
-    for sr in valid_results:
-        questions = sr['result'].get('questions', [])
-        for q in questions:
+    # Item analysis
+    question_stats = {}
+    for sr in valid:
+        for q in sr['result'].get('questions', []) or []:
             qn = q.get('question_num', '?')
             key = str(qn)
-            if key not in question_stats:
-                question_stats[key] = {
-                    'num': qn,
-                    'criterion_name': q.get('criterion_name', ''),
-                    'correct': 0, 'partial': 0, 'incorrect': 0, 'total': 0,
-                    'marks_sum': 0, 'marks_max': 0,
-                }
-            qs = question_stats[key]
+            qs = question_stats.setdefault(key, {
+                'num': qn, 'criterion_name': q.get('criterion_name', ''),
+                'correct': 0, 'partial': 0, 'incorrect': 0, 'total': 0,
+                'marks_sum': 0, 'marks_max': 0,
+            })
             qs['total'] += 1
             status = q.get('status', 'incorrect')
             if status == 'correct':
@@ -654,129 +675,182 @@ def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Sy
             else:
                 qs['incorrect'] += 1
             if q.get('marks_awarded') is not None:
-                qs['marks_sum'] += (q.get('marks_awarded') or 0)
-                qs['marks_max'] = max(qs['marks_max'], (q.get('marks_total') or 0))
+                qs['marks_sum'] += q.get('marks_awarded') or 0
+                qs['marks_max'] = max(qs['marks_max'], q.get('marks_total') or 0)
 
+    item_block = ''
+    weak_block = ''
     if question_stats:
-        # Sort by question number
-        sorted_qs = sorted(question_stats.values(), key=lambda x: (
-            int(x['num']) if str(x['num']).isdigit() else 999, str(x['num'])))
-
+        sorted_qs = sorted(
+            question_stats.values(),
+            key=lambda x: (int(x['num']) if str(x['num']).isdigit() else 999, str(x['num'])),
+        )
         is_rubrics = any(qs['criterion_name'] for qs in sorted_qs)
-        q_label = 'Criterion' if is_rubrics else 'Q#'
+        q_label = 'Criterion' if is_rubrics else 'Q\\#'
 
-        if has_marks:
-            header_row = [q_label, 'Correct', 'Partial', 'Incorrect', 'Avg Marks', 'Max', 'Difficulty']
-            col_widths = [2.8 * cm, 1.8 * cm, 1.8 * cm, 1.8 * cm, 2.2 * cm, 1.5 * cm, 2.2 * cm]
-        else:
-            header_row = [q_label, 'Correct', 'Partial', 'Incorrect', 'Difficulty']
-            col_widths = [3 * cm, 2.5 * cm, 2.5 * cm, 2.5 * cm, 3 * cm]
-
-        item_data = [[Paragraph(f'<b>{h}</b>', styles['TableHeader']) for h in header_row]]
-
-        center_cell = ParagraphStyle('CenterCell', parent=cell, alignment=TA_CENTER)
-
+        rows = []
         for qs in sorted_qs:
             n = qs['total'] or 1
             pct_correct = round(qs['correct'] / n * 100)
-            pct_partial = round(qs['partial'] / n * 100)
-            pct_incorrect = round(qs['incorrect'] / n * 100)
-
-            # Difficulty index: % who got it fully correct
             difficulty = pct_correct
             diff_label = 'Easy' if difficulty >= 70 else ('Moderate' if difficulty >= 40 else 'Hard')
-            diff_color = SUCCESS_COLOR if difficulty >= 70 else (WARNING_COLOR if difficulty >= 40 else DANGER_COLOR)
+            diff_color = 'brandgreen' if difficulty >= 70 else ('brandorange' if difficulty >= 40 else 'brandred')
 
-            q_name = qs['criterion_name'] if is_rubrics and qs['criterion_name'] else str(qs['num'])
-
-            row = [
-                Paragraph(clean_for_pdf(q_name), cell),
-                Paragraph(f'{qs["correct"]} ({pct_correct}%)', center_cell),
-                Paragraph(f'{qs["partial"]} ({pct_partial}%)', center_cell),
-                Paragraph(f'{qs["incorrect"]} ({pct_incorrect}%)', center_cell),
+            q_name = qs['criterion_name'] if (is_rubrics and qs['criterion_name']) else str(qs['num'])
+            cells = [
+                _tex_inline(q_name),
+                f'{qs["correct"]} ({pct_correct}\\%)',
+                f'{qs["partial"]} ({round(qs["partial"]/n*100)}\\%)',
+                f'{qs["incorrect"]} ({round(qs["incorrect"]/n*100)}\\%)',
             ]
             if has_marks:
-                avg_marks = round(qs['marks_sum'] / n, 1)
-                row.append(Paragraph(str(avg_marks), center_cell))
-                row.append(Paragraph(str(qs['marks_max']), center_cell))
-            row.append(Paragraph(f'<b>{diff_label}</b> ({difficulty}%)',
-                                 ParagraphStyle('DiffCell', parent=center_cell,
-                                                textColor=diff_color, fontName='Helvetica-Bold')))
-            item_data.append(row)
+                cells.append(str(round(qs['marks_sum'] / n, 1)))
+                cells.append(str(qs['marks_max']))
+            cells.append(rf'\textcolor{{{diff_color}}}{{\textbf{{{diff_label}}} ({difficulty}\%)}}')
+            rows.append(' & '.join(cells) + r' \\')
 
-        item_table = Table(item_data, colWidths=col_widths)
-        item_style = [
-            ('BACKGROUND', (0, 0), (-1, 0), PRIMARY_COLOR),
-            ('BOX', (0, 0), (-1, -1), 1, BORDER_COLOR),
-            ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
-            ('PADDING', (0, 0), (-1, -1), 6),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ]
-        # Alternate row colors
-        for i in range(1, len(item_data)):
-            if i % 2 == 0:
-                item_style.append(('BACKGROUND', (0, i), (-1, i), LIGHT_GRAY))
-        item_table.setStyle(TableStyle(item_style))
-        story.append(item_table)
-        story.append(Spacer(1, 15))
+        if has_marks:
+            cols = r'@{}>{\bfseries}p{3cm} >{\centering\arraybackslash}p{1.6cm} >{\centering\arraybackslash}p{1.6cm} >{\centering\arraybackslash}p{1.6cm} >{\centering\arraybackslash}p{1.5cm} >{\centering\arraybackslash}p{1.2cm} >{\centering\arraybackslash}X@{}'
+            head = (
+                r'\rowcolor{brandblue}'
+                rf'\color{{white}}\textbf{{{q_label}}} & '
+                r'\color{white}\textbf{Correct} & '
+                r'\color{white}\textbf{Partial} & '
+                r'\color{white}\textbf{Incorrect} & '
+                r'\color{white}\textbf{Avg} & '
+                r'\color{white}\textbf{Max} & '
+                r'\color{white}\textbf{Difficulty} \\'
+            )
+        else:
+            cols = r'@{}>{\bfseries}p{3.5cm} >{\centering\arraybackslash}p{2cm} >{\centering\arraybackslash}p{2cm} >{\centering\arraybackslash}p{2cm} >{\centering\arraybackslash}X@{}'
+            head = (
+                r'\rowcolor{brandblue}'
+                rf'\color{{white}}\textbf{{{q_label}}} & '
+                r'\color{white}\textbf{Correct} & '
+                r'\color{white}\textbf{Partial} & '
+                r'\color{white}\textbf{Incorrect} & '
+                r'\color{white}\textbf{Difficulty} \\'
+            )
+        item_block = (
+            r'\section*{Item Analysis}' + '\n'
+            r'\rowcolors{2}{bggrey}{white}' + '\n'
+            rf'\begin{{tabularx}}{{\linewidth}}{{{cols}}}' + '\n'
+            + head + '\n' + '\n'.join(rows) + '\n'
+            r'\end{tabularx}'
+        )
 
-        # Weak areas
         weak = [qs for qs in sorted_qs if (qs['correct'] / max(qs['total'], 1) * 100) < 40]
         if weak:
-            story.append(Paragraph("Areas Needing Attention", styles['Heading_Custom']))
-            story.append(Spacer(1, 5))
+            lines = []
             for qs in weak:
-                q_name = qs['criterion_name'] if is_rubrics and qs['criterion_name'] else f"Question {qs['num']}"
+                q_name = qs['criterion_name'] if (is_rubrics and qs['criterion_name']) else f'Question {qs["num"]}'
                 pct = round(qs['correct'] / max(qs['total'], 1) * 100)
-                story.append(Paragraph(
-                    f"<b>{clean_for_pdf(q_name)}</b> — Only {pct}% of students answered correctly. "
-                    f"({qs['incorrect']} incorrect, {qs['partial']} partially correct out of {qs['total']})",
-                    styles['Body_Custom']))
-            story.append(Spacer(1, 15))
+                lines.append(
+                    rf'\item \textbf{{{_tex_inline(q_name)}}} — only {pct}\% correct '
+                    rf'({qs["incorrect"]} incorrect, {qs["partial"]} partial of {qs["total"]})'
+                )
+            weak_block = (
+                r'\subsection*{Areas Needing Attention}' + '\n'
+                r'\begin{itemize}' + '\n' + '\n'.join(lines) + '\n' + r'\end{itemize}'
+            )
 
-    story.append(Spacer(1, 10))
-
-    # --- Student Scores Table ---
-    story.append(Paragraph("Individual Scores", styles['Heading_Custom']))
-    story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
-    story.append(Spacer(1, 10))
-
+    # Individual scores ranked
+    score_block = ''
     if scores:
         sorted_scores = sorted(scores, key=lambda x: x['pct'], reverse=True)
-        score_header = ['Rank', 'Index', 'Name', 'Score', '%']
-        score_data = [[Paragraph(f'<b>{h}</b>', styles['TableHeader']) for h in score_header]]
-        center_cell = ParagraphStyle('CenterCell2', parent=cell, alignment=TA_CENTER)
-
+        rows = []
         for rank, s in enumerate(sorted_scores, 1):
-            score_str = f"{s['awarded']}/{s['possible']}" if has_marks else f"{s['awarded']}/{s['possible']}"
-            pct_color = SUCCESS_COLOR if s['pct'] >= 50 else DANGER_COLOR
-            score_data.append([
-                Paragraph(str(rank), center_cell),
-                Paragraph(str(s['index']), cell),
-                Paragraph(clean_for_pdf(s['name']), cell),
-                Paragraph(score_str, center_cell),
-                Paragraph(f"{s['pct']}%", ParagraphStyle('PctCell', parent=center_cell, textColor=pct_color)),
-            ])
+            pct_color = 'brandgreen' if s['pct'] >= 50 else 'brandred'
+            rows.append(
+                rf'{rank} & {_tex_inline(s["index"])} & {_tex_inline(s["name"])} & '
+                rf'{s["awarded"]}/{s["possible"]} & '
+                rf'\textcolor{{{pct_color}}}{{\textbf{{{s["pct"]}\%}}}} \\'
+            )
+        score_block = (
+            r'\section*{Individual Scores}' + '\n'
+            r'\rowcolors{2}{bggrey}{white}' + '\n'
+            r'\begin{tabularx}{\linewidth}{@{}>{\centering\arraybackslash}p{1cm} >{\centering\arraybackslash}p{2cm} X >{\centering\arraybackslash}p{2cm} >{\centering\arraybackslash}p{2cm}@{}}' + '\n'
+            r'\rowcolor{brandblue}'
+            r'\color{white}\textbf{Rank} & \color{white}\textbf{Index} & '
+            r'\color{white}\textbf{Name} & \color{white}\textbf{Score} & '
+            r'\color{white}\textbf{\%} \\' + '\n'
+            + '\n'.join(rows) + '\n'
+            r'\end{tabularx}'
+        )
 
-        score_table = Table(score_data, colWidths=[1.5 * cm, 2.5 * cm, 6 * cm, 3 * cm, 3 * cm])
-        score_style = [
-            ('BACKGROUND', (0, 0), (-1, 0), PRIMARY_COLOR),
-            ('BOX', (0, 0), (-1, -1), 1, BORDER_COLOR),
-            ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
-            ('PADDING', (0, 0), (-1, -1), 6),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ]
-        for i in range(1, len(score_data)):
-            if i % 2 == 0:
-                score_style.append(('BACKGROUND', (0, i), (-1, i), LIGHT_GRAY))
-        score_table.setStyle(TableStyle(score_style))
-        story.append(score_table)
+    # No top title and no bottom footer — the PDF starts with the info
+    # grid and ends after the individual-scores table.
+    body = '\n\n'.join(filter(None, [
+        info,
+        summary_block,
+        item_block,
+        weak_block,
+        score_block,
+    ]))
 
-    # Footer
-    story.append(Spacer(1, 20))
-    story.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
-    story.append(Spacer(1, 10))
-    story.append(Paragraph("Generated by AI Marking Demo", styles['Footer']))
+    tex = _PREAMBLE + r'\begin{document}' + '\n' + body + '\n' + r'\end{document}' + '\n'
+    return _compile_tex_to_pdf(tex, jobname='overview')
 
-    doc.build(story)
-    return buffer.getvalue()
+
+# ---------------------------------------------------------------------------
+# Compile helper
+# ---------------------------------------------------------------------------
+
+def _compile_tex_to_pdf(tex_str, jobname='report'):
+    """Compile a .tex string to PDF via lualatex. Returns bytes; raises
+    RuntimeError on failure with the last 2KB of the LaTeX log so callers
+    can debug without trawling production logs."""
+    with tempfile.TemporaryDirectory(prefix='aimark_tex_') as tmpdir:
+        tex_path = os.path.join(tmpdir, f'{jobname}.tex')
+        with open(tex_path, 'w', encoding='utf-8') as f:
+            f.write(tex_str)
+        try:
+            proc = subprocess.run(
+                [
+                    LUALATEX_BIN,
+                    '-interaction=nonstopmode',
+                    '-halt-on-error',
+                    '-output-directory', tmpdir,
+                    tex_path,
+                ],
+                capture_output=True,
+                timeout=LUALATEX_TIMEOUT,
+                cwd=tmpdir,
+            )
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                f"lualatex not found at {LUALATEX_BIN!r}. "
+                "On Linux install texlive-luatex; on macOS install BasicTeX or MacTeX."
+            ) from e
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"lualatex timed out after {LUALATEX_TIMEOUT}s")
+
+        pdf_path = os.path.join(tmpdir, f'{jobname}.pdf')
+        if not os.path.exists(pdf_path):
+            log_tail = ''
+            log_path = os.path.join(tmpdir, f'{jobname}.log')
+            if os.path.exists(log_path):
+                try:
+                    with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+                        log_tail = f.read()[-2000:]
+                except Exception:
+                    pass
+            stderr_tail = (proc.stderr or b'').decode('utf-8', errors='replace')[-500:]
+            logger.error(
+                "lualatex compile failed (rc=%s).\nLog tail:\n%s\nStderr:\n%s",
+                proc.returncode, log_tail, stderr_tail,
+            )
+            raise RuntimeError(
+                f"lualatex compile failed (rc={proc.returncode}). "
+                f"Log tail:\n{log_tail[-800:]}"
+            )
+
+        with open(pdf_path, 'rb') as f:
+            return f.read()
+
+
+# Backwards-compat shim — older callers (none currently) imported this.
+def clean_for_pdf(text):  # noqa: D401
+    """Legacy helper. The new pipeline doesn't need it; we return an
+    inline-escaped string for any caller that still imports it."""
+    return _tex_inline(text)

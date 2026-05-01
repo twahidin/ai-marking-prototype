@@ -6,7 +6,22 @@
 <style>
     .class-section { margin-bottom: 20px; }
 
-    .asn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+    .asn-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+    }
+    @media (max-width: 900px) { .asn-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 560px) { .asn-grid { grid-template-columns: 1fr; } }
+    .asn-extra { display: none; }
+    .asn-extra.visible { display: block; }
+    .show-older-row { margin-top: 14px; display: flex; justify-content: center; }
+    .show-older-btn {
+        background: transparent; border: 1px dashed #cdd2eb; color: #667eea;
+        padding: 8px 18px; font-size: 13px; font-weight: 600; border-radius: 999px;
+        cursor: pointer; transition: all 0.15s;
+    }
+    .show-older-btn:hover { background: #f0f2ff; border-color: #667eea; }
 
     .asn-card {
         background: white; border-radius: 14px; padding: 20px;
@@ -113,9 +128,9 @@
         </div>
 
         {% if cls.assignments %}
-        <div class="asn-grid">
+        <div class="asn-grid" id="asnGrid_{{ cls.id }}">
             {% for asn in cls.assignments %}
-            <a class="asn-card" href="/teacher/assignment/{{ asn.id }}">
+            <a class="asn-card{% if loop.index0 >= 6 %} asn-extra{% endif %}" href="/teacher/assignment/{{ asn.id }}">
                 <div class="asn-card-title">{{ asn.title }}</div>
                 <div class="asn-card-subject">{{ asn.subject }}</div>
                 <span class="asn-card-code">{{ asn.classroom_code }}</span>
@@ -136,6 +151,16 @@
             </a>
             {% endfor %}
         </div>
+        {% if cls.assignments | length > 6 %}
+        <div class="show-older-row">
+            <button type="button" class="show-older-btn"
+                    data-target="asnGrid_{{ cls.id }}"
+                    data-count="{{ cls.assignments | length - 6 }}"
+                    onclick="toggleOlderAssignments(this)">
+                Show {{ cls.assignments | length - 6 }} older
+            </button>
+        </div>
+        {% endif %}
         {% else %}
         <div class="dept-empty" style="padding:32px 20px;">
             <p>No assignments yet for this class.</p>
@@ -155,6 +180,21 @@
 
 {% block scripts %}
 <script>
+function toggleOlderAssignments(btn) {
+    var grid = document.getElementById(btn.dataset.target);
+    if (!grid) return;
+    var extras = grid.querySelectorAll('.asn-extra');
+    var nowVisible = !btn.classList.contains('open');
+    extras.forEach(function (el) {
+        if (nowVisible) el.classList.add('visible');
+        else el.classList.remove('visible');
+    });
+    btn.classList.toggle('open', nowVisible);
+    btn.textContent = nowVisible
+        ? 'Hide older'
+        : ('Show ' + btn.dataset.count + ' older');
+}
+
 async function toggleStudents(classId) {
     var section = document.getElementById('students_' + classId);
     if (section.classList.contains('visible')) {
