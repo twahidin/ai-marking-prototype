@@ -122,11 +122,27 @@
             wrap.appendChild(d);
         }
 
+        // pdf.js character-map and standard-font URLs. These point at the
+        // bundled assets shipped alongside the loaded pdf.js version on
+        // jsdelivr. Required for PDFs that use CJK / non-Latin scripts
+        // (Chinese, Japanese, Korean, Tamil, etc.) — without cMapUrl,
+        // pdf.js can't map character codes back to glyphs and the page
+        // renders blank with the warning "Ensure that the cMapUrl and
+        // cMapPacked API parameters are provided".
+        var PDFJS_VERSION = '4.8.69';
+        var CMAP_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@' + PDFJS_VERSION + '/cmaps/';
+        var STANDARD_FONTS_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@' + PDFJS_VERSION + '/standard_fonts/';
+
         async function renderPdfBlob(blob, token) {
             try {
                 var ab = await blob.arrayBuffer();
                 if (token !== state.loadToken) return;
-                var loadingTask = pdfjsLib.getDocument({ data: ab });
+                var loadingTask = pdfjsLib.getDocument({
+                    data: ab,
+                    cMapUrl: CMAP_URL,
+                    cMapPacked: true,
+                    standardFontDataUrl: STANDARD_FONTS_URL,
+                });
                 var pdf = await loadingTask.promise;
                 if (token !== state.loadToken) return;
                 for (var i = 1; i <= pdf.numPages; i++) {
