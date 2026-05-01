@@ -728,6 +728,16 @@ FORMATTING NOTES:
 - The word / character limits in the feedback rules apply by character count
   for Chinese, by word count for Tamil / Malay / Hindi.
 
+QUOTATION MARKS — STRICT (this prevents JSON parse failures):
+- NEVER use ASCII straight double quotes (") inside any string value. They
+  collide with the JSON delimiters and corrupt your output.
+- For Chinese, when quoting a word, phrase, or idiom inline, use 「」 (corner
+  brackets) or “ ” (full-width curly quotes, U+201C / U+201D). Example:
+  「因为」与「所以」应成对出现。
+- For Tamil / Malay / Hindi, use the curly quotes “ ” (U+201C / U+201D), not
+  ASCII " ".
+- If you must use ASCII " for any reason, you MUST escape it as \\".
+
 Self-check before responding: re-read every field listed above. If any
 student-facing field is still in English, rewrite it in {lang}.
 
