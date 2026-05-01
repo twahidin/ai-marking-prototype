@@ -141,6 +141,25 @@ def _migrate_add_columns(app):
                 db.session.execute(text("ALTER TABLE assignments ADD COLUMN title VARCHAR(300) DEFAULT ''"))
                 db.session.commit()
                 logger.info('Added title column to assignments table')
+            # One-shot backfill: any assignment with no title gets its
+            # subject as a sensible fallback (or "Assignment <code>" if
+            # the subject is also empty). This keeps the new "Assignment"
+            # row in the PDF generator from showing a dash for legacy
+            # rows. Idempotent — guarded by WHERE title IS NULL OR title=''.
+            try:
+                db.session.execute(text(
+                    "UPDATE assignments SET title = subject "
+                    "WHERE (title IS NULL OR title = '') "
+                    "AND subject IS NOT NULL AND subject != ''"
+                ))
+                db.session.execute(text(
+                    "UPDATE assignments SET title = 'Assignment ' || classroom_code "
+                    "WHERE title IS NULL OR title = ''"
+                ))
+                db.session.commit()
+            except Exception as _e:
+                db.session.rollback()
+                logger.warning(f'Assignment.title backfill skipped: {_e}')
             if 'class_id' not in columns:
                 db.session.execute(text("ALTER TABLE assignments ADD COLUMN class_id VARCHAR(36)"))
                 db.session.commit()

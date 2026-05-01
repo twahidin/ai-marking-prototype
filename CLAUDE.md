@@ -75,7 +75,7 @@ At least one AI provider API key must be set. Providers only appear in the UI if
 - **`app.py`** — Flask routes, auth, background job system. Routes organized by: auth/hub, single marking, department management, teacher dashboard, bulk marking, student submission, API endpoints.
 - **`db.py`** — SQLAlchemy models (Teacher, Class, TeacherClass, Assignment, Student, Submission, DepartmentConfig). Auto-migrations for new columns.
 - **`ai_marking.py`** — AI provider abstraction. Builds multimodal prompts, calls Anthropic/OpenAI/Qwen APIs, parses JSON responses with 3 fallback strategies.
-- **`pdf_generator.py`** — ReportLab PDF report + class overview generation. Converts LaTeX to Unicode via `clean_for_pdf()`.
+- **`pdf_generator.py`** — LuaLaTeX-based PDF report + class overview generation. Compiles a generated `.tex` string in a temp dir via `lualatex`, returns the PDF bytes. Maths render natively via amsmath; CJK and Tamil via `luaotfload` fallback to Noto fonts. Outputs are memoised in an in-process LRU cache keyed on `sha256(kind, result, subject, app_title, assignment_name)`.
 - **`seed_data.py`** — Fake data generator for demo+dept mode.
 - **`templates/`** — 16 Jinja2 templates extending `base.html`. Key pages: `hub.html` (teacher home), `class.html` (class/assignment/marking view), `dashboard.html` (HOD dashboard), `submit.html` (student submission portal), `setup_wizard.html` (first-run setup), `settings.html` (teacher settings). Department pages: `department*.html`. Auth: `_gate.html`, `index.html`.
 - **`docs/plans/`** — Design documents for features (student submission portal, algorithm flow, setup wizard).
@@ -94,15 +94,23 @@ At least one AI provider API key must be set. Providers only appear in the UI if
 - **Anthropic supports native PDF** via document content blocks. OpenAI/Qwen convert PDFs to page images.
 - **Two assignment types**: `short_answer` and `rubrics` (essay with rubric criteria).
 - **Two scoring modes**: `status` (correct/partial/incorrect) and `marks` (numerical).
-- **MathJax** enabled on all feedback surfaces for LaTeX rendering.
+- **KaTeX 0.16.x** renders LaTeX in the browser. `base.html` ships a `window.MathJax.typesetPromise` shim over KaTeX's `renderMathInElement` so legacy call sites that invoke `MathJax.typesetPromise([elem])` keep working unchanged. The mhchem extension is loaded for chemistry markup; both browser KaTeX and PDF LuaLaTeX use the same `\ce{}` syntax.
 - **Security**: `secrets` module for codes, ownership checks on all assignment routes, HTML escaping for AI output, thread-safe rate limiting.
 - **API key resolution**: Assignment keys → Department keys → Env vars.
 - **Teacher roles**: `owner` (normal mode), `teacher` (dept mode), `hod` (dept mode). `TEACHER_CODE` env var is permanent master key.
 
 ## System Dependencies
 
-- **poppler** is required for `pdf2image` (PDF-to-image conversion for OpenAI/Qwen providers). Install via `brew install poppler` (macOS) or `apt-get install poppler-utils` (Linux).
-- Railway/Nixpacks handles this automatically in production.
+System dependencies are pinned in `Dockerfile` (Railway uses Dockerfile mode via `railway.json`'s `"builder": "DOCKERFILE"`). The two-layer split keeps the heavy TeX Live install separately cacheable from the lighter font + utility layer.
+
+- **poppler-utils** — required for `pdf2image` (PDF-to-image conversion for OpenAI/Qwen marking).
+- **fontconfig + fonts-noto + fonts-noto-cjk + fonts-noto-extra** — Noto family for Latin / CJK / Tamil / Devanagari rendering. `fontconfig` must be in the apt list because `--no-install-recommends` skips the font packages' Recommends.
+- **texlive-luatex + texlive-latex-recommended + texlive-latex-extra + texlive-fonts-recommended + texlive-fonts-extra + texlive-lang-cjk + texlive-lang-other + texlive-pictures + texlive-plain-generic + texlive-science** — the LuaLaTeX engine plus every package the PDF preamble loads (`tcolorbox`, `tabularx`, `enumitem`, `titlesec`, `ulem`, `mhchem`, `fontspec`).
+- **libheif1** — `pillow-heif` HEIC decoder for iOS-shot student uploads.
+
+For local development on macOS: `brew install poppler` for `pdf2image`, plus a TeX Live install (BasicTeX + `tlmgr install titlesec tcolorbox enumitem ulem mhchem chemgreek tex-gyre tools` for the missing packages BasicTeX doesn't ship).
+
+**Adding a new system dependency**: every Dockerfile change invalidates the apt layer cache, so the next build is 5–8 min. Bundle related additions into one commit; don't trickle-add packages across multiple commits if you can avoid it.
 
 ## Schema evolution policy
 
@@ -129,6 +137,50 @@ This app is in active use. Any code change that adds or relies on a new column /
 - `Assignment.subject_family` and `FeedbackEdit.subject_family` — drive marking-patterns aggregation, calibration lookup, and propagation candidate detection.
 - `FeedbackEdit.theme_key` — drives Tier-1 calibration retrieval and student-facing "Group by Mistake Type".
 - `Submission.categorisation_status` — gates UI rendering of the category line.
+
+## Backwards-compatibility policy
+
+Beyond schema evolution, every change should respect the following stable surfaces. These are the things that have bitten us before — keep them in mind on every PR.
+
+### Public function signatures (`pdf_generator.py`, `ai_marking.py`)
+
+When adding a new parameter to a function called from multiple places (especially `generate_report_pdf`, `generate_overview_pdf`, `mark_script`, `get_available_providers`):
+
+1. **Add it as a keyword argument with a sensible default.** No positional additions. Existing callers keep working without edits.
+2. **Update every callsite to pass the new value.** A `grep -n "function_name(" app.py` audit is mandatory before commit. If a callsite genuinely doesn't have the data, document why and let the default fire.
+3. **Plumb the new value into the result-relevant cache key.** `pdf_generator.py` memoises on `(kind, result, subject, app_title, assignment_name)` — adding a parameter without adding it to the key produces stale-cache bugs.
+
+### `Submission.result_json` shape
+
+`result_json` is the AI-generated marking output. Its shape evolves over time, but **old submissions stay in the DB forever**. Readers must tolerate older shapes.
+
+- Read with `q.get('field', default)` — never `q['field']`. The AI sometimes omits fields entirely; older submissions definitely will.
+- New optional fields (`correction_prompt`, `well_done`, `main_gap`, `theme_key`, etc.) added to one branch should not crash readers on older submissions.
+- The PDF generator has an example to copy: `if not body_rows: body = …(no detail)…` for a question that has no fields populated.
+- If a reader needs a field to be present, **fix the writer** (the AI prompt or the post-processing that fills in defaults). Don't litter readers with `if x.get('field') is None: skip`.
+
+### Frontend library swaps
+
+When replacing a JS library that has many call sites (e.g. MathJax → KaTeX), provide a **shim** so the replacement looks like the original API to existing code. The current `base.html` defines `window.MathJax.typesetPromise` over KaTeX's `renderMathInElement` so we didn't have to touch six template files.
+
+### In-process caches
+
+Anything stored in module-level globals (e.g. `pdf_generator._PDF_CACHE`, `ai_marking._PROVIDER_CACHE`) resets on container restart. **This is by design** — it aligns cache invalidation with code deploys, so a logic change automatically clears stale caches.
+
+- Don't depend on cache survival across restarts.
+- Don't add filesystem-backed caches for ephemeral state — Railway containers are immutable.
+- When extending a cache key, add to the SHA-256 input chain in `_cache_key()` rather than introducing a parallel cache.
+
+### Build / deploy compatibility
+
+- **Dockerfile changes** invalidate the heavy apt + texlive layers and trigger a 5–8 minute rebuild. Bundle related system-package additions into one commit.
+- **`requirements.txt` changes** invalidate the pip layer (~30 seconds). Cheap.
+- **Code-only changes** rebuild only the `COPY . .` layer (~5 seconds). Most deploys should land here.
+- **`luaotfload-tool --update --force` runs at image-build time** to populate the font db. Don't remove this — by-name font lookups on Railway intermittently fail without it.
+
+### `Assignment.title` is required-load-bearing
+
+The PDF generator's "Assignment" header row reads `Assignment.title`. The boot-time backfill (`_migrate_add_columns`) fills empty titles with `subject` (or `Assignment <classroom_code>` if both are empty). When adding new code that creates assignments, populate `title` at write time — don't rely on the backfill to catch you on the next boot.
 
 ## Canonical subjects
 

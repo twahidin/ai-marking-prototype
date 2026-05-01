@@ -3693,9 +3693,28 @@ def teacher_dashboard():
     for cls in teacher_classes:
         student_counts_by_class[cls.id] = Student.query.filter_by(class_id=cls.id).count()
 
-    # Bulk load all submissions for these assignments
+    # Bulk load all submissions for these assignments. Defer the heavy
+    # blob columns (`script_bytes`, the per-page image base64 dump,
+    # extracted/student answer text) — none are read on this page, and
+    # for a teacher with hundreds of submissions they account for the
+    # bulk of the DB transfer (typically MB per row). result_json stays
+    # eagerly loaded because the avg-score loop below reads it via
+    # s.get_result(). Lazy-load fires automatically if any of the
+    # deferred columns is accessed later, so this is safe even if
+    # downstream code starts touching them.
+    from sqlalchemy.orm import defer as _defer
     all_asn_ids = [a.id for a in all_assignments]
-    all_subs = Submission.query.filter(Submission.assignment_id.in_(all_asn_ids)).all() if all_asn_ids else []
+    all_subs = (
+        Submission.query
+        .filter(Submission.assignment_id.in_(all_asn_ids))
+        .options(
+            _defer(Submission.script_bytes),
+            _defer(Submission.script_pages_json),
+            _defer(Submission.extracted_text_json),
+            _defer(Submission.student_text_json),
+        )
+        .all()
+    ) if all_asn_ids else []
     subs_by_assignment = {}
     for s in all_subs:
         subs_by_assignment.setdefault(s.assignment_id, []).append(s)

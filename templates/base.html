@@ -9,7 +9,7 @@
     {% block head %}{% endblock %}
 
     <!-- Math rendering: KaTeX. Stricter parser than MathJax (so what the
-         browser accepts also compiles in our LuaLaTeX PDF generator),
+         browser accepts also compiles in the LuaLaTeX PDF generator), and
          ~10x faster on render. mhchem extension handles \ce{} and \pu{}
          for chemistry. Shim below keeps the existing MathJax.typesetPromise
          call sites in templates / feedback_render.js working unchanged. -->
