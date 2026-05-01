@@ -96,9 +96,23 @@
             + '  0%, 92%, 100% { transform: scaleY(1); }'
             + '  95% { transform: scaleY(0.1); }'
             + '}'
+            // External Z bubble: head-sized glyph that floats up roughly
+            // two turtle-heights and fades. Spawned periodically while the
+            // turtle is in 'sleep' or 'bed'. Lives on body (not inside the
+            // SVG) so it isn't clipped by the SVG viewport.
+            + '.screen-pet-fx-z {'
+            + '  position: fixed; pointer-events: none; z-index: 9998;'
+            + '  width: 18px; height: 22px;'
+            + '  font: italic 700 20px serif; color: #7a8c9c;'
+            + '  display: flex; align-items: center; justify-content: center;'
+            + '  text-shadow: 0 1px 2px rgba(255,255,255,0.6);'
+            + '  animation: screen-pet-z-float 2.6s ease-out forwards;'
+            + '}'
             + '@keyframes screen-pet-z-float {'
-            + '  0% { transform: translate(0, 0); opacity: 0.9; }'
-            + '  100% { transform: translate(8px, -10px); opacity: 0; }'
+            + '  0%   { transform: translate(-50%, -50%) scale(0.5); opacity: 0; }'
+            + '  15%  { transform: translate(-50%, calc(-50% - 18px)) scale(1); opacity: 1; }'
+            + '  85%  { opacity: 0.85; }'
+            + '  100% { transform: translate(calc(-50% + 26px), calc(-50% - ' + (HEIGHT * 2) + 'px)) scale(0.95); opacity: 0; }'
             + '}'
             + '@keyframes screen-pet-hop {'
             + '  0%, 100% { transform: translateY(0); }'
@@ -131,9 +145,6 @@
             + '#screen-pet[data-mode="sleep"] .eye-closed, #screen-pet[data-mode="bed"] .eye-closed { display: block; }'
             + '#screen-pet.happy .eye-open { display: none; }'
             + '#screen-pet.happy .eye-happy { display: block; }'
-            + '#screen-pet .z-bubble-group { display: none; }'
-            + '#screen-pet[data-mode="sleep"] .z-bubble-group, #screen-pet[data-mode="bed"] .z-bubble-group { display: block; }'
-            + '#screen-pet[data-mode="sleep"] .z-bubble, #screen-pet[data-mode="bed"] .z-bubble { animation: screen-pet-z-float 1.6s ease-out infinite; }'
             + '#screen-pet[data-mode="hop"] .turtle-svg { animation: screen-pet-hop 0.4s ease-out; }'
             + '#screen-pet.shake .turtle-svg { animation: screen-pet-shake 0.18s ease-in-out 4; }'
             + '#screen-pet.munch .turtle-head { animation: screen-pet-munch 0.32s ease-in-out 3; }'
@@ -171,54 +182,72 @@
             + '  100% { transform: translate(-50%, -130%) scale(0.7); opacity: 0; }'
             + '}'
 
-            // ---------- effect: lettuce (food drops + shrinks) ----------
+            // ---------- effect: lettuce (drops, then bites get taken out) ----------
             + '.screen-pet-fx-lettuce {'
             + '  position: fixed; pointer-events: none; z-index: 9998;'
-            + '  width: 28px; height: 28px;'
+            + '  width: 30px; height: 30px;'
             + '  animation: screen-pet-lettuce-drop 0.6s cubic-bezier(.4,1.6,.6,1) forwards;'
-            + '}'
-            + '.screen-pet-fx-lettuce.eaten {'
-            + '  animation: screen-pet-lettuce-eat 1.6s ease-in forwards;'
             + '}'
             + '@keyframes screen-pet-lettuce-drop {'
             + '  0%   { transform: translate(-50%, calc(-50% - 80px)) rotate(-15deg); opacity: 0; }'
             + '  60%  { transform: translate(-50%, -50%) rotate(8deg); opacity: 1; }'
             + '  100% { transform: translate(-50%, -50%) rotate(0deg); opacity: 1; }'
             + '}'
-            + '@keyframes screen-pet-lettuce-eat {'
-            + '  0%   { transform: translate(-50%, -50%) scale(1); opacity: 1; }'
-            + '  33%  { transform: translate(-50%, -50%) scale(0.7); opacity: 0.85; }'
-            + '  66%  { transform: translate(-50%, -50%) scale(0.4); opacity: 0.6; }'
-            + '  100% { transform: translate(-50%, -50%) scale(0); opacity: 0; }'
-            + '}'
 
             // ---------- effect: cherry blossom petals ----------
+            // Petals fall, then sit on the "ground" for a beat before fading
+            // out. Three phases packed into one keyframe set: 0–55% falling,
+            // 55–80% resting at landing, 80–100% fading.
             + '.screen-pet-fx-petal {'
             + '  position: fixed; pointer-events: none; z-index: 9998;'
-            + '  width: 14px; height: 14px;'
+            + '  width: 20px; height: 20px;'
             + '}'
             + '@keyframes screen-pet-petal-fall {'
             + '  0%   { transform: translate(-50%, -50%) rotate(0deg); opacity: 0; }'
-            + '  10%  { opacity: 1; }'
-            + '  100% { transform: translate(calc(-50% + var(--drift, 0px)), calc(-50% + var(--fall, 200px))) rotate(360deg); opacity: 0; }'
+            + '  8%   { opacity: 1; }'
+            + '  55%  { transform: translate(calc(-50% + var(--drift, 0px)), calc(-50% + var(--fall, 200px))) rotate(var(--rot, 360deg)); opacity: 1; }'
+            + '  80%  { transform: translate(calc(-50% + var(--drift, 0px)), calc(-50% + var(--fall, 200px))) rotate(var(--rot, 360deg)); opacity: 1; }'
+            + '  100% { transform: translate(calc(-50% + var(--drift, 0px)), calc(-50% + var(--fall, 200px))) rotate(var(--rot, 360deg)); opacity: 0; }'
             + '}'
 
-            // ---------- effect: water droplets ----------
-            + '.screen-pet-fx-drop {'
-            + '  position: fixed; pointer-events: none; z-index: 9998;'
-            + '  width: 10px; height: 14px;'
+            // ---------- effect: kiddie pool + splash droplets ----------
+            + '.screen-pet-fx-pool {'
+            + '  position: fixed; pointer-events: none; z-index: 9997;'
+            + '  width: 110px; height: 36px;'
+            + '  transform: translate(-50%, -50%);'
+            + '  animation: screen-pet-pool-in 0.3s ease-out forwards;'
             + '}'
-            + '@keyframes screen-pet-drop-fall {'
-            + '  0%   { transform: translate(-50%, calc(-50% - 80px)); opacity: 0; }'
-            + '  20%  { opacity: 1; }'
-            + '  100% { transform: translate(-50%, -50%); opacity: 0; }'
+            + '.screen-pet-fx-splash {'
+            + '  position: fixed; pointer-events: none; z-index: 9998;'
+            + '  width: 9px; height: 13px;'
+            + '  animation: screen-pet-splash 0.7s cubic-bezier(.3,.7,.7,1) forwards;'
+            + '}'
+            + '@keyframes screen-pet-splash {'
+            + '  0%   { transform: translate(-50%, -50%) scale(0.5); opacity: 0; }'
+            + '  20%  { transform: translate(calc(-50% + (var(--dx, 0px) * 0.5)), calc(-50% + var(--peak, -16px))) scale(1); opacity: 1; }'
+            + '  100% { transform: translate(calc(-50% + var(--dx, 0px)), calc(-50% + var(--end, 18px))) scale(0.6); opacity: 0; }'
+            + '}'
+            + '@keyframes screen-pet-pool-in {'
+            + '  0%   { transform: translate(-50%, -50%) scale(0); opacity: 0; }'
+            + '  100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }'
+            + '}'
+            + '.screen-pet-fx-pool.fading {'
+            + '  animation: screen-pet-pool-out 0.3s ease-in forwards;'
+            + '}'
+            + '@keyframes screen-pet-pool-out {'
+            + '  0%   { transform: translate(-50%, -50%) scale(1); opacity: 1; }'
+            + '  100% { transform: translate(-50%, -50%) scale(0.6); opacity: 0; }'
             + '}'
 
             // ---------- effect: bed (stays until interaction) ----------
+            // forwards is required so the translate(-50%, -50%) centering
+            // transform persists after the entrance keyframes finish —
+            // otherwise the bed reverts to no-transform and visibly jumps.
             + '.screen-pet-fx-bed {'
             + '  position: fixed; pointer-events: none; z-index: 9997;'
             + '  width: 110px; height: 26px;'
-            + '  animation: screen-pet-bed-in 0.35s ease-out;'
+            + '  transform: translate(-50%, -50%);'
+            + '  animation: screen-pet-bed-in 0.35s ease-out forwards;'
             + '}'
             + '@keyframes screen-pet-bed-in {'
             + '  0%   { transform: translate(-50%, calc(-50% + 30px)) scale(0.8); opacity: 0; }'
@@ -256,10 +285,6 @@
             +     '<path class="eye-happy" d="M 9 49 q 2 -2.2 4 0" fill="none" stroke="#222" stroke-width="0.9" stroke-linecap="round"/>'
             +     '<path class="mouth" d="M 9 51.5 q 1.5 1 3 0" fill="none" stroke="#222" stroke-width="0.7" stroke-linecap="round"/>'
             +   '</g>'
-            +   '<g class="z-bubble-group">'
-            +     '<text class="z-bubble" x="22" y="38" font-size="9" fill="#7a8c9c" font-family="serif" font-style="italic">z</text>'
-            +     '<text x="26" y="34" font-size="6" fill="#7a8c9c" font-family="serif" font-style="italic" opacity="0.6">z</text>'
-            +   '</g>'
             + '</svg>';
     }
 
@@ -293,11 +318,39 @@
         if (bedEl) positionBed();
     }
 
+    // ----------------------------------------------- sleep Z bubble spawner
+    var sleepZTimer = null;
+
+    function spawnSleepZ() {
+        var h = turtleHead();
+        // Z floats up from just above the head, slightly toward the back so
+        // it doesn't trace exactly the same path each time.
+        var jitter = (Math.random() - 0.5) * 6;
+        spawn('screen-pet-fx-z', 'z', h.hx + 6 + jitter, h.hy - 6, 2700);
+    }
+
+    function startSleepZs() {
+        if (sleepZTimer) return;
+        spawnSleepZ();
+        sleepZTimer = setInterval(spawnSleepZ, 1100);
+    }
+
+    function stopSleepZs() {
+        if (sleepZTimer) clearInterval(sleepZTimer);
+        sleepZTimer = null;
+    }
+
     // ---------------------------------------------------------- mode helpers
     function setMode(mode, durationMs) {
+        var prev = state.mode;
         state.mode = mode;
         state.modeUntil = performance.now() + (durationMs || 0);
         applyTransform();
+
+        var nowSleeping = (mode === 'sleep' || mode === 'bed');
+        var wasSleeping = (prev === 'sleep' || prev === 'bed');
+        if (nowSleeping && !wasSleeping) startSleepZs();
+        else if (!nowSleeping && wasSleeping) stopSleepZs();
     }
 
     function pickWalkTarget() {
@@ -326,6 +379,18 @@
         return { cx: state.x + WIDTH / 2, cy: state.y + HEIGHT / 2 };
     }
 
+    // World coords of the turtle's head centre. Head is at SVG (14, 50)
+    // in viewBox 96x80; rendered into a WIDTH x HEIGHT box. When facing
+    // right the SVG is mirrored, so the head sits on the opposite side.
+    function turtleHead() {
+        var lx = 14 * (WIDTH / 96);
+        var ly = 50 * (HEIGHT / 80);
+        return {
+            hx: state.facing === 'left' ? state.x + lx : state.x + WIDTH - lx,
+            hy: state.y + ly,
+        };
+    }
+
     function openMenu() {
         if (menuEl) return;
         closeBed();          // opening menu interrupts the bed
@@ -333,12 +398,13 @@
         setMode('menu', 0);
 
         var c = turtleCenter();
-        var arcCenterY = state.y;       // top of turtle
-        var radius = 78;
+        var arcCenterY = state.y + 6;   // start arc just below turtle top so radius reads tighter
+        var radius = 56;
         var items = ['pet', 'lettuce', 'blossom', 'water', 'bed'];
         var n = items.length;
-        // Spread 5 bubbles in a 120° arc above the turtle (-60° .. +60° from up)
-        var spread = 120 * Math.PI / 180;
+        // Same arc + radius as before, but bubbles span a wider angle so
+        // they don't overlap each other. -70° .. +70° from straight-up.
+        var spread = 140 * Math.PI / 180;
         var startA = -spread / 2;
         var stepA = spread / (n - 1);
 
@@ -425,11 +491,36 @@
         pendingTimers.length = 0;
     }
 
+    // ----------------------------------------------- turtle position tweener
+    // Drives state.x / state.y over time without going through the main tick
+    // loop. Used by the pool sequence (hop in / bounce / hop out). An abort
+    // token lets interruptToIdle() cancel any in-flight tween.
+    var animToken = 0;
+    function abortAnim() { animToken++; }
+
+    function tweenTurtle(fromX, fromY, toX, toY, duration, hopHeight, done) {
+        animToken++;
+        var myToken = animToken;
+        var start = performance.now();
+        function step(now) {
+            if (myToken !== animToken) return;
+            var t = Math.min(1, (now - start) / duration);
+            var arc = -Math.sin(t * Math.PI) * (hopHeight || 0);
+            state.x = fromX + (toX - fromX) * t;
+            state.y = fromY + (toY - fromY) * t + arc;
+            applyTransform();
+            if (t < 1) requestAnimationFrame(step);
+            else if (done) done();
+        }
+        requestAnimationFrame(step);
+    }
+
     // -------------------------------------------- action handlers (animations)
     function runAction(id) {
         closeMenu();
         clearTimers();
         clearAllEffects();
+        abortAnim();
         if (id === 'pet') doPet();
         else if (id === 'lettuce') doLettuce();
         else if (id === 'blossom') doBlossom();
@@ -440,15 +531,17 @@
     function doPet() {
         setMode('busy', 0);
         if (pet) pet.classList.add('happy');
-        var c = turtleCenter();
-        // 3 hearts staggered
+        // Hearts pop up close to the turtle's head, with a small horizontal
+        // jitter so they don't overlap each other.
         for (var i = 0; i < 3; i++) (function (i) {
             later(function () {
+                var h = turtleHead();
+                var jitterX = (i - 1) * 6 + (Math.random() - 0.5) * 4;
                 spawn(
                     'screen-pet-fx-heart',
                     '<svg viewBox="0 0 24 24" style="width:100%;height:100%"><path d="M12 21s-7-4.5-7-11a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 6.5-7 11-7 11z" fill="#ff7c9c"/></svg>',
-                    c.cx + (i - 1) * 12,
-                    state.y - 6,
+                    h.hx + jitterX,
+                    h.hy - 14,
                     1500
                 );
             }, i * 250);
@@ -459,68 +552,205 @@
         }, 1700);
     }
 
+    // Four progressive lettuce frames: full leaf, then bites taken out
+    // of the right side, then mostly gone, then a tiny remnant. The
+    // turtle's head bobs once per frame swap so it reads as chomping.
+    var LETTUCE_FRAMES = [
+        // 0 — full leaf
+        '<svg viewBox="0 0 24 24" style="width:100%;height:100%">'
+        + '<path d="M12 3 C 6 5 4 12 12 21 C 20 12 18 5 12 3 Z" fill="#7dc879" stroke="#4fa56d" stroke-width="1"/>'
+        + '<path d="M12 6 L12 19" stroke="#4fa56d" stroke-width="1" stroke-linecap="round"/>'
+        + '</svg>',
+        // 1 — bite taken from upper-right
+        '<svg viewBox="0 0 24 24" style="width:100%;height:100%">'
+        + '<path d="M12 3 C 6 5 4 12 12 21 C 18 17 18 13 16 10 Q 13 11 13 8 Q 13 5 12 3 Z" fill="#7dc879" stroke="#4fa56d" stroke-width="1"/>'
+        + '<path d="M12 8 L12 19" stroke="#4fa56d" stroke-width="1" stroke-linecap="round"/>'
+        + '</svg>',
+        // 2 — second bite from middle-right, mostly left half remains
+        '<svg viewBox="0 0 24 24" style="width:100%;height:100%">'
+        + '<path d="M12 5 C 6 7 5 13 11 21 Q 13 19 13 16 Q 11 13 13 11 Q 13 8 12 5 Z" fill="#7dc879" stroke="#4fa56d" stroke-width="1"/>'
+        + '<path d="M12 9 L12 19" stroke="#4fa56d" stroke-width="1" stroke-linecap="round"/>'
+        + '</svg>',
+        // 3 — small remnant in the lower-left
+        '<svg viewBox="0 0 24 24" style="width:100%;height:100%">'
+        + '<path d="M9 14 C 6 16 6 19 11 21 Q 13 19 12 16 Q 11 14 9 14 Z" fill="#7dc879" stroke="#4fa56d" stroke-width="1"/>'
+        + '</svg>',
+    ];
+
     function doLettuce() {
         setMode('busy', 0);
-        var c = turtleCenter();
-        var lettuceX = state.facing === 'left' ? state.x - 8 : state.x + WIDTH + 8;
-        var lettuceY = state.y + HEIGHT - 18;
+        var lettuceX = state.facing === 'left' ? state.x - 6 : state.x + WIDTH + 6;
+        var lettuceY = state.y + HEIGHT - 16;
         var lettuce = spawn(
             'screen-pet-fx-lettuce',
-            '<svg viewBox="0 0 24 24" style="width:100%;height:100%"><path d="M12 3 C6 5 4 12 12 21 C20 12 18 5 12 3 Z" fill="#7dc879" stroke="#4fa56d" stroke-width="1"/><path d="M12 6 L12 19" stroke="#4fa56d" stroke-width="1" stroke-linecap="round"/></svg>',
+            LETTUCE_FRAMES[0],
             lettuceX, lettuceY, 0
         );
-        // After drop completes, start munch + eat animations
-        later(function () {
+        // Each chomp = head bob + frame advance, then a small pause.
+        function chomp(toFrame, then) {
             if (pet) pet.classList.add('munch');
-            lettuce.classList.add('eaten');
-        }, 600);
-        later(function () {
-            if (pet) pet.classList.remove('munch');
-            removeEffect(lettuce);
-            setMode('idle', 600);
-        }, 2200);
+            later(function () {
+                if (pet) pet.classList.remove('munch');
+                if (toFrame >= LETTUCE_FRAMES.length) {
+                    removeEffect(lettuce);
+                    setMode('idle', 600);
+                    return;
+                }
+                lettuce.innerHTML = LETTUCE_FRAMES[toFrame];
+                later(then, 120);
+            }, 320);
+        }
+        // Wait for the lettuce to land before the first chomp.
+        later(function () { chomp(1, function () { chomp(2, function () { chomp(3, function () { chomp(4, null); }); }); }); }, 620);
     }
 
     function doBlossom() {
         setMode('busy', 0);
         var c = turtleCenter();
-        var n = 12;
+        var n = 22;             // denser
         var petalSvg = '<svg viewBox="0 0 24 24" style="width:100%;height:100%">'
             + '<path d="M12 2 C 8 6 8 12 12 16 C 16 12 16 6 12 2 Z" fill="#ffc1d6" stroke="#f199b8" stroke-width="0.8"/></svg>';
+        // Petals must land at-or-near the ground line, where the turtle's
+        // shadow ellipse sits. Compute a target landing band relative to
+        // the turtle's bottom edge so they read as resting on the ground.
+        var groundLineY = state.y + HEIGHT - 4;
+        var maxPetalDur = 0;
         for (var i = 0; i < n; i++) (function (i) {
             later(function () {
-                var x = c.cx + (Math.random() - 0.5) * 220;
-                var y = c.cy - 100 - Math.random() * 60;
-                var drift = (Math.random() - 0.5) * 80;
-                var fall = 160 + Math.random() * 120;
-                var dur = 2.0 + Math.random() * 1.4;
-                var el = spawn('screen-pet-fx-petal', petalSvg, x, y, dur * 1000 + 100, {
+                var x = c.cx + (Math.random() - 0.5) * 240;
+                var y = c.cy - 110 - Math.random() * 70;
+                var drift = (Math.random() - 0.5) * 60;
+                var fall = (groundLineY - y) + (Math.random() * 6 - 3); // land near ground
+                var rot = (Math.random() < 0.5 ? -1 : 1) * (200 + Math.random() * 240);
+                var dur = 3.4 + Math.random() * 1.6;     // longer (includes rest+fade)
+                if (dur > maxPetalDur) maxPetalDur = dur;
+                spawn('screen-pet-fx-petal', petalSvg, x, y, dur * 1000 + 100, {
                     '--drift': drift + 'px',
                     '--fall': fall + 'px',
-                    'animation': 'screen-pet-petal-fall ' + dur + 's linear forwards',
+                    '--rot': rot + 'deg',
+                    'animation': 'screen-pet-petal-fall ' + dur + 's ease-out forwards',
                 });
-            }, i * 120);
+            }, i * 100);
         })(i);
-        later(function () { setMode('idle', 600); }, 3500);
+        // Action ends a little after the slowest petal finishes resting+fading.
+        later(function () { setMode('idle', 600); }, (n * 100) + (maxPetalDur * 1000) + 200);
     }
 
+    // Spawns N water droplets shooting outward from (cx, cy). Each goes
+    // up + sideways then falls (parabolic-ish via the keyframes above).
+    function spawnSplash(cx, cy, count) {
+        var dropSvg = '<svg viewBox="0 0 24 24" style="width:100%;height:100%">'
+            + '<path d="M12 3 C 9 8 6 13 6 16 a 6 6 0 0 0 12 0 c 0 -3 -3 -8 -6 -13 z" fill="#7ec1ed"/>'
+            + '<path d="M9 14 q 0.5 2 2.5 2.5" fill="none" stroke="white" stroke-width="1.2" stroke-linecap="round"/>'
+            + '</svg>';
+        for (var i = 0; i < count; i++) {
+            var dx = (Math.random() - 0.5) * 38;        // horizontal range
+            var peak = -10 - Math.random() * 12;        // up
+            var end = 14 + Math.random() * 10;          // down
+            spawn('screen-pet-fx-splash', dropSvg, cx, cy, 750, {
+                '--dx': dx + 'px',
+                '--peak': peak + 'px',
+                '--end': end + 'px',
+            });
+        }
+    }
+
+    // Pool: a yellow inflatable kiddie pool spawns in front of the turtle.
+    // The turtle hops in, bounces a few times splashing water out, then
+    // settles in the pool — no hop out. The pool fades and the turtle
+    // resumes from its in-pool position.
     function doWater() {
         setMode('busy', 0);
-        var c = turtleCenter();
-        var dropSvg = '<svg viewBox="0 0 24 24" style="width:100%;height:100%"><path d="M12 3 C 9 8 6 13 6 16 a 6 6 0 0 0 12 0 c 0 -3 -3 -8 -6 -13 z" fill="#7ec1ed"/><path d="M9 14 q 0.5 2 2.5 2.5" fill="none" stroke="white" stroke-width="1.2" stroke-linecap="round"/></svg>';
-        // 6 droplets falling onto turtle
-        for (var i = 0; i < 6; i++) (function (i) {
-            later(function () {
-                var x = state.x + 14 + Math.random() * (WIDTH - 28);
-                var y = state.y + 14 + Math.random() * 16;
-                spawn('screen-pet-fx-drop', dropSvg, x, y, 800, {
-                    'animation': 'screen-pet-drop-fall 0.6s ease-in forwards',
-                });
-            }, i * 140);
-        })(i);
-        later(function () { if (pet) pet.classList.add('shake'); }, 200);
-        later(function () { if (pet) pet.classList.remove('shake'); }, 1100);
-        later(function () { setMode('idle', 600); }, 1800);
+        var startX = state.x;
+        var startY = state.y;
+
+        var poolGap = 6;
+        var poolWidth = 110;
+
+        // Spawn the pool on the side the turtle is facing. If there's no
+        // room on that side, flip the turtle so the pool fits.
+        var facing = state.facing;
+        var poolCx;
+        if (facing === 'left') {
+            poolCx = startX - poolGap - poolWidth / 2;
+            if (poolCx - poolWidth / 2 < 8) {
+                facing = 'right';
+                poolCx = startX + WIDTH + poolGap + poolWidth / 2;
+            }
+        } else {
+            poolCx = startX + WIDTH + poolGap + poolWidth / 2;
+            if (poolCx + poolWidth / 2 > window.innerWidth - 8) {
+                facing = 'left';
+                poolCx = startX - poolGap - poolWidth / 2;
+            }
+        }
+        state.facing = facing;
+        applyTransform();
+
+        var poolCy = startY + HEIGHT * 0.78;        // pool sits at turtle's feet
+        var turtleTargetX = clampX(poolCx - WIDTH / 2);
+
+        var poolSvg = '<svg viewBox="0 0 110 36" style="width:100%;height:100%">'
+            + '<ellipse cx="55" cy="22" rx="50" ry="12" fill="#ffd84d" stroke="#e0a800" stroke-width="1.5"/>'
+            + '<ellipse cx="55" cy="20" rx="42" ry="9" fill="#7ec1ed"/>'
+            + '<ellipse cx="55" cy="19" rx="42" ry="3" fill="#a3d4f4" opacity="0.7"/>'
+            + '<ellipse cx="55" cy="22" rx="50" ry="12" fill="none" stroke="#fff5b3" stroke-width="1" opacity="0.7"/>'
+            + '<circle cx="38" cy="19" r="1.3" fill="white" opacity="0.85"/>'
+            + '<circle cx="72" cy="21" r="1.1" fill="white" opacity="0.85"/>'
+            + '<circle cx="56" cy="17" r="1.0" fill="white" opacity="0.7"/>'
+            + '</svg>';
+        var pool = spawn('screen-pet-fx-pool', poolSvg, poolCx, poolCy, 0);
+
+        // 1) hop into the pool (parabolic arc) — splash on entry
+        tweenTurtle(startX, startY, turtleTargetX, startY, 500, 28, function () {
+            spawnSplash(poolCx, poolCy, 6);
+            // 2) bounce in place 3 times, splashing on each landing
+            bouncePoolWithSplash(turtleTargetX, startY, 3, 360, 14, poolCx, poolCy, function () {
+                // 3) sit in the pool for a beat (no hop-out)
+                later(function () {
+                    pool.classList.add('fading');
+                    later(function () {
+                        removeEffect(pool);
+                        setMode('idle', 600);
+                    }, 320);
+                }, 800);
+            });
+        });
+    }
+
+    // Same as bouncePool but spawns a small splash burst at each landing.
+    function bouncePoolWithSplash(cx, baseY, count, perBounceMs, hopHeight, splashCx, splashCy, done) {
+        animToken++;
+        var myToken = animToken;
+        var start = performance.now();
+        var total = count * perBounceMs;
+        var lastBounceIdx = -1;
+        function step(now) {
+            if (myToken !== animToken) return;
+            var elapsed = now - start;
+            if (elapsed >= total) {
+                state.x = cx;
+                state.y = baseY;
+                applyTransform();
+                spawnSplash(splashCx, splashCy, 4);   // final landing splash
+                if (done) done();
+                return;
+            }
+            var bounceIdx = Math.floor(elapsed / perBounceMs);
+            var phase = (elapsed / perBounceMs) % 1;
+            var arc = -Math.sin(phase * Math.PI) * hopHeight;
+            state.x = cx;
+            state.y = baseY + arc;
+            applyTransform();
+            // Splash at the start of each bounce after the first
+            // (each landing → push-off cycle).
+            if (bounceIdx > lastBounceIdx) {
+                if (bounceIdx > 0) spawnSplash(splashCx, splashCy, 4);
+                lastBounceIdx = bounceIdx;
+            }
+            requestAnimationFrame(step);
+        }
+        requestAnimationFrame(step);
     }
 
     function doBed() {
@@ -557,6 +787,7 @@
         clearTimers();
         clearAllEffects();
         closeBed();
+        abortAnim();   // cancel any in-flight tween (pool hop, etc.)
         if (pet) { pet.classList.remove('happy', 'shake', 'munch'); }
         setMode('idle', 600);
     }
@@ -687,6 +918,7 @@
         clearAllEffects();
         closeMenu();
         closeBed();
+        stopSleepZs();
         if (pet && pet.parentNode) pet.parentNode.removeChild(pet);
         pet = null;
     }
@@ -743,5 +975,15 @@
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
     else init();
 
-    window.ScreenPet = { setEnabled: setEnabled, isEnabled: isEnabled };
+    window.ScreenPet = {
+        setEnabled: setEnabled,
+        isEnabled: isEnabled,
+        // Preview / debug surface — used by screen_pet_preview.html
+        _runAction: runAction,
+        _setMode: setMode,
+        _openMenu: openMenu,
+        _closeMenu: closeMenu,
+        _interruptToIdle: interruptToIdle,
+        _state: state,
+    };
 })();
