@@ -280,20 +280,28 @@ _PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 \usepackage{titlesec}
 \usepackage{ulem}
 
-% Custom \ruby{base}{annotation}: stacks the annotation in tiny italic
-% blue above the base text using a single-cell tabular wrapped in \mbox.
-% Self-contained — avoids depending on ruby.sty, which isn't in the
-% Debian texlive-latex-extra package we install. Pinyin itself is
-% pre-generated via pypinyin in pinyin_annotate.py; this command just
-% renders one base/annotation pair above the line. The \mbox prevents
-% the multi-character base from being split mid-word.
+% Custom \ruby{base}{annotation}: paints the annotation centred above
+% the base using \rlap + \smash so it claims no horizontal space and
+% no vertical space — adjacent characters render exactly where they
+% would without the ruby. The base is measured into \rubytmpbox so the
+% overlay is exactly the base's width, regardless of pinyin length.
+% Avoids the tabular-based version's habit of clipping the character
+% immediately after each ruby in narrow table cells.
 \definecolor{rubypy}{HTML}{5B6CF0}
+\newsavebox{\rubytmpbox}
 \newcommand{\ruby}[2]{%
-  \mbox{%
-    \begin{tabular}[b]{@{}c@{}}%
-      \scriptsize\textcolor{rubypy}{\textit{#2}}\\[-1pt]%
-      #1%
-    \end{tabular}%
+  \sbox{\rubytmpbox}{#1}%
+  \makebox[\wd\rubytmpbox][c]{%
+    \rlap{%
+      \smash{%
+        \raisebox{0.95em}{%
+          \makebox[\wd\rubytmpbox][c]{%
+            \scriptsize\textcolor{rubypy}{\textit{#2}}%
+          }%
+        }%
+      }%
+    }%
+    \usebox{\rubytmpbox}%
   }%
 }
 
