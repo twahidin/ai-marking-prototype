@@ -119,7 +119,8 @@ def _ruby(word, py):
     return '<ruby>' + html.escape(word) + '<rt>' + html.escape(py) + '</rt></ruby>'
 
 
-def annotate(text, mode='vocab', hsk_threshold=4, annotate_unknown=True):
+def annotate(text, mode='vocab', hsk_threshold=4, annotate_unknown=True,
+             overrides=None):
     """Annotate CJK runs in `text` with ruby pinyin per the chosen mode.
 
     Args:
@@ -133,6 +134,11 @@ def annotate(text, mode='vocab', hsk_threshold=4, annotate_unknown=True):
                           ≥ threshold (i.e. annotate them). Default True
                           since most off-list words in marking feedback
                           are advanced or domain-specific terms.
+        overrides: optional dict mapping Chinese word/character to the
+                   pinyin string the teacher wants to use, overriding
+                   pypinyin's automatic output. Words present in
+                   overrides are *always* annotated regardless of HSK
+                   level so the teacher's edit doesn't silently vanish.
 
     Returns:
         HTML string safe to drop into existing feedback rendering.
@@ -143,6 +149,8 @@ def annotate(text, mode='vocab', hsk_threshold=4, annotate_unknown=True):
         return html.escape(text)
     if mode not in ('vocab', 'full'):
         raise ValueError("mode must be 'off', 'vocab', or 'full'")
+
+    overrides = overrides or {}
 
     jieba, _ = _ensure_libs()
     out = []
@@ -159,18 +167,22 @@ def annotate(text, mode='vocab', hsk_threshold=4, annotate_unknown=True):
         chunk = ''.join(buf_cjk)
         buf_cjk.clear()
         if mode == 'full':
-            # Per-character annotation regardless of HSK level.
+            # Per-character annotation regardless of HSK level. A teacher
+            # override on a single character still wins.
             for ch in chunk:
-                out.append(_ruby(ch, _toned_pinyin_for(ch)))
+                py = overrides.get(ch) or _toned_pinyin_for(ch)
+                out.append(_ruby(ch, py))
             return
-        # 'vocab' mode: segment, look up HSK level, annotate if ≥ threshold.
+        # 'vocab' mode: segment, look up HSK level, annotate if ≥ threshold
+        # OR a teacher has set a pinyin override for that exact word.
         for word in jieba.cut(chunk, HMM=True):
             if not word:
                 continue
-            # Skip annotation for non-CJK fragments inside the chunk
-            # (shouldn't happen since chunk is all CJK, but defensive).
             if not all(_is_cjk(c) for c in word):
                 out.append(html.escape(word))
+                continue
+            if word in overrides:
+                out.append(_ruby(word, overrides[word]))
                 continue
             if _word_meets_threshold(word, hsk_threshold, annotate_unknown):
                 out.append(_ruby(word, _toned_pinyin_for(word)))
@@ -228,6 +240,15 @@ RESULT_QUESTION_FIELDS = (
 )
 
 
+def _overrides_for(d, field):
+    """Return the per-field pinyin overrides dict on a result/question.
+    Stored as `<field>_pinyin_overrides`. Always returns a dict."""
+    if not isinstance(d, dict):
+        return {}
+    o = d.get(field + '_pinyin_overrides')
+    return o if isinstance(o, dict) else {}
+
+
 def annotate_result_for_pinyin(result, mode, hsk_threshold=4):
     """Add `_html` siblings to selected string fields on the AI marking
     result so templates can render annotated ruby HTML while the raw
@@ -236,6 +257,11 @@ def annotate_result_for_pinyin(result, mode, hsk_threshold=4):
     Mutates `result` in place. Safe to call on a result that's already
     been annotated — re-derives _html from the raw fields each time, so
     a teacher edit followed by re-annotate produces the latest HTML.
+
+    Per-field pinyin overrides (set by the inline-edit popover) are
+    respected on every re-annotate, so a teacher's correction sticks
+    across regenerations until the override is removed or the underlying
+    Chinese word is changed.
     """
     if not isinstance(result, dict) or mode == 'off':
         return result
@@ -243,7 +269,10 @@ def annotate_result_for_pinyin(result, mode, hsk_threshold=4):
     for f in RESULT_TEXT_FIELDS:
         v = result.get(f)
         if isinstance(v, str) and v.strip():
-            result[f + '_html'] = annotate(v, mode=mode, hsk_threshold=hsk_threshold)
+            result[f + '_html'] = annotate(
+                v, mode=mode, hsk_threshold=hsk_threshold,
+                overrides=_overrides_for(result, f),
+            )
 
     for q in (result.get('questions') or []):
         if not isinstance(q, dict):
@@ -251,9 +280,11 @@ def annotate_result_for_pinyin(result, mode, hsk_threshold=4):
         for f in RESULT_QUESTION_FIELDS:
             v = q.get(f)
             if isinstance(v, str) and v.strip():
-                q[f + '_html'] = annotate(v, mode=mode, hsk_threshold=hsk_threshold)
+                q[f + '_html'] = annotate(
+                    v, mode=mode, hsk_threshold=hsk_threshold,
+                    overrides=_overrides_for(q, f),
+                )
 
-    # 'recommended_actions' is a list of strings, not nested under a key.
     actions = result.get('recommended_actions')
     if isinstance(actions, list):
         result['recommended_actions_html'] = [

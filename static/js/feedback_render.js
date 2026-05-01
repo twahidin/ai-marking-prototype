@@ -339,11 +339,17 @@
 
         var fbBlock, impBlock;
         if (state.editable) {
-            // Editable view shows the *raw* text inside contenteditable so
-            // teachers edit prose, not the ruby markup. Pinyin annotations
-            // are re-applied after the save round-trip.
-            var fbContent = q.feedback ? escMath(q.feedback) : '<span class="fb-placeholder">Click to add feedback…</span>';
-            var impContent = q.improvement ? escMath(q.improvement) : '<span class="fb-placeholder">Click to add suggested improvement…</span>';
+            // Editable view: render the annotated _html when present so
+            // ruby tags are visible and clickable for the per-word
+            // edit popover. When there's no _html (English / non-pinyin
+            // assignments), fall back to plain escMath so contenteditable
+            // shows clean prose.
+            var fbContent = q.feedback_html
+                ? q.feedback_html
+                : (q.feedback ? escMath(q.feedback) : '<span class="fb-placeholder">Click to add feedback…</span>');
+            var impContent = q.improvement_html
+                ? q.improvement_html
+                : (q.improvement ? escMath(q.improvement) : '<span class="fb-placeholder">Click to add suggested improvement…</span>');
             fbBlock = '<div class="fb-q-field"><div class="fb-q-field-label">Feedback <small style="color:#bbb;font-weight:400;">(click to edit)</small></div>' +
                 '<div class="fb-q-field-value feedback fb-editable" data-field="feedback">' + fbContent +
                 '<span class="edit-hint">✎ edit</span></div></div>';
@@ -480,12 +486,137 @@
             statusBadge.addEventListener('click', function () { cycleStatus(state, statusBadge); });
         }
         card.querySelectorAll('[data-field="feedback"], [data-field="improvement"]').forEach(function (el) {
-            el.addEventListener('click', function () {
+            el.addEventListener('click', function (ev) {
                 if (el.dataset.editing === '1') return;
+                // If the click landed on a <ruby> annotation, open the
+                // per-word pinyin editor instead of switching the whole
+                // field to plain-text contenteditable.
+                var ruby = ev.target && ev.target.closest ? ev.target.closest('ruby') : null;
+                if (ruby && el.contains(ruby)) {
+                    ev.stopPropagation();
+                    openRubyPopover(state, el.getAttribute('data-field'), ruby);
+                    return;
+                }
                 beginTextEdit(state, el, el.getAttribute('data-field'));
             });
         });
         attachCategoryLineHandler(state, card);
+    }
+
+    // ------------------------------------------------------------------
+    // Per-ruby pinyin edit popover
+    // ------------------------------------------------------------------
+    var rubyPopover = null;
+
+    function closeRubyPopover() {
+        if (rubyPopover && rubyPopover.parentNode) rubyPopover.parentNode.removeChild(rubyPopover);
+        rubyPopover = null;
+        document.removeEventListener('mousedown', rubyOutsideClose, true);
+    }
+
+    function rubyOutsideClose(ev) {
+        if (!rubyPopover) return;
+        if (rubyPopover.contains(ev.target)) return;
+        closeRubyPopover();
+    }
+
+    function openRubyPopover(state, field, rubyEl) {
+        closeRubyPopover();
+        // Extract base + pinyin from the ruby element. Cloning lets us
+        // strip the <rt> safely without disturbing the live DOM.
+        var clone = rubyEl.cloneNode(true);
+        var rtClone = clone.querySelector('rt');
+        var oldPinyin = rtClone ? (rtClone.textContent || '').trim() : '';
+        if (rtClone) rtClone.remove();
+        var oldWord = (clone.textContent || '').trim();
+
+        var pop = document.createElement('div');
+        pop.className = 'fb-ruby-edit-pop';
+        pop.style.cssText =
+            'position: absolute; z-index: 9999;' +
+            'background: white; border: 1px solid #d8d8dc; border-radius: 8px;' +
+            'box-shadow: 0 6px 22px rgba(0,0,0,0.18);' +
+            'padding: 10px 12px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;';
+        pop.innerHTML =
+            '<label style="font-size:11px;color:#777;">中文</label>' +
+            '<input class="fb-ruby-zh" style="font-size:16px; padding:4px 8px; border:1px solid #d8d8dc; border-radius:5px; min-width:80px;">' +
+            '<label style="font-size:11px;color:#777;">拼音</label>' +
+            '<input class="fb-ruby-py" style="font-size:13px; padding:4px 8px; border:1px solid #d8d8dc; border-radius:5px; color:#5b6cf0; min-width:120px;">' +
+            '<button type="button" class="fb-ruby-save" style="font-size:12px; padding:5px 10px; border:none; border-radius:5px; background:#5b6cf0; color:white; cursor:pointer; font-weight:600;">Save</button>' +
+            '<button type="button" class="fb-ruby-cancel" style="font-size:12px; padding:5px 10px; border:none; border-radius:5px; background:#e8e8ec; color:#555; cursor:pointer;">Cancel</button>';
+        document.body.appendChild(pop);
+        rubyPopover = pop;
+
+        // Position below the ruby
+        var rect = rubyEl.getBoundingClientRect();
+        pop.style.top = (rect.bottom + window.scrollY + 6) + 'px';
+        pop.style.left = (rect.left + window.scrollX) + 'px';
+
+        var zhI = pop.querySelector('.fb-ruby-zh');
+        var pyI = pop.querySelector('.fb-ruby-py');
+        zhI.value = oldWord;
+        pyI.value = oldPinyin;
+        // Focus pinyin first since that's the more common edit
+        pyI.focus(); pyI.select();
+
+        pop.querySelector('.fb-ruby-save').addEventListener('click', function () {
+            saveRubyEdit(state, field, oldWord, zhI.value.trim(), pyI.value.trim());
+        });
+        pop.querySelector('.fb-ruby-cancel').addEventListener('click', closeRubyPopover);
+        // Enter saves; Escape cancels.
+        pop.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter') {
+                ev.preventDefault();
+                saveRubyEdit(state, field, oldWord, zhI.value.trim(), pyI.value.trim());
+            } else if (ev.key === 'Escape') {
+                ev.preventDefault();
+                closeRubyPopover();
+            }
+        });
+        // Defer outside-click handler so the click that opened us doesn't
+        // immediately close it.
+        setTimeout(function () { document.addEventListener('mousedown', rubyOutsideClose, true); }, 0);
+    }
+
+    function saveRubyEdit(state, field, oldWord, newWord, newPinyin) {
+        if (!oldWord || !newWord) { closeRubyPopover(); return; }
+        var qIdx = state.currentQ;
+        var qNum = state.questions[qIdx] && state.questions[qIdx].question_num;
+        var url = '/teacher/assignment/' + encodeURIComponent(state.assignmentId) +
+                  '/submission/' + encodeURIComponent(state.submissionId) +
+                  '/result/pinyin';
+        var body = {
+            question_num: qNum != null ? qNum : null,
+            field: field,
+            old_word: oldWord,
+            new_word: newWord,
+            new_pinyin: newPinyin,
+        };
+        fetch(url, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (!data.success) {
+                alert(data.error || 'Failed to save edit.');
+                return;
+            }
+            // Refresh the in-memory questions array with the server's
+            // re-annotated result and re-render the current card.
+            var newResult = data.result || {};
+            if (Array.isArray(newResult.questions)) {
+                state.questions = newResult.questions;
+            }
+            state.overall = newResult.overall_feedback || state.overall;
+            state.overallHtml = newResult.overall_feedback_html || '';
+            closeRubyPopover();
+            try { renderQuestion(state); } catch (e) {}
+        })
+        .catch(function () {
+            alert('Network error. Please try again.');
+        });
     }
 
     var THEME_KEYS = ['reasoning_gap', 'evidence_handling', 'language_expression', 'procedural_error', 'content_gap'];

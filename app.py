@@ -6495,6 +6495,106 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     return jsonify(response)
 
 
+@app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/result/pinyin', methods=['PATCH'])
+def teacher_submission_pinyin_patch(assignment_id, submission_id):
+    """Per-ruby pinyin edit. Accepts a single override:
+        {
+          "question_num": 1 | null,           # null => top-level (well_done, main_gap, overall_feedback)
+          "field": "feedback",                # which field hosts the word
+          "old_word": "成语",                 # current Chinese to edit (used for replace if changing)
+          "new_word": "成语",                 # may equal old_word if only pinyin changes
+          "new_pinyin": "chéngyǔ"             # new pinyin for new_word; empty string removes override
+        }
+    Mutates result_json in place: if new_word != old_word, the raw text
+    field is updated by string-replacing the first occurrence; the per-field
+    pinyin_overrides map is updated; the result is re-annotated; saved.
+    Returns the updated result so the client can re-render."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid submission'}), 400
+
+    pmode = getattr(asn, 'pinyin_mode', 'off') or 'off'
+    if pmode == 'off':
+        return jsonify({'success': False, 'error': 'Pinyin is not enabled on this assignment'}), 400
+
+    payload = request.get_json(silent=True) or {}
+    field = (payload.get('field') or '').strip()
+    if field not in (
+        'feedback', 'improvement', 'idea', 'correction_prompt',
+        'student_answer', 'correct_answer',
+        'well_done', 'main_gap', 'overall_feedback',
+    ):
+        return jsonify({'success': False, 'error': 'Unknown or non-editable field'}), 400
+    old_word = (payload.get('old_word') or '').strip()
+    new_word = (payload.get('new_word') or old_word).strip()
+    new_pinyin = (payload.get('new_pinyin') or '').strip()
+    if not old_word:
+        return jsonify({'success': False, 'error': 'old_word required'}), 400
+    if len(new_word) > 80 or len(new_pinyin) > 120:
+        return jsonify({'success': False, 'error': 'Edited values are too long'}), 400
+
+    result = sub.get_result() or {}
+    qnum = payload.get('question_num')
+
+    if qnum is None:
+        target = result
+    else:
+        target = None
+        for q in (result.get('questions') or []):
+            if str(q.get('question_num')) == str(qnum):
+                target = q
+                break
+        if target is None:
+            return jsonify({'success': False, 'error': 'Question not found'}), 400
+
+    if not isinstance(target.get(field), str):
+        return jsonify({'success': False, 'error': f'Field {field!r} not present'}), 400
+
+    # Replace the old word in the raw text if the teacher changed the
+    # Chinese (replace first occurrence only — multi-occurrence cases
+    # would need richer addressing). If only the pinyin changed, leave
+    # the prose alone.
+    if new_word != old_word:
+        target[field] = target[field].replace(old_word, new_word, 1)
+
+    # Update overrides map. Empty pinyin clears the override for that word.
+    ov_key = field + '_pinyin_overrides'
+    overrides = target.get(ov_key)
+    if not isinstance(overrides, dict):
+        overrides = {}
+    # Remove the old override key if the word actually changed and the old
+    # value is no longer present in the prose, otherwise it dangles.
+    if new_word != old_word and old_word in overrides:
+        if old_word not in target.get(field, ''):
+            overrides.pop(old_word, None)
+    if new_pinyin:
+        overrides[new_word] = new_pinyin
+    else:
+        overrides.pop(new_word, None)
+    if overrides:
+        target[ov_key] = overrides
+    else:
+        target.pop(ov_key, None)
+
+    # Re-annotate the whole result so all _html fields stay consistent.
+    try:
+        from pinyin_annotate import annotate_result_for_pinyin
+        annotate_result_for_pinyin(result, pmode)
+        result['pinyin_mode'] = pmode
+    except Exception as _e:
+        logger.warning(f'pinyin re-annotation on per-ruby edit skipped: {_e}')
+
+    sub.set_result(result)
+    db.session.commit()
+    return jsonify({'success': True, 'result': sub.get_result()})
+
+
 @app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/remark', methods=['POST'])
 def teacher_submission_remark(assignment_id, submission_id):
     asn = Assignment.query.get_or_404(assignment_id)
