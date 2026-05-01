@@ -13,15 +13,24 @@
     }
     @media (max-width: 900px) { .asn-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     @media (max-width: 560px) { .asn-grid { grid-template-columns: 1fr; } }
-    .asn-extra { display: none; }
-    .asn-extra.visible { display: block; }
-    .show-older-row { margin-top: 14px; display: flex; justify-content: center; }
-    .show-older-btn {
-        background: transparent; border: 1px dashed #cdd2eb; color: #667eea;
-        padding: 8px 18px; font-size: 13px; font-weight: 600; border-radius: 999px;
-        cursor: pointer; transition: all 0.15s;
+
+    /* Pager: cards are split into pages of 6. .asn-hidden uses !important
+       because the .asn-card rule below sets display:block at equal CSS
+       specificity, so without !important the hide rule loses. */
+    .asn-card.asn-hidden { display: none !important; }
+    .asn-pager {
+        margin-top: 14px;
+        display: flex; align-items: center; justify-content: center;
+        gap: 14px;
     }
-    .show-older-btn:hover { background: #f0f2ff; border-color: #667eea; }
+    .asn-pager .pager-btn {
+        background: white; border: 1px solid #cdd2eb; color: #667eea;
+        padding: 8px 18px; font-size: 13px; font-weight: 600;
+        border-radius: 999px; cursor: pointer; transition: all 0.15s;
+    }
+    .asn-pager .pager-btn:hover:not(:disabled) { background: #f0f2ff; border-color: #667eea; }
+    .asn-pager .pager-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .asn-pager .pager-status { font-size: 12px; color: #888; min-width: 56px; text-align: center; }
 
     .asn-card {
         background: white; border-radius: 14px; padding: 20px;
@@ -128,9 +137,15 @@
         </div>
 
         {% if cls.assignments %}
+        {# Paginate in groups of 6. Newest first; "older" pages are
+           reached by clicking the right arrow. #}
+        {% set total_pages = ((cls.assignments | length) + 5) // 6 %}
         <div class="asn-grid" id="asnGrid_{{ cls.id }}">
             {% for asn in cls.assignments %}
-            <a class="asn-card{% if loop.index0 >= 6 %} asn-extra{% endif %}" href="/teacher/assignment/{{ asn.id }}">
+            {% set page_idx = loop.index0 // 6 %}
+            <a class="asn-card{% if page_idx > 0 %} asn-hidden{% endif %}"
+               data-page-idx="{{ page_idx }}"
+               href="/teacher/assignment/{{ asn.id }}">
                 <div class="asn-card-title">{{ asn.title }}</div>
                 <div class="asn-card-subject">{{ asn.subject }}</div>
                 <span class="asn-card-code">{{ asn.classroom_code }}</span>
@@ -151,14 +166,20 @@
             </a>
             {% endfor %}
         </div>
-        {% if cls.assignments | length > 6 %}
-        <div class="show-older-row">
-            <button type="button" class="show-older-btn"
-                    data-target="asnGrid_{{ cls.id }}"
-                    data-count="{{ cls.assignments | length - 6 }}"
-                    onclick="toggleOlderAssignments(this)">
-                Show {{ cls.assignments | length - 6 }} older
-            </button>
+        {% if total_pages > 1 %}
+        <div class="asn-pager"
+             data-grid="asnGrid_{{ cls.id }}"
+             data-current="0"
+             data-total="{{ total_pages }}">
+            <button type="button" class="pager-btn" data-action="prev"
+                    aria-label="Newer assignments" disabled
+                    onclick="pagerStep(this, -1)">&#9664; Newer</button>
+            <span class="pager-status">
+                <span data-current-page>1</span> / <span data-total-pages>{{ total_pages }}</span>
+            </span>
+            <button type="button" class="pager-btn" data-action="next"
+                    aria-label="Older assignments"
+                    onclick="pagerStep(this, 1)">Older &#9654;</button>
         </div>
         {% endif %}
         {% else %}
@@ -180,19 +201,32 @@
 
 {% block scripts %}
 <script>
-function toggleOlderAssignments(btn) {
-    var grid = document.getElementById(btn.dataset.target);
+/* Pager step: shifts which page-of-6 is visible in the assignment grid.
+   `delta` = -1 (newer page) or +1 (older page). The pager element holds
+   the current page index and total page count in data-* attributes;
+   cards have data-page-idx so we just toggle .asn-hidden per match. */
+function pagerStep(btn, delta) {
+    var pager = btn.closest('.asn-pager');
+    if (!pager) return;
+    var current = parseInt(pager.dataset.current, 10) || 0;
+    var total = parseInt(pager.dataset.total, 10) || 1;
+    var next = current + delta;
+    if (next < 0) next = 0;
+    if (next >= total) next = total - 1;
+    if (next === current) return;
+    pager.dataset.current = next;
+    var grid = document.getElementById(pager.dataset.grid);
     if (!grid) return;
-    var extras = grid.querySelectorAll('.asn-extra');
-    var nowVisible = !btn.classList.contains('open');
-    extras.forEach(function (el) {
-        if (nowVisible) el.classList.add('visible');
-        else el.classList.remove('visible');
+    grid.querySelectorAll('.asn-card').forEach(function (card) {
+        var idx = parseInt(card.dataset.pageIdx, 10) || 0;
+        card.classList.toggle('asn-hidden', idx !== next);
     });
-    btn.classList.toggle('open', nowVisible);
-    btn.textContent = nowVisible
-        ? 'Hide older'
-        : ('Show ' + btn.dataset.count + ' older');
+    var statusCur = pager.querySelector('[data-current-page]');
+    if (statusCur) statusCur.textContent = (next + 1);
+    var prevBtn = pager.querySelector('[data-action="prev"]');
+    var nextBtn = pager.querySelector('[data-action="next"]');
+    if (prevBtn) prevBtn.disabled = (next === 0);
+    if (nextBtn) nextBtn.disabled = (next === total - 1);
 }
 
 async function toggleStudents(classId) {
