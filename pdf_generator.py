@@ -21,6 +21,7 @@ If lualatex is missing or the compile fails, RuntimeError is raised with
 the last 2KB of the LaTeX log so the failure is debuggable from the
 caller's exception path.
 """
+import html as _html
 import io
 import os
 import re
@@ -31,6 +32,8 @@ import logging
 import hashlib
 import json as _json
 import threading
+
+_html_unescape = _html.unescape
 from collections import OrderedDict
 from datetime import datetime, timezone
 from statistics import mean, median, stdev
@@ -138,15 +141,46 @@ _BARE_MATH_PATTERNS = [
 ]
 
 
+_RUBY_RE = re.compile(
+    r'<ruby[^>]*>(.*?)<rt[^>]*>(.*?)</rt>\s*</ruby>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _pick_field(d, key, default=''):
+    """Prefer the pinyin-annotated `<key>_html` field when it's a non-empty
+    string. Falls back to the raw text under `key`. _tex_text knows how to
+    render either: HTML strings get the ruby pre-pass; plain strings go
+    through the normal escape + math passes."""
+    if not isinstance(d, dict):
+        return default
+    html = d.get(key + '_html')
+    if isinstance(html, str) and html:
+        return html
+    return d.get(key, default)
+
+
+def _strip_html_to_text(s):
+    """Convert pinyin-annotated HTML (which carries <ruby><rt>...</rt></ruby>
+    tags) back to plain text. Used as a fallback when the PDF generator can't
+    render ruby for some reason — drops the annotation, keeps the base text."""
+    if not s:
+        return ''
+    return _RUBY_RE.sub(lambda m: m.group(1), str(s))
+
+
 def _tex_text(s):
     """Convert AI text to LaTeX-safe content while preserving math.
 
     Order:
-      1. extract $$...$$ blocks → \\[...\\] (display math)
-      2. extract $...$ blocks → \\(...\\) (inline math)
-      3. extract bare math patterns (\\frac, ^_, named cmds) → \\(...\\)
-      4. LaTeX-escape the remaining prose
-      5. restore all extracted math fragments
+      1. extract <ruby><rt>…</rt></ruby> spans → \\ruby{base}{pinyin}
+         (these come from pinyin_annotate.py; base + pinyin are HTML-escaped
+         already so we un-escape and let _tex_escape handle LaTeX special chars)
+      2. extract $$...$$ blocks → \\[...\\] (display math)
+      3. extract $...$ blocks → \\(...\\) (inline math)
+      4. extract bare math patterns (\\frac, ^_, named cmds) → \\(...\\)
+      5. LaTeX-escape the remaining prose
+      6. restore all extracted fragments
     """
     if not s:
         return ''
@@ -156,6 +190,15 @@ def _tex_text(s):
     def stash(payload):
         placeholders.append(payload)
         return f'\x02M{len(placeholders) - 1}M\x02'
+
+    # Ruby first — it must run before any escape pass so the < > inside the
+    # tags don't get mangled. Inside a ruby, the base and the pinyin are
+    # short bits of text/escapes; we LaTeX-escape each side then wrap.
+    def ruby_to_tex(m):
+        base = _html_unescape(m.group(1)).strip()
+        pinyin = _html_unescape(m.group(2)).strip()
+        return r'\ruby{' + _tex_escape(base) + r'}{' + _tex_escape(pinyin) + r'}'
+    s = _RUBY_RE.sub(lambda m: stash(ruby_to_tex(m)), s)
 
     s = re.sub(
         r'\$\$(.+?)\$\$',
@@ -204,6 +247,12 @@ _PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 \usepackage[version=4]{mhchem}
 \usepackage{titlesec}
 \usepackage{ulem}
+% Ruby annotations for hanyu pinyin above CJK characters. Ships in
+% texlive-latex-extra (already installed for tcolorbox / tabularx /
+% titlesec). \ruby{base}{annotation} renders the annotation centred
+% above the base text with reasonable kerning across LuaLaTeX + Noto
+% Sans CJK; we pre-generate the pinyin via pypinyin in pinyin_annotate.py.
+\usepackage{ruby}
 
 % Noto Sans as the main font — humanist sans-serif similar to Helvetica
 % in feel, reliably resolvable on Railway (apt-installed via fonts-noto
@@ -448,17 +497,17 @@ def _generate_report_pdf_impl(result, subject, app_title, assignment_name):
             r'\end{tabular}}\par' + '\n'
         )
 
-    if result.get('well_done'):
+    if result.get('well_done') or result.get('well_done_html'):
         banners.append(_banner(
             'brandgreen', 'bggreen',
             r'\textbf{$\checkmark$ Well done:}',
-            result['well_done'],
+            _pick_field(result, 'well_done'),
         ))
-    if result.get('main_gap'):
+    if result.get('main_gap') or result.get('main_gap_html'):
         banners.append(_banner(
             'brandorange', 'bgorange',
             r'\textbf{$\rightarrow$ Main gap:}',
-            result['main_gap'],
+            _pick_field(result, 'main_gap'),
         ))
 
     # Per-question cards
@@ -486,8 +535,8 @@ def _generate_report_pdf_impl(result, subject, app_title, assignment_name):
             label = f'{item_label} {q.get("question_num", "?")}'
 
         rows = [
-            (ans_label, q.get('student_answer', 'N/A')),
-            (ref_label, q.get('correct_answer', 'N/A')),
+            (ans_label, _pick_field(q, 'student_answer', 'N/A')),
+            (ref_label, _pick_field(q, 'correct_answer', 'N/A')),
         ]
         # Suppress Feedback / Improvement on correct questions —
         # matches master's behaviour and avoids cluttering the PDF
@@ -497,8 +546,8 @@ def _generate_report_pdf_impl(result, subject, app_title, assignment_name):
         # provided text; _build_qcard's per-row empty check then
         # drops any that came back blank.
         if status != 'correct':
-            rows.append(('Feedback', q.get('feedback', '')))
-            rows.append(('Improvement', q.get('improvement', '')))
+            rows.append(('Feedback', _pick_field(q, 'feedback', '')))
+            rows.append(('Improvement', _pick_field(q, 'improvement', '')))
         # `correction_prompt` ("Try this") intentionally not rendered in
         # the PDF — kept on the data shape but no row in the report.
         cards.append(_build_qcard(label, status, marks_text, rows))
@@ -528,8 +577,9 @@ def _generate_report_pdf_impl(result, subject, app_title, assignment_name):
         )
 
     # Overall + recommended actions
-    overall_tex = _tex_text(result.get('overall_feedback', 'No overall feedback provided.'))
-    actions = result.get('recommended_actions') or []
+    overall_tex = _tex_text(_pick_field(result, 'overall_feedback', 'No overall feedback provided.'))
+    actions_html = result.get('recommended_actions_html')
+    actions = actions_html if isinstance(actions_html, list) and actions_html else (result.get('recommended_actions') or [])
     actions_block = ''
     if actions:
         items = '\n'.join(rf'\item {_tex_text(a)}' for a in actions)
