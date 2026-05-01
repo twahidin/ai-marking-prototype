@@ -738,6 +738,15 @@ QUOTATION MARKS — STRICT (this prevents JSON parse failures):
   ASCII " ".
 - If you must use ASCII " for any reason, you MUST escape it as \\".
 
+NO INLINE ANNOTATIONS — STRICT.
+- Do NOT insert pinyin, romanisation, transliteration, or any other gloss
+  inside the prose using angle-bracket tags like <yong>, <pinyin>, <gloss>,
+  <ruby>, etc. The platform generates pinyin annotations automatically
+  AFTER you respond; your job is to write clean mother-tongue prose only.
+- Do NOT use parenthetical pinyin either, e.g. "用 (yòng)". Just write 用.
+- Do NOT emit any HTML tags (<b>, <i>, <em>, <span>, etc.) inside string
+  values. Plain prose only.
+
 Self-check before responding: re-read every field listed above. If any
 student-facing field is still in English, rewrite it in {lang}.
 

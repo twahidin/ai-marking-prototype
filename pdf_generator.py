@@ -146,6 +146,28 @@ _RUBY_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
+# CJK Unified Ideographs + Compatibility ranges. Used to inject zero-width
+# breakpoints so LuaLaTeX's line-breaker can wrap inside continuous Chinese
+# runs. Without this, CJK text is treated as one unbreakable atom and runs
+# off the right edge of any narrow column (Student Answer / Feedback cells).
+_CJK_RANGE = re.compile(r'([一-鿿㐀-䶿]+)')
+
+# Stray inline annotations the AI sometimes emits inside string values
+# (e.g. "<yong>" as inline pinyin for 用). Not part of our ruby pipeline,
+# never useful, always renders literally. Strip them before LaTeX-escape.
+_STRAY_TAG_RE = re.compile(r'<[a-z][a-z0-9]*>', re.IGNORECASE)
+
+
+def _cjk_breakable(s):
+    """Insert a discardable glue node (\\hspace{0pt}) after each CJK
+    character, giving LuaLaTeX line-break opportunities mid-string. Without
+    this, a 60-char Chinese sentence becomes one unbreakable atom and
+    overflows narrow table columns."""
+    return _CJK_RANGE.sub(
+        lambda m: ''.join(c + r'\hspace{0pt}' for c in m.group(1)),
+        s,
+    )
+
 
 def _pick_field(d, key, default=''):
     """Prefer the pinyin-annotated `<key>_html` field when it's a non-empty
@@ -197,8 +219,13 @@ def _tex_text(s):
     def ruby_to_tex(m):
         base = _html_unescape(m.group(1)).strip()
         pinyin = _html_unescape(m.group(2)).strip()
-        return r'\ruby{' + _tex_escape(base) + r'}{' + _tex_escape(pinyin) + r'}'
+        return r'\ruby{' + _cjk_breakable(_tex_escape(base)) + r'}{' + _tex_escape(pinyin) + r'}'
     s = _RUBY_RE.sub(lambda m: stash(ruby_to_tex(m)), s)
+
+    # Strip any stray inline single-word tags the AI may have left in
+    # (e.g. "<yong>" as a pinyin gloss). Our pinyin pipeline owns ruby;
+    # anything else is noise that would render literally.
+    s = _STRAY_TAG_RE.sub('', s)
 
     s = re.sub(
         r'\$\$(.+?)\$\$',
@@ -214,6 +241,11 @@ def _tex_text(s):
         s = pat.sub(lambda m: stash(r'\(' + m.group(0) + r'\)'), s)
 
     s = _tex_escape(s)
+    # Final pass: insert breakpoints inside CJK runs in the *prose* part
+    # so the table columns can wrap mid-Chinese-string. The ruby case
+    # above already passed the base text through _cjk_breakable, so any
+    # ruby-wrapped CJK was handled there.
+    s = _cjk_breakable(s)
     s = re.sub(r'\x02M(\d+)M\x02', lambda m: placeholders[int(m.group(1))], s)
     return s
 
