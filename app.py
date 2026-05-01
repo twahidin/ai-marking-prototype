@@ -5614,6 +5614,22 @@ def teacher_exemplars_generate(assignment_id):
     sanitised = {'areas': areas_out}
     asn.exemplar_analysis_json = json.dumps(sanitised)
     asn.exemplar_analyzed_at = datetime.now(timezone.utc)
+
+    # Mark every prior log row for this assignment as superseded, then
+    # append the new latest row. This way the history is preserved
+    # (audit / drift study) while clustering rollups can simply filter
+    # `superseded_at IS NULL` to count only one analysis per assignment.
+    from db import ExemplarAnalysisLog
+    ExemplarAnalysisLog.query.filter_by(
+        assignment_id=asn.id, superseded_at=None,
+    ).update({'superseded_at': asn.exemplar_analyzed_at}, synchronize_session=False)
+    db.session.add(ExemplarAnalysisLog(
+        assignment_id=asn.id,
+        submissions_count=len(submissions_data),
+        roster_size=total,
+        areas_json=json.dumps(sanitised),
+        created_at=asn.exemplar_analyzed_at,
+    ))
     db.session.commit()
 
     # Build student-name map for the response.

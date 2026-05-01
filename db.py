@@ -228,6 +228,58 @@ def _migrate_add_columns(app):
                         db.session.rollback()
                         logger.error(f'feedback_edit ALTER ADD {col} failed: {_e}')
 
+        # exemplar_analysis_log: ensure superseded_at column exists for
+        # tables created before the column was added to the model. New
+        # tables get it via create_all automatically.
+        if 'exemplar_analysis_log' in inspector.get_table_names():
+            log_cols = {c['name'] for c in inspector.get_columns('exemplar_analysis_log')}
+            if 'superseded_at' not in log_cols:
+                try:
+                    db.session.execute(text(
+                        'ALTER TABLE exemplar_analysis_log '
+                        'ADD COLUMN superseded_at TIMESTAMP'
+                    ))
+                    db.session.execute(text(
+                        'CREATE INDEX IF NOT EXISTS '
+                        'ix_exemplar_log_superseded ON exemplar_analysis_log (superseded_at)'
+                    ))
+                    db.session.commit()
+                    logger.info('Added superseded_at column to exemplar_analysis_log')
+                except Exception as _e:
+                    db.session.rollback()
+                    logger.warning(f'exemplar_analysis_log ALTER ADD superseded_at failed: {_e}')
+
+        # Backfill exemplar_analysis_log from existing
+        # Assignment.exemplar_analysis_json rows. One log entry per
+        # already-analysed assignment, using exemplar_analyzed_at as
+        # the historical created_at. Idempotent: only inserts rows
+        # that don't already have a log entry.
+        # submissions_count and roster_size stay NULL for backfilled
+        # rows — they were never recorded; clustering can weight
+        # NULL-sample rows lower.
+        if (
+            'exemplar_analysis_log' in inspector.get_table_names()
+            and 'assignments' in inspector.get_table_names()
+        ):
+            try:
+                db.session.execute(text(
+                    "INSERT INTO exemplar_analysis_log "
+                    "(assignment_id, areas_json, created_at) "
+                    "SELECT a.id, a.exemplar_analysis_json, "
+                    "       COALESCE(a.exemplar_analyzed_at, CURRENT_TIMESTAMP) "
+                    "FROM assignments a "
+                    "WHERE a.exemplar_analysis_json IS NOT NULL "
+                    "  AND a.exemplar_analysis_json != '' "
+                    "  AND NOT EXISTS ("
+                    "    SELECT 1 FROM exemplar_analysis_log l "
+                    "    WHERE l.assignment_id = a.id"
+                    "  )"
+                ))
+                db.session.commit()
+            except Exception as _e:
+                db.session.rollback()
+                logger.warning(f'exemplar_analysis_log backfill skipped: {_e}')
+
 
 def init_db(app):
     """Configure and initialize database."""
@@ -590,3 +642,47 @@ class TeacherDashboardLayout(db.Model):
     __table_args__ = (
         db.UniqueConstraint('teacher_id', 'class_id', name='uq_dashboard_teacher_class'),
     )
+
+
+class ExemplarAnalysisLog(db.Model):
+    """Append-only history of every exemplar-analysis run for an
+    assignment. The current/latest analysis still lives on
+    Assignment.exemplar_analysis_json (used by the exemplars page).
+    This table additionally captures every run over time so we can
+    later cluster recurring misconception themes across assignments
+    / classes / terms.
+
+    Deliberately separate from FeedbackEdit / MarkingPrinciples /
+    CategorisationCorrection — those are about per-question grading
+    consistency; this is about teacher-discussion-grade pattern
+    surfacing across an entire class.
+
+    Slim schema by design: subject / assign_type / provider / model /
+    teacher_id are all reachable via JOIN to assignments. Only the
+    snapshot data (submissions_count, roster_size at run time) and
+    the full areas_json output are stored here."""
+    __tablename__ = 'exemplar_analysis_log'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    assignment_id = db.Column(
+        db.String(36), db.ForeignKey('assignments.id'),
+        nullable=False, index=True,
+    )
+    # How many submissions the AI saw this run (capped at 40 by the
+    # route). Distinct from roster_size because the route samples.
+    submissions_count = db.Column(db.Integer, nullable=True)
+    # Class size at run time. Nullable because backfilled rows from
+    # before this table existed don't have a reliable historical value.
+    roster_size = db.Column(db.Integer, nullable=True)
+    areas_json = db.Column(db.Text, nullable=False, default='{}')
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False, index=True,
+    )
+    # NULL = current/latest analysis for this assignment (eligible for
+    # clustering rollups). Non-NULL = an older analysis that a re-run
+    # has since replaced; kept for audit / drift study but excluded
+    # from any "current state" aggregations. The teacher_exemplars_generate
+    # route stamps this on existing rows for the same assignment before
+    # inserting the new latest one.
+    superseded_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
