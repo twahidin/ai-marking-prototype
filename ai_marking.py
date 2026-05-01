@@ -667,6 +667,73 @@ CONSTRAINTS:
   may still expand the explainer to learn the concept."""
 
 
+# Mother-tongue subject families whose feedback should be written in the
+# native language. Other subjects (English, Math, Sciences, Humanities,
+# Lit, Art, Music, NFS, etc.) keep English feedback regardless of how the
+# Subject string was typed by the teacher.
+MOTHER_TONGUE_LANGUAGES = {
+    'chinese': '中文 (Chinese)',
+    'malay':   'Bahasa Melayu (Malay)',
+    'tamil':   'தமிழ் (Tamil)',
+    'hindi':   'हिन्दी (Hindi)',
+}
+
+
+def _language_directive(subject_text):
+    """Return a system-prompt block that forces same-language feedback for
+    mother-tongue assignments. Returns '' for non-mother-tongue subjects so
+    the prompt remains unchanged for English/Math/Sciences/etc.
+
+    Resolves the freeform subject via subjects.resolve_subject_key (the same
+    canonical mapping used by the dropdown / autocomplete), so 'CL', 'higher
+    chinese', 'Chinese Language', etc. all map to the chinese directive.
+    """
+    from subjects import resolve_subject_key
+    key = resolve_subject_key(subject_text or '')
+    lang = MOTHER_TONGUE_LANGUAGES.get(key)
+    if not lang:
+        return ''
+    return f"""LANGUAGE OF FEEDBACK — STRICT.
+This assignment's subject is a mother-tongue language: {lang}. ALL
+student-facing prose in your JSON output MUST be written in {lang}, in
+grammatically correct, age-appropriate {lang} (the level a Singapore
+secondary student should be able to read). The student's script is in
+{lang}; do not switch to English just because this system prompt happens
+to be written in English.
+
+WRITE IN {lang}:
+- well_done, main_gap, overall_feedback
+- For each question / criterion: feedback, improvement, idea,
+  correction_prompt, student_answer, correct_answer
+- Each item in recommended_actions
+- errors[].original and errors[].correction (mirror the student's exact text)
+- errors[].location
+
+KEEP IN ENGLISH (controlled vocabulary the platform depends on — do NOT translate):
+- "status" values: "correct" / "partially_correct" / "incorrect"
+- "type" values for errors: grammar | spelling | punctuation | vocabulary | factual | logical | style
+
+KEEP VERBATIM FROM THE SOURCE DOCUMENT (do not translate either way):
+- "criterion_name" — copy exactly from the rubrics table heading,
+  whatever language it is written in.
+- "band" — copy exactly as it appears in the rubrics
+  (e.g. "Band 5 (17-20)").
+
+FORMATTING NOTES:
+- Math stays inside $...$ delimiters with English LaTeX commands
+  (\\frac, \\times, \\leq, etc.). Do not translate math.
+- For Chinese: use Simplified Chinese (简体中文) by default. If the student's
+  script is clearly written in Traditional Chinese, mirror their variant.
+- For Tamil / Malay / Hindi: use modern, standard orthography.
+- The word / character limits in the feedback rules apply by character count
+  for Chinese, by word count for Tamil / Malay / Hindi.
+
+Self-check before responding: re-read every field listed above. If any
+student-facing field is still in English, rewrite it in {lang}.
+
+"""
+
+
 def _build_rubrics_prompt(subject, rubrics_pages, reference_pages, question_paper_pages,
                           script_pages, review_section, marking_section, total_marks,
                           calibration_block=''):
@@ -675,7 +742,9 @@ def _build_rubrics_prompt(subject, rubrics_pages, reference_pages, question_pape
     if reference_pages:
         reference_section = "\nREFERENCE MATERIALS (sample works or other references) have been provided — use them to calibrate your expectations."
 
-    system_prompt = f"""{calibration_block}You are an experienced teacher marking a student's essay/extended response using rubrics.
+    language_block = _language_directive(subject)
+
+    system_prompt = f"""{calibration_block}{language_block}You are an experienced teacher marking a student's essay/extended response using rubrics.
 
 Subject: {subject or 'General'}
 {reference_section}
@@ -882,7 +951,9 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "correction_prompt": "OMIT if status == 'correct'; otherwise one short do-this-now task following CORRECTION PROMPT RULES — pick the form matching this question's mistake type (procedural / reasoning / evidence / concept / language). ≤ 25 words. Must not duplicate another question's wording."
         }}"""
 
-    system_prompt = f"""{calibration_block}You are an experienced teacher marking a student's assignment script.
+    language_block = _language_directive(subject)
+
+    system_prompt = f"""{calibration_block}{language_block}You are an experienced teacher marking a student's assignment script.
 
 Subject: {subject or 'General'}
 {rubrics_section}
