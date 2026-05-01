@@ -69,6 +69,7 @@
             {% endif %}
         </div>
         <div class="dept-nav-user">
+            <input type="checkbox" id="screenPetToggle" class="screen-pet-toggle" title="Companion turtle">
             <span>{{ current_teacher.name }}</span>
             {% if current_teacher.role in ('hod', 'subject_head', 'owner', 'manager') %}
             <div class="dept-nav-cog" data-cog-menu>
@@ -113,6 +114,9 @@
 {% endif %}
 {% block body %}{% endblock %}
 <script src="{{ url_for('static', filename='common.js') }}?v={{ static_version }}"></script>
+{% if current_teacher %}
+<script src="{{ url_for('static', filename='js/screen_pet.js') }}?v={{ static_version }}" defer></script>
+{% endif %}
 {% block scripts %}{% endblock %}
 </body>
 </html>
