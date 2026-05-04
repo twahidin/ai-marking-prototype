@@ -8120,10 +8120,6 @@ def bank_delete(bank_id):
     if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
     item = AssignmentBank.query.get_or_404(bank_id)
-    teacher = _current_teacher()
-    # Subject head, lead, HOD, owner can delete
-    if teacher and teacher.role not in ('hod', 'subject_head', 'lead', 'owner') and item.created_by != teacher.id:
-        return jsonify({'success': False, 'error': 'Not authorized'}), 403
     db.session.delete(item)
     db.session.commit()
     return jsonify({'success': True})
@@ -8131,12 +8127,9 @@ def bank_delete(bank_id):
 
 @app.route('/bank/edit/<bank_id>', methods=['POST'])
 def bank_edit(bank_id):
-    """Edit a bank item. Subject head, lead, HOD can edit."""
+    """Edit a bank item. Any authenticated teacher can edit."""
     if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-    teacher = _current_teacher()
-    if not teacher or teacher.role not in ('hod', 'subject_head', 'lead', 'owner'):
-        return jsonify({'success': False, 'error': 'Not authorized'}), 403
 
     item = AssignmentBank.query.get_or_404(bank_id)
     data = request.get_json()
