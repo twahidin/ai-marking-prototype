@@ -5557,11 +5557,13 @@ def teacher_assignment_detail(assignment_id):
                 edit_api_keys[prov] = env_val
     available_providers = sorted(edit_api_keys.keys())
 
+    from subjects import SUBJECT_DISPLAY_NAMES
     resp = make_response(render_template('teacher_detail.html',
                            assignment=asn,
                            students=student_data,
                            all_providers=PROVIDERS,
-                           available_providers=available_providers))
+                           available_providers=available_providers,
+                           canonical_subjects=SUBJECT_DISPLAY_NAMES))
     # Prevent the browser/proxy from caching the score cells — a stale cache here
     # makes post-remark reloads show old marks even though the DB is fresh.
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'

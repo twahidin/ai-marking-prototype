@@ -601,127 +601,15 @@
 <div class="edit-modal" id="editModal">
     <div class="edit-modal-box">
         <h3>Edit Assignment</h3>
-
-        <div class="edit-form-group">
-            <label>Type (locked after creation)</label>
-            <div class="edit-disabled-field">
-                {% if assignment.assign_type == 'rubrics' %}Rubrics / Essay{% else %}Short Answer{% endif %}
-            </div>
-            <div class="edit-disabled-hint">Type cannot be changed after creation.</div>
-        </div>
-
-        <div class="edit-form-row">
-            <div class="edit-form-group">
-                <label for="editTitle">Title</label>
-                <input type="text" id="editTitle" value="{{ assignment.title or '' }}">
-            </div>
-            <div class="edit-form-group">
-                <label for="editSubject">Subject</label>
-                <input type="text" id="editSubject"
-                       class="subject-autocomplete"
-                       autocomplete="off"
-                       value="{{ assignment.subject or '' }}"
-                       data-subject-options='{{ canonical_subjects|tojson }}'
-                       oninput="updateEditPinyinVis()"
-                       onchange="updateEditPinyinVis()">
-            </div>
-        </div>
-
-        <!-- Hanyu Pinyin (Chinese subject only). Hidden unless subject resolves to chinese. -->
-        <div class="edit-form-group" id="editPinyinGroup" style="display:none;">
-            <label for="editPinyinMode">Show Pinyin (Chinese only)</label>
-            <select id="editPinyinMode">
-                <option value="off" {% if (assignment.pinyin_mode or 'off') == 'off' %}selected{% endif %}>Off (no pinyin)</option>
-                <option value="vocab" {% if assignment.pinyin_mode == 'vocab' %}selected{% endif %}>Vocab — HSK 4 and above</option>
-                <option value="advanced" {% if assignment.pinyin_mode == 'advanced' %}selected{% endif %}>Advanced — chengyu, 4-char idioms, HSK 6 only</option>
-                <option value="full" {% if assignment.pinyin_mode == 'full' %}selected{% endif %}>Full — every character</option>
-            </select>
-        </div>
-
-        <div class="edit-form-row">
-            <div class="edit-form-group">
-                <label for="editProvider">AI Provider</label>
-                <select id="editProvider" onchange="updateEditModelOptions()"></select>
-            </div>
-            <div class="edit-form-group">
-                <label for="editModel">Model</label>
-                <select id="editModel"></select>
-            </div>
-        </div>
-
-        <div class="edit-form-row">
-            <div class="edit-form-group">
-                <label for="editScoringMode">Scoring Mode</label>
-                <select id="editScoringMode">
-                    <option value="status" {% if assignment.scoring_mode == 'status' %}selected{% endif %}>Status (correct / partial / incorrect)</option>
-                    <option value="marks" {% if assignment.scoring_mode == 'marks' %}selected{% endif %}>Marks (numerical)</option>
-                </select>
-            </div>
-            <div class="edit-form-group">
-                <label for="editTotalMarks">Total Marks</label>
-                <input type="text" id="editTotalMarks" value="{{ assignment.total_marks or '' }}" placeholder="e.g. 100">
-            </div>
-        </div>
-
-        <div class="edit-form-row">
-            <div class="edit-form-group">
-                <label for="editShowResults">Show Results to Students</label>
-                <select id="editShowResults">
-                    <option value="on" {% if assignment.show_results %}selected{% endif %}>Yes</option>
-                    <option value="" {% if not assignment.show_results %}selected{% endif %}>No</option>
-                </select>
-            </div>
-            <!-- Allow Drafts deferred: keep the select hidden so the
-                 existing assignment value persists on edit (the form-post JS
-                 still reads its .value), but don't show it to teachers. -->
-            <div class="edit-form-group" style="display:none;">
-                <label for="editAllowDrafts">Allow Drafts</label>
-                <select id="editAllowDrafts" onchange="document.getElementById('editMaxDraftsRow').style.display = this.value === 'on' ? '' : 'none';">
-                    <option value="on" {% if assignment.allow_drafts %}selected{% endif %}>Yes</option>
-                    <option value="" {% if not assignment.allow_drafts %}selected{% endif %}>No</option>
-                </select>
-            </div>
-        </div>
-
-        <div class="edit-form-group" id="editMaxDraftsRow" style="display:none;">
-            <label for="editMaxDrafts">Max Drafts</label>
-            <input type="number" id="editMaxDrafts" min="2" max="10" value="{{ assignment.max_drafts or 3 }}">
-        </div>
-
-        <div class="edit-form-group">
-            <label for="editReviewInstructions">Feedback / Review Instructions</label>
-            <textarea id="editReviewInstructions">{{ assignment.review_instructions or '' }}</textarea>
-        </div>
-
-        <div class="edit-form-group">
-            <label for="editMarkingInstructions">Marking Instructions</label>
-            <textarea id="editMarkingInstructions">{{ assignment.marking_instructions or '' }}</textarea>
-        </div>
-
-        <div class="edit-form-group">
-            <label>Question Paper</label>
-            <input type="file" id="editQuestionPaper" accept=".pdf,.jpg,.jpeg,.png,.heic">
-            {% if assignment.question_paper %}<div class="edit-current-file">Current: file already uploaded. Leave empty to keep, or upload a new file to replace.</div>{% endif %}
-        </div>
-
-        {% if assignment.assign_type != 'rubrics' %}
-        <div class="edit-form-group">
-            <label>Answer Key</label>
-            <input type="file" id="editAnswerKey" accept=".pdf,.jpg,.jpeg,.png,.heic">
-            {% if assignment.answer_key %}<div class="edit-current-file">Current: file already uploaded. Leave empty to keep.</div>{% endif %}
-        </div>
-        {% else %}
-        <div class="edit-form-group">
-            <label>Rubrics</label>
-            <input type="file" id="editRubrics" accept=".pdf,.jpg,.jpeg,.png,.heic">
-            {% if assignment.rubrics %}<div class="edit-current-file">Current: file already uploaded. Leave empty to keep.</div>{% endif %}
-        </div>
-        {% endif %}
-
-        <div class="edit-form-group">
-            <label>Reference Materials (optional)</label>
-            <input type="file" id="editReference" accept=".pdf,.jpg,.jpeg,.png,.heic">
-            {% if assignment.reference %}<div class="edit-current-file">Current: file already uploaded. Leave empty to keep.</div>{% endif %}
+        <div id="editFormHost">
+            {% with mode='class',
+                   entity=assignment,
+                   entity_id=assignment.id,
+                   entity_assign_type=assignment.assign_type,
+                   inline_url_prefix='/teacher/assignment/' ~ assignment.id ~ '/file-inline',
+                   canonical_subjects=canonical_subjects %}
+                {% include '_assignment_form_fields.html' %}
+            {% endwith %}
         </div>
 
         <div class="edit-error" id="editErrorMsg"></div>
@@ -1492,7 +1380,6 @@ async function submitEdit() {
     fd.append('subject', document.getElementById('editSubject').value);
     fd.append('provider', document.getElementById('editProvider').value);
     fd.append('model', document.getElementById('editModel').value);
-    fd.append('scoring_mode', document.getElementById('editScoringMode').value);
     fd.append('total_marks', document.getElementById('editTotalMarks').value);
     if (document.getElementById('editShowResults').value === 'on') fd.append('show_results', 'on');
     if (document.getElementById('editAllowDrafts').value === 'on') fd.append('allow_drafts', 'on');
