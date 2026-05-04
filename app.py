@@ -8132,20 +8132,96 @@ def bank_edit(bank_id):
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     item = AssignmentBank.query.get_or_404(bank_id)
-    data = request.get_json()
 
-    if 'title' in data:
-        item.title = data['title'].strip()
-    if 'subject' in data:
-        item.subject = data['subject'].strip()
-    if 'level' in data:
-        item.level = data['level'].strip()
-    if 'tags' in data:
-        item.tags = data['tags'].strip()
-    if 'review_instructions' in data:
-        item.review_instructions = data['review_instructions'].strip()
-    if 'marking_instructions' in data:
-        item.marking_instructions = data['marking_instructions'].strip()
+    # Multipart form (PDFs) — fall back to JSON body for backwards-compat callers.
+    if request.content_type and 'multipart' in request.content_type:
+        form = request.form
+        files = request.files
+    else:
+        form = request.get_json() or {}
+        files = {}
+
+    def _f(key, default=''):
+        val = form.get(key, default)
+        return val.strip() if isinstance(val, str) else val
+
+    # Text fields
+    if 'title' in form:
+        item.title = _f('title')
+    if 'subject' in form:
+        item.subject = _f('subject')
+    if 'level' in form:
+        item.level = _f('level')
+    if 'tags' in form:
+        # Normalise via the model helper so tags always have leading '#'.
+        raw_tags = _f('tags')
+        tag_list = [t.strip() for t in raw_tags.split(',') if t.strip()]
+        item.set_tags_list(tag_list)
+    if 'total_marks' in form:
+        item.total_marks = _f('total_marks')
+    if 'review_instructions' in form:
+        item.review_instructions = _f('review_instructions')
+    if 'marking_instructions' in form:
+        item.marking_instructions = _f('marking_instructions')
+
+    # New default-settings fields
+    if 'provider' in form:
+        item.provider = _f('provider')
+    if 'model' in form:
+        item.model = _f('model')
+    if 'pinyin_mode' in form:
+        new_pin = (_f('pinyin_mode') or 'off').lower()
+        if new_pin not in ('off', 'vocab', 'advanced', 'full'):
+            new_pin = 'off'
+        # Subject-conditional: zero out pinyin for non-Chinese subjects.
+        from subjects import resolve_subject_key as _rsk
+        if _rsk(item.subject or '') != 'chinese':
+            new_pin = 'off'
+        item.pinyin_mode = new_pin
+    if 'show_results' in form:
+        item.show_results = (form.get('show_results') == 'on')
+    if 'allow_drafts' in form:
+        item.allow_drafts = (form.get('allow_drafts') == 'on')
+    if 'max_drafts' in form:
+        try:
+            md = int(_f('max_drafts') or 3)
+            item.max_drafts = max(2, min(10, md))
+        except (TypeError, ValueError):
+            pass
+
+    # NOTE: assign_type and scoring_mode are intentionally NOT updated here.
+    # They are locked after creation because changing them would invalidate
+    # already-marked submissions on class assignments cloned from this bank item.
+
+    # PDF replacement: only when a non-empty file is provided. Empty input keeps existing.
+    def _maybe_read(field_name):
+        if not files:
+            return None, False
+        f_list = files.getlist(field_name) if hasattr(files, 'getlist') else []
+        if f_list and f_list[0].filename:
+            return f_list[0].read(), True
+        return None, False
+
+    qp_bytes, qp_changed = _maybe_read('question_paper')
+    ak_bytes, ak_changed = _maybe_read('answer_key')
+    rub_bytes, rub_changed = _maybe_read('rubrics')
+    ref_bytes, ref_changed = _maybe_read('reference')
+
+    # Required-file invariants: don't end up with no answer_key for short_answer
+    # or no rubrics for rubrics. Replacement is fine; removal is not allowed.
+    if item.assign_type == 'rubrics' and rub_changed and not rub_bytes:
+        return jsonify({'success': False, 'error': 'Rubrics file cannot be empty for essay type'}), 400
+    if item.assign_type != 'rubrics' and ak_changed and not ak_bytes:
+        return jsonify({'success': False, 'error': 'Answer key cannot be empty for short answer type'}), 400
+
+    if qp_changed:
+        item.question_paper = qp_bytes
+    if ak_changed:
+        item.answer_key = ak_bytes
+    if rub_changed:
+        item.rubrics = rub_bytes
+    if ref_changed:
+        item.reference = ref_bytes
 
     db.session.commit()
     return jsonify({'success': True})
