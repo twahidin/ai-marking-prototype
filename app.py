@@ -8233,6 +8233,31 @@ def bank_file_inline(bank_id, file_type):
     return resp
 
 
+@app.route('/teacher/assignment/<assignment_id>/file-inline/<file_type>')
+def teacher_file_inline(assignment_id, file_type):
+    """Inline-display version of an assignment's uploaded PDF (used by edit modal preview links)."""
+    if not _is_authenticated():
+        return 'Not authenticated', 401
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        # _check_assignment_ownership returns a JSON tuple; for this raw-stream route, return a plain 403
+        return 'Not authorized', 403
+    file_map = {
+        'question_paper': asn.question_paper,
+        'answer_key': asn.answer_key,
+        'rubrics': asn.rubrics,
+        'reference': asn.reference,
+    }
+    data = file_map.get(file_type)
+    if not data:
+        return 'File not found', 404
+    resp = send_file(io.BytesIO(data), mimetype=_detect_mime(data), as_attachment=False)
+    resp.cache_control.private = True
+    resp.cache_control.no_store = True
+    return resp
+
+
 @app.route('/bank/<bank_id>/preview')
 def bank_preview(bank_id):
     """Split-screen preview of a bank item: question paper (left) vs answer key (right)."""
