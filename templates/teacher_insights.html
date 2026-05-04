@@ -152,7 +152,14 @@
     .swatch[data-color="teal"]   { background: #D9FFFF; border-color: #99E8E8; }
     .swatch[data-color="orange"] { background: #FFEBD9; border-color: #E8C999; }
     .swatch.active { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #667eea; }
-    .widget-body { flex: 1; min-height: 0; }
+    .widget-body {
+        flex: 1; min-height: 0;
+        /* Must be a flex column itself so chart-wrap's `flex:1 1 auto`
+           resolves to a definite height. Without display:flex here, the
+           absolute-positioned canvas inside chart-wrap pins to a zero-
+           height parent and the chart never paints. */
+        display: flex; flex-direction: column;
+    }
     .widget-placeholder { color: #aaa; font-size: 13px; line-height: 1.5; padding: 8px 0; }
 
     /* Widget: Missed submissions */
