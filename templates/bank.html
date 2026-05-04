@@ -363,13 +363,16 @@ function updateEditModelOptions() {
     mSel.innerHTML = '';
     var conf = ALL_PROVIDERS[prov];
     if (!conf) return;
-    var models = conf.models || [];
-    var defaultModel = conf.default || (models[0] || '');
-    models.forEach(function (m) {
+    // PROVIDERS[provider].models is an object: { model_id: display_label }, not an array.
+    // Iterate with Object.entries so each model becomes an <option value=id>label</option>.
+    var models = conf.models || {};
+    var modelIds = Object.keys(models);
+    var defaultModel = conf.default || (modelIds[0] || '');
+    modelIds.forEach(function (id) {
         var opt = document.createElement('option');
-        opt.value = m;
-        opt.textContent = m;
-        if (m === defaultModel) opt.selected = true;
+        opt.value = id;
+        opt.textContent = models[id] || id;
+        if (id === defaultModel) opt.selected = true;
         mSel.appendChild(opt);
     });
 }
