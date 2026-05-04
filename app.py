@@ -7856,7 +7856,25 @@ def bank_page():
     else:
         classes = Class.query.order_by(Class.name).all()
 
-    return render_template('bank.html', items=items, classes=classes, q=q, level=level, teacher=teacher)
+    from subjects import SUBJECT_DISPLAY_NAMES
+    sentinel_bank_item = type('Sentinel', (), {
+        'id': '__SENTINEL__',
+        'title': '', 'subject': '', 'level': '', 'tags': '',
+        'review_instructions': '', 'marking_instructions': '',
+        'assign_type': 'short_answer', 'scoring_mode': 'marks',
+        'total_marks': '', 'provider': '', 'model': '',
+        'pinyin_mode': 'off', 'show_results': True,
+        'allow_drafts': False, 'max_drafts': 3,
+        'question_paper': None, 'answer_key': None,
+        'rubrics': None, 'reference': None,
+    })()
+    sk = _get_session_keys()
+    providers = get_available_providers(session_keys=sk)
+    return render_template('bank.html', items=items, classes=classes, q=q, level=level, teacher=teacher,
+                           canonical_subjects=SUBJECT_DISPLAY_NAMES,
+                           sentinel_bank_item=sentinel_bank_item,
+                           providers=providers,
+                           all_providers=PROVIDERS)
 
 
 @app.route('/bank/publish', methods=['POST'])

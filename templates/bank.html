@@ -172,18 +172,40 @@
     {% if items %}
     <div class="bank-grid">
         {% for item in items %}
-        {% set can_edit = teacher and teacher.role in ('hod', 'subject_head', 'lead', 'owner') %}
-        {% set can_delete = can_edit or (teacher and item.created_by == teacher.id) %}
+        {% set can_edit = teacher is not none and teacher %}
+        {% set can_delete = teacher is not none and teacher %}
         <div class="bank-card">
+            <script type="application/json" class="bank-card-data">{{ {
+                'id': item.id,
+                'title': item.title or '',
+                'subject': item.subject or '',
+                'level': item.level or '',
+                'tags': item.tags or '',
+                'review_instructions': item.review_instructions or '',
+                'marking_instructions': item.marking_instructions or '',
+                'assign_type': item.assign_type,
+                'scoring_mode': item.scoring_mode,
+                'total_marks': item.total_marks or '',
+                'provider': item.provider or '',
+                'model': item.model or '',
+                'pinyin_mode': item.pinyin_mode or 'off',
+                'show_results': item.show_results if item.show_results is not none else true,
+                'allow_drafts': item.allow_drafts if item.allow_drafts is not none else false,
+                'max_drafts': item.max_drafts or 3,
+                'has_question_paper': item.question_paper is not none,
+                'has_answer_key': item.answer_key is not none,
+                'has_rubrics': item.rubrics is not none,
+                'has_reference': item.reference is not none
+            } | tojson | safe }}</script>
             {% if can_edit or can_delete %}
             <div class="card-menu" data-card-menu>
                 <button type="button" class="card-menu-btn" aria-haspopup="true" aria-expanded="false" aria-label="More actions">⋮</button>
                 <div class="card-menu-pop" role="menu">
                     {% if can_edit %}
-                    <button type="button" role="menuitem" onclick="openEditModal('{{ item.id }}', '{{ item.title | e }}', '{{ item.subject | e }}', '{{ item.level | e }}', '{{ item.tags | e }}', '{{ (item.review_instructions or '') | e }}', '{{ (item.marking_instructions or '') | e }}'); closeAllCardMenus();">Edit</button>
+                    <button type="button" role="menuitem" data-action="edit" data-bank-id="{{ item.id }}">Edit</button>
                     {% endif %}
                     {% if can_delete %}
-                    <button type="button" role="menuitem" class="danger" onclick="deleteItem('{{ item.id }}'); closeAllCardMenus();">Delete</button>
+                    <button type="button" role="menuitem" class="danger" data-action="delete" data-bank-id="{{ item.id }}">Delete</button>
                     {% endif %}
                 </div>
             </div>
@@ -246,34 +268,26 @@
     </div>
 </div>
 
-<!-- Edit Modal -->
-<div class="modal-overlay" id="editModal">
-    <div class="modal-box">
+<!-- Edit Modal: shell only; fields populated from per-card JSON on click -->
+<div class="modal-overlay edit-modal" id="editModal">
+    <div class="modal-box edit-modal-box" style="max-width:700px;max-height:90vh;overflow-y:auto;">
         <h3>Edit Bank Item</h3>
         <input type="hidden" id="editBankId">
-        <div class="modal-label">Title</div>
-        <input type="text" class="modal-input" id="editTitle">
-        <div class="modal-label">Subject</div>
-        <input type="text" class="modal-input" id="editSubject">
-        <div class="modal-label">Level</div>
-        <select class="modal-select" id="editLevel">
-            <option value="">No level</option>
-            <option value="Sec 1">Sec 1</option>
-            <option value="Sec 2">Sec 2</option>
-            <option value="Sec 3">Sec 3</option>
-            <option value="Sec 4">Sec 4</option>
-            <option value="Sec 5">Sec 5</option>
-        </select>
-        <div class="modal-label">Tags (comma-separated)</div>
-        <input type="text" class="modal-input" id="editTags" placeholder="#algebra, #geometry">
-        <div class="modal-label">Review Instructions</div>
-        <textarea class="modal-input" id="editReviewInstructions" rows="3" style="resize:vertical;"></textarea>
-        <div class="modal-label">Marking Instructions</div>
-        <textarea class="modal-input" id="editMarkingInstructions" rows="3" style="resize:vertical;"></textarea>
-        <div class="error-msg" id="editError" style="display:none;"></div>
-        <div class="modal-actions">
-            <button class="modal-cancel" onclick="closeEditModal()">Cancel</button>
-            <button class="modal-submit" id="editBtn" onclick="saveEdit()">Save</button>
+        <div id="editFormHost">
+            {# Server-rendered partial with a SENTINEL bank_item so the structure exists at load time. #}
+            {% with mode='bank',
+                   entity=sentinel_bank_item,
+                   entity_id='__SENTINEL__',
+                   entity_assign_type=sentinel_bank_item.assign_type,
+                   inline_url_prefix='/bank/__SENTINEL__/file-inline',
+                   canonical_subjects=canonical_subjects %}
+                {% include '_assignment_form_fields.html' %}
+            {% endwith %}
+        </div>
+        <div class="error-msg edit-error" id="editError" style="display:none;"></div>
+        <div class="modal-actions edit-modal-actions">
+            <button class="modal-cancel edit-cancel" onclick="closeEditModal()">Cancel</button>
+            <button class="modal-submit edit-save" id="editBtn" onclick="saveEdit()">Save</button>
         </div>
     </div>
 </div>
@@ -318,6 +332,57 @@
 
 {% block scripts %}
 <script>
+/* AI provider/model dropdown population for the edit modal. */
+const ALL_PROVIDERS = {{ all_providers | tojson }};
+const AVAILABLE_PROVIDERS = {{ providers | tojson }};
+
+function populateEditProviderModel(currentProvider, currentModel) {
+    var pSel = document.getElementById('editProvider');
+    if (!pSel) return;
+    pSel.innerHTML = '';
+    Object.keys(AVAILABLE_PROVIDERS).forEach(function (key) {
+        var opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = ALL_PROVIDERS[key] && ALL_PROVIDERS[key].label ? ALL_PROVIDERS[key].label : key;
+        if (key === currentProvider) opt.selected = true;
+        pSel.appendChild(opt);
+    });
+    if (!currentProvider && pSel.options.length) pSel.selectedIndex = 0;
+    updateEditModelOptions();
+    var mSel = document.getElementById('editModel');
+    if (mSel && currentModel) {
+        Array.from(mSel.options).forEach(function (o) { if (o.value === currentModel) o.selected = true; });
+    }
+}
+
+function updateEditModelOptions() {
+    var pSel = document.getElementById('editProvider');
+    var mSel = document.getElementById('editModel');
+    if (!pSel || !mSel) return;
+    var prov = pSel.value;
+    mSel.innerHTML = '';
+    var conf = ALL_PROVIDERS[prov];
+    if (!conf) return;
+    var models = conf.models || [];
+    var defaultModel = conf.default || (models[0] || '');
+    models.forEach(function (m) {
+        var opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m;
+        if (m === defaultModel) opt.selected = true;
+        mSel.appendChild(opt);
+    });
+}
+
+/* Show pinyin selector only when subject is Chinese. */
+function updateEditPinyinVis() {
+    var subj = (document.getElementById('editSubject') || {}).value || '';
+    var grp = document.getElementById('editPinyinGroup');
+    if (!grp) return;
+    var isChinese = /chinese|中文|华文|cn/i.test(subj.trim());
+    grp.style.display = isChinese ? '' : 'none';
+}
+
 var useBankId = null;
 
 function doSearch() {
@@ -432,15 +497,59 @@ async function deleteItem(bankId) {
     } catch (err) { alert('Network error.'); }
 }
 
-/* Edit Modal */
-function openEditModal(id, title, subject, level, tags, reviewInstr, markingInstr) {
-    document.getElementById('editBankId').value = id;
-    document.getElementById('editTitle').value = title;
-    document.getElementById('editSubject').value = subject;
-    document.getElementById('editLevel').value = level;
-    document.getElementById('editTags').value = tags;
-    document.getElementById('editReviewInstructions').value = reviewInstr;
-    document.getElementById('editMarkingInstructions').value = markingInstr;
+/* Edit Modal — populated from per-card JSON on click. */
+function openEditModal(data) {
+    document.getElementById('editBankId').value = data.id;
+    document.getElementById('editTitle').value = data.title || '';
+    document.getElementById('editSubject').value = data.subject || '';
+    var lvl = document.getElementById('editLevel'); if (lvl) lvl.value = data.level || '';
+    var tg = document.getElementById('editTags'); if (tg) tg.value = data.tags || '';
+    document.getElementById('editTotalMarks').value = data.total_marks || '';
+    document.getElementById('editReviewInstructions').value = data.review_instructions || '';
+    document.getElementById('editMarkingInstructions').value = data.marking_instructions || '';
+    document.getElementById('editShowResults').value = data.show_results ? 'on' : '';
+    document.getElementById('editAllowDrafts').value = data.allow_drafts ? 'on' : '';
+    document.getElementById('editMaxDrafts').value = data.max_drafts || 3;
+    var pin = document.getElementById('editPinyinMode'); if (pin) pin.value = data.pinyin_mode || 'off';
+
+    // Update the inline-preview link prefixes from sentinel to the actual bank id.
+    document.querySelectorAll('#editFormHost a[href*="__SENTINEL__"]').forEach(function (a) {
+        a.setAttribute('href', a.getAttribute('href').replace(/__SENTINEL__/g, data.id));
+    });
+
+    // Show/hide PDF current-file rows based on data.has_*
+    function setPresence(label, present, ftype) {
+        var hostGroups = document.querySelectorAll('#editFormHost .edit-form-group');
+        hostGroups.forEach(function (g) {
+            var lbl = g.querySelector('label');
+            if (!lbl || lbl.textContent.trim().split(' ')[0].toLowerCase() !== label.toLowerCase()) return;
+            var cur = g.querySelector('.edit-current-file');
+            if (!cur) return;
+            if (present) {
+                cur.innerHTML = '✓ Currently uploaded · <a href="/bank/' + data.id + '/file-inline/' + ftype + '" target="_blank" rel="noopener">Preview ↗</a>';
+                cur.style.color = '';
+            } else {
+                cur.textContent = 'No file uploaded.';
+                cur.style.color = '#888';
+            }
+        });
+    }
+    setPresence('Question', data.has_question_paper, 'question_paper');
+    setPresence('Answer', data.has_answer_key, 'answer_key');
+    setPresence('Rubrics', data.has_rubrics, 'rubrics');
+    setPresence('Reference', data.has_reference, 'reference');
+
+    // Reset file inputs (so previous selection doesn't carry between opens)
+    ['editQuestionPaper', 'editAnswerKey', 'editRubrics', 'editReference'].forEach(function (id) {
+        var el = document.getElementById(id); if (el) el.value = '';
+    });
+
+    // Populate provider/model dropdowns. updateEditPinyinVis runs after subject is set.
+    if (typeof populateEditProviderModel === 'function') {
+        populateEditProviderModel(data.provider, data.model);
+    }
+    if (typeof updateEditPinyinVis === 'function') updateEditPinyinVis();
+
     document.getElementById('editError').style.display = 'none';
     document.getElementById('editBtn').disabled = false;
     document.getElementById('editBtn').textContent = 'Save';
@@ -448,24 +557,62 @@ function openEditModal(id, title, subject, level, tags, reviewInstr, markingInst
 }
 function closeEditModal() { document.getElementById('editModal').classList.remove('active'); }
 
+/* Delegated handler for Edit / Delete clicks inside any kebab menu. */
+document.addEventListener('click', function (ev) {
+    var btn = ev.target.closest('[data-action]');
+    if (!btn) return;
+    var action = btn.getAttribute('data-action');
+    var bankId = btn.getAttribute('data-bank-id');
+    if (!action || !bankId) return;
+    if (action === 'edit') {
+        var card = btn.closest('.bank-card');
+        if (!card) return;
+        var dataNode = card.querySelector('.bank-card-data');
+        if (!dataNode) return;
+        var data;
+        try { data = JSON.parse(dataNode.textContent); }
+        catch (e) { console.error('bank-card-data JSON parse failed', e); return; }
+        openEditModal(data);
+        closeAllCardMenus();
+    } else if (action === 'delete') {
+        deleteItem(bankId);
+        closeAllCardMenus();
+    }
+});
+
 async function saveEdit() {
     var btn = document.getElementById('editBtn');
     btn.disabled = true; btn.textContent = 'Saving...';
     var errEl = document.getElementById('editError');
     errEl.style.display = 'none';
     var id = document.getElementById('editBankId').value;
+
+    var fd = new FormData();
+    fd.append('title', document.getElementById('editTitle').value);
+    fd.append('subject', document.getElementById('editSubject').value);
+    fd.append('level', (document.getElementById('editLevel') || {}).value || '');
+    fd.append('tags', (document.getElementById('editTags') || {}).value || '');
+    fd.append('total_marks', document.getElementById('editTotalMarks').value);
+    fd.append('review_instructions', document.getElementById('editReviewInstructions').value);
+    fd.append('marking_instructions', document.getElementById('editMarkingInstructions').value);
+    fd.append('provider', document.getElementById('editProvider').value || '');
+    fd.append('model', document.getElementById('editModel').value || '');
+    fd.append('pinyin_mode', (document.getElementById('editPinyinMode') || {}).value || 'off');
+    if (document.getElementById('editShowResults').value === 'on') fd.append('show_results', 'on');
+    if (document.getElementById('editAllowDrafts').value === 'on') fd.append('allow_drafts', 'on');
+    fd.append('max_drafts', document.getElementById('editMaxDrafts').value);
+
+    var qp = document.getElementById('editQuestionPaper');
+    if (qp && qp.files.length) fd.append('question_paper', qp.files[0]);
+    var ak = document.getElementById('editAnswerKey');
+    if (ak && ak.files.length) fd.append('answer_key', ak.files[0]);
+    var rub = document.getElementById('editRubrics');
+    if (rub && rub.files.length) fd.append('rubrics', rub.files[0]);
+    var ref = document.getElementById('editReference');
+    if (ref && ref.files.length) fd.append('reference', ref.files[0]);
+
     try {
-        var res = await fetch('/bank/edit/' + id, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                title: document.getElementById('editTitle').value,
-                subject: document.getElementById('editSubject').value,
-                level: document.getElementById('editLevel').value,
-                tags: document.getElementById('editTags').value,
-                review_instructions: document.getElementById('editReviewInstructions').value,
-                marking_instructions: document.getElementById('editMarkingInstructions').value,
-            })
-        });
+        var res = await fetch('/bank/edit/' + id, { method: 'POST', body: fd });
         var data = await res.json();
         if (data.success) { window.location.reload(); }
         else { errEl.textContent = data.error || 'Save failed.'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Save'; }
