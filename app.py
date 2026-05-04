@@ -7949,9 +7949,6 @@ def bank_use():
     if not api_keys:
         return jsonify({'success': False, 'error': 'No API keys configured'}), 400
 
-    # Pick first available provider
-    provider = next(iter(api_keys))
-
     created = []
     skipped = []
     for cid in class_ids:
@@ -7963,6 +7960,13 @@ def bank_use():
             skipped.append(cls.name)
             continue
 
+        # Resolve provider preference: bank value if set + key available, else first available.
+        bank_provider = item.provider or ''
+        if bank_provider and bank_provider in api_keys:
+            chosen_provider = bank_provider
+        else:
+            chosen_provider = next(iter(api_keys))
+
         asn = Assignment(
             id=str(uuid.uuid4()),
             classroom_code=_generate_classroom_code(),
@@ -7971,9 +7975,12 @@ def bank_use():
             assign_type=item.assign_type,
             scoring_mode=item.scoring_mode,
             total_marks=item.total_marks,
-            provider=provider,
-            model='',
-            show_results=True,
+            provider=chosen_provider,
+            model=item.model or '',
+            pinyin_mode=item.pinyin_mode or 'off',
+            show_results=item.show_results if item.show_results is not None else True,
+            allow_drafts=item.allow_drafts if item.allow_drafts is not None else False,
+            max_drafts=item.max_drafts or 3,
             review_instructions=item.review_instructions,
             marking_instructions=item.marking_instructions,
             question_paper=item.question_paper,
