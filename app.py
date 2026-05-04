@@ -7980,7 +7980,7 @@ def bank_use():
             pinyin_mode=item.pinyin_mode or 'off',
             show_results=item.show_results if item.show_results is not None else True,
             allow_drafts=item.allow_drafts if item.allow_drafts is not None else False,
-            max_drafts=item.max_drafts or 3,
+            max_drafts=item.max_drafts if item.max_drafts is not None else 3,
             review_instructions=item.review_instructions,
             marking_instructions=item.marking_instructions,
             question_paper=item.question_paper,
