@@ -206,6 +206,45 @@ def _migrate_add_columns(app):
                 ))
                 db.session.commit()
                 logger.info('Added pinyin_mode column to assignments table')
+
+        if 'assignment_bank' in inspector.get_table_names():
+            ab_cols = {c['name'] for c in inspector.get_columns('assignment_bank')}
+            ensure_ab = [
+                ('provider', "VARCHAR(50) DEFAULT ''"),
+                ('model', "VARCHAR(100) DEFAULT ''"),
+                ('pinyin_mode', "VARCHAR(20) DEFAULT 'off'"),
+                ('show_results', 'BOOLEAN DEFAULT TRUE'),
+                ('allow_drafts', 'BOOLEAN DEFAULT FALSE'),
+                ('max_drafts', 'INTEGER DEFAULT 3'),
+            ]
+            for col, ddl in ensure_ab:
+                if col not in ab_cols:
+                    try:
+                        db.session.execute(text(f'ALTER TABLE assignment_bank ADD COLUMN {col} {ddl}'))
+                        db.session.commit()
+                        logger.info(f'Added {col} column to assignment_bank table')
+                    except Exception as _e:
+                        db.session.rollback()
+                        logger.error(f'assignment_bank ALTER ADD {col} failed: {_e}')
+            try:
+                db.session.execute(text(
+                    "UPDATE assignment_bank SET pinyin_mode = 'off' "
+                    "WHERE pinyin_mode IS NULL OR pinyin_mode = ''"
+                ))
+                db.session.execute(text(
+                    "UPDATE assignment_bank SET show_results = TRUE WHERE show_results IS NULL"
+                ))
+                db.session.execute(text(
+                    "UPDATE assignment_bank SET allow_drafts = FALSE WHERE allow_drafts IS NULL"
+                ))
+                db.session.execute(text(
+                    "UPDATE assignment_bank SET max_drafts = 3 WHERE max_drafts IS NULL"
+                ))
+                db.session.commit()
+            except Exception as _e:
+                db.session.rollback()
+                logger.warning(f'assignment_bank backfill skipped: {_e}')
+
         # feedback_edit super-set columns. The table may exist on prod from
         # an older feed_forward_beta or staging deploy with a partial column
         # set; SELECTs blow up with "column does not exist" if the model
@@ -441,6 +480,16 @@ class AssignmentBank(db.Model):
     total_marks = db.Column(db.String(20), default='')
     review_instructions = db.Column(db.Text, default='')
     marking_instructions = db.Column(db.Text, default='')
+
+    # Default settings copied into class assignments by bank_use(). Mirrors
+    # the equivalent fields on Assignment so a bank item can carry per-class
+    # defaults beyond just text + PDFs.
+    provider = db.Column(db.String(50), default='')
+    model = db.Column(db.String(100), default='')
+    pinyin_mode = db.Column(db.String(20), default='off')
+    show_results = db.Column(db.Boolean, default=True)
+    allow_drafts = db.Column(db.Boolean, default=False)
+    max_drafts = db.Column(db.Integer, default=3)
 
     question_paper = db.Column(db.LargeBinary)
     answer_key = db.Column(db.LargeBinary)
