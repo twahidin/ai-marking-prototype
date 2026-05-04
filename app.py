@@ -5281,7 +5281,10 @@ def teacher_edit(assignment_id):
     # Parse incoming text/scalar fields (default to current value if missing)
     new_title = request.form.get('title', asn.title or '')
     new_subject = request.form.get('subject', asn.subject or '')
-    new_scoring_mode = request.form.get('scoring_mode', asn.scoring_mode or 'status')
+    # scoring_mode is locked after creation — changing it would invalidate
+    # already-marked submissions. Always pin to the current value regardless
+    # of what the form posts.
+    new_scoring_mode = asn.scoring_mode or 'status'
     new_total_marks = request.form.get('total_marks', asn.total_marks or '')
     new_show_results = request.form.get('show_results') == 'on'
     new_allow_drafts = request.form.get('allow_drafts') == 'on'
