@@ -4,7 +4,7 @@
 
 <div class="edit-form-group">
     <label>Type (locked after creation)</label>
-    <div class="edit-disabled-field">
+    <div class="edit-disabled-field" id="editTypeBadge">
         {% if entity_assign_type == 'rubrics' %}Rubrics / Essay{% else %}Short Answer{% endif %}
     </div>
     <div class="edit-disabled-hint">Type cannot be changed after creation.</div>
@@ -12,7 +12,7 @@
 
 <div class="edit-form-group">
     <label>Scoring Mode (locked after creation)</label>
-    <div class="edit-disabled-field">
+    <div class="edit-disabled-field" id="editScoringBadge">
         {% if entity.scoring_mode == 'status' %}Status (correct / partial / incorrect){% else %}Marks (numerical){% endif %}
     </div>
     <div class="edit-disabled-hint">Scoring mode cannot be changed after creation — would invalidate marked submissions.</div>
@@ -130,8 +130,38 @@
     <div class="edit-disabled-hint">Leave empty to keep current; pick a file to replace.</div>
 </div>
 
+{% if mode == 'bank' %}
+{# Bank mode: render both groups, JS shows the right one based on per-card data.assign_type. #}
+<div class="edit-form-group" id="editAnswerKeyGroup">
+    <label>Answer Key</label>
+    {% if entity.answer_key %}
+    <div class="edit-current-file">
+        ✓ Currently uploaded ·
+        <a href="{{ inline_url_prefix }}/answer_key" target="_blank" rel="noopener">Preview ↗</a>
+    </div>
+    {% else %}
+    <div class="edit-current-file" style="color:#888;">No file uploaded.</div>
+    {% endif %}
+    <input type="file" id="editAnswerKey" accept=".pdf,.jpg,.jpeg,.png,.heic">
+    <div class="edit-disabled-hint">Leave empty to keep current; pick a file to replace.</div>
+</div>
+<div class="edit-form-group" id="editRubricsGroup">
+    <label>Rubrics</label>
+    {% if entity.rubrics %}
+    <div class="edit-current-file">
+        ✓ Currently uploaded ·
+        <a href="{{ inline_url_prefix }}/rubrics" target="_blank" rel="noopener">Preview ↗</a>
+    </div>
+    {% else %}
+    <div class="edit-current-file" style="color:#888;">No file uploaded.</div>
+    {% endif %}
+    <input type="file" id="editRubrics" accept=".pdf,.jpg,.jpeg,.png,.heic">
+    <div class="edit-disabled-hint">Leave empty to keep current; pick a file to replace.</div>
+</div>
+{% else %}
+{# Class mode: only one is required for this assignment, render that one. #}
 {% if entity_assign_type != 'rubrics' %}
-<div class="edit-form-group">
+<div class="edit-form-group" id="editAnswerKeyGroup">
     <label>Answer Key</label>
     {% if entity.answer_key %}
     <div class="edit-current-file">
@@ -145,7 +175,7 @@
     <div class="edit-disabled-hint">Leave empty to keep current; pick a file to replace.</div>
 </div>
 {% else %}
-<div class="edit-form-group">
+<div class="edit-form-group" id="editRubricsGroup">
     <label>Rubrics</label>
     {% if entity.rubrics %}
     <div class="edit-current-file">
@@ -158,6 +188,7 @@
     <input type="file" id="editRubrics" accept=".pdf,.jpg,.jpeg,.png,.heic">
     <div class="edit-disabled-hint">Leave empty to keep current; pick a file to replace.</div>
 </div>
+{% endif %}
 {% endif %}
 
 <div class="edit-form-group">

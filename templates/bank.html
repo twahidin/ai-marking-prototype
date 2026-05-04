@@ -517,6 +517,23 @@ function openEditModal(data) {
         a.setAttribute('href', a.getAttribute('href').replace(/__SENTINEL__/g, data.id));
     });
 
+    // Update locked-field badges from per-card data
+    var typeBadge = document.getElementById('editTypeBadge');
+    if (typeBadge) {
+        typeBadge.textContent = (data.assign_type === 'rubrics') ? 'Rubrics / Essay' : 'Short Answer';
+    }
+    var scoringBadge = document.getElementById('editScoringBadge');
+    if (scoringBadge) {
+        scoringBadge.textContent = (data.scoring_mode === 'status')
+            ? 'Status (correct / partial / incorrect)'
+            : 'Marks (numerical)';
+    }
+    // Show only the file group that matches assign_type
+    var akGroup = document.getElementById('editAnswerKeyGroup');
+    var rubGroup = document.getElementById('editRubricsGroup');
+    if (akGroup) akGroup.style.display = (data.assign_type === 'rubrics') ? 'none' : '';
+    if (rubGroup) rubGroup.style.display = (data.assign_type === 'rubrics') ? '' : 'none';
+
     // Show/hide PDF current-file rows based on data.has_*
     function setPresence(label, present, ftype) {
         var hostGroups = document.querySelectorAll('#editFormHost .edit-form-group');
