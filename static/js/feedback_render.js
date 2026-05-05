@@ -205,6 +205,14 @@
         else if (options.scoringMode === 'status') isMarksMode = false;
         else isMarksMode = questions.some(function (q) { return q.marks_awarded != null || q.marks_total != null; });
 
+        // Pull the student's correction attempts out of the tiered bucket.
+        // Stored chronologically as {question_num, text, verdict, message,
+        // theme_key, submitted_at}; we group by question_num for the
+        // teacher-side back-and-forth view (no timestamp shown — keeps the
+        // thread readable as a conversation).
+        var tieredBucket = (result && result._tiered) || {};
+        var corrections = tieredBucket.corrections || [];
+
         var state = {
             questions: questions,
             errors: result.errors || [],
@@ -222,6 +230,9 @@
             onSave: options.onSave || null,
             isMarksMode: isMarksMode,
             textEditMeta: options.textEditMeta || {},  // {qKey: {field: {edit_id, version, calibrated}}}
+            corrections: corrections,
+            // 'questions' | 'corrections' — which panel is showing
+            mode: 'questions',
         };
         if (state.editable && (!state.assignmentId || !state.submissionId)) {
             state.editable = false;
@@ -250,19 +261,34 @@
                     '" data-q="' + i + '">' + esc(String(label)) + '</div>';
         });
 
+        // "Corrections" pill — only rendered when the student actually
+        // submitted at least one correction attempt. Sits at the right
+        // of the dot row so the spatial relationship matches the user's
+        // mental model (question pills → corrections pill, all lined up).
+        var correctionsPill = '';
+        if (state.corrections && state.corrections.length) {
+            correctionsPill =
+                '<button type="button" class="fb-corrections-pill" id="' + prefix + 'CorrPill"' +
+                ' aria-pressed="false">Corrections (' + state.corrections.length + ')</button>';
+        }
+
         var overallHtml = overallSectionHtml(state);
         var extras = extrasHtml(state);
 
         var html =
             '<div class="fb-summary-bar" id="' + prefix + 'SummaryBar">' + summary + '</div>' +
             (state.questions.length ? (
-                '<div class="fb-q-dots" id="' + prefix + 'QDots">' + dots + '</div>' +
-                '<div class="fb-q-nav">' +
+                '<div class="fb-q-dots-row" id="' + prefix + 'QDotsRow">' +
+                    '<div class="fb-q-dots" id="' + prefix + 'QDots">' + dots + '</div>' +
+                    correctionsPill +
+                '</div>' +
+                '<div class="fb-q-nav" id="' + prefix + 'QNavRow">' +
                     '<button id="' + prefix + 'PrevBtn" type="button">&larr; Prev</button>' +
                     '<span id="' + prefix + 'QNavInfo"></span>' +
                     '<button id="' + prefix + 'NextBtn" type="button">Next &rarr;</button>' +
                 '</div>' +
-                '<div id="' + prefix + 'QCardContainer"></div>'
+                '<div id="' + prefix + 'QCardContainer"></div>' +
+                '<div id="' + prefix + 'CorrPanel" class="fb-corrections-panel" style="display:none;"></div>'
             ) : '<p style="color:#888;font-style:italic;">No per-question feedback.</p>') +
             overallHtml +
             extras;
@@ -367,12 +393,134 @@
                 if (!isNaN(idx)) goQ(state, idx);
             });
         });
+        var corrPill = document.getElementById(state.prefix + 'CorrPill');
+        if (corrPill) {
+            corrPill.addEventListener('click', function () { toggleCorrections(state); });
+        }
     }
 
     function goQ(state, idx) {
         if (idx < 0 || idx >= state.questions.length) return;
         state.currentQ = idx;
+        // Clicking any question dot returns us to question-card mode.
+        if (state.mode !== 'questions') setMode(state, 'questions');
         renderQuestion(state);
+    }
+
+    function toggleCorrections(state) {
+        setMode(state, state.mode === 'corrections' ? 'questions' : 'corrections');
+    }
+
+    function setMode(state, mode) {
+        state.mode = mode;
+        var qCard = document.getElementById(state.prefix + 'QCardContainer');
+        var qNav = document.getElementById(state.prefix + 'QNavRow');
+        var corrPanel = document.getElementById(state.prefix + 'CorrPanel');
+        var corrPill = document.getElementById(state.prefix + 'CorrPill');
+        if (mode === 'corrections') {
+            if (qCard) qCard.style.display = 'none';
+            if (qNav) qNav.style.display = 'none';
+            if (corrPanel) corrPanel.style.display = 'block';
+            if (corrPill) {
+                corrPill.classList.add('active');
+                corrPill.setAttribute('aria-pressed', 'true');
+            }
+            // De-activate every question dot so it's clear no question is
+            // selected while we're in corrections view.
+            state.containerEl.querySelectorAll('.fb-q-dot').forEach(function (d) {
+                d.classList.remove('active');
+            });
+            renderCorrections(state);
+        } else {
+            if (qCard) qCard.style.display = '';
+            if (qNav) qNav.style.display = '';
+            if (corrPanel) corrPanel.style.display = 'none';
+            if (corrPill) {
+                corrPill.classList.remove('active');
+                corrPill.setAttribute('aria-pressed', 'false');
+            }
+            renderQuestion(state);
+        }
+    }
+
+    // Build the back-and-forth corrections thread, grouped by question.
+    // Each question card shows: header → AI's original feedback → an
+    // alternating sequence of student attempts and AI verdict responses.
+    // Verdict colours reuse the same palette used in the student-side
+    // "Now You Try" panel: good=green, not_quite=yellow, error=red.
+    function renderCorrections(state) {
+        var panel = document.getElementById(state.prefix + 'CorrPanel');
+        if (!panel) return;
+        // Group attempts by question_num, preserving insertion order
+        // (the array is appended chronologically server-side).
+        var byQ = {};
+        var qOrder = [];
+        state.corrections.forEach(function (a) {
+            var key = String(a.question_num != null ? a.question_num : '');
+            if (!(key in byQ)) {
+                byQ[key] = [];
+                qOrder.push(key);
+            }
+            byQ[key].push(a);
+        });
+
+        // Sort question groups in the same order as the question carousel
+        // so the corrections view mirrors the question sequence.
+        var qIndex = {};
+        state.questions.forEach(function (q, i) {
+            qIndex[String(q.question_num != null ? q.question_num : (i + 1))] = i;
+        });
+        qOrder.sort(function (a, b) {
+            var ai = qIndex[a] != null ? qIndex[a] : 999;
+            var bi = qIndex[b] != null ? qIndex[b] : 999;
+            return ai - bi;
+        });
+
+        if (!qOrder.length) {
+            panel.innerHTML = '<p style="color:#888;font-style:italic;">No corrections submitted.</p>';
+            return;
+        }
+
+        var html = '';
+        qOrder.forEach(function (qKey) {
+            var qIdx = qIndex[qKey];
+            var q = qIdx != null ? state.questions[qIdx] : null;
+            var heading = q
+                ? (state.assignType === 'rubrics'
+                    ? (q.criterion_name || ('Criterion ' + qKey))
+                    : ('Question ' + (q.question_num || qKey)))
+                : ('Question ' + qKey);
+
+            var aiFb = q ? (q.feedback_html || (q.feedback ? escMath(q.feedback) : '')) : '';
+
+            html += '<div class="fb-corr-q-card">';
+            html += '<div class="fb-corr-q-header">' + esc(heading) + '</div>';
+            if (aiFb) {
+                html += '<div class="fb-corr-bubble fb-corr-ai">' +
+                            '<div class="fb-corr-bubble-label">AI feedback</div>' +
+                            '<div class="fb-corr-bubble-body">' + aiFb + '</div>' +
+                        '</div>';
+            }
+            byQ[qKey].forEach(function (a) {
+                html += '<div class="fb-corr-bubble fb-corr-student">' +
+                            '<div class="fb-corr-bubble-label">Student wrote</div>' +
+                            '<div class="fb-corr-bubble-body">' + escMath(a.text || '') + '</div>' +
+                        '</div>';
+                var verdictCls = 'good';
+                if (a.verdict === 'not_quite') verdictCls = 'not_quite';
+                else if (a.verdict === 'error' || a.verdict === 'bad') verdictCls = 'error';
+                html += '<div class="fb-corr-verdict ' + verdictCls + '">' +
+                            esc(a.message || '') +
+                        '</div>';
+            });
+            html += '</div>';
+        });
+
+        panel.innerHTML = html;
+
+        if (window.MathJax && MathJax.typesetPromise) {
+            MathJax.typesetPromise([panel]).catch(function () {});
+        }
     }
 
     function renderQuestion(state) {
