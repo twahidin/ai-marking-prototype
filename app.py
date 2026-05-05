@@ -5087,15 +5087,20 @@ def teacher_create():
     raw_pinyin = (request.form.get('pinyin_mode', 'off') or 'off').lower()
     if raw_pinyin not in ('off', 'vocab', 'advanced', 'full'):
         raw_pinyin = 'off'
-    from subjects import resolve_subject_key
-    if resolve_subject_key(request.form.get('subject', '')) != 'chinese':
+    from subjects import resolve_subject_key, canonicalise_subject
+    # Coerce the typed subject to its canonical display form ('maths' →
+    # 'Mathematics', 'hcl' → 'Chinese', etc.) so the canonical pool
+    # actually pools cross-assignment. Freeform input passes through
+    # unchanged and stays intra-assignment-only via is_canonical_subject.
+    canon_subject = canonicalise_subject(request.form.get('subject', ''))
+    if resolve_subject_key(canon_subject) != 'chinese':
         raw_pinyin = 'off'
 
     asn = Assignment(
         id=str(uuid.uuid4()),
         classroom_code=_generate_classroom_code(),
         title=request.form.get('title', ''),
-        subject=request.form.get('subject', ''),
+        subject=canon_subject,
         assign_type=assign_type,
         scoring_mode=request.form.get('scoring_mode', 'marks'),
         total_marks=request.form.get('total_marks', ''),
@@ -5188,7 +5193,10 @@ def teacher_edit(assignment_id):
 
     # Parse incoming text/scalar fields (default to current value if missing)
     new_title = request.form.get('title', asn.title or '')
-    new_subject = request.form.get('subject', asn.subject or '')
+    from subjects import resolve_subject_key as _rsk, canonicalise_subject as _canon
+    # Coerce on edit too, so changing the typed subject from 'maths' to
+    # 'Mathematics' (or vice-versa) lands on the same canonical row.
+    new_subject = _canon(request.form.get('subject', asn.subject or ''))
     # scoring_mode is locked after creation — changing it would invalidate
     # already-marked submissions. Always pin to the current value regardless
     # of what the form posts.
@@ -5204,7 +5212,6 @@ def teacher_edit(assignment_id):
     new_pinyin = (request.form.get('pinyin_mode', prior_pinyin) or 'off').lower()
     if new_pinyin not in ('off', 'vocab', 'advanced', 'full'):
         new_pinyin = 'off'
-    from subjects import resolve_subject_key as _rsk
     if _rsk(new_subject) != 'chinese':
         new_pinyin = 'off'
 
@@ -7971,10 +7978,11 @@ def bank_bulk_upload():
         if scoring not in ('status', 'marks'):
             scoring = 'status'
 
+        from subjects import canonicalise_subject as _canon
         item = AssignmentBank(
             id=str(uuid.uuid4()),
             title=title,
-            subject=(row.get('subject') or '').strip(),
+            subject=_canon(row.get('subject') or ''),
             level=(row.get('level') or '').strip(),
             tags=(row.get('tags') or '').strip(),
             assign_type=assign_type,
@@ -8030,7 +8038,8 @@ def bank_edit(bank_id):
     if 'title' in form:
         item.title = _f('title')
     if 'subject' in form:
-        item.subject = _f('subject')
+        from subjects import canonicalise_subject as _canon
+        item.subject = _canon(_f('subject'))
     if 'level' in form:
         item.level = _f('level')
     if 'tags' in form:

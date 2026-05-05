@@ -96,6 +96,27 @@ def resolve_subject_key(text):
     return None
 
 
+def canonicalise_subject(text):
+    """Normalise a freeform subject string to its canonical display form
+    if it resolves to a taxonomy entry; otherwise return the input
+    unchanged (just whitespace-stripped). Call at every write site so
+    aliases like 'maths', 'hcl', 'phy' all collapse to the canonical
+    display string ('Mathematics', 'Chinese', 'Physics') in the DB —
+    that's what the cross-assignment retrieval / principles cache /
+    marking-patterns page key on. Freeform input ('Sec 3 Maths') falls
+    through unchanged so the freeform-isolation gate still picks it up.
+    """
+    if text is None:
+        return ''
+    stripped = str(text).strip()
+    if not stripped:
+        return ''
+    key = resolve_subject_key(stripped)
+    if key:
+        return display_name(key)
+    return stripped
+
+
 def is_canonical_subject(text):
     """True if the freeform subject string maps to a canonical taxonomy
     entry (display match or alias hit). Used to gate cross-assignment
