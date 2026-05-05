@@ -576,38 +576,72 @@ The student should be able to act on the feedback without ever seeing the
 rubric."""
 
 
-# Shared rules for the per-question "correction_prompt" string. Replaces the
-# old fixed boilerplate ("In your own words, explain what you should have
-# written and why") with a typology-driven prompt that varies by mistake type
-# so the student isn't asked the same generic question on every gap.
+# Shared rules for the per-question "correction_prompt" string. The prompt
+# is what the student sees in their feedback view as the task to attempt —
+# it must scaffold their thinking towards the correct answer, NEVER hand it
+# to them. Three non-negotiables: (1) anchor in the student's actual words,
+# (2) point at the gap without revealing the answer or the method, (3) end
+# with a concrete thinking step the student can do without being told what
+# the right answer is.
 CORRECTION_PROMPT_RULES = """CORRECTION PROMPT RULES (for the "correction_prompt" field)
 
-The correction prompt is a one-line task the student does on the spot — a
-short do-this-now exercise, not a reflection question. Vary it to match the
-mistake type. Pick exactly ONE form per criterion based on what went wrong:
+The correction prompt is a SCAFFOLDED THINKING TASK — one short instruction
+that helps the student notice WHY their answer fell short and rework it
+themselves. It must NOT hand them the correct answer, the correct method,
+or the correct value. Make them think; don't make them copy.
 
-- Procedural / careless slip (computation error, wrong unit, missed step):
-  "Re-do the [specific step] using [the correct method or value]."
+EVERY correction prompt MUST satisfy all three:
+1. ANCHOR — quote or paraphrase a specific element from THIS student's
+   actual answer (a value they wrote, a term they used, a sentence they
+   produced). No generic stems. The student must see "this is about MY
+   answer", not "this is the same prompt the AI gives everyone".
+2. POINT WITHOUT REVEALING — direct attention to the gap (a missing link,
+   an inconsistent value, an undefined term, an imprecise word) WITHOUT
+   stating the correct answer or the correct method. Frame as a question
+   the student answers, or a check the student performs.
+3. CONCRETE NEXT STEP — end with one action the student can do now: re-
+   derive, re-check, compare, look up, rewrite, sketch, justify. The action
+   must be specific to the gap, not "review your work".
+
+VARY the form by mistake type — pick exactly ONE per criterion:
+
+- Procedural / careless slip (arithmetic, unit, missed step):
+  "You wrote '[the wrong value or step]'. Re-read what the question gave
+  you — which input or step doesn't line up? Re-derive that step."
 
 - Reasoning gap (link not made, cause→effect missing, comparison flat):
-  "Explain the link between [X] and [Y]."
+  "Your answer says '[the student's claim]' but doesn't say why. What must
+  hold between '[X]' and '[Y the question asks about]' for that claim to
+  follow? Write the missing step."
 
 - Evidence / source handling (quotation missing, source not unpacked):
-  "Pick one quote from [Source A] and explain what it suggests about [Z]."
+  "Your answer mentions '[Z]' without grounding it. Find one phrase in
+  '[the source / question]' that connects to '[Z]', and explain how."
 
 - Content / concept gap (term defined wrongly, idea misunderstood):
-  "In your own words, define [the concept] and explain how it applies here."
+  "Your answer treats '[the concept]' as '[what the student wrote]'. Look
+  up '[the concept]' — does that match how this question is using it?
+  Reconcile the two definitions in your own words."
 
 - Language / expression (clarity, register, sentence structure):
-  "Rewrite the sentence so it [specific quality the student needs]."
+  "Your sentence reads '[the student's exact phrase]'. Which word is doing
+  the heavy lifting but is too vague? Rewrite using a more precise term."
+
+BANNED — these reveal the answer / method:
+- "Re-do the calculation using [the correct method/formula/value]." — gives the method.
+- "The correct answer is [Y]; explain why." — gives the answer.
+- "Use [formula X] to compute [Y]." — gives both.
+- "Convert your answer to [the correct unit]." — gives the unit.
+- "In your own words, explain what you should have written and why." — old boilerplate, banned.
+
+BANNED — these are too generic:
+- Any prompt that doesn't quote or paraphrase the student's actual answer.
+- "Review your working" / "Check your answer" / "Re-read the question" with no anchor.
 
 CONSTRAINTS:
-- ≤ 25 words. One imperative sentence.
-- Reference the specific content of THIS criterion — never a generic stem.
+- ≤ 30 words. One sentence (or one short question + one action).
 - Across all correction_prompt fields in the SAME response, no two prompts
-  may end with the same words. Vary the verb and the focus.
-- Do NOT use "In your own words, explain what you should have written and
-  why" — that's the old boilerplate and is banned.
+  may end with the same words. Vary the verb AND the anchor.
 - OMIT this field entirely on full-marks (or "correct") criteria."""
 
 
@@ -1609,6 +1643,33 @@ def _looks_like_advice(label):
     return bool(label and _ADVICE_LABEL_PATTERNS.match(label.strip()))
 
 
+# Phrases that signal an answer-revealing or generic boilerplate correction
+# prompt. The categorisation prompt instructs the AI to scaffold thinking,
+# never to hand over the answer or method; this regex catches the obvious
+# violations so the UI falls back to the marking-time prompt instead of
+# confusing the student.
+_BOILERPLATE_PROMPT_PATTERNS = re.compile(
+    r'(?i)(?:'
+    r'in your own words[, ]+explain'                  # banned old boilerplate
+    r'|the correct answer is\b'                        # gives the answer
+    r'|use the formula\b'                              # gives the formula
+    r'|use the equation\b'
+    r'|the answer should be\b'
+    r'|convert (?:your answer|to)\s+(?:to\s+)?[a-z]+\b'  # gives the unit
+    r'|^(?:re-?do|redo)\b.*\busing\b'                  # "redo using [method]"
+    r')'
+)
+
+
+def _looks_like_boilerplate_correction(prompt):
+    """Return True if a themed_correction_prompt looks like generic
+    boilerplate or reveals the answer/method directly. Conservative — only
+    rejects on clear violations; ambiguous prompts pass through."""
+    if not prompt:
+        return False
+    return bool(_BOILERPLATE_PROMPT_PATTERNS.search(prompt))
+
+
 def _extract_final_json(text, marker='FINAL_JSON'):
     """Find the JSON object that follows a labelled marker like FINAL_JSON:.
 
@@ -1832,12 +1893,51 @@ WRONG: "Next time: be more careful with your answers."
 RIGHT: "Next time: after writing any quantity, ask yourself — have I stated the unit?"
 RIGHT: "Next time: after describing a process, ask — what breaks if this step fails?"
 
+DISCIPLINE — themed correction prompts MUST scaffold thinking, NOT reveal the answer.
+
+For each categorised criterion, also produce a `themed_correction_prompt`: a
+short instruction the student sees in their feedback view that helps them
+notice WHY their answer fell short and rework it themselves. You have just
+diagnosed the theme — use it to frame the prompt, but do NOT hand them the
+correct answer, the correct method, the correct value, or the correct unit.
+
+EVERY themed_correction_prompt MUST satisfy all three:
+1. ANCHOR — quote or paraphrase a specific element from THIS student's actual
+   answer (a value they wrote, a term they used, a sentence they produced).
+   No generic stems.
+2. POINT WITHOUT REVEALING — direct attention to the gap WITHOUT stating the
+   correct answer or method. Frame as a question the student answers, or a
+   check they perform. The student must do the cognitive work.
+3. CONCRETE NEXT STEP — end with one action the student can do now: re-
+   derive, re-check, compare, look up, rewrite, sketch, justify. Specific to
+   the gap, not "review your work".
+
+ALIGN the prompt with the diagnosed theme:
+- careless_slip / procedural_error: anchor in the wrong value or step the student wrote, then ask them to re-read the question's inputs and re-derive — never name the right method.
+- misread_question / incomplete_answer: anchor in what the student answered, then ask what the question is actually asking for — never restate the question for them.
+- content_gap / misconception: anchor in how the student used the concept, then ask them to look it up and reconcile — never define it for them.
+- keyword_missing / too_vague / language_error: anchor in the student's exact phrase, then ask which word is imprecise / which technical term is missing — never supply the missing term.
+- working_not_shown / mark_allocation_ignored / question_format_not_followed: anchor in what the student produced (the short answer, the wrong format), then ask what the question's format demanded — never describe the missing structure for them.
+
+BANNED in themed_correction_prompt:
+- "Re-do the calculation using [the correct method]." — gives the method.
+- "The correct answer is [Y]; explain why." — gives the answer.
+- "Convert to [the correct unit]." — gives the unit.
+- "Use the formula [X]." — gives the formula.
+- "In your own words, explain what you should have written and why." — boilerplate.
+- Any prompt that doesn't quote or paraphrase THIS student's actual answer.
+
+CONSTRAINTS for themed_correction_prompt:
+- ≤ 30 words. One sentence (or short question + action).
+- No two themed_correction_prompts in the same response may end with the same words.
+
 PROCESS
 
 1. For each criterion that lost marks, write a one-sentence diagnosis (what went wrong, not what to do).
 2. Find shared causes across diagnoses. A group needs ≥ 2 criteria sharing the same root error.
 3. For each group, generate a 2-4 word diagnostic specific_label, assign ONE theme_key, and write one "Next time:" habit.
 4. Standalone criteria (no shared cause) still get a theme_key and a 2-4 word specific_label, but no group entry and no habit.
+5. For EVERY criterion (grouped or standalone), write a themed_correction_prompt following the rules above.
 
 OUTPUT
 
@@ -1850,6 +1950,7 @@ FINAL_JSON:
       "criterion_id": "<copied>",
       "theme_key": "<one of {theme_keys_csv}>",
       "specific_label": "<2-4 words, diagnostic>",
+      "themed_correction_prompt": "<scaffolded thinking task — anchored, non-revealing, ≤ 30 words>",
       "low_confidence": false
     }}
   ],
@@ -1869,6 +1970,7 @@ Rules for the JSON:
 - A group appears in groups ONLY if it has 2 or more criteria.
 - Standalone criteria appear in categorisation but NOT in groups.
 - Self-check before output: re-read each specific_label. Does it start with a verb like "check", "show", "remember", "always", "read"? If so, rewrite as a diagnosis (a noun phrase like "X error" or "X omitted").
+- Self-check before output: re-read each themed_correction_prompt. Does it (a) quote/paraphrase the student's actual answer? (b) avoid stating the correct answer/method/value/unit? (c) end with a concrete thinking action? If any answer is "no", rewrite.
 - Never leave a criterion unassigned."""
 
     user_prompt = (
@@ -1908,15 +2010,21 @@ Rules for the JSON:
         # rather than running another AI round-trip to verify.
         if not spec or _looks_like_advice(spec):
             spec = (themes.get(tk) or {}).get('label', 'Area for review')
+        # Themed correction prompt: scaffolded thinking task that the student
+        # sees in their feedback view, anchored in their actual answer and
+        # aligned with the diagnosed theme. Reject if it looks like a
+        # generic boilerplate or an answer-revealing instruction so the UI
+        # falls back to the marking-time prompt rather than confusing the
+        # student.
+        themed_prompt = (c.get('themed_correction_prompt') or '').strip()
+        if themed_prompt and _looks_like_boilerplate_correction(themed_prompt):
+            themed_prompt = ''
         cats_out.append({
             'criterion_id': cid,
             'theme_key': tk,
             'specific_label': spec,
             'low_confidence': bool(c.get('low_confidence')),
-            # No themed correction prompt under the single-pass pipeline;
-            # stays empty so the existing UI swap is a no-op (generic
-            # prompt is shown instead).
-            'themed_correction_prompt': '',
+            'themed_correction_prompt': themed_prompt,
         })
 
     # ---------------------------------------------------------------

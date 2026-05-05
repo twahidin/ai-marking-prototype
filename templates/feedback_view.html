@@ -333,17 +333,24 @@
             {% set mt = q.get('marks_total') %}
             {% set needs_correction = (ma is not none and mt is not none and mt > 0 and ma < mt) or (q.get('status') and q.get('status') != 'correct') %}
             {% if needs_correction %}
-                {% set cprompt = q.get('correction_prompt') or (cname ~ ': In your own words, explain what you should have written and why.') %}
+                {# Marking-time correction_prompt is the always-present
+                   fallback. Categorisation pass produces a theme-aware
+                   scaffolded prompt anchored in the student's actual
+                   answer; when present, prefer it on first paint so the
+                   student sees the better-tailored task immediately,
+                   not only when they toggle "Group by Mistake Type". #}
+                {% set cprompt = q.get('correction_prompt') or '' %}
                 {% set last_attempt = (prior_attempts | selectattr('question_num', 'equalto', qnum|string) | list | last) if prior_attempts else None %}
                 {% set themed_map = q.get('correction_prompts_by_theme') or {} %}
                 {% set theme_key = q.get('theme_key') or '' %}
                 {% set themed_prompt = themed_map.get(theme_key) if theme_key else '' %}
+                {% set initial_prompt = themed_prompt if themed_prompt else (cprompt if cprompt else (cname ~ ': Look back at your answer. What specifically does the question ask for that your answer did not address? Rework that part.')) %}
                 <div class="fv-correction-card"
                      data-qnum="{{ qnum }}"
                      data-generic-prompt="{{ cprompt }}"
                      data-themed-prompt="{{ themed_prompt or '' }}"
                      data-theme-key="{{ theme_key }}">
-                    <div class="fv-correction-prompt">{{ cprompt }}</div>
+                    <div class="fv-correction-prompt">{{ initial_prompt }}</div>
                     <textarea class="fv-correction-textarea" placeholder="Type your correction here…">{{ last_attempt.text if last_attempt else '' }}</textarea>
                     <button type="button" class="fv-correction-submit" onclick="fvSubmitCorrection(this, '{{ qnum }}')">Submit</button>
                     <div class="fv-correction-result{% if last_attempt %} {{ last_attempt.verdict }}{% endif %}" style="{% if not last_attempt %}display:none;{% endif %}">{{ last_attempt.message if last_attempt else '' }}</div>
@@ -722,15 +729,18 @@ function fvActivateView(which) {
         // Leave layer2/corrections hidden by default; the "Show breakdown"
         // button governs those (existing behaviour — no changes).
     }
-    // Swap each correction card's visible prompt: themed in grouped mode (if
-    // available), generic in by-question mode. Submit still uses the same
-    // endpoint; we tag the attempt with theme_key when grouped.
+    // Swap each correction card's visible prompt. Themed (theme-aware,
+    // scaffolded, anchored in the student's actual answer) is preferred
+    // whenever available — both in grouped mode and by-question mode —
+    // because it's strictly more informative than the marking-time
+    // generic. Fall back to generic only when no themed prompt exists for
+    // this criterion's theme_key.
     document.querySelectorAll('.fv-correction-card').forEach(function (card) {
         var p = card.querySelector('.fv-correction-prompt');
         if (!p) return;
         var themed = card.getAttribute('data-themed-prompt') || '';
         var generic = card.getAttribute('data-generic-prompt') || '';
-        p.textContent = (which === 'mistake' && themed) ? themed : generic;
+        p.textContent = themed || generic;
     });
     try { localStorage.setItem(FV_VIEW_STORAGE_KEY, which); } catch (e) {}
 }
