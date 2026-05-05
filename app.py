@@ -5951,6 +5951,19 @@ def teacher_submission_result(assignment_id, submission_id):
         return jsonify({'success': False, 'error': 'Invalid submission'}), 400
     teacher = _current_teacher()
     teacher_id = teacher.id if teacher else None
+    # Available categories for the inline "Mistake Category" dropdown in
+    # the per-question card. Strict (non-display) variant — teachers pick
+    # from canonical taxonomy keys only; deprecated legacy keys never
+    # appear as a choice for new categorisations.
+    from config.mistake_themes import themes_for as _themes_for
+    available_themes = [
+        {
+            'key': k,
+            'label': v.get('label', k),
+            'description': v.get('description', ''),
+            'never_group': bool(v.get('never_group')),
+        } for k, v in _themes_for(asn.subject or '').items()
+    ]
     return jsonify({
         'success': True,
         'result': sub.get_result(),
@@ -5959,6 +5972,7 @@ def teacher_submission_result(assignment_id, submission_id):
         'is_final': sub.is_final,
         'text_edit_meta': _build_text_edit_meta(sub.id, teacher_id=teacher_id),
         'current_teacher_id': teacher_id,
+        'available_themes': available_themes,
     })
 
 

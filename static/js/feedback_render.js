@@ -188,7 +188,14 @@
             '.fb-q-card.status-incorrect { background: #fdf3f3; border-color: #e8b5b8; }' +
             '.fb-q-card.status-correct .fb-q-card-header { background: #e7f3eb; }' +
             '.fb-q-card.status-partially_correct .fb-q-card-header { background: #fff4d6; }' +
-            '.fb-q-card.status-incorrect .fb-q-card-header { background: #fbe3e3; }';
+            '.fb-q-card.status-incorrect .fb-q-card-header { background: #fbe3e3; }' +
+            /* Mistake-category field — sits between Correct Answer and Feedback */
+            '.fb-q-field-value.mistake-category { background: #fbeef0; padding: 10px 12px; border-radius: 8px; border-left: 3px solid #c0394a; font-size: 13.5px; }' +
+            '.fb-cat-trigger { cursor: pointer; transition: box-shadow 0.15s, background 0.15s; outline: none; }' +
+            '.fb-cat-trigger:hover { background: #f7e3e6; box-shadow: 0 0 0 2px rgba(192,57,74,0.18); }' +
+            '.fb-cat-trigger:focus { box-shadow: 0 0 0 2px rgba(192,57,74,0.32); }' +
+            '.fb-cat-display-label { font-weight: 600; color: #2d2d2d; }' +
+            '.fb-cat-dropdown-item:hover { background: #eef1ff !important; }';
         document.head.appendChild(css);
     }
 
@@ -230,6 +237,7 @@
             onSave: options.onSave || null,
             isMarksMode: isMarksMode,
             textEditMeta: options.textEditMeta || {},  // {qKey: {field: {edit_id, version, calibrated}}}
+            availableThemes: Array.isArray(options.availableThemes) ? options.availableThemes : [],
             corrections: corrections,
             // 'questions' | 'corrections' — which panel is showing
             mode: 'questions',
@@ -560,30 +568,53 @@
             impBlock = (q.improvement || q.improvement_html) ? '<div class="fb-q-field"><div class="fb-q-field-label">Suggested Improvement</div><div class="fb-q-field-value improvement">' + rawOrHtml(q, 'improvement') + '</div></div>' : '';
         }
 
-        // Category line: muted, contenteditable annotation in the form
-        // [theme_key] specific_label. Hidden completely when categorisation
-        // hasn't run for this criterion (no theme_key set).
+        // Mistake-category field. Sits between Correct Answer and Feedback.
+        // Editable mode + lost marks: always visible (so teachers can categorise
+        // even when the AI didn't run categorisation, or set a category for a
+        // criterion that fell below the worker's 2-criteria threshold).
+        // Read-only mode: only visible when a theme_key is already set.
+        var mtMC = q.marks_total, maMC = q.marks_awarded;
+        var lostByMarks = (mtMC != null && maMC != null && mtMC > 0 && maMC < mtMC);
+        var lostByStatus = (!lostByMarks && q.status && q.status !== 'correct');
+        var hasLostMarks = lostByMarks || lostByStatus;
+
         var catBlock = '';
-        if (q.theme_key) {
-            var corrMark = q.theme_key_corrected ?
-                '<span class="fb-cat-corrected" style="color:#8a8db2;margin-left:6px;font-style:normal;" title="Teacher-corrected">✎</span>' : '';
-            var labelTxt = q.specific_label ? esc(q.specific_label) : '';
-            if (state.editable) {
-                catBlock = '<div class="fb-q-cat-row" style="margin-bottom:4px; font-size:12px; color:#7a7f8c; line-height:1.5;">' +
-                    '<span class="fb-cat-line" data-field="category" contenteditable="true" spellcheck="false" ' +
-                        'style="outline:none; padding:1px 4px; border-radius:3px; cursor:text; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;">' +
-                        '[' + esc(q.theme_key) + '] ' + labelTxt +
-                    '</span>' +
-                    corrMark +
-                '</div>';
+        var themesByKey = {};
+        (state.availableThemes || []).forEach(function (t) { themesByKey[t.key] = t; });
+        var currentThemeMeta = q.theme_key ? themesByKey[q.theme_key] : null;
+        var currentLabel = currentThemeMeta ? currentThemeMeta.label : (q.theme_key || '');
+        var specificTxt = q.specific_label ? esc(q.specific_label) : '';
+        var corrMark = q.theme_key_corrected
+            ? '<span class="fb-cat-corrected" style="color:#8a8db2;margin-left:8px;font-style:normal;" title="Teacher-corrected">✎</span>'
+            : '';
+
+        if (state.editable && hasLostMarks) {
+            // Editable: full clickable field block. Visible label is the
+            // human theme label (or "Click to set" placeholder); raw key
+            // and specific_label are kept on data-* attrs so saves preserve
+            // the AI's original specific_label across category changes.
+            var displayInner;
+            if (q.theme_key) {
+                displayInner = '<span class="fb-cat-display-label">' + esc(currentLabel) + '</span>' +
+                    (specificTxt ? '<span class="fb-cat-display-specific" style="color:#888;font-style:italic;margin-left:8px;">— ' + specificTxt + '</span>' : '') +
+                    corrMark;
             } else {
-                catBlock = '<div class="fb-q-cat-row" style="margin-bottom:4px; font-size:12px; color:#7a7f8c; line-height:1.5;">' +
-                    '<span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;">' +
-                        '[' + esc(q.theme_key) + '] ' + labelTxt +
-                    '</span>' +
-                    corrMark +
-                '</div>';
+                displayInner = '<span class="fb-cat-display-placeholder" style="color:#aaa;font-style:italic;">Click to set category</span>';
             }
+            catBlock = '<div class="fb-q-field"><div class="fb-q-field-label">Mistake Category <small style="color:#bbb;font-weight:400;">(click to set)</small></div>' +
+                '<div class="fb-q-field-value mistake-category fb-cat-trigger" data-field="category" tabindex="0" ' +
+                    'data-theme-key="' + esc(q.theme_key || '') + '" ' +
+                    'data-specific-label="' + esc(q.specific_label || '') + '">' +
+                    displayInner +
+                '</div></div>';
+        } else if (q.theme_key) {
+            // Read-only with a category set: show the label inline.
+            catBlock = '<div class="fb-q-field"><div class="fb-q-field-label">Mistake Category</div>' +
+                '<div class="fb-q-field-value mistake-category">' +
+                    '<span class="fb-cat-display-label">' + esc(currentLabel) + '</span>' +
+                    (specificTxt ? '<span class="fb-cat-display-specific" style="color:#888;font-style:italic;margin-left:8px;">— ' + specificTxt + '</span>' : '') +
+                    corrMark +
+                '</div></div>';
         }
 
         var cardClass = 'fb-q-card status-' + statusCls;
@@ -849,49 +880,73 @@
         });
     }
 
-    var THEME_KEYS = ['reasoning_gap', 'evidence_handling', 'language_expression', 'procedural_error', 'content_gap'];
-
     function attachCategoryLineHandler(state, card) {
-        var span = card.querySelector('.fb-cat-line');
-        if (!span || span.dataset.bound === '1') return;
-        span.dataset.bound = '1';
+        var trigger = card.querySelector('.fb-cat-trigger');
+        if (!trigger || trigger.dataset.bound === '1') return;
+        trigger.dataset.bound = '1';
 
-        var originalText = (span.textContent || '').trim();
+        var themes = (state.availableThemes || []);
         var dropdown = null;
         var highlightIdx = -1;
 
+        function renderTriggerInner(themeKey, specificLabel, corrected) {
+            var meta = themes.find(function (t) { return t.key === themeKey; });
+            var lbl = meta ? meta.label : themeKey;
+            var spec = specificLabel ? esc(specificLabel) : '';
+            var corrMark = corrected
+                ? '<span class="fb-cat-corrected" style="color:#8a8db2;margin-left:8px;font-style:normal;" title="Teacher-corrected">✎</span>'
+                : '';
+            if (themeKey) {
+                trigger.innerHTML = '<span class="fb-cat-display-label">' + esc(lbl) + '</span>' +
+                    (spec ? '<span class="fb-cat-display-specific" style="color:#888;font-style:italic;margin-left:8px;">— ' + spec + '</span>' : '') +
+                    corrMark;
+            } else {
+                trigger.innerHTML = '<span class="fb-cat-display-placeholder" style="color:#aaa;font-style:italic;">Click to set category</span>';
+            }
+        }
+
+        function onDocMouseDown(ev) {
+            if (!dropdown) return;
+            if (dropdown.contains(ev.target) || trigger.contains(ev.target)) return;
+            hideDropdown();
+        }
+
         function showDropdown() {
             if (dropdown) return;
+            if (!themes.length) return;  // nothing to choose from
             dropdown = document.createElement('div');
             dropdown.className = 'fb-cat-dropdown';
-            dropdown.style.cssText = 'position:absolute; background:white; border:1px solid #c5cbe8; border-radius:6px; box-shadow:0 4px 10px rgba(0,0,0,0.12); padding:4px 0; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; z-index:99999; min-width:200px;';
-            THEME_KEYS.forEach(function (k, i) {
+            dropdown.style.cssText = 'position:absolute; background:white; border:1px solid #c5cbe8; border-radius:8px; box-shadow:0 6px 16px rgba(0,0,0,0.14); padding:6px 0; font-size:13px; z-index:99999; min-width:280px; max-width:380px; max-height:340px; overflow-y:auto;';
+            themes.forEach(function (t, i) {
                 var item = document.createElement('div');
                 item.className = 'fb-cat-dropdown-item';
-                item.style.cssText = 'padding:5px 12px; cursor:pointer; color:#333;';
-                item.textContent = k;
+                item.style.cssText = 'padding:8px 14px; cursor:pointer; color:#333; line-height:1.4;';
+                item.innerHTML = '<div style="font-weight:600;">' + esc(t.label) + '</div>' +
+                    (t.description ? '<div style="font-size:11.5px;color:#888;margin-top:2px;">' + esc(t.description) + '</div>' : '');
                 item.addEventListener('mousedown', function (ev) {
-                    ev.preventDefault();  // keep focus on span; mousedown fires before blur
-                    applyKey(k);
+                    ev.preventDefault();  // keep focus; fires before blur
+                    applyKey(t.key);
                 });
                 item.addEventListener('mouseenter', function () { highlight(i); });
                 dropdown.appendChild(item);
             });
             document.body.appendChild(dropdown);
-            var rect = span.getBoundingClientRect();
+            var rect = trigger.getBoundingClientRect();
             dropdown.style.top = (rect.bottom + window.scrollY + 2) + 'px';
             dropdown.style.left = (rect.left + window.scrollX) + 'px';
 
-            // Pre-highlight whichever key the line currently shows.
-            var current = span.textContent || '';
-            var m = current.match(/^\s*\[([^\]]*)\]/);
-            if (m) {
-                var idx = THEME_KEYS.indexOf((m[1] || '').trim());
+            // Pre-highlight the current selection.
+            var currentKey = trigger.getAttribute('data-theme-key') || '';
+            if (currentKey) {
+                var idx = themes.findIndex(function (t) { return t.key === currentKey; });
                 if (idx >= 0) highlight(idx);
             }
+
+            document.addEventListener('mousedown', onDocMouseDown);
         }
 
         function hideDropdown() {
+            document.removeEventListener('mousedown', onDocMouseDown);
             if (dropdown) { dropdown.remove(); dropdown = null; }
             highlightIdx = -1;
         }
@@ -903,70 +958,22 @@
             for (var idx = 0; idx < children.length; idx++) {
                 children[idx].style.background = (idx === i) ? '#eef1ff' : 'white';
             }
+            // Keep highlighted item visible.
+            var el = children[i];
+            if (el && el.scrollIntoView) {
+                try { el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+            }
         }
 
         function applyKey(k) {
-            // Replace bracketed key, preserve specific_label after `]`.
-            var current = span.textContent || '';
-            var m = current.match(/^\s*\[[^\]]*\]\s*(.*)$/);
-            var label = m ? (m[1] || '') : '';
-            span.textContent = '[' + k + '] ' + label;
+            var prevKey = trigger.getAttribute('data-theme-key') || '';
+            if (k === prevKey) { hideDropdown(); return; }
+            var specificLabel = trigger.getAttribute('data-specific-label') || '';
+            // Optimistic update — re-rendered from server response below.
+            trigger.setAttribute('data-theme-key', k);
+            renderTriggerInner(k, specificLabel, false);
             hideDropdown();
-            span.blur();  // triggers existing save flow
-        }
 
-        span.addEventListener('focus', function () { showDropdown(); });
-
-        span.addEventListener('keydown', function (ev) {
-            if (ev.key === 'ArrowDown') {
-                ev.preventDefault();
-                if (!dropdown) showDropdown();
-                var next = highlightIdx < 0 ? 0 : (highlightIdx + 1) % THEME_KEYS.length;
-                highlight(next);
-            } else if (ev.key === 'ArrowUp') {
-                ev.preventDefault();
-                if (!dropdown) showDropdown();
-                var prev = highlightIdx <= 0 ? THEME_KEYS.length - 1 : highlightIdx - 1;
-                highlight(prev);
-            } else if (ev.key === 'Enter' || ev.key === 'Tab') {
-                if (dropdown && highlightIdx >= 0) {
-                    ev.preventDefault();
-                    applyKey(THEME_KEYS[highlightIdx]);
-                } else if (ev.key === 'Enter') {
-                    ev.preventDefault();
-                    span.blur();
-                }
-                // Tab with no highlight: let the browser move focus naturally.
-            } else if (ev.key === 'Escape') {
-                ev.preventDefault();
-                if (dropdown) {
-                    hideDropdown();
-                } else {
-                    span.textContent = originalText;
-                    span.blur();
-                }
-            }
-        });
-        // Strip rich text on paste.
-        span.addEventListener('paste', function (ev) {
-            ev.preventDefault();
-            var text = ((ev.clipboardData || window.clipboardData) || { getData: function () { return ''; } }).getData('text') || '';
-            text = text.replace(/[\r\n]+/g, ' ');
-            try { document.execCommand('insertText', false, text); } catch (e) { /* ignore */ }
-        });
-        span.addEventListener('blur', function () {
-            // Defer hide so a mousedown click on a dropdown item can fire first.
-            setTimeout(hideDropdown, 150);
-            var current = (span.textContent || '').trim();
-            if (current === originalText) return;
-            // Parse [theme_key] specific_label
-            var m = current.match(/^\s*\[([^\]]*)\]\s*(.*)$/);
-            if (!m) {
-                span.textContent = originalText;  // malformed → silent revert
-                return;
-            }
-            var newTheme = (m[1] || '').trim();
-            var newLabel = (m[2] || '').trim();
             var q = state.questions[state.currentQ];
             if (!q) return;
             var savedQNum = q.question_num != null ? q.question_num : (state.currentQ + 1);
@@ -974,44 +981,60 @@
             patchResult(state, {
                 questions: [{
                     question_num: savedQNum,
-                    theme_key: newTheme,
-                    specific_label: newLabel,
+                    theme_key: k,
+                    specific_label: specificLabel,
                 }]
             }).then(function (data) {
                 if (!data || !data.success) {
-                    span.textContent = originalText;
+                    trigger.setAttribute('data-theme-key', prevKey);
+                    renderTriggerInner(prevKey, specificLabel, !!q.theme_key_corrected);
                     return;
                 }
                 var newQ = ((data.result && data.result.questions) || []).find(function (qq) {
                     return String(qq.question_num) === String(savedQNum);
                 });
                 if (!newQ) {
-                    span.textContent = originalText;
+                    trigger.setAttribute('data-theme-key', prevKey);
+                    renderTriggerInner(prevKey, specificLabel, !!q.theme_key_corrected);
                     return;
                 }
                 var serverTk = newQ.theme_key || '';
                 var serverLabel = newQ.specific_label || '';
-                // Server may have silently reverted (invalid theme_key); reflect
-                // whatever the server returned, not what the user typed.
-                span.textContent = '[' + serverTk + '] ' + serverLabel;
-                originalText = span.textContent.trim();
+                trigger.setAttribute('data-theme-key', serverTk);
+                trigger.setAttribute('data-specific-label', serverLabel);
+                renderTriggerInner(serverTk, serverLabel, !!newQ.theme_key_corrected);
                 state.questions[state.currentQ].theme_key = serverTk;
                 state.questions[state.currentQ].specific_label = serverLabel;
                 state.questions[state.currentQ].theme_key_corrected = !!newQ.theme_key_corrected;
-                if (newQ.theme_key_corrected) {
-                    var row = span.parentElement;
-                    if (row && !row.querySelector('.fb-cat-corrected')) {
-                        var mark = document.createElement('span');
-                        mark.className = 'fb-cat-corrected';
-                        mark.style.cssText = 'color:#8a8db2;margin-left:6px;';
-                        mark.title = 'Teacher-corrected';
-                        mark.textContent = '✎';
-                        row.appendChild(mark);
-                    }
-                }
             }).catch(function () {
-                span.textContent = originalText;
+                trigger.setAttribute('data-theme-key', prevKey);
+                renderTriggerInner(prevKey, specificLabel, !!q.theme_key_corrected);
             });
+        }
+
+        trigger.addEventListener('click', function () {
+            if (dropdown) { hideDropdown(); } else { showDropdown(); }
+        });
+        trigger.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter' || ev.key === ' ') {
+                ev.preventDefault();
+                if (!dropdown) showDropdown();
+                else if (highlightIdx >= 0) applyKey(themes[highlightIdx].key);
+            } else if (ev.key === 'ArrowDown') {
+                ev.preventDefault();
+                if (!dropdown) showDropdown();
+                var next = highlightIdx < 0 ? 0 : (highlightIdx + 1) % themes.length;
+                highlight(next);
+            } else if (ev.key === 'ArrowUp') {
+                ev.preventDefault();
+                if (!dropdown) showDropdown();
+                var prev = highlightIdx <= 0 ? themes.length - 1 : highlightIdx - 1;
+                highlight(prev);
+            } else if (ev.key === 'Escape') {
+                ev.preventDefault();
+                hideDropdown();
+                trigger.blur();
+            }
         });
     }
 
