@@ -2276,15 +2276,23 @@ def _rubric_version_hash(asn):
 
 def fetch_calibration_examples(teacher_id, assignment, theme_keys, limit=10):
     """Return up to `limit` of this teacher's prior active edits relevant to
-    the current marking. Two tiers, merged then deduped:
+    the current marking. Three sub-queries, merged then deduped:
 
-      Tier 0: same assignment + same rubric_version (no theme filter).
-      Tier 1: per theme_key — different assignment, same subject_family,
-              theme_key matches.
+      Tier 0:  same assignment + same rubric_version (no theme filter).
+      Tier 1:  per theme_key — different assignment, same subject_family,
+               theme_key matches. Only fires when subject_family AND
+               theme_keys are both populated.
+      Tier 1b: different assignment, exact LOWER(assignments.subject)
+               match (canonical-dropdown subject string). Fires
+               independently of subject_family / theme_keys, so first
+               marks and uncategorised assignments still get
+               cross-assignment calibration. Skipped when the target
+               subject is blank.
 
     `theme_keys` is the iterable of theme_keys from the current submission's
     lost-mark criteria. May be empty (first mark of a fresh submission, or
-    submission not yet categorised) — only Tier 0 returns rows in that case.
+    submission not yet categorised) — Tier 1 won't fire, but Tier 1b will
+    if the assignment has a subject set.
 
     All queries use bound parameters via SQLAlchemy text(). Never f-string
     interpolation.
@@ -2344,6 +2352,40 @@ def fetch_calibration_examples(teacher_id, assignment, theme_keys, limit=10):
                 # Tier 0 wins over Tier 1 for the same edit id.
                 if r['id'] not in rows_by_id:
                     rows_by_id[r['id']] = dict(r)
+
+    # Tier 1b — exact assignments.subject string match. Adapts staging's
+    # e4caaf0: with the canonical-subject dropdown wired into the create
+    # form (subjects.py), every new assignment carries a normalised string
+    # ('Physics', 'Higher Chinese', ...). JOIN feedback_edit -> assignments
+    # so we match on the *source* assignment's live subject, not a frozen
+    # column. Independent of subject_family / theme_keys: this path covers
+    # cases where the AI hasn't categorised yet OR theme_keys is empty
+    # (first mark on a fresh submission). Skipped when subject is blank,
+    # otherwise it'd cross-pollinate every legacy "" subject row.
+    target_subject = (getattr(assignment, 'subject', '') or '').strip()
+    if target_subject:
+        tier1b_sql = _sql_text(
+            "SELECT fe.id AS id, fe.original_text AS original_text, "
+            "       fe.edited_text AS edited_text, fe.theme_key AS theme_key, "
+            "       fe.assignment_id AS assignment_id, "
+            "       fe.rubric_version AS rubric_version, "
+            "       fe.created_at AS created_at, fe.criterion_id AS criterion_id, "
+            "       fe.field AS field, 1 AS match_tier "
+            "FROM feedback_edit fe "
+            "JOIN assignments a ON a.id = fe.assignment_id "
+            "WHERE fe.edited_by = :teacher_id "
+            "  AND fe.active = true "
+            "  AND fe.assignment_id != :aid "
+            "  AND LOWER(a.subject) = LOWER(:target_subject) "
+            "ORDER BY fe.created_at DESC"
+        )
+        for r in db.session.execute(tier1b_sql, {
+            'teacher_id': teacher_id,
+            'aid': assignment.id,
+            'target_subject': target_subject,
+        }).mappings().all():
+            if r['id'] not in rows_by_id:
+                rows_by_id[r['id']] = dict(r)
 
     # Sort: Tier 0 first, newest first within each tier.
     def _ts(d):
