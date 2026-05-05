@@ -88,39 +88,6 @@ def _helper_model_for(provider, fallback):
     return HELPER_MODELS.get(provider) or fallback
 
 
-# Coarse subject buckets derived from Assignment.subject (free-text). Used by
-# the keyword-based cross-assignment calibration lookup — a teacher's edits
-# on Assignment A inform marking of Assignment B when both share a bucket.
-# This complements feed_forward_beta's AI-categorised `subject_family` —
-# bucket is the cheap fallback when the AI categorisation hasn't run yet.
-SUBJECT_BUCKETS = [
-    ('math',       ['math', 'algebra', 'geometry', 'calculus', 'statistics', 'arithmetic']),
-    ('physics',    ['physics']),
-    ('chemistry',  ['chem']),
-    ('biology',    ['biology', 'biological']),
-    ('history',    ['hist']),
-    ('geography',  ['geograph']),
-    ('literature', ['literature', 'english lit']),
-    ('language',   ['english', 'language', 'mother tongue', 'grammar',
-                    'mandarin', 'chinese', 'malay', 'tamil']),
-    ('science',    ['science']),
-    ('humanities', ['humanit', 'social stud', 'civics', 'economics']),
-]
-
-
-def bucket_subject(subject_text):
-    """Map a free-text subject to a coarse bucket. Returns 'other' on no
-    match. Pure string matching, no AI call."""
-    if not subject_text:
-        return 'other'
-    s = str(subject_text).lower().strip()
-    for bucket, keywords in SUBJECT_BUCKETS:
-        for kw in keywords:
-            if kw in s:
-                return bucket
-    return 'other'
-
-
 def _resolve_api_key(provider, session_keys=None):
     """Get API key from session keys → env vars → wizard-stored DB keys."""
     env_name = PROVIDER_KEY_MAP.get(provider)
@@ -1387,220 +1354,6 @@ def _run_text_completion(provider, model, session_keys, system_prompt, user_prom
     return resp.choices[0].message.content
 
 
-# ---------------------------------------------------------------------------
-# Calibration bank: helpers used by the propagation feature and the
-# calibration block prepended to marking prompts. None of these make any AI
-# calls — the AI cost lives in mark_script and refresh_criterion_feedback.
-# ---------------------------------------------------------------------------
-
-def _rubric_version_hash(asn):
-    """MD5 hex digest of the assignment's raw rubric or answer_key bytes.
-    Used to detect rubric changes — when the hash changes, prior calibration
-    edits stop matching the same-assignment Tier-0 lookup automatically."""
-    import hashlib
-    blob = (getattr(asn, 'rubrics', None) or getattr(asn, 'answer_key', None) or b'')
-    if isinstance(blob, str):
-        blob = blob.encode('utf-8')
-    return hashlib.md5(blob).hexdigest()
-
-
-def fetch_calibration_examples(teacher_id, assignment, theme_keys=None, limit=10):
-    """Two-tier lookup of this teacher's prior calibration edits.
-
-    Tier 0 — same assignment + same rubric_version (rubric hash already
-    pins to this assignment's content).
-    Tier 1 — different assignment, same subject_bucket OR same
-    subject_family if the AI has categorised this assignment yet.
-
-    `theme_keys` (optional iterable) further filters Tier 1 to edits
-    whose theme_key matches one of the supplied keys — used by
-    build_calibration_block when feed_forward_beta has identified the
-    submission's mistake themes.
-
-    Merged + deduplicated by edit id (Tier 0 wins), sorted by tier then
-    recency, collapsed to the most-recent edit per (criterion_id, field),
-    truncated to `limit`. All bound parameters via SQLAlchemy text().
-    """
-    from sqlalchemy import text as _sql_text
-    from db import db
-    if not teacher_id or not assignment:
-        return []
-
-    rubric_hash = _rubric_version_hash(assignment)
-    rows_by_id = {}
-
-    tier0_sql = _sql_text(
-        "SELECT id, original_text, edited_text, assignment_id, rubric_version, "
-        "criterion_id, field, subject_bucket, subject_family, created_at, 0 AS match_tier "
-        "FROM feedback_edit "
-        "WHERE edited_by = :teacher_id "
-        "  AND active = true "
-        "  AND assignment_id = :aid "
-        "  AND rubric_version = :rubric_hash "
-        "ORDER BY created_at DESC"
-    )
-    for r in db.session.execute(tier0_sql, {
-        'teacher_id': teacher_id,
-        'aid': assignment.id,
-        'rubric_hash': rubric_hash,
-    }).mappings().all():
-        rows_by_id[r['id']] = dict(r)
-
-    sb = bucket_subject(getattr(assignment, 'subject', '') or '')
-    sf = getattr(assignment, 'subject_family', None)
-    if (sb and sb != 'other') or sf:
-        # Match on subject_bucket OR subject_family — bucket is keyword-derived
-        # and works without AI categorisation; family is the AI-categorised
-        # version. Either path finds cross-assignment edits from the same
-        # teacher. Optional theme_keys narrows further to specific mistake
-        # themes when feed_forward_beta has categorised the submission.
-        theme_filter = ''
-        params = {
-            'teacher_id': teacher_id,
-            'aid': assignment.id,
-            'sb': sb if sb and sb != 'other' else None,
-            'sf': sf,
-        }
-        if theme_keys:
-            theme_list = [tk for tk in theme_keys if tk]
-            if theme_list:
-                placeholders = ', '.join(f':tk{i}' for i in range(len(theme_list)))
-                theme_filter = f' AND theme_key IN ({placeholders})'
-                for i, tk in enumerate(theme_list):
-                    params[f'tk{i}'] = tk
-        tier1_sql = _sql_text(
-            "SELECT id, original_text, edited_text, assignment_id, rubric_version, "
-            "criterion_id, field, subject_bucket, subject_family, created_at, 1 AS match_tier "
-            "FROM feedback_edit "
-            "WHERE edited_by = :teacher_id "
-            "  AND active = true "
-            "  AND assignment_id != :aid "
-            "  AND ((:sb IS NOT NULL AND subject_bucket = :sb) "
-            "    OR (:sf IS NOT NULL AND subject_family = :sf)) "
-            f"  {theme_filter}"
-            " ORDER BY created_at DESC"
-        )
-        for r in db.session.execute(tier1_sql, params).mappings().all():
-            if r['id'] not in rows_by_id:
-                rows_by_id[r['id']] = dict(r)
-
-    def _ts(d):
-        ca = d.get('created_at')
-        if ca is None:
-            return 0
-        try:
-            return ca.timestamp()
-        except Exception:
-            return 0
-    sorted_rows = sorted(rows_by_id.values(),
-                         key=lambda d: (d['match_tier'], -_ts(d)))
-    seen_keys = set()
-    out = []
-    for d in sorted_rows:
-        key = (d['criterion_id'], d['field'])
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        out.append(d)
-        if len(out) >= limit:
-            break
-    return out
-
-
-def _truncate_at_word(s, max_chars=200):
-    """Truncate `s` to <= max_chars at the nearest word boundary; append '...'."""
-    if not s:
-        return ''
-    s = s.replace('\n', ' ').replace('\r', ' ').strip()
-    if len(s) <= max_chars:
-        return s
-    cut = s[:max_chars]
-    last_space = cut.rfind(' ')
-    if last_space > max_chars * 0.5:
-        cut = cut[:last_space]
-    return cut.rstrip(' .,;:!?') + '…'
-
-
-def format_calibration_block(examples):
-    """Render the list returned by fetch_calibration_examples as the
-    MARKING CALIBRATION block prepended to the system prompt. Returns ''
-    when empty so callers can splice unconditionally."""
-    if not examples:
-        return ''
-    lines = [
-        '---',
-        'MARKING CALIBRATION',
-        '',
-        "This teacher has previously edited AI-generated feedback on "
-        "this or similar assignments. Use these examples only to "
-        "calibrate your tone, length, and marking standard. Do not "
-        "reference them in your output. Apply the same corrections "
-        "silently to any similar criteria in this submission.",
-        '',
-    ]
-    for ex in examples:
-        orig = _truncate_at_word(ex.get('original_text') or '', 200)
-        edited = _truncate_at_word(ex.get('edited_text') or '', 200)
-        lines.append(f'Original AI feedback: "{orig}"')
-        lines.append(f'Teacher changed it to: "{edited}"')
-        if ex.get('match_tier') == 0:
-            lines.append('Context: same assignment, same rubric')
-        else:
-            lines.append('Context: different assignment, same subject')
-        lines.append('')
-    lines.append('---')
-    lines.append('')
-    return '\n'.join(lines)
-
-
-def refresh_criterion_feedback(provider, model, session_keys, subject,
-                                criterion_name, student_answer, correct_answer,
-                                marks_awarded, marks_total, calibration_edit):
-    """Regenerate feedback + improvement for ONE criterion on ONE student,
-    calibrated against a teacher's edit on a different student. Text-only
-    cheap-tier call — no images, no marks change. Returns
-    {feedback, improvement}. Used by _run_propagation_worker."""
-    helper_model = _helper_model_for(provider, model)
-    system_prompt = (
-        "You are regenerating feedback for one criterion on a student's "
-        "script. A teacher has shown you their marking standard by editing "
-        "another student's feedback on the same type of mistake.\n\n"
-        "Apply the same standard to this student's answer. If this student's "
-        "mistake is the same TYPE as the teacher's example, apply the "
-        "teacher's voice and framing. If the mistake is a different type "
-        "(factual error vs detail gap, off-topic vs incomplete, etc.), "
-        "write feedback appropriate to THIS student's actual mistake. Do "
-        "not force the teacher's framing onto a different kind of mistake. "
-        "Do not change the marks. Do not re-evaluate correctness.\n\n"
-        f"{FEEDBACK_GENERATION_RULES}\n\n"
-        "Return JSON only:\n"
-        "{\n"
-        '  "feedback": "...",\n'
-        '  "improvement": "..."\n'
-        "}"
-    )
-    orig = (calibration_edit.original_text or '')[:200]
-    edited = (calibration_edit.edited_text or '')[:200]
-    user_prompt = (
-        "TEACHER'S CALIBRATION EDIT (apply this standard):\n"
-        f"Original AI feedback: \"{orig}\"\n"
-        f"Teacher changed it to: \"{edited}\"\n\n"
-        "NOW APPLY THE SAME STANDARD TO:\n"
-        f"Subject: {subject or 'General'}\n"
-        f"Criterion: {criterion_name}\n"
-        f"Student's answer: {(student_answer or '')[:600]}\n"
-        f"Expected answer: {(correct_answer or '')[:400]}\n"
-        f"Marks: {marks_awarded if marks_awarded is not None else '-'} / {marks_total if marks_total is not None else '-'}\n\n"
-        "Return the JSON now."
-    )
-    parsed = _run_feedback_helper(provider, helper_model, session_keys,
-                                   system_prompt, user_prompt, max_tokens=300)
-    return {
-        'feedback': (parsed.get('feedback') or '').strip(),
-        'improvement': (parsed.get('improvement') or '').strip(),
-    }
-
-
 def _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=400):
     """Single-shot chat completion that parses the first {...} block from
     the response as JSON. Used by extract_correction_insight,
@@ -1650,7 +1403,7 @@ def _run_feedback_helper(provider, model, session_keys, system_prompt, user_prom
 
 
 def extract_correction_insight(provider, model, session_keys,
-                                subject_family, theme_key,
+                                subject, theme_key,
                                 criterion_name, original_text, edited_text):
     """Extract a reusable marking principle from a teacher's correction.
 
@@ -1671,7 +1424,7 @@ def extract_correction_insight(provider, model, session_keys,
         "}\n\n"
         "transferability:\n"
         "  high   = applies to any similar question in any assignment\n"
-        "  medium = applies within this subject family\n"
+        "  medium = applies within this subject\n"
         "  low    = specific to this question or assignment type only\n\n"
         "The correction_principle must be written as a generalised rule, not "
         "a description of this specific edit. It should read like something a "
@@ -1682,7 +1435,7 @@ def extract_correction_insight(provider, model, session_keys,
         "Maximum 30 words for correction_principle."
     )
     user_prompt = (
-        f"Subject family: {subject_family or 'unknown'}\n"
+        f"Subject: {subject or 'unknown'}\n"
         f"Theme: {theme_key or 'unknown'}\n"
         f"Criterion: {criterion_name}\n"
         f"Original AI feedback: {(original_text or '')[:600]}\n"
@@ -1837,80 +1590,6 @@ def evaluate_correction(provider, model, session_keys, subject, criterion_name,
 # mistake categorisation (run ONCE per submission after marking, async).
 # ---------------------------------------------------------------------------
 
-# Canonical subject taxonomy lives in subjects.py. Importing here keeps
-# the AI prompt + the dropdown UI + the marking-patterns header on the
-# same source of truth.
-from subjects import (
-    SUBJECT_KEYS as SUBJECT_FAMILIES,
-    SUBJECTS as _CANONICAL_SUBJECTS,
-    resolve_subject_key as _resolve_subject_key,
-)
-
-
-def classify_subject_family(provider, model, session_keys, subject, assign_type,
-                             has_rubric=False, has_answer_key=False):
-    """One-shot classification of a freeform subject string into one of
-    the canonical SUBJECT_FAMILIES (see subjects.py).
-
-    The vast majority of assignments now come from the dropdown, so the
-    typed string already matches a display name or alias and we skip the
-    AI entirely. AI fallback only kicks in for genuinely freeform input
-    that doesn't match anything in the alias table.
-
-    Returns a key string. Falls back to a sensible default on AI error
-    so the caller never has to handle None.
-    """
-    # Fast path: exact display match or alias hit. Catches every
-    # dropdown selection plus common abbreviations (math, phy, lit, ...).
-    direct = _resolve_subject_key(subject)
-    if direct:
-        return direct
-
-    format_hint = 'rubric (essay)' if has_rubric else ('answer key' if has_answer_key else assign_type or 'unknown')
-
-    # Build the per-family enumeration for the prompt from the canonical
-    # taxonomy so the prompt stays in sync with subjects.py automatically.
-    fam_lines = '\n'.join(
-        f"  {s['key']:<28} - {s['display']}" for s in _CANONICAL_SUBJECTS
-    )
-
-    system_prompt = (
-        "You classify a subject string for a Singapore secondary school assignment "
-        "into exactly one of these family keys:\n\n"
-        f"{fam_lines}\n\n"
-        "Notes:\n"
-        "  - General 'science' at lower-secondary level → lower_secondary_science.\n"
-        "  - Upper-secondary 'physics', 'chemistry', or 'biology' → their own family.\n"
-        "  - 'literature' (any language) → literature_in_english unless explicitly mother-tongue.\n"
-        "  - Mother-tongue subjects (Chinese / Malay / Tamil / Hindi) → that language family,\n"
-        "    regardless of whether it's comprehension, composition, or translation.\n"
-        "  - Marking format hints help disambiguate borderline cases but never override an explicit subject.\n\n"
-        "Return JSON ONLY in this shape: {\"family\": \"<one key>\"}. If genuinely ambiguous, "
-        "choose the most semantically similar family — never leave it blank."
-    )
-    user_prompt = (
-        f"Subject string: {subject!r}\n"
-        f"Marking format: {format_hint}\n"
-        f"Assignment type flag: {assign_type or 'unknown'}\n\n"
-        "Return the JSON now."
-    )
-
-    try:
-        parsed = _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=60)
-        key = (parsed.get('family') or '').strip().lower()
-        if key in SUBJECT_FAMILIES:
-            return key
-    except Exception as e:
-        logger.warning(f"classify_subject_family failed for {subject!r}: {e}")
-
-    # Heuristic fallback when the AI fails or returns an unknown key.
-    # Pick the most generic family for the marking format. Lower-sec
-    # science covers the majority of short-answer/answer-key marking;
-    # english covers most rubric-marked freeform that isn't a humanities
-    # subject we can identify.
-    if has_rubric:
-        return 'english'
-    return 'lower_secondary_science'
 
 
 # Advice-language detector for specific_label sanitisation. Single-pass
@@ -1950,22 +1629,25 @@ def _extract_final_json(text, marker='FINAL_JSON'):
     return _json.loads(m.group(1))
 
 
-def fetch_recent_categorisation_corrections(subject_family, limit=5):
+def fetch_recent_categorisation_corrections(subject, limit=5):
     """Pull up to `limit` most recent teacher corrections for the given
-    subject_family, joined with the original criterion content from the
-    source submission's result_json. Returns a list of dicts:
+    `subject` string (canonical assignment.subject from the dropdown,
+    matched case-insensitively via JOIN). Joined with the original
+    criterion content from the source submission's result_json. Returns
+    a list of dicts:
       {criterion_text, original_theme_key, corrected_theme_key,
        original_specific_label, corrected_specific_label}
 
-    Cheap: one indexed SELECT for the corrections + one bulk SELECT for
+    Cheap: one JOIN'd SELECT for the corrections + one bulk SELECT for
     all referenced submissions. No AI calls. Returns [] when there's no
     data (no extra work, no extra cost on the prompt side).
     """
-    from db import db, CategorisationCorrection, Submission
-    if not subject_family:
+    from db import db, CategorisationCorrection, Submission, Assignment
+    if not subject:
         return []
     rows = (CategorisationCorrection.query
-            .filter(CategorisationCorrection.subject_family == subject_family)
+            .join(Assignment, Assignment.id == CategorisationCorrection.assignment_id)
+            .filter(db.func.lower(Assignment.subject) == subject.strip().lower())
             .order_by(CategorisationCorrection.created_at.desc())
             .limit(limit)
             .all())
@@ -2037,7 +1719,7 @@ def format_categorisation_corrections_block(corrections):
     return '\n'.join(lines).strip() + '\n\n'
 
 
-def categorise_mistakes(provider, model, session_keys, subject_family, themes, questions_data, corrections_block=''):
+def categorise_mistakes(provider, model, session_keys, subject, themes, questions_data, corrections_block=''):
     """Single-pass categorisation pipeline.
 
     One AI call produces:
@@ -2104,14 +1786,14 @@ def categorise_mistakes(provider, model, session_keys, subject_family, themes, q
         )
     crits_block = '\n'.join(crit_lines)
 
-    subject_family_str = subject_family or 'unknown'
+    subject_str = subject or 'unknown'
 
     # ---------------------------------------------------------------
     # SINGLE PASS — diagnose, group, label, habit (all in one JSON)
     # ---------------------------------------------------------------
     system_prompt = f"""You are analysing a student's mistakes across an assignment to identify shared causes, produce calibrated category labels, and propose one "Next time" habit per group.
 
-Subject family: {subject_family_str}
+Subject: {subject_str}
 
 Allowed parent themes (use EXACTLY one of these keys — no others):
 {theme_block}
@@ -2276,26 +1958,27 @@ def _rubric_version_hash(asn):
 
 def fetch_calibration_examples(teacher_id, assignment, theme_keys, limit=10):
     """Return up to `limit` of this teacher's prior active edits relevant to
-    the current marking. Three sub-queries, merged then deduped:
+    the current marking. Two sub-queries, merged then deduped:
 
-      Tier 0:  same assignment + same rubric_version (no theme filter).
-      Tier 1:  per theme_key — different assignment, same subject_family,
-               theme_key matches. Only fires when subject_family AND
-               theme_keys are both populated.
-      Tier 1b: different assignment, exact LOWER(assignments.subject)
-               match (canonical-dropdown subject string). Fires
-               independently of subject_family / theme_keys, so first
-               marks and uncategorised assignments still get
-               cross-assignment calibration. Skipped when the target
-               subject is blank.
+      Tier 0: same assignment + same rubric_version (no theme filter,
+              rubric hash already pins us to this assignment's content).
+      Tier 1: different assignment, exact LOWER(assignments.subject)
+              match. With the canonical-subject dropdown (subjects.py)
+              wired into the create form, every new assignment carries
+              a normalised string ('Physics', 'Higher Chinese', ...) so
+              equal-string matching cleanly partitions the calibration
+              corpus by subject. Skipped when the target subject is
+              blank — otherwise we'd cross-pollinate any legacy "" rows.
+              When `theme_keys` is non-empty, Tier 1 narrows further to
+              edits whose theme_key matches one of the supplied keys.
 
-    `theme_keys` is the iterable of theme_keys from the current submission's
-    lost-mark criteria. May be empty (first mark of a fresh submission, or
-    submission not yet categorised) — Tier 1 won't fire, but Tier 1b will
-    if the assignment has a subject set.
+    `theme_keys` is the iterable of theme_keys from the current
+    submission's lost-mark criteria. May be empty (first mark of a fresh
+    submission, or submission not yet categorised) — Tier 1 still fires
+    on subject match alone in that case.
 
-    All queries use bound parameters via SQLAlchemy text(). Never f-string
-    interpolation.
+    All queries use bound parameters via SQLAlchemy text(). Never
+    f-string interpolation.
     """
     from sqlalchemy import text as _sql_text
     from db import db
@@ -2323,48 +2006,25 @@ def fetch_calibration_examples(teacher_id, assignment, theme_keys, limit=10):
     }).mappings().all():
         rows_by_id[r['id']] = dict(r)
 
-    sf = getattr(assignment, 'subject_family', None) or ''
-    if sf and theme_keys:
-        tier1_sql = _sql_text(
-            "SELECT id, original_text, edited_text, theme_key, assignment_id, "
-            "rubric_version, created_at, criterion_id, field, "
-            "1 AS match_tier "
-            "FROM feedback_edit "
-            "WHERE edited_by = :teacher_id "
-            "  AND active = true "
-            "  AND assignment_id != :aid "
-            "  AND subject_family = :sf "
-            "  AND theme_key IS NOT NULL "
-            "  AND theme_key = :tk "
-            "ORDER BY created_at DESC"
-        )
-        seen_themes = set()
-        for tk in theme_keys:
-            if not tk or tk in seen_themes:
-                continue
-            seen_themes.add(tk)
-            for r in db.session.execute(tier1_sql, {
-                'teacher_id': teacher_id,
-                'aid': assignment.id,
-                'sf': sf,
-                'tk': tk,
-            }).mappings().all():
-                # Tier 0 wins over Tier 1 for the same edit id.
-                if r['id'] not in rows_by_id:
-                    rows_by_id[r['id']] = dict(r)
-
-    # Tier 1b — exact assignments.subject string match. Adapts staging's
-    # e4caaf0: with the canonical-subject dropdown wired into the create
-    # form (subjects.py), every new assignment carries a normalised string
-    # ('Physics', 'Higher Chinese', ...). JOIN feedback_edit -> assignments
-    # so we match on the *source* assignment's live subject, not a frozen
-    # column. Independent of subject_family / theme_keys: this path covers
-    # cases where the AI hasn't categorised yet OR theme_keys is empty
-    # (first mark on a fresh submission). Skipped when subject is blank,
-    # otherwise it'd cross-pollinate every legacy "" subject row.
     target_subject = (getattr(assignment, 'subject', '') or '').strip()
     if target_subject:
-        tier1b_sql = _sql_text(
+        # Tier 1: cross-assignment match on canonical subject string.
+        # If theme_keys is supplied, narrow to those theme_keys; else
+        # match all edits within the subject. Single query handles both
+        # paths via a NULL-aware theme filter.
+        theme_filter = ''
+        params = {
+            'teacher_id': teacher_id,
+            'aid': assignment.id,
+            'target_subject': target_subject,
+        }
+        theme_list = [tk for tk in (theme_keys or []) if tk]
+        if theme_list:
+            placeholders = ', '.join(f':tk{i}' for i in range(len(theme_list)))
+            theme_filter = f' AND fe.theme_key IN ({placeholders})'
+            for i, tk in enumerate(theme_list):
+                params[f'tk{i}'] = tk
+        tier1_sql = _sql_text(
             "SELECT fe.id AS id, fe.original_text AS original_text, "
             "       fe.edited_text AS edited_text, fe.theme_key AS theme_key, "
             "       fe.assignment_id AS assignment_id, "
@@ -2377,13 +2037,10 @@ def fetch_calibration_examples(teacher_id, assignment, theme_keys, limit=10):
             "  AND fe.active = true "
             "  AND fe.assignment_id != :aid "
             "  AND LOWER(a.subject) = LOWER(:target_subject) "
-            "ORDER BY fe.created_at DESC"
+            f"  {theme_filter}"
+            " ORDER BY fe.created_at DESC"
         )
-        for r in db.session.execute(tier1b_sql, {
-            'teacher_id': teacher_id,
-            'aid': assignment.id,
-            'target_subject': target_subject,
-        }).mappings().all():
+        for r in db.session.execute(tier1_sql, params).mappings().all():
             if r['id'] not in rows_by_id:
                 rows_by_id[r['id']] = dict(r)
 
@@ -2465,20 +2122,25 @@ def format_calibration_block(examples):
     return '\n'.join(lines)
 
 
-def count_active_calibration_edits(subject_family):
+def count_active_calibration_edits(subject):
     """Count active calibration edits across ALL teachers for the given
-    subject_family. Used by the calibration-injection threshold gate."""
-    from db import db, FeedbackEdit
-    if not subject_family:
+    `subject` string (case-insensitive match against assignments.subject
+    via JOIN). Used by the calibration-injection threshold gate."""
+    from db import db, FeedbackEdit, Assignment
+    if not subject:
         return 0
-    return db.session.query(FeedbackEdit).filter(
-        FeedbackEdit.subject_family == subject_family,
-        FeedbackEdit.active == True,  # noqa: E712 — SQLAlchemy comparison
-    ).count()
+    return (db.session.query(FeedbackEdit)
+            .join(Assignment, Assignment.id == FeedbackEdit.assignment_id)
+            .filter(db.func.lower(Assignment.subject) == subject.strip().lower(),
+                    FeedbackEdit.active == True)  # noqa: E712 — SQLAlchemy comparison
+            .count())
 
 
-def get_marking_principles(provider, model, session_keys, subject_family):
-    """Return the shared cached markdown principles file for the subject.
+def get_marking_principles(provider, model, session_keys, subject):
+    """Return the shared cached markdown principles file for `subject`
+    (canonical Assignment.subject string, e.g. 'Physics', 'Higher
+    Chinese'). Cache is keyed on the subject string (case-insensitive
+    via SQL lower()).
 
     Regenerates when:
       1. Cache row missing, OR
@@ -2488,17 +2150,21 @@ def get_marking_principles(provider, model, session_keys, subject_family):
     Below 8 active edits across the whole subject, returns '' so the caller
     falls back to teacher-scoped raw examples.
     """
-    from db import db, MarkingPrinciplesCache, FeedbackEdit
-    import json as _json
+    from db import db, MarkingPrinciplesCache, FeedbackEdit, Assignment
 
     THRESHOLD = 8
-    if not subject_family:
+    if not subject:
         return ''
-    edit_count = count_active_calibration_edits(subject_family)
+    subject_norm = subject.strip()
+    if not subject_norm:
+        return ''
+    edit_count = count_active_calibration_edits(subject_norm)
     if edit_count < THRESHOLD:
         return ''
 
-    cache = MarkingPrinciplesCache.query.filter_by(subject_family=subject_family).first()
+    cache = (MarkingPrinciplesCache.query
+             .filter(db.func.lower(MarkingPrinciplesCache.subject) == subject_norm.lower())
+             .first())
 
     needs_regen = False
     if cache is None:
@@ -2519,7 +2185,8 @@ def get_marking_principles(provider, model, session_keys, subject_family):
         return cache.markdown_text or ''
 
     edits = (FeedbackEdit.query
-             .filter(FeedbackEdit.subject_family == subject_family,
+             .join(Assignment, Assignment.id == FeedbackEdit.assignment_id)
+             .filter(db.func.lower(Assignment.subject) == subject_norm.lower(),
                      FeedbackEdit.active == True)  # noqa: E712
              .all())
     by_theme = {}
@@ -2563,7 +2230,7 @@ def get_marking_principles(provider, model, session_keys, subject_family):
         "}"
     )
     user_prompt = (
-        f"Subject family: {subject_family}\n"
+        f"Subject: {subject_norm}\n"
         f"Total active calibration edits: {edit_count}\n\n"
         "Edits grouped by theme (each line is one teacher's correction principle):\n"
         f"{summary_block}\n\n"
@@ -2575,7 +2242,7 @@ def get_marking_principles(provider, model, session_keys, subject_family):
         parsed = _run_feedback_helper(provider, helper_model, session_keys,
                                        system_prompt, user_prompt, max_tokens=700)
     except Exception as e:
-        logger.warning(f"principles regen failed for {subject_family}: {e}")
+        logger.warning(f"principles regen failed for {subject_norm}: {e}")
         return (cache.markdown_text if cache else '') or ''
 
     new_md = (parsed.get('markdown') or '').strip()
@@ -2586,7 +2253,7 @@ def get_marking_principles(provider, model, session_keys, subject_family):
     try:
         if cache is None:
             cache = MarkingPrinciplesCache(
-                subject_family=subject_family,
+                subject=subject_norm,
                 markdown_text=new_md,
                 generated_at=datetime.now(timezone.utc),
                 is_stale=False,
@@ -2601,7 +2268,7 @@ def get_marking_principles(provider, model, session_keys, subject_family):
             cache.edit_count_at_gen = edit_count
             cache.has_conflicts = has_conflicts
         db.session.commit()
-        logger.info(f"principles regenerated for {subject_family}: "
+        logger.info(f"principles regenerated for {subject_norm}: "
                     f"{edit_count} edits, has_conflicts={has_conflicts}")
     except Exception as commit_err:
         db.session.rollback()
@@ -2610,9 +2277,10 @@ def get_marking_principles(provider, model, session_keys, subject_family):
     return new_md
 
 
-def build_calibration_block(teacher_id, asn, subject_family, theme_keys,
+def build_calibration_block(teacher_id, asn, subject, theme_keys,
                              provider, model, session_keys):
-    """Tiered calibration injection.
+    """Tiered calibration injection. `subject` is the canonical
+    Assignment.subject string from the dropdown (subjects.py).
 
     < 8 active edits in the subject (across ALL teachers) → existing
     teacher-scoped raw examples (format_calibration_block over
@@ -2622,13 +2290,13 @@ def build_calibration_block(teacher_id, asn, subject_family, theme_keys,
     falls back to a smaller raw-example pull (limit=5).
     """
     THRESHOLD = 8
-    edit_count = count_active_calibration_edits(subject_family)
+    edit_count = count_active_calibration_edits(subject)
     if edit_count < THRESHOLD:
         return format_calibration_block(
             fetch_calibration_examples(teacher_id, asn, theme_keys, limit=10)
         )
 
-    principles = get_marking_principles(provider, model, session_keys, subject_family)
+    principles = get_marking_principles(provider, model, session_keys, subject)
     if not principles:
         return format_calibration_block(
             fetch_calibration_examples(teacher_id, asn, theme_keys, limit=5)
