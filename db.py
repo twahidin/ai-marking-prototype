@@ -271,7 +271,7 @@ def _migrate_add_columns(app):
         if 'feedback_edit' in inspector.get_table_names():
             fe_cols = {c['name'] for c in inspector.get_columns('feedback_edit')}
             ensure_fe = [
-                ('theme_key', 'VARCHAR(40)'),
+                ('theme_key', 'VARCHAR(64)'),
                 ('promoted_by', 'VARCHAR(36)'),
                 ('promoted_at', 'TIMESTAMP'),
                 ('propagation_status', "VARCHAR(20) DEFAULT 'none' NOT NULL"),
@@ -292,6 +292,18 @@ def _migrate_add_columns(app):
                     except Exception as _e:
                         db.session.rollback()
                         logger.error(f'feedback_edit ALTER ADD {col} failed: {_e}')
+
+            # Widen theme_key column for richer per-subject taxonomy keys
+            # (longest key is 42 chars; bumped to 64 for headroom).
+            for col in inspector.get_columns('feedback_edit'):
+                if col['name'] == 'theme_key' and hasattr(col['type'], 'length') and col['type'].length and col['type'].length < 64:
+                    try:
+                        db.session.execute(text('ALTER TABLE feedback_edit ALTER COLUMN theme_key TYPE VARCHAR(64)'))
+                        db.session.commit()
+                        logger.info('Widened feedback_edit.theme_key to VARCHAR(64)')
+                    except Exception:
+                        db.session.rollback()
+                    break
 
             # One-shot purge of legacy calibration data, then drop the
             # subject_family / subject_bucket columns. The user explicitly
@@ -398,6 +410,20 @@ def _migrate_add_columns(app):
                 except Exception as _e:
                     db.session.rollback()
                     logger.warning(f'categorisation_correction DROP subject_family skipped: {_e}')
+
+            # Widen theme_key columns for richer per-subject taxonomy.
+            for col_name in ('original_theme_key', 'corrected_theme_key'):
+                for col in inspector.get_columns('categorisation_correction'):
+                    if col['name'] == col_name and hasattr(col['type'], 'length') and col['type'].length and col['type'].length < 64:
+                        try:
+                            db.session.execute(text(
+                                f'ALTER TABLE categorisation_correction ALTER COLUMN {col_name} TYPE VARCHAR(64)'
+                            ))
+                            db.session.commit()
+                            logger.info(f'Widened categorisation_correction.{col_name} to VARCHAR(64)')
+                        except Exception:
+                            db.session.rollback()
+                        break
 
         # exemplar_analysis_log: ensure superseded_at column exists for
         # tables created before the column was added to the model. New
@@ -748,7 +774,7 @@ class FeedbackEdit(db.Model):
     original_text = db.Column(db.Text, nullable=False, default='')
     edited_text = db.Column(db.Text, nullable=False, default='')
     edited_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=False, index=True)
-    theme_key = db.Column(db.String(40), nullable=True)
+    theme_key = db.Column(db.String(64), nullable=True)
     assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)
     rubric_version = db.Column(db.String(64), nullable=False, default='')
     scope = db.Column(db.String(20), nullable=False, default='individual')
@@ -788,9 +814,9 @@ class CategorisationCorrection(db.Model):
     submission_id = db.Column(db.Integer, db.ForeignKey('submissions.id'), nullable=False, index=True)
     criterion_id = db.Column(db.String(64), nullable=False)
     field = db.Column(db.String(20), nullable=False, default='theme_key')
-    original_theme_key = db.Column(db.String(40), nullable=True)
+    original_theme_key = db.Column(db.String(64), nullable=True)
     original_specific_label = db.Column(db.String(80), nullable=True)
-    corrected_theme_key = db.Column(db.String(40), nullable=False)
+    corrected_theme_key = db.Column(db.String(64), nullable=False)
     corrected_specific_label = db.Column(db.String(80), nullable=True)
     corrected_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=False, index=True)
     assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)

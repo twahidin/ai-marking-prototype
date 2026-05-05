@@ -4804,12 +4804,13 @@ def _run_categorisation_worker(app_obj, submission_id):
                 db.session.commit()
                 return
 
-            from config.mistake_themes import THEMES
+            from config.mistake_themes import themes_for
             from ai_marking import (
                 categorise_mistakes,
                 fetch_recent_categorisation_corrections,
                 format_categorisation_corrections_block,
             )
+            THEMES = themes_for(asn.subject or '')
 
             # Few-shot teacher corrections: pull recent CategorisationCorrection
             # rows for this assignment's subject (canonical dropdown string)
@@ -6170,9 +6171,10 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             # row below if the teacher also calibrates.
             if 'theme_key' in edit or 'specific_label' in edit:
                 try:
-                    from config.mistake_themes import THEMES as _THEMES
+                    from config.mistake_themes import themes_for as _themes_for
                     from db import CategorisationCorrection
                     from subjects import is_canonical_subject as _is_canonical
+                    _THEMES = _themes_for(asn.subject or '')
                     proposed_tk = (edit.get('theme_key') or '').strip() or None
                     proposed_label_raw = edit.get('specific_label')
                     proposed_label = (proposed_label_raw or '').strip() or None
@@ -6875,8 +6877,12 @@ def student_feedback_page(assignment_id, submission_id):
         correct = sum(1 for q in questions if q.get('status') == 'correct')
         score_pill = f"{correct} / {len(questions)}"
 
-    from config.mistake_themes import THEMES
+    from config.mistake_themes import themes_for_display
+    THEMES = themes_for_display(asn.subject or '')
     # Serialisable theme metadata for the template + JS (never hardcoded).
+    # Includes deprecated legacy keys so old submissions render with clean
+    # labels; the categorisation worker + correction dropdown still use
+    # the strict (legacy-free) themes_for() variant.
     theme_meta = {
         k: {
             'label': v.get('label', k),
@@ -7220,8 +7226,8 @@ def student_feedback_grouping_status(submission_id):
     if state != 'done':
         return jsonify({'status': state})
 
-    from config.mistake_themes import THEMES
-    payload = _compute_grouping_payload(sub, sub.get_result() or {}, THEMES)
+    from config.mistake_themes import themes_for_display
+    payload = _compute_grouping_payload(sub, sub.get_result() or {}, themes_for_display(asn.subject or ''))
     if not payload:
         return jsonify({'status': 'pending'})  # defensive — don't flip UI yet
     return jsonify({'status': 'done', **payload})
