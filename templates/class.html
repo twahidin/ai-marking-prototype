@@ -559,7 +559,7 @@ async function createAssignment() {
     fd.append('review_instructions', document.getElementById('teacher_review_instructions').value);
     fd.append('marking_instructions', document.getElementById('teacher_marking_instructions').value);
     // pinyin_mode is only meaningful for Chinese subjects; the input
-    // is hidden otherwise. Server-side also gates on subject_family.
+    // is hidden otherwise. Server-side also gates on assignment.subject.
     fd.append('pinyin_mode', document.getElementById('teacherPinyinMode').value || 'off');
 
     // Add to bank

@@ -194,104 +194,6 @@ if _ENV_DEMO_MODE and _ENV_DEPT_MODE:
         seed_demo_department(db, Teacher, Class, TeacherClass, Assignment, Student, Submission)
 
 
-def _backfill_subject_family(batch_limit=50):
-    """One-shot, idempotent backfill / remap for subject_family.
-
-    Two distinct legacy populations need fixing up so the marking-patterns
-    aggregation, calibration lookup, and propagation candidate detection
-    see them under the new canonical taxonomy:
-
-      A. NULL/empty subject_family — assignments created before the
-         column existed.
-      B. Old-taxonomy subject_family — rows stamped 'science' /
-         'humanities_seq' / etc. before the 16-family taxonomy in
-         subjects.py shipped. These appear as a stale single bucket on
-         the patterns page and need re-classification.
-
-    Strategy:
-      1. Walk Assignment rows in either population A or B and classify
-         each via classify_subject_family. Bounded by batch_limit to
-         keep boot time predictable; eventually consistent across boots.
-      2. Walk FeedbackEdit rows in either population A or B whose parent
-         assignment now has a canonical key, and copy it down. No AI
-         calls — cheap to do all at once.
-
-    Best-effort: every failure is logged and swallowed so a transient
-    AI/API outage cannot block app boot. Safe to re-run.
-    """
-    from sqlalchemy import or_
-    try:
-        from ai_marking import classify_subject_family
-        from subjects import LEGACY_FAMILY_KEYS
-    except Exception as _imp_err:
-        logger.warning(f"backfill_subject_family: import failed, skipping: {_imp_err}")
-        return
-
-    legacy = list(LEGACY_FAMILY_KEYS)
-
-    def _needs_remap(col):
-        # Population A (NULL/empty) OR Population B (in legacy set).
-        return or_(col.is_(None), col == '', col.in_(legacy))
-
-    # Step 1 — assignments
-    asn_q = (Assignment.query
-             .filter(_needs_remap(Assignment.subject_family))
-             .limit(batch_limit))
-    asn_rows = asn_q.all()
-    asn_filled = 0
-    for _asn in asn_rows:
-        try:
-            sf = classify_subject_family(
-                provider=_asn.provider,
-                model=_asn.model,
-                session_keys=_resolve_api_keys(_asn),
-                subject=_asn.subject or '',
-                assign_type=_asn.assign_type,
-                has_rubric=bool(_asn.rubrics),
-                has_answer_key=bool(_asn.answer_key),
-            )
-            if sf:
-                _asn.subject_family = sf
-                asn_filled += 1
-        except Exception as _e:
-            logger.warning(f"backfill: classify failed for asn {_asn.id}: {_e}")
-    if asn_filled:
-        try:
-            db.session.commit()
-        except Exception as _ce:
-            db.session.rollback()
-            logger.error(f"backfill: assignment commit failed: {_ce}")
-            asn_filled = 0
-
-    # Step 2 — feedback_edit rows (no AI calls; cheap to do all at once).
-    # Pull rows where the EDIT row needs remap AND the parent assignment
-    # already has a canonical key (so we have something to copy down).
-    fe_filled = 0
-    try:
-        from db import FeedbackEdit
-        rows = (db.session.query(FeedbackEdit, Assignment)
-                .join(Assignment, FeedbackEdit.assignment_id == Assignment.id)
-                .filter(_needs_remap(FeedbackEdit.subject_family))
-                .filter(Assignment.subject_family.isnot(None))
-                .filter(Assignment.subject_family != '')
-                .filter(~Assignment.subject_family.in_(legacy))
-                .all())
-        for fe, asn in rows:
-            fe.subject_family = asn.subject_family
-            fe_filled += 1
-        if fe_filled:
-            db.session.commit()
-    except Exception as _fee:
-        db.session.rollback()
-        logger.error(f"backfill: feedback_edit pass failed: {_fee}")
-        fe_filled = 0
-
-    if asn_filled or fe_filled:
-        logger.info(
-            f"backfill_subject_family: filled/remapped {asn_filled} assignments, "
-            f"{fe_filled} feedback_edit rows"
-        )
-
 
 # ---------------------------------------------------------------------------
 # Security: headers, rate limiting, error handlers
@@ -715,18 +617,22 @@ def _has_conflicts_in_my_subjects(teacher_id):
     if not teacher_id:
         return False
     try:
-        from db import FeedbackEdit, MarkingPrinciplesCache
-        my_subjects_q = (db.session.query(FeedbackEdit.subject_family)
+        from db import FeedbackEdit, MarkingPrinciplesCache, Assignment
+        # Distinct subjects (case-insensitive) from this teacher's active
+        # calibration edits, found by JOINing feedback_edit -> assignments.
+        my_subjects_q = (db.session.query(db.func.lower(Assignment.subject))
+                         .join(FeedbackEdit, FeedbackEdit.assignment_id == Assignment.id)
                          .filter(FeedbackEdit.edited_by == teacher_id,
                                  FeedbackEdit.active == True,  # noqa: E712
-                                 FeedbackEdit.subject_family.isnot(None))
+                                 Assignment.subject.isnot(None),
+                                 Assignment.subject != '')
                          .distinct())
         my_subjects = [row[0] for row in my_subjects_q.all() if row[0]]
         if not my_subjects:
             return False
         hit = (MarkingPrinciplesCache.query
                .filter(MarkingPrinciplesCache.has_conflicts == True,  # noqa: E712
-                       MarkingPrinciplesCache.subject_family.in_(my_subjects))
+                       db.func.lower(MarkingPrinciplesCache.subject).in_(my_subjects))
                .first())
         return bool(hit)
     except Exception as e:
@@ -4402,13 +4308,13 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
             ref = [asn.reference] if asn.reference else []
             script = sub.get_script_pages()
 
-            # Calibration injection. feed_forward_beta's build_calibration_block
-            # gives us the tiered behavior — raw examples below the principles
-            # threshold, shared markdown principles at/above. fetch_calibration_examples
-            # under the hood now matches both subject_bucket (keyword-derived)
-            # AND subject_family (AI-categorised) so either path finds edits.
-            # Best-effort: a failure here never blocks marking, and we roll
-            # back so the session isn't poisoned for the result-write commit.
+            # Calibration injection. build_calibration_block gives the
+            # tiered behaviour — raw examples below the principles
+            # threshold, shared markdown principles at/above —
+            # everything keyed on assignments.subject (canonical
+            # dropdown string). Best-effort: a failure here never blocks
+            # marking, and we roll back so the session isn't poisoned for
+            # the result-write commit.
             calibration_block = ''
             try:
                 from ai_marking import build_calibration_block
@@ -4421,7 +4327,7 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
                 calibration_block = build_calibration_block(
                     teacher_id=asn.teacher_id,
                     asn=asn,
-                    subject_family=getattr(asn, 'subject_family', None) or '',
+                    subject=(asn.subject or ''),
                     theme_keys=theme_keys,
                     provider=asn.provider,
                     model=asn.model,
@@ -4720,7 +4626,7 @@ def _run_insight_extraction_worker(app_obj, edit_id):
                 provider=asn.provider,
                 model=asn.model,
                 session_keys=_resolve_api_keys(asn),
-                subject_family=edit.subject_family,
+                subject=(asn.subject or ''),
                 theme_key=edit.theme_key,
                 criterion_name=edit.criterion_id,
                 original_text=edit.original_text,
@@ -4906,20 +4812,20 @@ def _run_categorisation_worker(app_obj, submission_id):
             )
 
             # Few-shot teacher corrections: pull recent CategorisationCorrection
-            # rows for this subject_family and inject them into the existing
-            # categorisation prompt. NO additional AI call — same single-pass
-            # categorise_mistakes call now sees the corrections as in-prompt
-            # examples.
+            # rows for this assignment's subject (canonical dropdown string)
+            # and inject them into the categorisation prompt. NO additional
+            # AI call — same single-pass categorise_mistakes call now sees
+            # the corrections as in-prompt examples.
             try:
                 _corr = fetch_recent_categorisation_corrections(
-                    subject_family=(asn.subject_family or ''), limit=5
+                    subject=(asn.subject or ''), limit=5
                 )
                 corrections_block = format_categorisation_corrections_block(_corr)
                 if _corr:
                     logger.info(
                         f"Categorisation for sub {submission_id}: "
                         f"injecting {len(_corr)} past teacher correction(s) for "
-                        f"subject {asn.subject_family!r}"
+                        f"subject {asn.subject!r}"
                     )
             except Exception as _corr_err:
                 logger.warning(
@@ -4931,7 +4837,7 @@ def _run_categorisation_worker(app_obj, submission_id):
                 provider=asn.provider,
                 model=asn.model,
                 session_keys=_resolve_api_keys(asn),
-                subject_family=asn.subject_family or '',
+                subject=asn.subject or '',
                 themes=THEMES,
                 questions_data=payload,
                 corrections_block=corrections_block,
@@ -5001,15 +4907,20 @@ def teacher_marking_patterns():
 
     from db import FeedbackEdit, MarkingPrinciplesCache
     from sqlalchemy import func as _func
-    from subjects import display_name as _subject_display
 
+    # Group by canonical assignments.subject (case-insensitive). The
+    # subject string from the dropdown IS the display name.
+    subj_lower = _func.lower(Assignment.subject)
     contributed_rows = (
-        db.session.query(FeedbackEdit.subject_family,
+        db.session.query(subj_lower.label('subj_lc'),
+                         _func.min(Assignment.subject).label('subj_display'),
                          _func.count(FeedbackEdit.id).label('my_count'))
+        .join(Assignment, Assignment.id == FeedbackEdit.assignment_id)
         .filter(FeedbackEdit.edited_by == teacher_id,
                 FeedbackEdit.active == True,  # noqa: E712
-                FeedbackEdit.subject_family.isnot(None))
-        .group_by(FeedbackEdit.subject_family)
+                Assignment.subject.isnot(None),
+                Assignment.subject != '')
+        .group_by(subj_lower)
         .all()
     )
     if not contributed_rows:
@@ -5017,16 +4928,19 @@ def teacher_marking_patterns():
                                 sections=[], teacher=teacher)
 
     sections = []
-    for sf, my_count in contributed_rows:
+    for subj_lc, subj_display, my_count in contributed_rows:
         total = (db.session.query(_func.count(FeedbackEdit.id))
-                 .filter(FeedbackEdit.subject_family == sf,
+                 .join(Assignment, Assignment.id == FeedbackEdit.assignment_id)
+                 .filter(_func.lower(Assignment.subject) == subj_lc,
                          FeedbackEdit.active == True)  # noqa: E712
                  .scalar()) or 0
-        cache = MarkingPrinciplesCache.query.filter_by(subject_family=sf).first()
+        cache = (MarkingPrinciplesCache.query
+                 .filter(_func.lower(MarkingPrinciplesCache.subject) == subj_lc)
+                 .first())
         threshold_met = total >= 8
         sections.append({
-            'subject_family': sf,
-            'display_name': _subject_display(sf),
+            'subject': subj_display,
+            'display_name': subj_display,
             'my_count': my_count,
             'total_count': total,
             'has_principles': bool(cache and cache.markdown_text and threshold_met),
@@ -5035,7 +4949,6 @@ def teacher_marking_patterns():
             'threshold_met': threshold_met,
             'remaining_to_threshold': max(0, 8 - total),
         })
-    # Stable display order: alphabetical by display name.
     sections.sort(key=lambda s: s['display_name'].lower())
     return render_template('marking_patterns.html', sections=sections, teacher=teacher)
 
@@ -5052,29 +4965,35 @@ def teacher_marking_patterns_dismiss_conflict():
     if not teacher_id:
         return redirect(url_for('hub'))
 
-    sf = (request.form.get('subject_family') or '').strip()
-    if not sf:
+    subj = (request.form.get('subject') or request.form.get('subject_family') or '').strip()
+    if not subj:
         return redirect(url_for('teacher_marking_patterns'))
 
-    # Auth: the teacher must contribute at least one active edit to this
-    # subject_family — i.e. they're part of the pool whose conflict was
-    # flagged.
+    # Auth: the teacher must contribute at least one active edit to an
+    # assignment with this subject string — i.e. they're part of the
+    # pool whose conflict was flagged.
     from db import FeedbackEdit, MarkingPrinciplesCache
+    subj_lc = subj.lower()
     contributor = (FeedbackEdit.query
-                   .filter_by(edited_by=teacher_id, subject_family=sf, active=True)
+                   .join(Assignment, Assignment.id == FeedbackEdit.assignment_id)
+                   .filter(FeedbackEdit.edited_by == teacher_id,
+                           FeedbackEdit.active == True,  # noqa: E712
+                           db.func.lower(Assignment.subject) == subj_lc)
                    .first())
     if not contributor:
         return redirect(url_for('teacher_marking_patterns'))
 
-    cache = MarkingPrinciplesCache.query.filter_by(subject_family=sf).first()
+    cache = (MarkingPrinciplesCache.query
+             .filter(db.func.lower(MarkingPrinciplesCache.subject) == subj_lc)
+             .first())
     if cache and cache.has_conflicts:
         cache.has_conflicts = False
         try:
             db.session.commit()
-            logger.info(f"has_conflicts dismissed for {sf} by teacher {teacher_id}")
+            logger.info(f"has_conflicts dismissed for {subj} by teacher {teacher_id}")
         except Exception as e:
             db.session.rollback()
-            logger.warning(f"dismiss-conflict commit failed for {sf}: {e}")
+            logger.warning(f"dismiss-conflict commit failed for {subj}: {e}")
     return redirect(url_for('teacher_marking_patterns'))
 
 
@@ -5196,23 +5115,6 @@ def teacher_create():
         if val:
             user_keys[prov] = val
     asn.set_api_keys(user_keys)
-
-    # Classify the freeform subject into a subject_family (used by the
-    # "Group by Mistake Type" feature). Fires ONCE at creation time only —
-    # never per student, never repeated per marking. Non-fatal on failure.
-    try:
-        from ai_marking import classify_subject_family
-        asn.subject_family = classify_subject_family(
-            provider=asn.provider,
-            model=asn.model,
-            session_keys=_resolve_api_keys(asn),
-            subject=asn.subject or '',
-            assign_type=asn.assign_type,
-            has_rubric=bool(asn.rubrics),
-            has_answer_key=bool(asn.answer_key),
-        )
-    except Exception as _sf_err:
-        logger.warning(f"classify_subject_family failed on create for {asn.id}: {_sf_err}")
 
     db.session.add(asn)
 
@@ -5355,24 +5257,6 @@ def teacher_edit(assignment_id):
     asn.last_edited_at = datetime.now(timezone.utc)
     if major_change:
         asn.needs_remark = True
-
-    # If the inputs that drive subject_family changed, re-classify so the
-    # Group by Mistake Type feature stays sensible. Non-fatal on failure.
-    if (new_subject != (asn.subject or '') or ak_changed or rub_changed
-            or asn.subject_family in (None, '')):
-        try:
-            from ai_marking import classify_subject_family
-            asn.subject_family = classify_subject_family(
-                provider=asn.provider,
-                model=asn.model,
-                session_keys=_resolve_api_keys(asn),
-                subject=asn.subject or '',
-                assign_type=asn.assign_type,
-                has_rubric=bool(asn.rubrics),
-                has_answer_key=bool(asn.answer_key),
-            )
-        except Exception as _sf_err:
-            logger.warning(f"classify_subject_family failed on edit for {asn.id}: {_sf_err}")
 
     try:
         db.session.commit()
@@ -6149,7 +6033,6 @@ def _process_text_edit(submission, criterion_id, field, edited_text,
             original_text=original_text,
             edited_text=edited_text or '',
             edited_by=teacher_id,
-            subject_family=getattr(assignment, 'subject_family', None),
             theme_key=theme_key,
             assignment_id=assignment.id,
             rubric_version=_rubric_version_hash(assignment),
@@ -6171,10 +6054,7 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     write a feedback_edit row + trigger propagation candidate detection.
     """
     from db import FeedbackEdit
-    from ai_marking import (
-        _rubric_version_hash,
-        bucket_subject,
-    )
+    from ai_marking import _rubric_version_hash
 
     asn = Assignment.query.get_or_404(assignment_id)
     err = _check_assignment_ownership(asn)
@@ -6300,7 +6180,6 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                                 corrected_specific_label=proposed_label,
                                 corrected_by=editor_id,
                                 assignment_id=asn.id,
-                                subject_family=getattr(asn, 'subject_family', None),
                             ))
                         except Exception as cat_err:
                             logger.warning(
@@ -6319,38 +6198,7 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             #     unchecking the box actually removes it from the bank.
             cal_flag = bool(edit.get('calibrate'))
             if editor_id and ('feedback' in edit or 'improvement' in edit):
-                snapshot_bucket = bucket_subject(asn.subject or '')
                 rubric_hash = _rubric_version_hash(asn)
-                # Lazy-fill: legacy assignments may have subject_family as
-                # NULL (column added later) or as an old-taxonomy key
-                # ('science', 'humanities_seq', ...) from before the
-                # 16-family taxonomy in subjects.py shipped. Either case
-                # means the calibration edit would land in a stale
-                # bucket. Classify on the fly into the new canonical
-                # taxonomy and persist on the assignment.
-                if cal_flag:
-                    try:
-                        from subjects import LEGACY_FAMILY_KEYS
-                    except Exception:
-                        LEGACY_FAMILY_KEYS = set()
-                    _cur_sf = (getattr(asn, 'subject_family', None) or '').strip()
-                    if (not _cur_sf) or (_cur_sf in LEGACY_FAMILY_KEYS):
-                        try:
-                            from ai_marking import classify_subject_family
-                            asn.subject_family = classify_subject_family(
-                                provider=asn.provider,
-                                model=asn.model,
-                                session_keys=_resolve_api_keys(asn),
-                                subject=asn.subject or '',
-                                assign_type=asn.assign_type,
-                                has_rubric=bool(asn.rubrics),
-                                has_answer_key=bool(asn.answer_key),
-                            )
-                            db.session.flush()
-                        except Exception as _lazy_err:
-                            logger.warning(
-                                f"lazy classify_subject_family failed for {asn.id}: {_lazy_err}"
-                            )
                 for _field in ('feedback', 'improvement'):
                     if _field not in edit:
                         continue
@@ -6417,8 +6265,6 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                             edited_by=editor_id,
                             assignment_id=asn.id,
                             rubric_version=rubric_hash,
-                            subject_bucket=snapshot_bucket,
-                            subject_family=getattr(asn, 'subject_family', None),
                             theme_key=target.get('theme_key'),
                             scope='individual',
                             active=True,
@@ -6486,14 +6332,14 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     #      0 candidates) so the toast can confirm the save landed.
     auto_propagation = None
     if fresh_calibration_edits:
-        # Mark principles cache stale.
+        # Mark principles cache stale (case-insensitive subject match).
         try:
             from db import MarkingPrinciplesCache
-            sf = asn.subject_family
-            if sf:
-                MarkingPrinciplesCache.query.filter_by(subject_family=sf).update(
-                    {'is_stale': True}, synchronize_session=False
-                )
+            subj = (asn.subject or '').strip()
+            if subj:
+                (MarkingPrinciplesCache.query
+                    .filter(db.func.lower(MarkingPrinciplesCache.subject) == subj.lower())
+                    .update({'is_stale': True}, synchronize_session=False))
                 db.session.commit()
         except Exception as stale_err:
             logger.warning(f"Could not mark principles cache stale: {stale_err}")
@@ -8801,16 +8647,6 @@ def _run_propagation_worker(app_obj, edit_id, target_ids):
                 db.session.rollback()
 
 
-
-
-# Run the schema-evolution backfill ONCE at boot. Placed at module bottom
-# so every helper it depends on (e.g. _resolve_api_keys) is already
-# defined. Wrapped — backfill problems must not block app boot.
-with app.app_context():
-    try:
-        _backfill_subject_family()
-    except Exception as _bf_err:
-        logger.error(f"backfill_subject_family raised at boot: {_bf_err}")
 
 
 if __name__ == '__main__':
