@@ -192,10 +192,20 @@ def _migrate_add_columns(app):
                 db.session.execute(text('ALTER TABLE assignments ADD COLUMN exemplar_analyzed_at TIMESTAMP'))
                 db.session.commit()
                 logger.info('Added exemplar_analyzed_at column to assignments table')
-            if 'subject_family' not in columns:
-                db.session.execute(text('ALTER TABLE assignments ADD COLUMN subject_family VARCHAR(40)'))
-                db.session.commit()
-                logger.info('Added subject_family column to assignments table')
+            # subject_family was a denormalised AI-classified slug.
+            # Retired: assignments now key calibration directly on the
+            # canonical Assignment.subject string from the dropdown
+            # (subjects.py). Idempotent drop — safe to redeploy.
+            if 'subject_family' in columns:
+                try:
+                    db.session.execute(text(
+                        'ALTER TABLE assignments DROP COLUMN subject_family'
+                    ))
+                    db.session.commit()
+                    logger.info('Dropped legacy subject_family column from assignments table')
+                except Exception as _e:
+                    db.session.rollback()
+                    logger.warning(f'assignments DROP subject_family skipped: {_e}')
             if 'pinyin_mode' not in columns:
                 # Default 'off' so legacy rows don't suddenly start emitting
                 # pinyin on next render. Teachers opt-in per assignment via
@@ -251,16 +261,16 @@ def _migrate_add_columns(app):
                 db.session.rollback()
                 logger.warning(f'assignment_bank backfill skipped: {_e}')
 
-        # feedback_edit super-set columns. The table may exist on prod from
-        # an older feed_forward_beta or staging deploy with a partial column
-        # set; SELECTs blow up with "column does not exist" if the model
-        # references a column the table is missing. Single ensure-list with
-        # every column the current model SELECTs/INSERTs.
+        # feedback_edit ensure-list. The table may exist on prod from
+        # an older deploy with a partial column set; SELECTs blow up with
+        # "column does not exist" if the model references a column the
+        # table is missing. Single ensure-list with every column the
+        # current model SELECTs/INSERTs. subject_family + subject_bucket
+        # are NOT in this list — they were dropped (see below) when
+        # calibration moved to keying on assignments.subject directly.
         if 'feedback_edit' in inspector.get_table_names():
             fe_cols = {c['name'] for c in inspector.get_columns('feedback_edit')}
             ensure_fe = [
-                ('subject_family', 'VARCHAR(40)'),
-                ('subject_bucket', 'VARCHAR(40)'),
                 ('theme_key', 'VARCHAR(40)'),
                 ('promoted_by', 'VARCHAR(36)'),
                 ('promoted_at', 'TIMESTAMP'),
@@ -282,6 +292,112 @@ def _migrate_add_columns(app):
                     except Exception as _e:
                         db.session.rollback()
                         logger.error(f'feedback_edit ALTER ADD {col} failed: {_e}')
+
+            # One-shot purge of legacy calibration data, then drop the
+            # subject_family / subject_bucket columns. The user explicitly
+            # opted into clearing the calibration corpus when migrating to
+            # subject-string-keyed retrieval — old rows can't be reliably
+            # remapped (subject_family was AI-classified, subject_bucket
+            # was substring-keyword-derived; neither equals the canonical
+            # Assignment.subject string).
+            fe_cols_after = {c['name'] for c in inspector.get_columns('feedback_edit')}
+            if 'subject_family' in fe_cols_after or 'subject_bucket' in fe_cols_after:
+                try:
+                    db.session.execute(text('DELETE FROM feedback_edit'))
+                    db.session.commit()
+                    logger.info('Purged feedback_edit (subject taxonomy migration)')
+                except Exception as _e:
+                    db.session.rollback()
+                    logger.warning(f'feedback_edit purge skipped: {_e}')
+                # Drop indexes that reference the columns first so the
+                # column drops don't fail on a column-still-in-index error.
+                for idx in (
+                    'ix_feedback_edit_lookup',
+                    'ix_feedback_edit_bucket',
+                    'ix_feedback_edit_subject_family',
+                    'ix_feedback_edit_subject_bucket',
+                ):
+                    try:
+                        db.session.execute(text(f'DROP INDEX IF EXISTS {idx}'))
+                        db.session.commit()
+                    except Exception as _e:
+                        db.session.rollback()
+                        logger.warning(f'feedback_edit DROP INDEX {idx} skipped: {_e}')
+                for col in ('subject_family', 'subject_bucket'):
+                    if col in fe_cols_after:
+                        try:
+                            db.session.execute(text(
+                                f'ALTER TABLE feedback_edit DROP COLUMN {col}'
+                            ))
+                            db.session.commit()
+                            logger.info(f'Dropped legacy {col} column from feedback_edit')
+                        except Exception as _e:
+                            db.session.rollback()
+                            logger.warning(f'feedback_edit DROP COLUMN {col} skipped: {_e}')
+                # Recreate the lookup index on the new key shape.
+                try:
+                    db.session.execute(text(
+                        'CREATE INDEX IF NOT EXISTS ix_feedback_edit_lookup '
+                        'ON feedback_edit (edited_by, active, theme_key)'
+                    ))
+                    db.session.commit()
+                except Exception as _e:
+                    db.session.rollback()
+                    logger.warning(f'feedback_edit lookup index create skipped: {_e}')
+
+        # marking_principles_cache rekey. Old: `subject_family` slug
+        # (UNIQUE NOT NULL). New: `subject` (the canonical display string
+        # from the assignment dropdown — case-insensitive matching is in
+        # the SQL). The user opted into clearing the principles cache
+        # during this migration; cleanest path is to drop the legacy
+        # table entirely and let SQLAlchemy's create_all rebuild it on
+        # the next ensure pass. SQLite won't DROP COLUMN on a UNIQUE
+        # column without a full table rebuild — drop+recreate is simpler.
+        if 'marking_principles_cache' in inspector.get_table_names():
+            mpc_cols = {c['name'] for c in inspector.get_columns('marking_principles_cache')}
+            if 'subject_family' in mpc_cols:
+                try:
+                    db.session.execute(text('DROP TABLE marking_principles_cache'))
+                    db.session.commit()
+                    logger.info('Dropped legacy marking_principles_cache table (subject taxonomy migration)')
+                except Exception as _e:
+                    db.session.rollback()
+                    logger.warning(f'marking_principles_cache DROP TABLE skipped: {_e}')
+                # Recreate the table with the current model schema.
+                try:
+                    MarkingPrinciplesCache.__table__.create(db.engine)
+                    logger.info('Recreated marking_principles_cache with new schema')
+                except Exception as _e:
+                    logger.warning(f'marking_principles_cache recreate skipped: {_e}')
+
+        # categorisation_correction: drop subject_family — no replacement
+        # needed, callers JOIN on assignment_id -> assignments.subject.
+        if 'categorisation_correction' in inspector.get_table_names():
+            cc_cols = {c['name'] for c in inspector.get_columns('categorisation_correction')}
+            if 'subject_family' in cc_cols:
+                try:
+                    db.session.execute(text('DELETE FROM categorisation_correction'))
+                    db.session.commit()
+                    logger.info('Purged categorisation_correction (subject taxonomy migration)')
+                except Exception as _e:
+                    db.session.rollback()
+                    logger.warning(f'categorisation_correction purge skipped: {_e}')
+                try:
+                    db.session.execute(text(
+                        'DROP INDEX IF EXISTS ix_cat_corr_assignment_subject'
+                    ))
+                    db.session.commit()
+                except Exception as _e:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text(
+                        'ALTER TABLE categorisation_correction DROP COLUMN subject_family'
+                    ))
+                    db.session.commit()
+                    logger.info('Dropped legacy subject_family column from categorisation_correction')
+                except Exception as _e:
+                    db.session.rollback()
+                    logger.warning(f'categorisation_correction DROP subject_family skipped: {_e}')
 
         # exemplar_analysis_log: ensure superseded_at column exists for
         # tables created before the column was added to the model. New
@@ -407,11 +523,6 @@ class Assignment(db.Model):
     classroom_code = db.Column(db.String(10), unique=True, nullable=False, index=True)
     title = db.Column(db.String(300), default='')
     subject = db.Column(db.String(200), default='')
-    # Resolved once at creation time by a lightweight AI classify call — one of
-    # the keys in SUBJECT_FAMILIES (science / humanities_seq / humanities_sbq /
-    # literature / mother_tongue_comprehension / _composition / _translation).
-    # Null for assignments that pre-date this feature.
-    subject_family = db.Column(db.String(40), nullable=True)
     assign_type = db.Column(db.String(20), default='short_answer')
     scoring_mode = db.Column(db.String(20), default='marks')
     total_marks = db.Column(db.String(20), default='')
@@ -624,10 +735,10 @@ class FeedbackEdit(db.Model):
     prepended to future marking prompts and the propagation candidate
     detection that fires after each save.
 
-    Super-set schema: keeps feed_forward_beta's categorisation/insight
-    columns (subject_family, theme_key, mistake_pattern, etc.) AND
-    staging's keyword-bucket field (subject_bucket) so either matching
-    path keeps working.
+    Subject grouping is via JOIN on assignments.subject (case-insensitive)
+    against the canonical-dropdown string. theme_key keeps its WITHIN-
+    subject "nature of the mistake" categorisation role
+    (config/mistake_themes.py is the single source of truth for keys).
     """
     __tablename__ = 'feedback_edit'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -637,8 +748,6 @@ class FeedbackEdit(db.Model):
     original_text = db.Column(db.Text, nullable=False, default='')
     edited_text = db.Column(db.Text, nullable=False, default='')
     edited_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=False, index=True)
-    subject_family = db.Column(db.String(40), nullable=True)
-    subject_bucket = db.Column(db.String(40), nullable=True, index=True)
     theme_key = db.Column(db.String(40), nullable=True)
     assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)
     rubric_version = db.Column(db.String(64), nullable=False, default='')
@@ -655,8 +764,7 @@ class FeedbackEdit(db.Model):
     transferability = db.Column(db.String(10), nullable=True)
 
     __table_args__ = (
-        db.Index('ix_feedback_edit_lookup', 'edited_by', 'active', 'subject_family', 'theme_key'),
-        db.Index('ix_feedback_edit_bucket', 'edited_by', 'active', 'subject_bucket'),
+        db.Index('ix_feedback_edit_lookup', 'edited_by', 'active', 'theme_key'),
         db.Index('ix_feedback_edit_assignment', 'assignment_id', 'rubric_version'),
     )
 
@@ -664,7 +772,9 @@ class FeedbackEdit(db.Model):
 class MarkingPrinciplesCache(db.Model):
     __tablename__ = 'marking_principles_cache'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    subject_family = db.Column(db.String(40), nullable=False, unique=True)
+    # Canonical Assignment.subject string (e.g. 'Physics', 'Higher Chinese').
+    # Case-insensitive matching is in the SQL — values are stored as-typed.
+    subject = db.Column(db.String(80), nullable=False, unique=True)
     markdown_text = db.Column(db.Text, nullable=False, default='')
     generated_at = db.Column(db.DateTime(timezone=True), nullable=True)
     is_stale = db.Column(db.Boolean, nullable=False, default=False)
@@ -684,11 +794,10 @@ class CategorisationCorrection(db.Model):
     corrected_specific_label = db.Column(db.String(80), nullable=True)
     corrected_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=False, index=True)
     assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)
-    subject_family = db.Column(db.String(40), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
-        db.Index('ix_cat_corr_assignment_subject', 'assignment_id', 'subject_family'),
+        db.Index('ix_cat_corr_assignment', 'assignment_id'),
     )
 
 

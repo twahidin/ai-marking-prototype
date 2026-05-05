@@ -1,22 +1,24 @@
 """Canonical subject taxonomy.
 
-Single source of truth for:
-  - the dropdown / autocomplete on the assignment creation form
-  - the AI classifier in ai_marking.classify_subject_family
-  - the marking-patterns display name
-  - the calibration / propagation lookup keys (FeedbackEdit.subject_family)
+Single source of truth for the assignment-creation dropdown / autocomplete.
+The Assignment.subject column stores the human-readable display string
+chosen from this list (e.g. 'Physics', 'Higher Chinese'); calibration
+retrieval, marking-principles caching, and categorisation corrections all
+match on that string (case-insensitive) — no separate slug / family
+column is persisted.
 
 Each entry has:
-  - key:         slugged identifier persisted in DB columns
+  - key:         slugged identifier (used by the dropdown JS)
   - display:     human-readable label shown in UI / dropdown / patterns page
+                 — also what gets written to Assignment.subject
   - aliases:     freeform strings teachers commonly type that should resolve
-                 to this family without an AI round-trip
+                 to this entry's `key` (used by the autocomplete fallback)
 
 The taxonomy is intentionally Singapore-secondary-school shaped. Future
 band-level subdivision (G1 / G2 / G3) is anticipated but deliberately
 NOT modelled here yet — when it ships, add a separate `band` column on
-Assignment and FeedbackEdit. Per the schema-evolution policy in
-CLAUDE.md, we don't add NULL-everywhere columns ahead of time.
+Assignment. Per the schema-evolution policy in CLAUDE.md, we don't add
+NULL-everywhere columns ahead of time.
 """
 
 # Order: alphabetical by display name. Same order is used in the
@@ -77,21 +79,12 @@ for _s in SUBJECTS:
         _ALIAS_TO_KEY[_alias.lower().strip()] = _s['key']
 
 
-# Old 7-family taxonomy. Kept here only so the migration can detect
-# rows that need re-classification under the new taxonomy. Do NOT use
-# these keys for any new code — the canonical set is SUBJECT_KEYS.
-LEGACY_FAMILY_KEYS = {
-    'science', 'humanities_seq', 'humanities_sbq', 'literature',
-    'mother_tongue_comprehension', 'mother_tongue_composition',
-    'mother_tongue_translation',
-}
-
-
 def resolve_subject_key(text):
-    """Resolve a freeform subject string to a canonical family key.
+    """Resolve a freeform subject string to a canonical key.
 
     Tries exact display match → alias match → None. Returns None if no
-    confident match; callers fall back to the AI classifier.
+    confident match; callers can fall back to keeping the freeform
+    string (it just won't share calibration with canonical-subject rows).
     """
     if not text:
         return None
