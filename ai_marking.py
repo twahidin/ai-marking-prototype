@@ -1638,12 +1638,17 @@ def fetch_recent_categorisation_corrections(subject, limit=5):
       {criterion_text, original_theme_key, corrected_theme_key,
        original_specific_label, corrected_specific_label}
 
+    Returns [] when subject is blank OR isn't a canonical-taxonomy entry
+    (subjects.py). Freeform-subject assignments are intra-assignment-
+    only by design — they don't contribute to the cross-assignment
+    categorisation corpus.
+
     Cheap: one JOIN'd SELECT for the corrections + one bulk SELECT for
-    all referenced submissions. No AI calls. Returns [] when there's no
-    data (no extra work, no extra cost on the prompt side).
+    all referenced submissions. No AI calls.
     """
     from db import db, CategorisationCorrection, Submission, Assignment
-    if not subject:
+    from subjects import is_canonical_subject
+    if not subject or not is_canonical_subject(subject):
         return []
     rows = (CategorisationCorrection.query
             .join(Assignment, Assignment.id == CategorisationCorrection.assignment_id)
@@ -1962,14 +1967,15 @@ def fetch_calibration_examples(teacher_id, assignment, theme_keys, limit=10):
 
       Tier 0: same assignment + same rubric_version (no theme filter,
               rubric hash already pins us to this assignment's content).
+              ALWAYS runs — drives same-assignment propagation regardless
+              of whether the subject is canonical or freeform.
       Tier 1: different assignment, exact LOWER(assignments.subject)
-              match. With the canonical-subject dropdown (subjects.py)
-              wired into the create form, every new assignment carries
-              a normalised string ('Physics', 'Higher Chinese', ...) so
-              equal-string matching cleanly partitions the calibration
-              corpus by subject. Skipped when the target subject is
-              blank — otherwise we'd cross-pollinate any legacy "" rows.
-              When `theme_keys` is non-empty, Tier 1 narrows further to
+              match. ONLY runs when the assignment's subject is a
+              canonical-taxonomy entry (subjects.is_canonical_subject).
+              Freeform subjects (anything not in the dropdown) are
+              intra-assignment-only by design — their feedback edits
+              never reach a different assignment's marking. When
+              `theme_keys` is non-empty, Tier 1 narrows further to
               edits whose theme_key matches one of the supplied keys.
 
     `theme_keys` is the iterable of theme_keys from the current
@@ -2006,12 +2012,16 @@ def fetch_calibration_examples(teacher_id, assignment, theme_keys, limit=10):
     }).mappings().all():
         rows_by_id[r['id']] = dict(r)
 
+    from subjects import is_canonical_subject as _is_canonical_subject
     target_subject = (getattr(assignment, 'subject', '') or '').strip()
-    if target_subject:
+    if target_subject and _is_canonical_subject(target_subject):
         # Tier 1: cross-assignment match on canonical subject string.
-        # If theme_keys is supplied, narrow to those theme_keys; else
-        # match all edits within the subject. Single query handles both
-        # paths via a NULL-aware theme filter.
+        # Skipped entirely when the source assignment's subject isn't
+        # in the canonical dropdown taxonomy — freeform-subject
+        # assignments stay intra-assignment-only (Tier 0 above still
+        # picks up same-assignment edits, which drives propagation
+        # within the class). If theme_keys is supplied, narrow to
+        # those theme_keys; else match all edits within the subject.
         theme_filter = ''
         params = {
             'teacher_id': teacher_id,
@@ -2125,9 +2135,15 @@ def format_calibration_block(examples):
 def count_active_calibration_edits(subject):
     """Count active calibration edits across ALL teachers for the given
     `subject` string (case-insensitive match against assignments.subject
-    via JOIN). Used by the calibration-injection threshold gate."""
+    via JOIN). Used by the calibration-injection threshold gate.
+
+    Returns 0 when subject is blank OR isn't a canonical-taxonomy entry
+    (subjects.py). Freeform-subject assignments don't accumulate toward
+    the shared principles threshold — they're intra-assignment-only.
+    """
     from db import db, FeedbackEdit, Assignment
-    if not subject:
+    from subjects import is_canonical_subject
+    if not subject or not is_canonical_subject(subject):
         return 0
     return (db.session.query(FeedbackEdit)
             .join(Assignment, Assignment.id == FeedbackEdit.assignment_id)
@@ -2147,16 +2163,20 @@ def get_marking_principles(provider, model, session_keys, subject):
       2. is_stale=True AND count_active_calibration_edits >= 8, OR
       3. generated_at is older than 30 days.
 
-    Below 8 active edits across the whole subject, returns '' so the caller
-    falls back to teacher-scoped raw examples.
+    Returns '' (no principles) when:
+      - subject is blank, OR
+      - subject isn't canonical (freeform assignments don't share
+        principles), OR
+      - fewer than 8 active calibration edits across the whole subject.
     """
     from db import db, MarkingPrinciplesCache, FeedbackEdit, Assignment
+    from subjects import is_canonical_subject
 
     THRESHOLD = 8
     if not subject:
         return ''
     subject_norm = subject.strip()
-    if not subject_norm:
+    if not subject_norm or not is_canonical_subject(subject_norm):
         return ''
     edit_count = count_active_calibration_edits(subject_norm)
     if edit_count < THRESHOLD:

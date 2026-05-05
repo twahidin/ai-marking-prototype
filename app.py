@@ -4907,9 +4907,12 @@ def teacher_marking_patterns():
 
     from db import FeedbackEdit, MarkingPrinciplesCache
     from sqlalchemy import func as _func
+    from subjects import is_canonical_subject as _is_canonical
 
     # Group by canonical assignments.subject (case-insensitive). The
-    # subject string from the dropdown IS the display name.
+    # subject string from the dropdown IS the display name. Non-canonical
+    # (freeform-typed) subjects are excluded — their feedback edits are
+    # intra-assignment-only and don't aggregate into shared patterns.
     subj_lower = _func.lower(Assignment.subject)
     contributed_rows = (
         db.session.query(subj_lower.label('subj_lc'),
@@ -4929,6 +4932,9 @@ def teacher_marking_patterns():
 
     sections = []
     for subj_lc, subj_display, my_count in contributed_rows:
+        # Drop freeform subjects — they're intra-assignment-only.
+        if not _is_canonical(subj_display or ''):
+            continue
         total = (db.session.query(_func.count(FeedbackEdit.id))
                  .join(Assignment, Assignment.id == FeedbackEdit.assignment_id)
                  .filter(_func.lower(Assignment.subject) == subj_lc,
@@ -6148,13 +6154,18 @@ def teacher_submission_result_patch(assignment_id, submission_id):
 
             # Categorisation correction — feed_forward_beta inline editable
             # category line above the feedback textarea. Validate theme_key
-            # against THEMES; on valid change, write a CategorisationCorrection
-            # audit row. The corrected theme_key flows into the FeedbackEdit
+            # against THEMES; on valid change, update the in-memory result
+            # AND write a CategorisationCorrection audit row IF the
+            # assignment's subject is a canonical-taxonomy entry. Freeform
+            # subjects skip the audit-row write — they're intra-assignment-
+            # only, so cross-assignment few-shot learning never sees them.
+            # The corrected theme_key still flows into the FeedbackEdit
             # row below if the teacher also calibrates.
             if 'theme_key' in edit or 'specific_label' in edit:
                 try:
                     from config.mistake_themes import THEMES as _THEMES
                     from db import CategorisationCorrection
+                    from subjects import is_canonical_subject as _is_canonical
                     proposed_tk = (edit.get('theme_key') or '').strip() or None
                     proposed_label_raw = edit.get('specific_label')
                     proposed_label = (proposed_label_raw or '').strip() or None
@@ -6169,22 +6180,23 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                         target['theme_key'] = proposed_tk
                         target['specific_label'] = proposed_label or ''
                         target['theme_key_corrected'] = True
-                        try:
-                            db.session.add(CategorisationCorrection(
-                                submission_id=sub.id,
-                                criterion_id=str(qn),
-                                field='theme_key',
-                                original_theme_key=current_tk,
-                                original_specific_label=current_label,
-                                corrected_theme_key=proposed_tk,
-                                corrected_specific_label=proposed_label,
-                                corrected_by=editor_id,
-                                assignment_id=asn.id,
-                            ))
-                        except Exception as cat_err:
-                            logger.warning(
-                                f"CategorisationCorrection insert failed "
-                                f"(sub={sub.id}, crit={qn}): {cat_err}")
+                        if _is_canonical(asn.subject or ''):
+                            try:
+                                db.session.add(CategorisationCorrection(
+                                    submission_id=sub.id,
+                                    criterion_id=str(qn),
+                                    field='theme_key',
+                                    original_theme_key=current_tk,
+                                    original_specific_label=current_label,
+                                    corrected_theme_key=proposed_tk,
+                                    corrected_specific_label=proposed_label,
+                                    corrected_by=editor_id,
+                                    assignment_id=asn.id,
+                                ))
+                            except Exception as cat_err:
+                                logger.warning(
+                                    f"CategorisationCorrection insert failed "
+                                    f"(sub={sub.id}, crit={qn}): {cat_err}")
                 except Exception as outer_cat_err:
                     logger.warning(f"categorisation correction handling failed: {outer_cat_err}")
 

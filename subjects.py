@@ -96,6 +96,18 @@ def resolve_subject_key(text):
     return None
 
 
+def is_canonical_subject(text):
+    """True if the freeform subject string maps to a canonical taxonomy
+    entry (display match or alias hit). Used to gate cross-assignment
+    behaviour: only canonical-subject assignments contribute to the
+    shared calibration corpus, marking principles, and categorisation
+    corrections. Freeform subjects are treated as one-off, intra-
+    assignment-only — their feedback edits still propagate within the
+    same assignment but never reach a different assignment's marking.
+    """
+    return resolve_subject_key(text) is not None
+
+
 def display_name(key):
     """Human-readable label for a family key. Falls back to the key
     titlecased if the key is unknown (e.g. a stale legacy value)."""
