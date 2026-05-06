@@ -287,6 +287,13 @@ _PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 \usepackage[version=4]{mhchem}
 \usepackage{titlesec}
 \usepackage{ulem}
+% fancyhdr drives the per-page student-name header on the report
+% (top-left). The preamble loads it unconditionally; whether the header
+% renders is controlled per-document via \pagestyle calls in the body.
+% The default \pagestyle remains 'plain' so the overview PDF — which
+% reuses this preamble — keeps its bare footer-page-number layout.
+\usepackage{fancyhdr}
+\setlength{\headheight}{14pt}
 
 % Custom \ruby{base}{annotation}: paints the annotation centred above
 % the base. The block is sized to the WIDER of base or annotation
@@ -500,19 +507,24 @@ def _build_qcard(label, status_key, marks_text, rows):
 # ---------------------------------------------------------------------------
 
 def generate_report_pdf(result, subject='', app_title='AI Feedback Systems',
-                        assignment_name=''):
+                        assignment_name='', student_name=''):
     """Build a single-submission feedback report and return its PDF bytes.
-    Memoised on (kind, result, subject, app_title, assignment_name)."""
-    cache_key = _cache_key('report', result, subject, app_title, assignment_name)
+    Memoised on (kind, result, subject, app_title, assignment_name,
+    student_name) — student_name is part of the key so reports for
+    different students never share a cached PDF."""
+    cache_key = _cache_key('report', result, subject, app_title,
+                           assignment_name, student_name)
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
-    pdf = _generate_report_pdf_impl(result, subject, app_title, assignment_name)
+    pdf = _generate_report_pdf_impl(result, subject, app_title,
+                                    assignment_name, student_name)
     _cache_put(cache_key, pdf)
     return pdf
 
 
-def _generate_report_pdf_impl(result, subject, app_title, assignment_name):
+def _generate_report_pdf_impl(result, subject, app_title, assignment_name,
+                              student_name=''):
     questions = result.get('questions', []) or []
     is_rubrics = result.get('assign_type') == 'rubrics'
     has_marks = any(q.get('marks_awarded') is not None for q in questions)
@@ -682,7 +694,28 @@ def _generate_report_pdf_impl(result, subject, app_title, assignment_name):
     )
     linespread = r'\linespread{1.45}\selectfont' + '\n' if has_pinyin else ''
 
-    tex = _PREAMBLE + r'\begin{document}' + '\n' + linespread + body + '\n' + r'\end{document}' + '\n'
+    # Per-page student-name header — top-left, small grey text, no rule.
+    # Only emitted when a name is supplied (the legacy callsites that
+    # don't pass it keep the previous bare layout). Switches the page
+    # style for THIS document only — overview reports reusing _PREAMBLE
+    # stay on the default \pagestyle{plain}.
+    name_header = ''
+    if student_name:
+        name_header = (
+            r'\pagestyle{fancy}\fancyhf{}'
+            r'\renewcommand{\headrulewidth}{0pt}'
+            rf'\fancyhead[L]{{\footnotesize\color{{textmuted}}{_tex_text(student_name)}}}'
+            '\n'
+        )
+
+    tex = (
+        _PREAMBLE
+        + r'\begin{document}' + '\n'
+        + name_header
+        + linespread
+        + body
+        + '\n' + r'\end{document}' + '\n'
+    )
     return _compile_tex_to_pdf(tex, jobname='report')
 
 

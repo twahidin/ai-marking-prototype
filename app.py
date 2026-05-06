@@ -4180,6 +4180,7 @@ def bulk_download(job_id):
                 subject=job.get('subject', ''),
                 app_title=get_app_title(),
                 assignment_name=job.get('assignment_name', '') or job.get('title', ''),
+                student_name=item.get('name', ''),
             )
             safe_name = item['name'].replace('/', '_').replace('\\', '_')
             zf.writestr(f"{item['index']}_{safe_name}_report.pdf", pdf_bytes)
@@ -5516,6 +5517,7 @@ def teacher_download_all(assignment_id):
             pdf_bytes = generate_report_pdf(
                 result, subject=asn.subject, app_title=get_app_title(),
                 assignment_name=asn.title or '',
+                student_name=student.name or '',
             )
             safe_name = student.name.replace('/', '_').replace('\\', '_')
             zf.writestr(f"{student.index_number}_{safe_name}_report.pdf", pdf_bytes)
@@ -5608,10 +5610,25 @@ def _run_print_all_reports_job(app_obj, job_id, assignment_id):
                         subject=asn.subject,
                         app_title=get_app_title(),
                         assignment_name=asn.title or '',
+                        student_name=student.name or '',
                     )
                     reader = PdfReader(io.BytesIO(pdf_bytes))
-                    for page in reader.pages:
+                    pages = list(reader.pages)
+                    for page in pages:
                         writer.add_page(page)
+                    # Pad odd-page reports with a blank page so duplex
+                    # printing keeps each student on their own sheets —
+                    # without this, an odd-page student would land their
+                    # last page on the front of a sheet whose back gets
+                    # the next student's first page.
+                    if len(pages) % 2 == 1:
+                        try:
+                            mb = pages[-1].mediabox
+                            writer.add_blank_page(width=float(mb.width),
+                                                  height=float(mb.height))
+                        except Exception:
+                            # A4 fallback (595 × 842 pt) if mediabox is unreadable.
+                            writer.add_blank_page(width=595, height=842)
                     merged_count += 1
                 except Exception as e:
                     logger.warning(
@@ -7855,9 +7872,12 @@ def download_submission_pdf(assignment_id, submission_id):
     result = sub.get_result()
     subject = asn.subject if asn else ''
     asn_title = (asn.title if asn else '') or ''
+    student = Student.query.get(sub.student_id) if sub.student_id else None
+    student_name = (student.name if student else '') or ''
     pdf_bytes = generate_report_pdf(
         result, subject=subject, app_title=get_app_title(),
         assignment_name=asn_title,
+        student_name=student_name,
     )
 
     return send_file(
