@@ -24,7 +24,7 @@
 THEMES = {
 
     "comprehension": {
-        "label": "Question Comprehension",
+        "label": "Question comprehension",
         "description": "Student misread the question or answered something different from what was asked — wrong focus, ignored a qualifier, or addressed only part of what the question demanded.",
         "never_group": False,
     },
