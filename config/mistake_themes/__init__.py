@@ -140,22 +140,28 @@ def themes_for_display(subject):
     return {**LEGACY_THEMES, **themes_for(subject)}
 
 
-def theme_keys():
-    """Return the list of base theme keys in declaration order.
+def themes_meta_list(themes):
+    """Serialise a themes dict as an ordered list of {key, label,
+    description, never_group} entries. Used by JSON endpoints (e.g. the
+    teacher feedback modal's category dropdown)."""
+    return [
+        {
+            'key': k,
+            'label': v.get('label', k),
+            'description': v.get('description', ''),
+            'never_group': bool(v.get('never_group')),
+        } for k, v in themes.items()
+    ]
 
-    Kept for legacy callers; subject-aware code should call
-    `themes_for(subject).keys()` instead.
-    """
-    return list(_BASE_THEMES.keys())
 
-
-def theme_label(key):
-    """Return the display label for a base theme key, or the key itself
-    if unknown. Kept for legacy callers."""
-    return (_BASE_THEMES.get(key) or {}).get('label', key)
-
-
-def is_never_group(key):
-    """True if criteria with this base theme must always render standalone.
-    Kept for legacy callers."""
-    return bool((_BASE_THEMES.get(key) or {}).get('never_group'))
+def themes_meta_dict(themes):
+    """Serialise a themes dict as a flat metadata map keyed by theme_key.
+    Used by Jinja templates that inject FV_THEMES for client-side label
+    fallback (e.g. the student feedback grouped view)."""
+    return {
+        k: {
+            'label': v.get('label', k),
+            'description': v.get('description', ''),
+            'never_group': bool(v.get('never_group')),
+        } for k, v in themes.items()
+    }

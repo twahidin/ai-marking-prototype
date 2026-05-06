@@ -842,7 +842,7 @@ Respond ONLY with valid JSON:
             "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
             "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)",
             "idea": "single sentence — see LAYER 3 IDEA RULES (≤25 words, why this criterion matters)",
-            "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise one short do-this-now task following CORRECTION PROMPT RULES — pick the form that matches this criterion's mistake type (procedural / reasoning / evidence / concept / language). ≤ 25 words. Must not duplicate another criterion's wording."
+            "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise one scaffolded thinking task following CORRECTION PROMPT RULES above (anchor in student's actual answer, point at the gap WITHOUT revealing the correct answer/method/value/unit, end with a concrete action). Must not duplicate another criterion's wording."
         }}
     ],
     "errors": [
@@ -952,7 +952,7 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
             "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)",
             "idea": "single sentence — see LAYER 3 IDEA RULES (≤25 words, why this question matters)",
-            "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise one short do-this-now task following CORRECTION PROMPT RULES — pick the form matching this question's mistake type (procedural / reasoning / evidence / concept / language). ≤ 25 words. Must not duplicate another question's wording."
+            "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise one scaffolded thinking task following CORRECTION PROMPT RULES above (anchor in student's actual answer, point at the gap WITHOUT revealing the correct answer/method/value/unit, end with a concrete action). Must not duplicate another question's wording."
         }}"""
     else:
         scoring_instructions = """SCORING: For each question, assign one of these statuses:
@@ -968,7 +968,7 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
             "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
             "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)",
             "idea": "single sentence — see LAYER 3 IDEA RULES (≤25 words, why this question matters)",
-            "correction_prompt": "OMIT if status == 'correct'; otherwise one short do-this-now task following CORRECTION PROMPT RULES — pick the form matching this question's mistake type (procedural / reasoning / evidence / concept / language). ≤ 25 words. Must not duplicate another question's wording."
+            "correction_prompt": "OMIT if status == 'correct'; otherwise one scaffolded thinking task following CORRECTION PROMPT RULES above (anchor in student's actual answer, point at the gap WITHOUT revealing the correct answer/method/value/unit, end with a concrete action). Must not duplicate another question's wording."
         }}"""
 
     language_block = _language_directive(subject)

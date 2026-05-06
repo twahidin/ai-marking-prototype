@@ -4474,19 +4474,8 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
             sub_fresh = Submission.query.get(submission_id)
             if sub_fresh and sub_fresh.status == 'done':
                 result = sub_fresh.get_result() or {}
-                lost_count = sum(
-                    1 for q in (result.get('questions') or [])
-                    if ((q.get('marks_total') or 0) > 0 and (q.get('marks_awarded') or 0) < (q.get('marks_total') or 0))
-                    or (q.get('status') and q.get('status') != 'correct')
-                )
-                if lost_count >= 2:
-                    sub_fresh.categorisation_status = 'pending'
-                    db.session.commit()
-                    threading.Thread(
-                        target=_run_categorisation_worker,
-                        args=(app, submission_id),
-                        daemon=True,
-                    ).start()
+                if _count_lost_criteria(result.get('questions')) >= 2:
+                    _kick_categorisation_worker(submission_id)
                 else:
                     sub_fresh.categorisation_status = 'done'  # nothing to group; render shows no toggle
                     db.session.commit()
@@ -4760,6 +4749,41 @@ def _run_propagation_worker(app_obj, edit_id, target_ids):
                     db.session.commit()
             except Exception:
                 db.session.rollback()
+
+
+def _count_lost_criteria(questions):
+    """Count criteria where the student lost marks (by-marks comparison
+    OR by-status if marks aren't tracked). Used by both the post-marking
+    kickoff gate and the feedback-view resilience auto-relaunch — same
+    logic in both places."""
+    return sum(
+        1 for q in (questions or [])
+        if ((q.get('marks_total') or 0) > 0 and (q.get('marks_awarded') or 0) < (q.get('marks_total') or 0))
+        or (q.get('status') and q.get('status') != 'correct')
+    )
+
+
+def _kick_categorisation_worker(submission_id):
+    """Mark the submission as 'pending' and spawn the background worker.
+    Caller is responsible for ensuring the worker SHOULD run (lost-marks
+    gate satisfied). Commits in this helper; rolls back on failure.
+    Returns True on success."""
+    try:
+        sub = Submission.query.get(submission_id)
+        if not sub:
+            return False
+        sub.categorisation_status = 'pending'
+        db.session.commit()
+        threading.Thread(
+            target=_run_categorisation_worker,
+            args=(app, submission_id),
+            daemon=True,
+        ).start()
+        return True
+    except Exception as kick_err:
+        db.session.rollback()
+        logger.warning(f"Could not kick categorisation for sub {submission_id}: {kick_err}")
+        return False
 
 
 def _run_categorisation_worker(app_obj, submission_id):
@@ -5955,15 +5979,7 @@ def teacher_submission_result(assignment_id, submission_id):
     # the per-question card. Strict (non-display) variant — teachers pick
     # from canonical taxonomy keys only; deprecated legacy keys never
     # appear as a choice for new categorisations.
-    from config.mistake_themes import themes_for as _themes_for
-    available_themes = [
-        {
-            'key': k,
-            'label': v.get('label', k),
-            'description': v.get('description', ''),
-            'never_group': bool(v.get('never_group')),
-        } for k, v in _themes_for(asn.subject or '').items()
-    ]
+    from config.mistake_themes import themes_for, themes_meta_list
     return jsonify({
         'success': True,
         'result': sub.get_result(),
@@ -5972,7 +5988,7 @@ def teacher_submission_result(assignment_id, submission_id):
         'is_final': sub.is_final,
         'text_edit_meta': _build_text_edit_meta(sub.id, teacher_id=teacher_id),
         'current_teacher_id': teacher_id,
-        'available_themes': available_themes,
+        'available_themes': themes_meta_list(themes_for(asn.subject or '')),
     })
 
 
@@ -6891,19 +6907,13 @@ def student_feedback_page(assignment_id, submission_id):
         correct = sum(1 for q in questions if q.get('status') == 'correct')
         score_pill = f"{correct} / {len(questions)}"
 
-    from config.mistake_themes import themes_for_display
-    THEMES = themes_for_display(asn.subject or '')
+    from config.mistake_themes import themes_for_display, themes_meta_dict
     # Serialisable theme metadata for the template + JS (never hardcoded).
     # Includes deprecated legacy keys so old submissions render with clean
     # labels; the categorisation worker + correction dropdown still use
     # the strict (legacy-free) themes_for() variant.
-    theme_meta = {
-        k: {
-            'label': v.get('label', k),
-            'description': v.get('description', ''),
-            'never_group': bool(v.get('never_group')),
-        } for k, v in THEMES.items()
-    }
+    THEMES = themes_for_display(asn.subject or '')
+    theme_meta = themes_meta_dict(THEMES)
 
     grouping_data = _compute_grouping_payload(sub, result, THEMES)
 
@@ -6914,12 +6924,7 @@ def student_feedback_page(assignment_id, submission_id):
     # at marking time — a single criterion can't form a group anyway.
     cat_state = sub.categorisation_status
     if cat_state in (None, 'pending'):
-        lost_count = sum(
-            1 for q in questions
-            if ((q.get('marks_total') or 0) > 0 and (q.get('marks_awarded') or 0) < (q.get('marks_total') or 0))
-            or (q.get('status') and q.get('status') != 'correct')
-        )
-        if lost_count >= 2:
+        if _count_lost_criteria(questions) >= 2:
             stale = False
             if cat_state is None:
                 stale = True
@@ -6929,19 +6934,8 @@ def student_feedback_page(assignment_id, submission_id):
                     marked_at = marked_at.replace(tzinfo=timezone.utc)
                 if (datetime.now(timezone.utc) - marked_at).total_seconds() > 90:
                     stale = True
-            if stale:
-                try:
-                    sub.categorisation_status = 'pending'
-                    db.session.commit()
-                    threading.Thread(
-                        target=_run_categorisation_worker,
-                        args=(app, sub.id),
-                        daemon=True,
-                    ).start()
-                    logger.info(f"Re-kicked categorisation for stale/legacy submission {sub.id}")
-                except Exception as relaunch_err:
-                    db.session.rollback()
-                    logger.warning(f"Could not relaunch categorisation for sub {sub.id}: {relaunch_err}")
+            if stale and _kick_categorisation_worker(sub.id):
+                logger.info(f"Re-kicked categorisation for stale/legacy submission {sub.id}")
         elif cat_state is None:
             # Fewer than 2 lost criteria → nothing to group; mark done so the page stops polling.
             try:
