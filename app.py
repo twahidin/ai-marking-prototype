@@ -5522,6 +5522,98 @@ def teacher_download_all(assignment_id):
                      download_name=f'{asn.classroom_code}_reports.zip')
 
 
+@app.route('/teacher/assignment/<assignment_id>/print-all-reports')
+def teacher_print_all_reports(assignment_id):
+    """HTML wrapper that auto-triggers window.print() on the embedded
+    merged feedback PDF. Renders an iframe pointing at the .pdf sibling
+    route below; opens in a new tab from the teacher view."""
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    return render_template(
+        'print_all_reports.html',
+        assignment=asn,
+        app_title=get_app_title(),
+    )
+
+
+@app.route('/teacher/assignment/<assignment_id>/print-all-reports.pdf')
+def teacher_print_all_reports_pdf(assignment_id):
+    """Single merged PDF of every 'done' submission for this assignment,
+    ordered by class-list index. Skips not-yet-marked submissions and
+    submissions whose result_json carries an error. Re-uses the per-
+    student PDF cache in pdf_generator (memoised on result content), so
+    a second print run is near-instant once each student's PDF is hot."""
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+
+    rows = (
+        db.session.query(Submission, Student)
+        .join(Student, Submission.student_id == Student.id)
+        .filter(
+            Submission.assignment_id == assignment_id,
+            Submission.status == 'done',
+            Submission.is_final.is_(True),
+        )
+        .all()
+    )
+
+    # Order by index_number numerically when possible, else lexicographically.
+    # The column is db.String(50) — typed values like '1', '10', '2' would
+    # otherwise sort lexicographically as 1, 10, 2 instead of 1, 2, 10.
+    def _sort_key(pair):
+        student = pair[1]
+        idx = (student.index_number or '').strip()
+        return (0, int(idx)) if idx.isdigit() else (1, idx.lower(), student.name or '')
+    rows = sorted(rows, key=_sort_key)
+
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    merged_count = 0
+    for sub, student in rows:
+        try:
+            result = sub.get_result() or {}
+            if result.get('error'):
+                continue
+            pdf_bytes = generate_report_pdf(
+                result,
+                subject=asn.subject,
+                app_title=get_app_title(),
+                assignment_name=asn.title or '',
+            )
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            for page in reader.pages:
+                writer.add_page(page)
+            merged_count += 1
+        except Exception as e:
+            logger.warning(
+                f"print-all-reports: skipping student {student.name!r} "
+                f"in assignment {assignment_id}: {e}"
+            )
+            continue
+
+    if merged_count == 0:
+        return ('No marked submissions to print.', 404,
+                {'Content-Type': 'text/plain; charset=utf-8'})
+
+    buf = io.BytesIO()
+    writer.write(buf)
+    buf.seek(0)
+
+    response = make_response(buf.read())
+    response.headers['Content-Type'] = 'application/pdf'
+    # inline so the browser PDF viewer renders it in the iframe;
+    # the wrapper template's auto-print fires once it loads.
+    response.headers['Content-Disposition'] = (
+        f'inline; filename="{asn.classroom_code}_all_reports.pdf"'
+    )
+    return response
+
+
 @app.route('/teacher/assignment/<assignment_id>/overview')
 def teacher_overview(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)

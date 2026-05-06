@@ -138,6 +138,11 @@
         border: 1px solid #ddd; border-radius: 6px; font-size: 13px;
     }
     .bulk-page-input:disabled { background: #f5f5f5; color: #999; cursor: not-allowed; }
+    /* Submissions card action row: 5 buttons need tighter padding to fit
+       on one line on typical desktop widths. Scoped to this row so other
+       .action-btn instances in the app keep their generous default. */
+    .submissions-actions { gap: 8px; justify-content: flex-start; }
+    .submissions-actions .action-btn { padding: 10px 16px; font-size: 13px; }
     /* Per-student row coloring in the Pages modal */
     .page-row td { transition: background-color 0.15s; }
     .page-row.mark > td { background-color: #e8f5e9; }
@@ -492,8 +497,9 @@
                     <span class="refresh-indicator"><span class="refresh-dot"></span>Auto-refreshing</span>
                 {% endif %}
             </div>
-            <div class="action-row" style="margin-top:0;">
+            <div class="action-row submissions-actions" style="margin-top:0;">
                 <a href="/teacher/assignment/{{ assignment.id }}/download" class="action-btn success">Download All Reports</a>
+                <a href="/teacher/assignment/{{ assignment.id }}/print-all-reports" target="_blank" rel="noopener" class="action-btn primary">Print All Reports</a>
                 <a href="/teacher/assignment/{{ assignment.id }}/overview" target="_blank" rel="noopener" class="action-btn primary">Item Analysis</a>
                 <a href="/teacher/assignment/{{ assignment.id }}/exemplars" target="_blank" rel="noopener" class="action-btn primary">Exemplar Analysis</a>
                 <button class="action-btn secondary" onclick="window.location.reload();">Refresh</button>

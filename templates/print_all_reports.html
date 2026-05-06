@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Print all reports — {{ assignment.title or assignment.classroom_code }}</title>
+    <style>
+        html, body { margin: 0; padding: 0; height: 100%; background: #f5f6f8; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; color: #333; }
+        .pa-hint {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+            background: #f0f4ff; border-bottom: 1px solid #c5cbe8;
+            padding: 10px 16px; font-size: 13px; color: #4a5072;
+            display: flex; align-items: center; gap: 12px;
+        }
+        .pa-hint .pa-spacer { flex: 1; }
+        .pa-hint button {
+            background: #667eea; color: white; border: none;
+            border-radius: 6px; padding: 6px 14px; font-size: 13px;
+            font-weight: 600; cursor: pointer;
+        }
+        .pa-hint button:hover { background: #5a6fd6; }
+        .pa-hint button.pa-close {
+            background: white; color: #4a5072; border: 1px solid #c5cbe8;
+        }
+        .pa-hint button.pa-close:hover { background: #eef1ff; }
+        iframe {
+            display: block; width: 100%; height: calc(100vh - 44px);
+            margin-top: 44px; border: none; background: white;
+        }
+        .pa-error {
+            margin: 80px auto; max-width: 480px; padding: 24px;
+            background: white; border-radius: 12px;
+            box-shadow: 0 2px 14px rgba(0,0,0,0.08); text-align: center;
+        }
+        .pa-error h2 { margin: 0 0 8px 0; font-size: 18px; color: #333; }
+        .pa-error p { margin: 0; font-size: 14px; color: #888; }
+    </style>
+</head>
+<body>
+    <div class="pa-hint">
+        <span>Printing reports for <strong>{{ assignment.title or assignment.classroom_code }}</strong>.
+              Print dialog will open automatically — if it doesn't, use Cmd / Ctrl + P or the button to the right.</span>
+        <span class="pa-spacer"></span>
+        <button type="button" onclick="paPrint()">Print</button>
+        <button type="button" class="pa-close" onclick="window.close()">Close tab</button>
+    </div>
+
+    <iframe id="paPdf"
+            src="{{ url_for('teacher_print_all_reports_pdf', assignment_id=assignment.id) }}"
+            title="Merged feedback reports"></iframe>
+
+    <div id="paError" class="pa-error" style="display:none;">
+        <h2>No marked submissions yet</h2>
+        <p>There are no completed feedback reports to print for this assignment. Mark some submissions, then come back.</p>
+    </div>
+
+    <script>
+        // Auto-print: triggers the browser print dialog as soon as the
+        // merged PDF finishes loading inside the iframe. Falls back to
+        // window.print() (prints the wrapper page, which displays the
+        // PDF) if same-origin contentWindow.print() throws.
+        var paFrame = document.getElementById('paPdf');
+        var paFired = false;
+
+        function paPrint() {
+            try {
+                paFrame.contentWindow.focus();
+                paFrame.contentWindow.print();
+            } catch (e) {
+                window.print();
+            }
+        }
+
+        // Detect 404 (no marked submissions) by listening for the
+        // iframe's load result. Most browsers don't expose a body for
+        // failed loads, so we sniff via a HEAD-like fetch before
+        // committing to the iframe wait.
+        fetch(paFrame.src, { method: 'GET', credentials: 'same-origin' }).then(function (r) {
+            if (r.status === 404) {
+                paFrame.style.display = 'none';
+                document.getElementById('paError').style.display = 'block';
+                return;
+            }
+            // OK — wait for the iframe to render the PDF, then print.
+            paFrame.addEventListener('load', function () {
+                if (paFired) return;
+                paFired = true;
+                // Brief delay so the in-iframe PDF viewer has time to
+                // bind its own print handlers before we ask it to print.
+                setTimeout(paPrint, 600);
+            });
+        }).catch(function () {
+            // Network error — leave the iframe in place; user can retry
+            // with the Print button.
+        });
+    </script>
+</body>
+</html>
