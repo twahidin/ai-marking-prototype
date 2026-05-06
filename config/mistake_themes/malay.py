@@ -1,57 +1,32 @@
-# mistake_themes/malay.py
+# config/mistake_themes/malay.py
 #
-# Mistake themes for Malay Language / Higher Malay (O Level / N Level)
-# Singapore syllabus
-#
-# ──────────────────────────────────────────────────────────────────────
-# HOW TO ADD YOUR OWN CATEGORIES  (see base.py for full instructions)
-# ──────────────────────────────────────────────────────────────────────
+# 4 skills-based mistake categories for Malay / Higher Malay.
+# Descriptions use both Bahasa Melayu and English so the AI prompt
+# can ground in either language.
 
 THEMES = {
 
-    "malay_lifting": {
-        "label": "Lifted From Passage",
-        "description": "Student copied phrases directly from the passage instead of paraphrasing in own words.",
+    "vocabulary_precision": {
+        "label": "Kosa Kata / Vocabulary",
+        "description": "Pemilihan perkataan tidak tepat — wrong word choice, idiom (peribahasa / simpulan bahasa) misused, or everyday phrasing where a more precise term was expected.",
         "never_group": False,
     },
 
-    "malay_inference_not_made": {
-        "label": "Inference Not Made",
-        "description": "Student answered at a surface level when the question required drawing an implication or conclusion from the passage.",
+    "grammar_structure": {
+        "label": "Tatabahasa / Grammar and Structure",
+        "description": "Struktur ayat atau tatabahasa salah — wrong sentence structure, imbuhan (prefix/suffix) misuse, or run-on / fragmented sentences.",
         "never_group": False,
     },
 
-    "malay_register_wrong": {
-        "label": "Register Wrong",
-        "description": "Student used informal Bahasa Melayu (including Singlish-influenced Malay or colloquial terms) in a formal writing task.",
+    "comprehension": {
+        "label": "Pemahaman / Comprehension",
+        "description": "Salah faham soalan atau teks — misread the question, missed the focus of the prompt, or addressed only part of what was asked.",
         "never_group": False,
     },
 
-    "malay_spelling_error": {
-        "label": "Spelling Error",
-        "description": "Student misspelled a Malay word — common errors include confusion between similar-sounding words or incorrect application of spelling rules.",
+    "expression_coherence": {
+        "label": "Pengungkapan / Expression and Coherence",
+        "description": "Pengungkapan tidak koheren — ideas not linked, weak paragraphing, conclusion not justified, or writing flow that doesn't carry the reader through.",
         "never_group": False,
     },
-
-    "malay_sentence_structure_wrong": {
-        "label": "Sentence Structure Wrong",
-        "description": "Student constructed a grammatically incorrect sentence — common errors in word order, verb agreement, or use of affixes (awalan/akhiran).",
-        "never_group": False,
-    },
-
-    "malay_composition_no_structure": {
-        "label": "Composition Lacks Structure",
-        "description": "Composition does not have a clear pendahuluan (introduction), isi (body), and penutup (conclusion).",
-        "never_group": False,
-    },
-
-    "malay_peribahasa_wrong": {
-        "label": "Peribahasa Used Incorrectly",
-        "description": "Student used a peribahasa (proverb) in the wrong context, or its meaning does not fit the point being made.",
-        "never_group": False,
-    },
-
-    # ==================================================================
-    # TEACHER-ADDED CATEGORIES
-    # ==================================================================
 }

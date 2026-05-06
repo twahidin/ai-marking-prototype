@@ -53,15 +53,17 @@ SUBJECT_MODULE_MAP = {
 
 
 def get_themes_for_subject(subject_key):
-    """Return merged dict of base themes + subject-specific themes.
+    """Return the theme dict for a canonical subject.
 
-    Subject themes override base themes when keys clash — this lets a
-    subject file sharpen a generic base theme with a more specific
-    description without duplicating the whole entry.
+    When a subject file exists, its THEMES dict is returned VERBATIM — no
+    merge with base. The deliberate design: each subject file owns the
+    complete, slim list of skills-based categories that show up in the
+    teacher's "Mistake Category" dropdown. Mixing in base entries would
+    re-introduce the mental clutter the slim-down was meant to remove.
 
-    Falls back to base themes only if:
+    Base themes are returned only as the fallback when:
     - subject_key is None or blank
-    - no module exists for that subject
+    - no module exists for that subject (freeform / unrecognised)
     - the subject module fails to import
     """
     if not subject_key:
@@ -74,8 +76,10 @@ def get_themes_for_subject(subject_key):
 
     try:
         module = importlib.import_module(module_path)
-        subject_themes = getattr(module, 'THEMES', {})
-        return {**_BASE_THEMES, **subject_themes}
+        subject_themes = getattr(module, 'THEMES', None)
+        if not subject_themes:
+            return dict(_BASE_THEMES)
+        return dict(subject_themes)
     except Exception as e:
         logger.warning(f"Could not load theme module '{module_path}': {e} — falling back to base themes")
         return dict(_BASE_THEMES)
@@ -99,6 +103,7 @@ def themes_for(subject):
 # result_json blobs. Never injected into the AI prompt and never offered
 # in the teacher-correction dropdown — see themes_for_display below.
 LEGACY_THEMES = {
+    # Pre-2026 universal-taxonomy keys.
     "reasoning_gap": {
         "label": "Reasoning gap (legacy)",
         "description": "Pre-2026 universal taxonomy — kept for label display only.",
@@ -123,6 +128,28 @@ LEGACY_THEMES = {
         "never_group": False,
         "deprecated": True,
     },
+    "content_gap": {
+        "label": "Content gap (legacy)",
+        "description": "Pre-2026 universal taxonomy — kept for label display only.",
+        "never_group": False,
+        "deprecated": True,
+    },
+    # Pre-slim-down per-subject keys (2026-05) — kept so old submissions
+    # still resolve to a clean label rather than a raw snake_case key.
+    # These are NEVER offered in the dropdown; themes_for() (strict) does
+    # not include LEGACY_THEMES, so teachers can only choose from the
+    # current 4 skills-based categories. Legacy keys appear only in
+    # themes_for_display() at READ time.
+    "careless_slip": {"label": "Careless slip (legacy)", "description": "Pre-2026-05 base taxonomy.", "never_group": False, "deprecated": True},
+    "incomplete_answer": {"label": "Incomplete answer (legacy)", "description": "Pre-2026-05 base taxonomy.", "never_group": False, "deprecated": True},
+    "misread_question": {"label": "Misread question (legacy)", "description": "Pre-2026-05 base taxonomy.", "never_group": False, "deprecated": True},
+    "working_not_shown": {"label": "Working not shown (legacy)", "description": "Pre-2026-05 base taxonomy.", "never_group": False, "deprecated": True},
+    "keyword_missing": {"label": "Missing keyword (legacy)", "description": "Pre-2026-05 base taxonomy.", "never_group": False, "deprecated": True},
+    "misconception": {"label": "Misconception (legacy)", "description": "Pre-2026-05 base taxonomy.", "never_group": False, "deprecated": True},
+    "too_vague": {"label": "Too vague (legacy)", "description": "Pre-2026-05 base taxonomy.", "never_group": False, "deprecated": True},
+    "language_error": {"label": "Language error (legacy)", "description": "Pre-2026-05 base taxonomy.", "never_group": False, "deprecated": True},
+    "mark_allocation_ignored": {"label": "Mark allocation ignored (legacy)", "description": "Pre-2026-05 base taxonomy.", "never_group": False, "deprecated": True},
+    "question_format_not_followed": {"label": "Format not followed (legacy)", "description": "Pre-2026-05 base taxonomy.", "never_group": False, "deprecated": True},
 }
 
 

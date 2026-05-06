@@ -1,46 +1,30 @@
-# mistake_themes/art.py
+# config/mistake_themes/art.py
 #
-# Mistake themes for Art (O Level / N Level)
-# Singapore syllabus — covers written paper (art history, visual analysis)
-# and practical components
-#
-# ──────────────────────────────────────────────────────────────────────
-# HOW TO ADD YOUR OWN CATEGORIES  (see base.py for full instructions)
-# ──────────────────────────────────────────────────────────────────────
+# 4 skills-based mistake categories for Art.
 
 THEMES = {
 
-    "art_element_named_not_analysed": {
-        "label": "Element Named, Not Analysed",
-        "description": "Student identified an element of art or principle of design (e.g. line, colour, balance) but did not explain how it contributes to the work's meaning or effect.",
+    "analysis_depth": {
+        "label": "Depth of Visual Analysis",
+        "description": "Visual element named but not analysed — formal feature identified (line, colour, texture, composition) without explaining its effect or how it shapes meaning, or analysis stops at description.",
         "never_group": False,
     },
 
-    "art_description_not_analysis": {
-        "label": "Described Instead of Analysed",
-        "description": "Student described what they see in the artwork (colour, shape, subject matter) without analysing why the artist made those choices.",
+    "contextual_understanding": {
+        "label": "Contextual Understanding",
+        "description": "Work / artist / movement discussed without grounding in its historical, cultural, or art-historical context — context missing, generic, or inaccurate for the specific work being discussed.",
         "never_group": False,
     },
 
-    "art_context_not_used": {
-        "label": "Historical Context Not Used",
-        "description": "Student analysed the artwork in isolation without referencing the historical, cultural, or social context that shaped it.",
+    "terminology_precision": {
+        "label": "Art Terminology",
+        "description": "Right idea conveyed but the precise art term is missing or used loosely — everyday language where syllabus vocabulary (e.g. 'chiaroscuro', 'impasto', 'composition') was expected.",
         "never_group": False,
     },
 
-    "art_artist_intent_missing": {
-        "label": "Artist Intent Not Addressed",
-        "description": "Student described the artwork but did not consider what the artist was trying to communicate, express, or achieve.",
+    "expression_precision": {
+        "label": "Written Expression",
+        "description": "Imprecise or loose written response — wrong word choice, awkward phrasing, ideas not coherently linked, or argument restated rather than developed.",
         "never_group": False,
     },
-
-    "art_terminology_wrong": {
-        "label": "Art Terminology Wrong",
-        "description": "Student used an art term incorrectly — e.g. confused 'tone' with 'colour', or 'texture' with 'pattern'.",
-        "never_group": False,
-    },
-
-    # ==================================================================
-    # TEACHER-ADDED CATEGORIES
-    # ==================================================================
 }

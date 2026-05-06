@@ -1,57 +1,32 @@
-# mistake_themes/tamil.py
+# config/mistake_themes/tamil.py
 #
-# Mistake themes for Tamil Language / Higher Tamil (O Level / N Level)
-# Singapore syllabus
-#
-# ──────────────────────────────────────────────────────────────────────
-# HOW TO ADD YOUR OWN CATEGORIES  (see base.py for full instructions)
-# ──────────────────────────────────────────────────────────────────────
+# 4 skills-based mistake categories for Tamil / Higher Tamil.
+# Descriptions use both Tamil and English so the AI prompt can ground
+# in either language.
 
 THEMES = {
 
-    "tamil_lifting": {
-        "label": "Lifted From Passage",
-        "description": "Student copied phrases directly from the passage instead of paraphrasing in own words.",
+    "vocabulary_precision": {
+        "label": "சொற்களஞ்சியம் / Vocabulary",
+        "description": "சொல் தேர்வு பிழை — wrong word choice, idiom misused, or everyday phrasing where a more precise term was expected.",
         "never_group": False,
     },
 
-    "tamil_inference_not_made": {
-        "label": "Inference Not Made",
-        "description": "Student answered at a surface level when the question required drawing an implication from the passage.",
+    "grammar_structure": {
+        "label": "இலக்கணம் / Grammar and Structure",
+        "description": "வாக்கிய அமைப்பு அல்லது இலக்கணப் பிழை — wrong sentence structure, case-marker / verb-form mistakes, or run-on / fragmented sentences.",
         "never_group": False,
     },
 
-    "tamil_register_wrong": {
-        "label": "Register Wrong",
-        "description": "Student used spoken/colloquial Tamil in a formal writing task — did not use written literary Tamil as required.",
+    "comprehension": {
+        "label": "புரிதல் / Comprehension",
+        "description": "கேள்வியை அல்லது பகுதியைத் தவறாகப் புரிந்துகொண்டது — misread the question, missed the focus of the prompt, or addressed only part of what was asked.",
         "never_group": False,
     },
 
-    "tamil_spelling_error": {
-        "label": "Spelling Error",
-        "description": "Student misspelled a Tamil word — common errors include confusion between similar-looking characters or incorrect use of vowel markers (உயிர்மெய்).",
+    "expression_coherence": {
+        "label": "வெளிப்பாடு / Expression and Coherence",
+        "description": "வெளிப்பாட்டில் தொடர்ச்சியின்மை — ideas not linked, weak paragraphing, conclusion not justified, or writing flow that doesn't carry the reader through.",
         "never_group": False,
     },
-
-    "tamil_sandhi_error": {
-        "label": "Sandhi Rule Error",
-        "description": "Student made an error in applying Tamil sandhi rules — incorrect joining of words at boundaries, changing the sound or spelling of combined words.",
-        "never_group": False,
-    },
-
-    "tamil_composition_no_structure": {
-        "label": "Composition Lacks Structure",
-        "description": "Composition does not have a clear introduction, development, and conclusion in proper Tamil essay form.",
-        "never_group": False,
-    },
-
-    "tamil_thirukkural_wrong": {
-        "label": "Thirukkural Used Incorrectly",
-        "description": "Student cited a Thirukkural couplet but its meaning does not fit the context, or the couplet was misquoted.",
-        "never_group": False,
-    },
-
-    # ==================================================================
-    # TEACHER-ADDED CATEGORIES
-    # ==================================================================
 }

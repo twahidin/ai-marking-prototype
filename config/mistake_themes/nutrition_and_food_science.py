@@ -1,64 +1,30 @@
-# mistake_themes/nutrition_and_food_science.py
+# config/mistake_themes/nutrition_and_food_science.py
 #
-# Mistake themes for Nutrition and Food Science (O Level / N Level)
-# Singapore syllabus — covers nutrients, meal planning, food preparation,
-# food safety, and consumer education
-#
-# ──────────────────────────────────────────────────────────────────────
-# HOW TO ADD YOUR OWN CATEGORIES  (see base.py for full instructions)
-# ──────────────────────────────────────────────────────────────────────
+# 4 skills-based mistake categories for Nutrition and Food Science.
 
 THEMES = {
 
-    "nfs_nutrient_function_wrong": {
-        "label": "Nutrient Function Wrong",
-        "description": "Student attributed the wrong function to a nutrient — e.g. stated that carbohydrates build and repair tissue, or that protein is the primary energy source.",
+    "content_misconception": {
+        "label": "Content Misconception",
+        "description": "Student brought the wrong NFS concept to the question — incorrect nutrient function, mistaken food-science principle (e.g. denaturation vs coagulation), or fundamentally incorrect mental model.",
         "never_group": False,
     },
 
-    "nfs_deficiency_wrong": {
-        "label": "Wrong Deficiency Disease Named",
-        "description": "Student linked a nutrient to the wrong deficiency disease — e.g. stated that lack of Vitamin C causes rickets instead of scurvy.",
+    "application_specificity": {
+        "label": "Application to Context",
+        "description": "Concept stated in general terms but not applied to the specific context the question gave (e.g. life-stage, dietary need, cooking method, target consumer) — answer reads textbook-generic rather than addressing THIS scenario.",
         "never_group": False,
     },
 
-    "nfs_food_group_wrong": {
-        "label": "Food Group Classification Wrong",
-        "description": "Student placed a food item in the wrong food group — e.g. classified cheese as a fat rather than a dairy/protein source.",
+    "reasoning_gap": {
+        "label": "Reasoning Gap",
+        "description": "Student identified a nutrient/process/issue but did not link it to the consequence or recommendation the question asked about — missing cause→effect, or stopping short of the practical implication.",
         "never_group": False,
     },
 
-    "nfs_hygiene_reason_missing": {
-        "label": "Food Safety Reason Missing",
-        "description": "Student stated a food hygiene or safety practice but did not explain why it is necessary — the reason linked to bacterial growth or contamination was absent.",
+    "terminology_precision": {
+        "label": "Terminology and Keywords",
+        "description": "Right idea conveyed but the precise NFS term is missing or used loosely — everyday language where syllabus terms (e.g. 'satiety', 'gelatinisation', 'micronutrient') were expected.",
         "never_group": False,
     },
-
-    "nfs_cooking_method_wrong": {
-        "label": "Wrong Cooking Method for Nutrient",
-        "description": "Student recommended a cooking method that would destroy the nutrient in question — e.g. boiling for water-soluble vitamins without noting nutrient loss.",
-        "never_group": False,
-    },
-
-    "nfs_meal_plan_not_balanced": {
-        "label": "Meal Plan Not Balanced",
-        "description": "Student's suggested meal plan did not meet the dietary requirements — missing food groups, wrong proportions, or did not address the specific dietary need in the question.",
-        "never_group": False,
-    },
-
-    "nfs_target_group_ignored": {
-        "label": "Target Group Needs Ignored",
-        "description": "Question specified a target group (e.g. elderly, pregnant women, athletes) but student gave a generic answer without addressing the specific nutritional needs of that group.",
-        "never_group": False,
-    },
-
-    "nfs_sensory_term_wrong": {
-        "label": "Sensory Evaluation Term Wrong",
-        "description": "Student used sensory evaluation terms incorrectly — e.g. confused 'texture' with 'appearance', or described taste when aroma was asked.",
-        "never_group": False,
-    },
-
-    # ==================================================================
-    # TEACHER-ADDED CATEGORIES
-    # ==================================================================
 }

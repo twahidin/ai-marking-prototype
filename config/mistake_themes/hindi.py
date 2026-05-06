@@ -1,57 +1,32 @@
-# mistake_themes/hindi.py
+# config/mistake_themes/hindi.py
 #
-# Mistake themes for Hindi (O Level / N Level)
-# Singapore syllabus
-#
-# ──────────────────────────────────────────────────────────────────────
-# HOW TO ADD YOUR OWN CATEGORIES  (see base.py for full instructions)
-# ──────────────────────────────────────────────────────────────────────
+# 4 skills-based mistake categories for Hindi.
+# Descriptions use both Hindi and English so the AI prompt can ground
+# in either language.
 
 THEMES = {
 
-    "hindi_lifting": {
-        "label": "Lifted From Passage",
-        "description": "Student copied phrases directly from the passage instead of paraphrasing in own words.",
+    "vocabulary_precision": {
+        "label": "शब्दावली / Vocabulary",
+        "description": "शब्द-चयन में त्रुटि — wrong word choice, muhāvarā (idiom) misused, or everyday phrasing where a more precise term was expected.",
         "never_group": False,
     },
 
-    "hindi_inference_not_made": {
-        "label": "Inference Not Made",
-        "description": "Student answered at a surface level when the question required drawing an implication from the passage.",
+    "grammar_structure": {
+        "label": "व्याकरण / Grammar and Structure",
+        "description": "वाक्य-संरचना या व्याकरण की त्रुटि — wrong sentence structure, mismatched gender / number / verb forms, or run-on / fragmented sentences.",
         "never_group": False,
     },
 
-    "hindi_register_wrong": {
-        "label": "Register Wrong",
-        "description": "Student used informal or spoken Hindi in a formal writing task — did not use standard written Hindi (Manak Hindi) as required.",
+    "comprehension": {
+        "label": "समझ / Comprehension",
+        "description": "प्रश्न या गद्यांश की गलत समझ — misread the question, missed the focus of the prompt, or addressed only part of what was asked.",
         "never_group": False,
     },
 
-    "hindi_gender_agreement_wrong": {
-        "label": "Gender Agreement Error",
-        "description": "Student used incorrect grammatical gender for a noun, causing disagreement with the verb or adjective — common for nouns whose gender is not obvious.",
+    "expression_coherence": {
+        "label": "अभिव्यक्ति / Expression and Coherence",
+        "description": "अभिव्यक्ति में निरंतरता का अभाव — ideas not linked, weak paragraphing, conclusion not justified, or writing flow that doesn't carry the reader through.",
         "never_group": False,
     },
-
-    "hindi_spelling_error": {
-        "label": "Spelling Error",
-        "description": "Student misspelled a Hindi word — common errors include incorrect use of matra (vowel diacritics) or confusion between similar Devanagari characters.",
-        "never_group": False,
-    },
-
-    "hindi_composition_no_structure": {
-        "label": "Composition Lacks Structure",
-        "description": "Composition does not have a clear introduction (भूमिका), body (विस्तार), and conclusion (उपसंहार).",
-        "never_group": False,
-    },
-
-    "hindi_muhavara_wrong": {
-        "label": "Muhavara Used Incorrectly",
-        "description": "Student used a muhavara (idiom) or lokokti (proverb) in the wrong context, or its meaning does not fit the point being made.",
-        "never_group": False,
-    },
-
-    # ==================================================================
-    # TEACHER-ADDED CATEGORIES
-    # ==================================================================
 }
