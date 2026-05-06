@@ -50,7 +50,7 @@
        white container without horizontal scroll on typical desktop widths. */
     .results-table { font-size: 14px; width: 100%; }
     .results-table td { padding: 10px 8px; border-bottom: 1px solid #f0f0f0; }
-    .results-table th { padding: 10px 8px; }
+    .results-table th { padding: 10px 8px; text-align: left; }
     .results-table th, .results-table td { vertical-align: middle; }
     /* Short columns: fixed widths, no wrapping. */
     .results-table th.col-source,    .results-table td.col-source    { width: 28px; padding-left: 4px; padding-right: 4px; }
@@ -59,7 +59,7 @@
     .results-table th.col-score,     .results-table td.col-score     { width: 70px; white-space: nowrap; }
     .results-table th.col-submitted, .results-table td.col-submitted { width: 96px; white-space: nowrap; font-size: 13px; }
     .results-table th.col-feedback,  .results-table td.col-feedback  { width: 132px; white-space: nowrap; }
-    .results-table th.col-actions,   .results-table td.col-actions   { width: 168px; white-space: nowrap; text-align: right; }
+    .results-table th.col-actions,   .results-table td.col-actions   { width: 168px; white-space: nowrap; }
     /* Name column takes remaining space and wraps (long names like
        "ARDILL SUJITH JANICE PHOEBE" otherwise blow the layout out). */
     .results-table td.col-name      { word-break: break-word; }
@@ -171,7 +171,14 @@
        with one-menu-at-a-time, close-on-outside-click, close-on-scroll
        (capture phase, catches nested scroll containers), and auto-flip
        upward when the popover would clip below the viewport. */
-    .actions-cell { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; justify-content: flex-end; }
+    .actions-cell { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; justify-content: flex-start; }
+    /* Default-button slot has a fixed min-width so Upload, View Feedback,
+       Re-mark, and "Marking…" all share the same horizontal footprint —
+       their centres line up regardless of label length. Header "ACTIONS"
+       (left-aligned via the th rule above) sits over the slot's left edge. */
+    .actions-cell > .upload-btn,
+    .actions-cell > .remark-btn,
+    .actions-cell > .actions-pending { min-width: 120px; text-align: center; box-sizing: border-box; }
     .actions-pending { display: inline-block; padding: 6px 12px; font-size: 12px; color: #888; font-style: italic; }
     .actions-menu { position: relative; display: inline-block; }
     .actions-menu-btn {
