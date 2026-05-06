@@ -149,6 +149,42 @@
     }
     .remark-btn:hover { background: #fff8e1; }
     .remark-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    /* Per-row actions: state-driven default button + kebab overflow.
+       Kebab pattern mirrors templates/bank.html — same visual rhythm —
+       with one-menu-at-a-time, close-on-outside-click, close-on-scroll
+       (capture phase, catches nested scroll containers), and auto-flip
+       upward when the popover would clip below the viewport. */
+    .actions-cell { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; justify-content: flex-end; }
+    .actions-pending { display: inline-block; padding: 6px 12px; font-size: 12px; color: #888; font-style: italic; }
+    .actions-menu { position: relative; display: inline-block; }
+    .actions-menu-btn {
+        width: 30px; height: 30px; border-radius: 50%; border: 1px solid #d6dbe8;
+        background: white; color: #888; font-size: 18px; line-height: 1; cursor: pointer;
+        padding: 0; display: inline-flex; align-items: center; justify-content: center;
+        transition: background 0.12s, color 0.12s, border-color 0.12s;
+    }
+    .actions-menu-btn:hover { background: #f0f2fa; color: #333; border-color: #b6bcd6; }
+    .actions-menu.open .actions-menu-btn { background: #667eea; color: white; border-color: #667eea; }
+    .actions-menu-pop {
+        display: none; position: absolute; top: 36px; right: 0; min-width: 160px;
+        background: white; border: 1px solid #e0e0e0; border-radius: 10px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.14); padding: 4px; z-index: 1500;
+    }
+    .actions-menu.open .actions-menu-pop { display: block; }
+    .actions-menu.flip-up .actions-menu-pop { top: auto; bottom: 36px; }
+    .actions-menu-pop > button,
+    .actions-menu-pop > a {
+        display: block; width: 100%; box-sizing: border-box; text-align: left;
+        padding: 8px 12px; border: none; background: transparent; font-size: 13px;
+        color: #333; cursor: pointer; border-radius: 6px; text-decoration: none;
+        font-family: inherit;
+    }
+    .actions-menu-pop > button:hover:not(:disabled),
+    .actions-menu-pop > a:hover:not(.disabled) { background: #f5f5fa; }
+    .actions-menu-pop > button:disabled,
+    .actions-menu-pop > a.disabled {
+        color: #b0b3bd; cursor: not-allowed; pointer-events: none; opacity: 0.65;
+    }
     .last-edited-line {
         font-size: 12px; color: #888; margin-bottom: 16px;
         display: flex; align-items: center; gap: 6px;
@@ -459,25 +495,79 @@
                                 {% endif %}
                             </td>
                             <td>
-                                {% if s.status == 'done' and s.submission_id %}
-                                <button class="upload-btn" type="button" onclick='openFeedbackModal({{ s.submission_id|tojson }}, {{ s.name|tojson }})'>View Feedback</button>
-                                <a href="/submit/{{ assignment.id }}/download/{{ s.submission_id }}" class="upload-btn" style="text-decoration:none;display:inline-block;">Download</a>
-                                {% endif %}
-                                {% if s.status in ('done', 'error') and s.submission_id %}
-                                <button class="remark-btn" type="button" data-submission-id="{{ s.submission_id }}" onclick='remarkStudent(this, {{ s.submission_id|tojson }})'>Re-mark</button>
-                                {% endif %}
-                                {% if s.stuck and s.submission_id %}
-                                <button class="upload-btn" type="button" onclick='forceRetryStuck(this, {{ s.submission_id|tojson }})'>Retry</button>
-                                {% endif %}
-                                <button class="upload-btn" onclick='openUploadModal({{ s.student_id|tojson }}, {{ s.name|tojson }})'>
-                                    {% if s.status == 'not_submitted' %}Upload{% else %}Re-upload{% endif %}
-                                </button>
-                                {% if s.student_amended and s.submission_id %}
-                                <button class="view-extracted-btn" onclick='viewExtracted({{ s.submission_id|tojson }}, {{ s.name|tojson }})'>View Edits</button>
-                                {% endif %}
-                                {% if assignment.allow_drafts and s.submission_id %}
-                                <button class="view-drafts-btn" onclick="toggleDraftsRow('{{ s.student_id }}', {{ s.submission_id }})">Drafts</button>
-                                {% endif %}
+                                {# State-driven default button + overflow kebab. The default
+                                   button choice depends on submission state; the kebab holds
+                                   secondary actions, with state-inappropriate items disabled.
+                                   For not-submitted and marking-in-progress, no kebab is
+                                   shown — nothing in it would be actionable anyway. #}
+                                {% set _state = (
+                                    'not_submitted' if s.status == 'not_submitted'
+                                    else 'stuck' if s.stuck
+                                    else 'in_progress' if s.status in ('pending', 'processing', 'extracting', 'preview')
+                                    else 'error' if s.status == 'error'
+                                    else 'done' if s.status == 'done'
+                                    else 'unknown'
+                                ) %}
+                                <div class="actions-cell">
+                                    {% if _state == 'not_submitted' %}
+                                        <button class="upload-btn" type="button" onclick='openUploadModal({{ s.student_id|tojson }}, {{ s.name|tojson }})'>Upload</button>
+                                    {% elif _state == 'in_progress' %}
+                                        <span class="actions-pending">Marking…</span>
+                                    {% elif _state == 'stuck' %}
+                                        <button class="upload-btn" type="button" onclick='openUploadModal({{ s.student_id|tojson }}, {{ s.name|tojson }})'>Re-upload</button>
+                                    {% elif _state == 'error' %}
+                                        <button class="remark-btn" type="button" data-submission-id="{{ s.submission_id }}" onclick='remarkStudent(this, {{ s.submission_id|tojson }})'>Re-mark</button>
+                                    {% elif _state == 'done' %}
+                                        <button class="upload-btn" type="button" onclick='openFeedbackModal({{ s.submission_id|tojson }}, {{ s.name|tojson }})'>View Feedback</button>
+                                    {% endif %}
+
+                                    {% if _state in ('stuck', 'error', 'done') %}
+                                    <span class="actions-menu" data-actions-menu>
+                                        <button type="button" class="actions-menu-btn" aria-haspopup="true" aria-expanded="false" aria-label="More actions">⋮</button>
+                                        <div class="actions-menu-pop" role="menu">
+                                            {# 1. Download — only meaningful when feedback ready #}
+                                            <a role="menuitem"
+                                               href="/submit/{{ assignment.id }}/download/{{ s.submission_id }}"
+                                               {% if _state != 'done' %}class="disabled" aria-disabled="true" tabindex="-1"{% endif %}
+                                            >Download</a>
+
+                                            {# 2. Re-mark — hidden when it's the default (error state).
+                                                 Greyed for stuck (the regular /remark endpoint refuses
+                                                 because status hasn't advanced — Retry below is the
+                                                 stuck-state path). #}
+                                            {% if _state != 'error' %}
+                                            <button role="menuitem" type="button"
+                                                {% if _state == 'stuck' %}disabled{% else %}onclick='remarkStudent(this, {{ s.submission_id|tojson }})'{% endif %}
+                                            >Re-mark</button>
+                                            {% endif %}
+
+                                            {# 3. Re-upload — hidden when it's the default (stuck state). #}
+                                            {% if _state != 'stuck' %}
+                                            <button role="menuitem" type="button"
+                                                onclick='openUploadModal({{ s.student_id|tojson }}, {{ s.name|tojson }})'
+                                            >Re-upload</button>
+                                            {% endif %}
+
+                                            {# 4. Retry — only meaningful for stuck state; greyed elsewhere. #}
+                                            <button role="menuitem" type="button"
+                                                {% if _state == 'stuck' %}onclick='forceRetryStuck(this, {{ s.submission_id|tojson }})'{% else %}disabled{% endif %}
+                                            >Retry</button>
+
+                                            {# 5. View Edits — greyed when student didn't amend OCR transcript. #}
+                                            <button role="menuitem" type="button"
+                                                {% if s.student_amended %}onclick='viewExtracted({{ s.submission_id|tojson }}, {{ s.name|tojson }})'{% else %}disabled{% endif %}
+                                            >View Edits</button>
+
+                                            {# 6. Drafts — only on draft-enabled assignments (else absent). #}
+                                            {% if assignment.allow_drafts %}
+                                            <button role="menuitem" type="button"
+                                                onclick="toggleDraftsRow('{{ s.student_id }}', {{ s.submission_id }})"
+                                            >Drafts</button>
+                                            {% endif %}
+                                        </div>
+                                    </span>
+                                    {% endif %}
+                                </div>
                             </td>
                         </tr>
                         {% if assignment.allow_drafts and s.submission_id %}
@@ -785,6 +875,88 @@ async function forceRetryStuck(btn, submissionId) {
         alert('Retry failed: ' + e.message);
     }
 }
+
+/* Per-row actions kebab menu.
+ *
+ * Past kebab regressions taught us a few things:
+ *   - Use event DELEGATION on document so re-rendered tables (e.g. after
+ *     a Re-mark refresh) don't lose handlers.
+ *   - stopPropagation() on the kebab button so the document-level "outside
+ *     click" handler doesn't immediately close what we just opened.
+ *   - Close on scroll (capture phase, so it fires for nested scroll
+ *     containers too) — otherwise the popover stays anchored to its old
+ *     coords while the table scrolls past.
+ *   - Auto-flip-up when the popover would clip the viewport bottom — a
+ *     row near the bottom of the table otherwise opens off-screen.
+ */
+(function () {
+    function closeAllActionsMenus() {
+        document.querySelectorAll('[data-actions-menu].open').forEach(function (m) {
+            m.classList.remove('open');
+            m.classList.remove('flip-up');
+            var btn = m.querySelector('.actions-menu-btn');
+            if (btn) btn.setAttribute('aria-expanded', 'false');
+        });
+    }
+
+    function maybeFlipUp(menu) {
+        var pop = menu.querySelector('.actions-menu-pop');
+        if (!pop) return;
+        var rect = menu.getBoundingClientRect();
+        // Estimate popover height from item count; pop hasn't been laid out
+        // when this runs (we set the class first), so we can't measure it
+        // directly without a forced reflow. ~36px per item + 8px padding is
+        // close enough for the flip decision.
+        var items = pop.children.length;
+        var estHeight = items * 36 + 8;
+        if (rect.bottom + estHeight > window.innerHeight - 12) {
+            menu.classList.add('flip-up');
+        }
+    }
+
+    document.addEventListener('click', function (ev) {
+        var kbBtn = ev.target.closest('.actions-menu-btn');
+        if (kbBtn) {
+            ev.stopPropagation();
+            var wrap = kbBtn.closest('[data-actions-menu]');
+            if (!wrap) return;
+            var wasOpen = wrap.classList.contains('open');
+            closeAllActionsMenus();
+            if (!wasOpen) {
+                wrap.classList.add('open');
+                kbBtn.setAttribute('aria-expanded', 'true');
+                maybeFlipUp(wrap);
+            }
+            return;
+        }
+
+        // Click inside an actions menu wrap.
+        var insideWrap = ev.target.closest('[data-actions-menu]');
+        if (insideWrap) {
+            // Click on an enabled menu item (button or link) → let the click
+            // fire its own handler/href, then close. Disabled items: do
+            // nothing (CSS pointer-events:none stops the click anyway).
+            var item = ev.target.closest('.actions-menu-pop > button, .actions-menu-pop > a');
+            if (item && !item.disabled && !item.classList.contains('disabled')) {
+                closeAllActionsMenus();
+            }
+            return;
+        }
+
+        // Click outside any actions menu → close all.
+        closeAllActionsMenus();
+    });
+
+    // Close on any scroll. Capture phase catches scroll from nested scroll
+    // containers (modals, etc.) too. Same defensive pattern as the mistake-
+    // category dropdown.
+    window.addEventListener('scroll', closeAllActionsMenus, true);
+
+    // Esc closes all open menus.
+    document.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape') closeAllActionsMenus();
+    });
+})();
 
 /* Bulk marking */
 var bulkJobId = null;
