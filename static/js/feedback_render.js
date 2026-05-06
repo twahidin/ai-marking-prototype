@@ -911,18 +911,23 @@
             hideDropdown();
         }
 
+        // Close on any scroll — the dropdown is absolute-positioned to the
+        // body at click time, so once the modal box (or window) scrolls,
+        // it would otherwise float over unrelated content. Capture phase
+        // catches scroll events from the nested scroll container too.
+        function onAnyScroll() { hideDropdown(); }
+
         function showDropdown() {
             if (dropdown) return;
             if (!themes.length) return;  // nothing to choose from
             dropdown = document.createElement('div');
             dropdown.className = 'fb-cat-dropdown';
-            dropdown.style.cssText = 'position:absolute; background:white; border:1px solid #c5cbe8; border-radius:8px; box-shadow:0 6px 16px rgba(0,0,0,0.14); padding:6px 0; font-size:13px; z-index:99999; min-width:280px; max-width:380px; max-height:340px; overflow-y:auto;';
+            dropdown.style.cssText = 'position:absolute; background:white; border:1px solid #c5cbe8; border-radius:8px; box-shadow:0 6px 16px rgba(0,0,0,0.14); padding:4px 0; font-size:13px; z-index:99999; min-width:240px; max-width:320px; max-height:280px; overflow-y:auto;';
             themes.forEach(function (t, i) {
                 var item = document.createElement('div');
                 item.className = 'fb-cat-dropdown-item';
-                item.style.cssText = 'padding:8px 14px; cursor:pointer; color:#333; line-height:1.4;';
-                item.innerHTML = '<div style="font-weight:600;">' + esc(t.label) + '</div>' +
-                    (t.description ? '<div style="font-size:11.5px;color:#888;margin-top:2px;">' + esc(t.description) + '</div>' : '');
+                item.style.cssText = 'padding:8px 14px; cursor:pointer; color:#333; font-weight:600; line-height:1.3;';
+                item.textContent = t.label;
                 item.addEventListener('mousedown', function (ev) {
                     ev.preventDefault();  // keep focus; fires before blur
                     applyKey(t.key);
@@ -943,10 +948,12 @@
             }
 
             document.addEventListener('mousedown', onDocMouseDown);
+            window.addEventListener('scroll', onAnyScroll, true);
         }
 
         function hideDropdown() {
             document.removeEventListener('mousedown', onDocMouseDown);
+            window.removeEventListener('scroll', onAnyScroll, true);
             if (dropdown) { dropdown.remove(); dropdown = null; }
             highlightIdx = -1;
         }
