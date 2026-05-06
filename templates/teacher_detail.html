@@ -24,6 +24,18 @@
     .info-label { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
     .info-value { font-size: 14px; font-weight: 600; color: #333; word-break: break-all; }
     .info-value.large { font-size: 24px; letter-spacing: 3px; color: #667eea; }
+    /* Compact metadata strip below the main info-grid — Type / Results
+       Visibility / Created on one row, label inline with value, items
+       separated by a small visual divider. Wraps to multiple lines on
+       narrow viewports. */
+    .info-strip {
+        display: flex; flex-wrap: wrap; gap: 8px 28px;
+        margin-top: 18px; padding-top: 14px; border-top: 1px solid #f0f0f0;
+        font-size: 13px;
+    }
+    .info-strip-item { display: flex; align-items: baseline; gap: 6px; }
+    .info-strip-item .info-label { margin-bottom: 0; font-size: 11px; }
+    .info-strip-item .info-value { font-size: 13px; word-break: normal; }
 
     .copyable { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; position: relative; }
     .copy-btn {
@@ -346,37 +358,37 @@
         <div class="info-grid">
             <div class="info-item">
                 <div class="info-label">Classroom Code</div>
-                <div class="info-value large">
-                    <span class="copyable" onclick="copyText('{{ assignment.classroom_code }}', this)">
-                        {{ assignment.classroom_code }}
-                        <button class="copy-btn" type="button">Copy</button>
-                    </span>
-                </div>
+                <div class="info-value large">{{ assignment.classroom_code }}</div>
             </div>
             <div class="info-item">
                 <div class="info-label">Student Submission Link</div>
                 <div class="info-value" style="word-break:break-all;"><span id="submitUrl"></span></div>
-                <button class="copy-btn" type="button" style="margin-top:6px;" onclick="copyText(getFullUrl('/submit/{{ assignment.id }}'), this)">Copy Link</button>
+                {# One combined Copy button — clipboard gets the submission
+                   link, one blank line, then the classroom code, so a
+                   teacher can paste both into Slack / email / a noticeboard
+                   in one go. #}
+                <button class="copy-btn" type="button" style="margin-top:6px;" onclick="copyLinkAndCode(this)">Copy Link &amp; Code</button>
             </div>
-            <div class="info-item">
-                <div class="info-label">Type</div>
-                <div class="info-value">
-                    {% if assignment.assign_type == 'rubrics' %}Rubrics / Essay{% else %}Short Answer{% endif %}
-                </div>
+        </div>
+        {# Compact metadata strip — Type, Results Visibility, Created share
+           one line so the card no longer takes 3 grid rows for what is
+           essentially three glanceable values. #}
+        <div class="info-strip">
+            <div class="info-strip-item">
+                <span class="info-label">Type</span>
+                <span class="info-value">{% if assignment.assign_type == 'rubrics' %}Rubrics / Essay{% else %}Short Answer{% endif %}</span>
             </div>
-            <div class="info-item">
-                <div class="info-label">Results Visibility</div>
-                <div class="info-value">
-                    {% if assignment.show_results %}
-                        <span style="color:#28a745;">Shown to students</span>
-                    {% else %}
-                        <span style="color:#e68a00;">Hidden</span>
+            <div class="info-strip-item">
+                <span class="info-label">Results Visibility</span>
+                <span class="info-value">
+                    {% if assignment.show_results %}<span style="color:#28a745;">Shown to students</span>
+                    {% else %}<span style="color:#e68a00;">Hidden</span>
                     {% endif %}
-                </div>
+                </span>
             </div>
-            <div class="info-item">
-                <div class="info-label">Created</div>
-                <div class="info-value">{{ assignment.created_at.strftime('%d %b %Y, %H:%M') if assignment.created_at else 'N/A' }}</div>
+            <div class="info-strip-item">
+                <span class="info-label">Created</span>
+                <span class="info-value">{{ assignment.created_at.strftime('%d %b %Y, %H:%M') if assignment.created_at else 'N/A' }}</span>
             </div>
         </div>
         <div style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;display:flex;gap:10px;flex-wrap:wrap;">
@@ -759,6 +771,14 @@ function copyText(text, el) {
         btn.classList.add('copied');
         setTimeout(function() { btn.textContent = origText; btn.classList.remove('copied'); }, 2000);
     });
+}
+
+// Combined link + code copier. Clipboard gets the submission URL, one
+// blank line, then the classroom code — paste-ready for Slack / email.
+function copyLinkAndCode(btn) {
+    var link = getFullUrl('/submit/{{ assignment.id }}');
+    var code = '{{ assignment.classroom_code }}';
+    copyText(link + '\n\n' + code, btn);
 }
 
 (function() {
