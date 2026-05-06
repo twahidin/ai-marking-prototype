@@ -228,7 +228,10 @@ def inject_dept_context():
 @app.after_request
 def add_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['X-Frame-Options'] = 'DENY'
+    # setdefault so individual routes can override (e.g. the print-all
+    # merged-PDF endpoint sets SAMEORIGIN so the wrapper-page iframe
+    # can embed it). DENY remains the default for everything else.
+    response.headers.setdefault('X-Frame-Options', 'DENY')
     response.headers['X-XSS-Protection'] = '1; mode=block'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     return response
@@ -5522,11 +5525,125 @@ def teacher_download_all(assignment_id):
                      download_name=f'{asn.classroom_code}_reports.zip')
 
 
+# Background-job state for "Print All Reports". Each entry is a dict:
+#   {'status': 'running'|'done'|'error', 'phase': str, 'current': int,
+#    'total': int, 'pdf_bytes': bytes|None, 'error': str|None,
+#    'created_at': float, 'asn_id': str, 'classroom_code': str}
+# Entries are removed lazily — once the wrapper consumes the result via
+# /result/<job_id>, we drop the bytes (keep a tiny stub so a duplicate
+# fetch still gets a 410 instead of a 404 noise).
+_PRINT_JOBS = {}
+_PRINT_JOBS_LOCK = threading.Lock()
+_PRINT_JOB_TTL_SECONDS = 30 * 60  # 30 min — long enough to print, short enough not to leak
+
+
+def _print_job_set(job_id, **fields):
+    with _PRINT_JOBS_LOCK:
+        if job_id not in _PRINT_JOBS:
+            return
+        _PRINT_JOBS[job_id].update(fields)
+
+
+def _print_job_get(job_id):
+    with _PRINT_JOBS_LOCK:
+        return dict(_PRINT_JOBS.get(job_id) or {})
+
+
+def _print_job_evict_stale():
+    """Drop jobs older than TTL. Cheap; called on each /start."""
+    now = time.time()
+    with _PRINT_JOBS_LOCK:
+        for jid in list(_PRINT_JOBS.keys()):
+            if now - _PRINT_JOBS[jid].get('created_at', now) > _PRINT_JOB_TTL_SECONDS:
+                _PRINT_JOBS.pop(jid, None)
+
+
+def _run_print_all_reports_job(app_obj, job_id, assignment_id):
+    """Background worker: regenerate every done submission's PDF, merge
+    into one with pypdf, store result bytes on the job. Updates progress
+    on each student so the wrapper page can render a progress bar."""
+    from pypdf import PdfReader, PdfWriter
+
+    with app_obj.app_context():
+        try:
+            asn = Assignment.query.get(assignment_id)
+            if not asn:
+                _print_job_set(job_id, status='error', error='Assignment not found')
+                return
+
+            rows = (
+                db.session.query(Submission, Student)
+                .join(Student, Submission.student_id == Student.id)
+                .filter(
+                    Submission.assignment_id == assignment_id,
+                    Submission.status == 'done',
+                    Submission.is_final.is_(True),
+                )
+                .all()
+            )
+
+            def _sort_key(pair):
+                student = pair[1]
+                idx = (student.index_number or '').strip()
+                return (0, int(idx)) if idx.isdigit() else (1, idx.lower(), student.name or '')
+            rows = sorted(rows, key=_sort_key)
+
+            total = len(rows)
+            _print_job_set(job_id, total=total, phase='preparing', current=0)
+
+            if total == 0:
+                _print_job_set(job_id, status='error', error='No marked submissions to print.')
+                return
+
+            writer = PdfWriter()
+            merged_count = 0
+            for i, (sub, student) in enumerate(rows, start=1):
+                _print_job_set(job_id, current=i, phase='preparing')
+                try:
+                    result = sub.get_result() or {}
+                    if result.get('error'):
+                        continue
+                    pdf_bytes = generate_report_pdf(
+                        result,
+                        subject=asn.subject,
+                        app_title=get_app_title(),
+                        assignment_name=asn.title or '',
+                    )
+                    reader = PdfReader(io.BytesIO(pdf_bytes))
+                    for page in reader.pages:
+                        writer.add_page(page)
+                    merged_count += 1
+                except Exception as e:
+                    logger.warning(
+                        f"print-all-reports[{job_id}]: skipping student "
+                        f"{student.name!r}: {e}"
+                    )
+                    continue
+
+            if merged_count == 0:
+                _print_job_set(job_id, status='error', error='No printable reports could be generated.')
+                return
+
+            _print_job_set(job_id, phase='merging')
+            buf = io.BytesIO()
+            writer.write(buf)
+            buf.seek(0)
+
+            _print_job_set(
+                job_id, status='done', phase='done',
+                pdf_bytes=buf.read(),
+                merged_count=merged_count,
+            )
+        except Exception as e:
+            logger.exception(f"print-all-reports[{job_id}] failed: {e}")
+            _print_job_set(job_id, status='error', error=str(e))
+
+
 @app.route('/teacher/assignment/<assignment_id>/print-all-reports')
 def teacher_print_all_reports(assignment_id):
-    """HTML wrapper that auto-triggers window.print() on the embedded
-    merged feedback PDF. Renders an iframe pointing at the .pdf sibling
-    route below; opens in a new tab from the teacher view."""
+    """HTML wrapper. Loads the progress UI; the page's JS kicks off the
+    background job, polls progress, then loads the merged PDF in an
+    iframe and fires window.print()."""
     asn = Assignment.query.get_or_404(assignment_id)
     err = _check_assignment_ownership(asn)
     if err:
@@ -5538,79 +5655,94 @@ def teacher_print_all_reports(assignment_id):
     )
 
 
-@app.route('/teacher/assignment/<assignment_id>/print-all-reports.pdf')
-def teacher_print_all_reports_pdf(assignment_id):
-    """Single merged PDF of every 'done' submission for this assignment,
-    ordered by class-list index. Skips not-yet-marked submissions and
-    submissions whose result_json carries an error. Re-uses the per-
-    student PDF cache in pdf_generator (memoised on result content), so
-    a second print run is near-instant once each student's PDF is hot."""
+@app.route('/teacher/assignment/<assignment_id>/print-all-reports/start',
+           methods=['POST'])
+def teacher_print_all_reports_start(assignment_id):
+    """Spawn a background worker that builds the merged PDF. Returns
+    {job_id} immediately so the wrapper page can begin polling progress."""
     asn = Assignment.query.get_or_404(assignment_id)
     err = _check_assignment_ownership(asn)
     if err:
         return err
 
-    rows = (
-        db.session.query(Submission, Student)
-        .join(Student, Submission.student_id == Student.id)
-        .filter(
-            Submission.assignment_id == assignment_id,
-            Submission.status == 'done',
-            Submission.is_final.is_(True),
-        )
-        .all()
-    )
+    _print_job_evict_stale()
 
-    # Order by index_number numerically when possible, else lexicographically.
-    # The column is db.String(50) — typed values like '1', '10', '2' would
-    # otherwise sort lexicographically as 1, 10, 2 instead of 1, 2, 10.
-    def _sort_key(pair):
-        student = pair[1]
-        idx = (student.index_number or '').strip()
-        return (0, int(idx)) if idx.isdigit() else (1, idx.lower(), student.name or '')
-    rows = sorted(rows, key=_sort_key)
+    job_id = str(uuid.uuid4())
+    with _PRINT_JOBS_LOCK:
+        _PRINT_JOBS[job_id] = {
+            'status': 'running',
+            'phase': 'preparing',
+            'current': 0,
+            'total': 0,
+            'pdf_bytes': None,
+            'error': None,
+            'created_at': time.time(),
+            'asn_id': assignment_id,
+            'classroom_code': asn.classroom_code,
+        }
 
-    from pypdf import PdfReader, PdfWriter
+    threading.Thread(
+        target=_run_print_all_reports_job,
+        args=(app, job_id, assignment_id),
+        daemon=True,
+    ).start()
 
-    writer = PdfWriter()
-    merged_count = 0
-    for sub, student in rows:
-        try:
-            result = sub.get_result() or {}
-            if result.get('error'):
-                continue
-            pdf_bytes = generate_report_pdf(
-                result,
-                subject=asn.subject,
-                app_title=get_app_title(),
-                assignment_name=asn.title or '',
-            )
-            reader = PdfReader(io.BytesIO(pdf_bytes))
-            for page in reader.pages:
-                writer.add_page(page)
-            merged_count += 1
-        except Exception as e:
-            logger.warning(
-                f"print-all-reports: skipping student {student.name!r} "
-                f"in assignment {assignment_id}: {e}"
-            )
-            continue
+    return jsonify({'success': True, 'job_id': job_id})
 
-    if merged_count == 0:
-        return ('No marked submissions to print.', 404,
-                {'Content-Type': 'text/plain; charset=utf-8'})
 
-    buf = io.BytesIO()
-    writer.write(buf)
-    buf.seek(0)
+@app.route('/teacher/assignment/<assignment_id>/print-all-reports/progress/<job_id>')
+def teacher_print_all_reports_progress(assignment_id, job_id):
+    """Polled by the wrapper page. Returns the job's current state:
+       status: running | done | error
+       phase:  preparing | merging | done
+       current / total: per-student progress counter"""
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
 
-    response = make_response(buf.read())
+    job = _print_job_get(job_id)
+    if not job or job.get('asn_id') != assignment_id:
+        return jsonify({'success': False, 'error': 'Job not found'}), 404
+
+    return jsonify({
+        'success': True,
+        'status': job.get('status'),
+        'phase': job.get('phase'),
+        'current': job.get('current', 0),
+        'total': job.get('total', 0),
+        'error': job.get('error'),
+    })
+
+
+@app.route('/teacher/assignment/<assignment_id>/print-all-reports/result/<job_id>')
+def teacher_print_all_reports_result(assignment_id, job_id):
+    """Serve the merged PDF. The wrapper page sets the iframe src to
+    this URL once /progress reports status='done'. SAMEORIGIN override
+    on X-Frame-Options lets the wrapper iframe embed it (the global
+    default is DENY)."""
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+
+    job = _print_job_get(job_id)
+    if not job or job.get('asn_id') != assignment_id:
+        return ('Job not found.', 404, {'Content-Type': 'text/plain; charset=utf-8'})
+    if job.get('status') != 'done':
+        return ('Job not ready.', 409, {'Content-Type': 'text/plain; charset=utf-8'})
+    pdf_bytes = job.get('pdf_bytes')
+    if not pdf_bytes:
+        return ('Result expired.', 410, {'Content-Type': 'text/plain; charset=utf-8'})
+
+    response = make_response(pdf_bytes)
     response.headers['Content-Type'] = 'application/pdf'
-    # inline so the browser PDF viewer renders it in the iframe;
-    # the wrapper template's auto-print fires once it loads.
     response.headers['Content-Disposition'] = (
         f'inline; filename="{asn.classroom_code}_all_reports.pdf"'
     )
+    # Override the global X-Frame-Options: DENY default so the wrapper
+    # iframe can embed this same-origin PDF.
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
     return response
 
 

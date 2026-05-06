@@ -22,43 +22,76 @@
             background: white; color: #4a5072; border: 1px solid #c5cbe8;
         }
         .pa-hint button.pa-close:hover { background: #eef1ff; }
+        .pa-hint button[disabled] { opacity: 0.5; cursor: not-allowed; }
         iframe {
             display: block; width: 100%; height: calc(100vh - 44px);
             margin-top: 44px; border: none; background: white;
         }
-        .pa-error {
-            margin: 80px auto; max-width: 480px; padding: 24px;
+        /* Progress / status panel — shown while the merged PDF is
+           being generated; replaced by the iframe once it's ready. */
+        .pa-panel {
+            margin: 80px auto; max-width: 520px; padding: 28px 32px;
             background: white; border-radius: 12px;
-            box-shadow: 0 2px 14px rgba(0,0,0,0.08); text-align: center;
+            box-shadow: 0 2px 14px rgba(0,0,0,0.08);
         }
-        .pa-error h2 { margin: 0 0 8px 0; font-size: 18px; color: #333; }
-        .pa-error p { margin: 0; font-size: 14px; color: #888; }
+        .pa-panel h2 { margin: 0 0 8px 0; font-size: 18px; color: #333; }
+        .pa-panel p { margin: 0 0 16px 0; font-size: 14px; color: #666; line-height: 1.55; }
+        .pa-progress-track {
+            width: 100%; height: 10px; border-radius: 999px;
+            background: #eef0f6; overflow: hidden; margin: 18px 0 8px 0;
+        }
+        .pa-progress-fill {
+            width: 0%; height: 100%; background: #667eea;
+            transition: width 0.3s ease;
+        }
+        .pa-progress-meta {
+            font-size: 13px; color: #888; display: flex;
+            justify-content: space-between; gap: 12px;
+        }
+        .pa-error { color: #c0392b; }
+        .pa-tip { font-size: 12px; color: #888; margin-top: 16px; line-height: 1.5; }
     </style>
 </head>
 <body>
     <div class="pa-hint">
-        <span>Printing reports for <strong>{{ assignment.title or assignment.classroom_code }}</strong>.
-              Print dialog will open automatically — if it doesn't, use Cmd / Ctrl + P or the button to the right.</span>
+        <span id="paHintText">Preparing reports for <strong>{{ assignment.title or assignment.classroom_code }}</strong>…</span>
         <span class="pa-spacer"></span>
-        <button type="button" onclick="paPrint()">Print</button>
+        <button type="button" id="paPrintBtn" onclick="paPrint()" disabled>Print</button>
         <button type="button" class="pa-close" onclick="window.close()">Close tab</button>
     </div>
 
-    <iframe id="paPdf"
-            src="{{ url_for('teacher_print_all_reports_pdf', assignment_id=assignment.id) }}"
-            title="Merged feedback reports"></iframe>
-
-    <div id="paError" class="pa-error" style="display:none;">
-        <h2>No marked submissions yet</h2>
-        <p>There are no completed feedback reports to print for this assignment. Mark some submissions, then come back.</p>
+    <!-- Initial progress panel (visible until the PDF finishes generating) -->
+    <div class="pa-panel" id="paPanel">
+        <h2 id="paPanelTitle">Preparing your print bundle</h2>
+        <p id="paPanelMessage">
+            We're regenerating each student's feedback report and merging them into one printable PDF.
+            For a class of 30 with a cold cache this can take 1–2 minutes.
+            Subsequent prints are near-instant.
+        </p>
+        <div class="pa-progress-track">
+            <div class="pa-progress-fill" id="paProgressFill"></div>
+        </div>
+        <div class="pa-progress-meta">
+            <span id="paProgressLabel">Starting…</span>
+            <span id="paProgressCount"></span>
+        </div>
+        <p class="pa-tip">Leave this tab open. Once the PDF is ready, your browser's print dialog will open automatically.</p>
     </div>
 
+    <!-- Merged-PDF iframe (hidden until the job finishes) -->
+    <iframe id="paPdf" title="Merged feedback reports" style="display:none;"></iframe>
+
     <script>
-        // Auto-print: triggers the browser print dialog as soon as the
-        // merged PDF finishes loading inside the iframe. Falls back to
-        // window.print() (prints the wrapper page, which displays the
-        // PDF) if same-origin contentWindow.print() throws.
+        var ASSIGNMENT_ID = {{ assignment.id|tojson }};
         var paFrame = document.getElementById('paPdf');
+        var paPanel = document.getElementById('paPanel');
+        var paPanelTitle = document.getElementById('paPanelTitle');
+        var paPanelMessage = document.getElementById('paPanelMessage');
+        var paProgressFill = document.getElementById('paProgressFill');
+        var paProgressLabel = document.getElementById('paProgressLabel');
+        var paProgressCount = document.getElementById('paProgressCount');
+        var paHintText = document.getElementById('paHintText');
+        var paPrintBtn = document.getElementById('paPrintBtn');
         var paFired = false;
 
         function paPrint() {
@@ -70,28 +103,103 @@
             }
         }
 
-        // Detect 404 (no marked submissions) by listening for the
-        // iframe's load result. Most browsers don't expose a body for
-        // failed loads, so we sniff via a HEAD-like fetch before
-        // committing to the iframe wait.
-        fetch(paFrame.src, { method: 'GET', credentials: 'same-origin' }).then(function (r) {
-            if (r.status === 404) {
-                paFrame.style.display = 'none';
-                document.getElementById('paError').style.display = 'block';
-                return;
+        function showError(msg) {
+            paPanelTitle.textContent = 'Could not prepare reports';
+            paPanelMessage.innerHTML = '<span class="pa-error">' + msg + '</span>';
+            paProgressFill.style.background = '#dc3545';
+            paProgressLabel.textContent = 'Error';
+            paProgressCount.textContent = '';
+            paHintText.innerHTML = '<span class="pa-error">' + msg + '</span>';
+        }
+
+        function setProgress(phase, current, total) {
+            var pct;
+            if (phase === 'merging') {
+                pct = 95;
+                paProgressLabel.textContent = 'Merging into one PDF…';
+                paProgressCount.textContent = '';
+            } else if (phase === 'done') {
+                pct = 100;
+                paProgressLabel.textContent = 'Done';
+                paProgressCount.textContent = '';
+            } else {
+                pct = total ? Math.min(94, Math.round((current / total) * 94)) : 0;
+                paProgressLabel.textContent = total
+                    ? ('Preparing student ' + Math.min(current, total) + ' of ' + total)
+                    : 'Looking up submissions…';
+                paProgressCount.textContent = total ? Math.round((current / total) * 100) + '%' : '';
             }
-            // OK — wait for the iframe to render the PDF, then print.
+            paProgressFill.style.width = pct + '%';
+        }
+
+        function loadResultIntoIframe(jobId) {
+            var resultUrl = '/teacher/assignment/' + ASSIGNMENT_ID +
+                            '/print-all-reports/result/' + jobId;
+            paFrame.src = resultUrl;
+            paFrame.style.display = 'block';
+            paPanel.style.display = 'none';
+            paPrintBtn.disabled = false;
+            paHintText.innerHTML =
+                'Reports for <strong>{{ (assignment.title or assignment.classroom_code) }}</strong> are ready. ' +
+                'The print dialog will open automatically — if it doesn\'t, use the button or Cmd / Ctrl + P.';
             paFrame.addEventListener('load', function () {
                 if (paFired) return;
                 paFired = true;
-                // Brief delay so the in-iframe PDF viewer has time to
-                // bind its own print handlers before we ask it to print.
+                // Brief delay so the in-iframe PDF viewer binds its own
+                // print handlers before we ask it to print.
                 setTimeout(paPrint, 600);
             });
-        }).catch(function () {
-            // Network error — leave the iframe in place; user can retry
-            // with the Print button.
-        });
+        }
+
+        function pollProgress(jobId) {
+            fetch('/teacher/assignment/' + ASSIGNMENT_ID +
+                  '/print-all-reports/progress/' + jobId, {
+                credentials: 'same-origin',
+            }).then(function (r) {
+                if (r.status === 404) {
+                    showError('Print job expired. Close this tab and try again.');
+                    return;
+                }
+                return r.json();
+            }).then(function (data) {
+                if (!data) return;
+                if (!data.success) {
+                    showError(data.error || 'Could not check progress.');
+                    return;
+                }
+                setProgress(data.phase, data.current, data.total);
+                if (data.status === 'error') {
+                    showError(data.error || 'Print job failed.');
+                    return;
+                }
+                if (data.status === 'done') {
+                    loadResultIntoIframe(jobId);
+                    return;
+                }
+                // Still running — poll again.
+                setTimeout(function () { pollProgress(jobId); }, 700);
+            }).catch(function (e) {
+                showError('Network error while checking progress: ' + e.message);
+            });
+        }
+
+        function startPrintJob() {
+            fetch('/teacher/assignment/' + ASSIGNMENT_ID +
+                  '/print-all-reports/start', {
+                method: 'POST',
+                credentials: 'same-origin',
+            }).then(function (r) { return r.json(); }).then(function (data) {
+                if (!data || !data.success || !data.job_id) {
+                    showError((data && data.error) || 'Could not start print job.');
+                    return;
+                }
+                pollProgress(data.job_id);
+            }).catch(function (e) {
+                showError('Could not start print job: ' + e.message);
+            });
+        }
+
+        startPrintJob();
     </script>
 </body>
 </html>
