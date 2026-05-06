@@ -112,7 +112,27 @@
     }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
-    .bulk-section { margin-bottom: 0; }
+    /* Bulk Mark is a collapsible accordion — teachers typically use it
+       once per assignment, so it stays out of the way by default and
+       expands on click. Native <details>/<summary> handles the toggle,
+       keyboard activation, and ARIA semantics for free. */
+    .bulk-section { /* inherits .card { margin-bottom: 24px } so it spaces
+                       evenly from the Submissions card below */ }
+    .bulk-section > summary {
+        cursor: pointer; list-style: none; outline: none;
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; user-select: none;
+    }
+    .bulk-section > summary::-webkit-details-marker { display: none; }
+    .bulk-section > summary::marker { content: ''; }
+    .bulk-section > summary h2 { margin-bottom: 0; }
+    .bulk-section > summary .bulk-chevron {
+        font-size: 14px; color: #888; line-height: 1;
+        transition: transform 0.2s ease;
+    }
+    .bulk-section[open] > summary { margin-bottom: 16px; }
+    .bulk-section[open] > summary .bulk-chevron { transform: rotate(180deg); }
+    .bulk-section > summary:hover .bulk-chevron { color: #555; }
     .bulk-page-input {
         width: 60px; padding: 6px 4px; text-align: center;
         border: 1px solid #ddd; border-radius: 6px; font-size: 13px;
@@ -412,9 +432,12 @@
         <div class="stat-box"><div class="stat-number green" id="avgScore">-</div><div class="stat-label">Avg Score</div></div>
     </div>
 
-    <!-- Bulk Mark Section -->
-    <div class="card bulk-section">
-        <h2>Bulk Mark</h2>
+    <!-- Bulk Mark Section — collapsible accordion, default closed -->
+    <details class="card bulk-section">
+        <summary>
+            <h2>Bulk Mark</h2>
+            <span class="bulk-chevron" aria-hidden="true">▾</span>
+        </summary>
         <p style="font-size:13px;color:#888;margin-bottom:16px;">
             Upload a single PDF with all student scripts in class list order. Set pages per student, then mark all at once.
         </p>
@@ -457,7 +480,7 @@
             <div style="font-weight:600;margin-bottom:6px;">Skipped students (cap reached):</div>
             <ul id="bulkSkippedList" style="margin:0;padding-left:20px;"></ul>
         </div>
-    </div>
+    </details>
 
     <!-- Submissions Table -->
     <div class="card">
