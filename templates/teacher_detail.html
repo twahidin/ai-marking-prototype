@@ -44,8 +44,25 @@
     .stat-label { font-size: 12px; font-weight: 600; color: #888; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
 
     .table-wrap { overflow-x: auto; margin: 0 -8px; padding: 0 8px; }
-    .results-table { font-size: 14px; }
-    .results-table td { padding: 12px 14px; border-bottom: 1px solid #f0f0f0; }
+    /* Table sizes to its container (100% width). Short columns get fixed
+       widths and don't wrap; the Name column gets the remaining flex space
+       and wraps if needed. Tighter cell padding keeps everything inside the
+       white container without horizontal scroll on typical desktop widths. */
+    .results-table { font-size: 14px; width: 100%; }
+    .results-table td { padding: 10px 8px; border-bottom: 1px solid #f0f0f0; }
+    .results-table th { padding: 10px 8px; }
+    .results-table th, .results-table td { vertical-align: middle; }
+    /* Short columns: fixed widths, no wrapping. */
+    .results-table th.col-source,    .results-table td.col-source    { width: 28px; padding-left: 4px; padding-right: 4px; }
+    .results-table th.col-index,     .results-table td.col-index     { width: 56px; white-space: nowrap; }
+    .results-table th.col-status,    .results-table td.col-status    { width: 112px; white-space: nowrap; }
+    .results-table th.col-score,     .results-table td.col-score     { width: 70px; white-space: nowrap; }
+    .results-table th.col-submitted, .results-table td.col-submitted { width: 96px; white-space: nowrap; font-size: 13px; }
+    .results-table th.col-feedback,  .results-table td.col-feedback  { width: 132px; white-space: nowrap; }
+    .results-table th.col-actions,   .results-table td.col-actions   { width: 168px; white-space: nowrap; text-align: right; }
+    /* Name column takes remaining space and wraps (long names like
+       "ARDILL SUJITH JANICE PHOEBE" otherwise blow the layout out). */
+    .results-table td.col-name      { word-break: break-word; }
 
     .refresh-indicator {
         display: inline-flex; align-items: center; gap: 6px;
@@ -464,15 +481,24 @@
             <div class="table-wrap">
                 <table class="results-table">
                     <thead>
-                        <tr><th style="width:24px;" title="Feedback source"></th><th>Index</th><th>Name</th><th>Status</th><th>Score</th><th>Submitted</th><th title="Tiered feedback engagement">Feedback</th><th>Actions</th></tr>
+                        <tr>
+                            <th class="col-source" title="Feedback source"></th>
+                            <th class="col-index">Index</th>
+                            <th class="col-name">Name</th>
+                            <th class="col-status">Status</th>
+                            <th class="col-score">Score</th>
+                            <th class="col-submitted">Submitted</th>
+                            <th class="col-feedback" title="Tiered feedback engagement">Feedback</th>
+                            <th class="col-actions">Actions</th>
+                        </tr>
                     </thead>
                     <tbody>
                         {% for s in students %}
                         <tr>
-                            <td title="{{ s.source_label }}" style="text-align:center;color:#7a7f8c;">{{ s.source_icon }}</td>
-                            <td>{{ s.index }}</td>
-                            <td style="font-weight:600;">{% if s.status == 'done' and s.submission_id %}<a href="/teacher/assignment/{{ assignment.id }}/submission/{{ s.submission_id }}/review" target="_blank" rel="noopener" style="color:#667eea;text-decoration:none;" title="Open split-view review">{{ s.name }}</a>{% else %}{{ s.name }}{% endif %}</td>
-                            <td>
+                            <td class="col-source" title="{{ s.source_label }}" style="text-align:center;color:#7a7f8c;">{{ s.source_icon }}</td>
+                            <td class="col-index">{{ s.index }}</td>
+                            <td class="col-name" style="font-weight:600;">{% if s.status == 'done' and s.submission_id %}<a href="/teacher/assignment/{{ assignment.id }}/submission/{{ s.submission_id }}/review" target="_blank" rel="noopener" style="color:#667eea;text-decoration:none;" title="Open split-view review">{{ s.name }}</a>{% else %}{{ s.name }}{% endif %}</td>
+                            <td class="col-status">
                                 {% if s.status == 'not_submitted' %}<span class="badge badge-gray">Not Submitted</span>
                                 {% elif s.stuck %}<span class="badge badge-red" title="No progress for over 5 minutes — likely stuck. Click Retry to re-kick the worker.">Stuck</span>
                                 {% elif s.status in ['pending', 'processing'] %}<span class="badge badge-blue">Marking...</span>
@@ -483,9 +509,9 @@
                                 {% endif %}
                                 {% if s.student_amended %}<span class="badge-amended">Amended</span>{% endif %}
                             </td>
-                            <td>{{ s.score if s.score else '-' }}</td>
-                            <td style="color:#888; font-size:13px;">{{ s.submitted_at if s.submitted_at else '-' }}</td>
-                            <td>
+                            <td class="col-score">{{ s.score if s.score else '-' }}</td>
+                            <td class="col-submitted" style="color:#888;">{{ s.submitted_at if s.submitted_at else '-' }}</td>
+                            <td class="col-feedback">
                                 {% if s.feedback_status == 'corrections_done' %}
                                     <span class="badge badge-green" title="Opened {{ s.feedback_opened_at }} · First correction {{ s.correction_submitted_at }}">Corrections done</span>
                                 {% elif s.feedback_status == 'opened' %}
@@ -494,7 +520,7 @@
                                     <span class="badge badge-gray">Not opened</span>
                                 {% endif %}
                             </td>
-                            <td>
+                            <td class="col-actions">
                                 {# State-driven default button + overflow kebab. The default
                                    button choice depends on submission state; the kebab holds
                                    secondary actions, with state-inappropriate items disabled.
