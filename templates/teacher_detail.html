@@ -53,7 +53,6 @@
     .results-table th { padding: 10px 8px; text-align: left; }
     .results-table th, .results-table td { vertical-align: middle; }
     /* Short columns: fixed widths, no wrapping. */
-    .results-table th.col-source,    .results-table td.col-source    { width: 28px; padding-left: 4px; padding-right: 4px; }
     .results-table th.col-index,     .results-table td.col-index     { width: 56px; white-space: nowrap; }
     .results-table th.col-status,    .results-table td.col-status    { width: 112px; white-space: nowrap; }
     .results-table th.col-score,     .results-table td.col-score     { width: 70px; white-space: nowrap; }
@@ -489,7 +488,6 @@
                 <table class="results-table">
                     <thead>
                         <tr>
-                            <th class="col-source" title="Feedback source"></th>
                             <th class="col-index">Index</th>
                             <th class="col-name">Name</th>
                             <th class="col-status">Status</th>
@@ -502,7 +500,6 @@
                     <tbody>
                         {% for s in students %}
                         <tr>
-                            <td class="col-source" title="{{ s.source_label }}" style="text-align:center;color:#7a7f8c;">{{ s.source_icon }}</td>
                             <td class="col-index">{{ s.index }}</td>
                             <td class="col-name" style="font-weight:600;">{% if s.status == 'done' and s.submission_id %}<a href="/teacher/assignment/{{ assignment.id }}/submission/{{ s.submission_id }}/review" target="_blank" rel="noopener" style="color:#667eea;text-decoration:none;" title="Open split-view review">{{ s.name }}</a>{% else %}{{ s.name }}{% endif %}</td>
                             <td class="col-status">
@@ -605,7 +602,7 @@
                         </tr>
                         {% if assignment.allow_drafts and s.submission_id %}
                         <tr class="drafts-row hidden" id="drafts_row_{{ s.student_id }}">
-                            <td colspan="8">
+                            <td colspan="7">
                                 <div id="drafts_strip_{{ s.student_id }}" class="drafts-strip" style="display:none;"></div>
                             </td>
                         </tr>
