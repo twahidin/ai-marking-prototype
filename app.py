@@ -5396,12 +5396,51 @@ def teacher_assignment_issue_feedback(assignment_id):
 
 
 @app.route('/teacher/assignment/<assignment_id>')
+def _rubric_pills_for_questions(questions):
+    """Build the table-cell band pills for a rubrics submission.
+
+    Returns a list of {abbrev, band_num, criterion_name, band_label} or [] if
+    the data isn't a marked rubrics submission.
+    """
+    pills = []
+    for q in questions or []:
+        crit = (q.get('criterion_name') or '').strip()
+        band = (q.get('band') or '').strip()
+        if not crit or not band:
+            continue
+        m = re.search(r'Band\s+(\d+)', band, re.IGNORECASE)
+        if not m:
+            continue
+        band_num = int(m.group(1))
+        # Abbreviation: first 2 alpha chars of the first word with ≥2 alpha chars
+        # (so "Content (Addressing the Task)" → CO, "Language" → LA). If no word
+        # qualifies, fall back to first 2 alpha chars of the whole string.
+        abbrev = ''
+        for word in crit.split():
+            clean = ''.join(c for c in word if c.isalpha())
+            if len(clean) >= 2:
+                abbrev = clean[:2].upper()
+                break
+        if not abbrev:
+            letters = ''.join(c for c in crit if c.isalpha())
+            abbrev = letters[:2].upper() if letters else '??'
+        pills.append({
+            'abbrev': abbrev,
+            'band_num': band_num,
+            'criterion_name': crit,
+            'band_label': band,
+        })
+    return pills
+
+
 def teacher_assignment_detail(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)
     err = _check_assignment_ownership(asn)
     if err:
         return err
     students = _sort_by_index(Student.query.filter_by(class_id=asn.class_id).all()) if asn.class_id else _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
+    is_rubrics = (getattr(asn, 'assign_type', 'short_answer') == 'rubrics')
+    eligible_remark_count = 0
 
     # Stuck-submission detection: submissions that entered an in-progress
     # status more than 5 minutes ago without finishing are surfaced as
@@ -5464,6 +5503,18 @@ def teacher_assignment_detail(assignment_id):
             if (now_utc - submitted).total_seconds() > STUCK_THRESHOLD_SECONDS:
                 stuck = True
 
+        # Re-mark All eligibility: submissions that finished (done) or errored
+        # AND have stored script pages we can re-feed to the AI. Mirrors the
+        # /remark-all endpoint's filter so the button count matches reality.
+        if sub and sub.status in ('done', 'error') and sub.get_script_pages():
+            eligible_remark_count += 1
+
+        rubric_pills = (
+            _rubric_pills_for_questions(questions)
+            if (is_rubrics and sub and sub.status == 'done' and not result.get('error'))
+            else []
+        )
+
         student_data.append({
             'student_id': s.id,
             'index': s.index_number,
@@ -5471,6 +5522,7 @@ def teacher_assignment_detail(assignment_id):
             'status': sub.status if sub else 'not_submitted',
             'stuck': stuck,
             'score': score,
+            'rubric_pills': rubric_pills,
             'submitted_at': sub.submitted_at.strftime('%d %b %H:%M') if sub and sub.submitted_at else None,
             'student_amended': sub.student_amended if sub else False,
             'submission_id': sub.id if sub else None,
@@ -5497,7 +5549,9 @@ def teacher_assignment_detail(assignment_id):
                            students=student_data,
                            all_providers=PROVIDERS,
                            available_providers=available_providers,
-                           canonical_subjects=SUBJECT_DISPLAY_NAMES))
+                           canonical_subjects=SUBJECT_DISPLAY_NAMES,
+                           is_rubrics=is_rubrics,
+                           eligible_remark_count=eligible_remark_count))
     # Prevent the browser/proxy from caching the score cells — a stale cache here
     # makes post-remark reloads show old marks even though the DB is fresh.
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'

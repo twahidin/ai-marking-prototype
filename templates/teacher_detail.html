@@ -554,7 +554,20 @@
                                 {% endif %}
                                 {% if s.student_amended %}<span class="badge-amended">Amended</span>{% endif %}
                             </td>
-                            <td class="col-score">{{ s.score if s.score else '-' }}</td>
+                            <td class="col-score">
+                                {% if is_rubrics and s.rubric_pills %}
+                                    <div class="score-stack">
+                                        <div class="score-stack-total">{{ s.score if s.score else '-' }}</div>
+                                        <div class="score-stack-pills">
+                                            {% for pill in s.rubric_pills %}
+                                                <span class="band-pill band-{{ pill.band_num }}" title="{{ pill.criterion_name }} — {{ pill.band_label }}">{{ pill.abbrev }}·B{{ pill.band_num }}</span>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                {% else %}
+                                    {{ s.score if s.score else '-' }}
+                                {% endif %}
+                            </td>
                             <td class="col-submitted" style="color:#888;">{{ s.submitted_at if s.submitted_at else '-' }}</td>
                             <td class="col-feedback">
                                 {% if s.feedback_status == 'corrections_done' %}
