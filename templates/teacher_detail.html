@@ -1382,6 +1382,10 @@ document.addEventListener('keydown', function(e) {
 
 // --- Per-student Re-mark ---
 var REMARK_ASSIGNMENT_ID = '{{ assignment.id }}';
+// Per-criterion band lists for the rubrics modal's editable band dropdown.
+// Empty {} for short_answer assignments — feedback_render.js falls back to
+// a free-text input in that case (no canonical band list to populate).
+window.__rubricBandsByCriterion = {{ rubric_bands_by_criterion | default({}) | tojson }};
 var remarkPollTimers = {};
 
 // Helpers for live-updating the table row when marking/remarking is in

@@ -90,6 +90,101 @@
         return esc(preprocessMath(String(s)));
     }
 
+    // ------------------------------------------------------------------
+    // Rubrics-redesign helpers (active only when assignType === 'rubrics').
+    // CALIBRATABLE_FIELDS is shared between short_answer (feedback,
+    // improvement) and the new rubrics fields. Used by attachQuestionEdit
+    // tag-rendering loops + saveTextField calibration writes.
+    // ------------------------------------------------------------------
+    var CALIBRATABLE_FIELDS = [
+        'feedback', 'improvement',
+        'current_band_oneliner', 'next_band_oneliner',
+        'improvement_rewrite', 'improvement_rewrite_2',
+        'maintain_advice'
+    ];
+
+    // Bullet-aware math escaping for the rubrics "Assessment" field, which
+    // the AI emits as a markdown bullet list. Falls back to escMath when
+    // the input has no bullet markers (legacy / short_answer rendering).
+    function escMathBulletAware(s) {
+        if (s == null || s === '') return '';
+        var lines = String(s).split(/\r?\n/);
+        var bullets = [];
+        var sawBullet = false;
+        for (var i = 0; i < lines.length; i++) {
+            var trimmed = lines[i].replace(/^\s+/, '');
+            if (trimmed.indexOf('- ') === 0 || trimmed.indexOf('* ') === 0) {
+                bullets.push(trimmed.slice(2).trim());
+                sawBullet = true;
+            } else if (trimmed === '') {
+                // blank line — skip
+            } else if (!sawBullet) {
+                return escMath(s);
+            } else {
+                bullets[bullets.length - 1] += ' ' + trimmed;
+            }
+        }
+        if (bullets.length === 0) return escMath(s);
+        return '<ul class="fb-bullet-list">' +
+            bullets.map(function (b) { return '<li>' + escMath(b) + '</li>'; }).join('') +
+            '</ul>';
+    }
+
+    // Word-level diff: highlight tokens in `newStr` that aren't in the LCS
+    // with `oldStr`. Used to show students exactly which words/phrases the
+    // AI added or changed in the "Could become" rewrite vs their original
+    // line. Returns HTML — already escaped, with <mark class="fb-diff-add">
+    // wrapping inserted/changed tokens.
+    function renderWordDiffHtml(oldStr, newStr) {
+        var safeNew = String(newStr || '');
+        if (!oldStr) return esc(safeNew);
+        var oldToks = String(oldStr).split(/(\s+)/).filter(function (t) { return t.length > 0; });
+        var newToks = safeNew.split(/(\s+)/).filter(function (t) { return t.length > 0; });
+        if (newToks.length === 0) return '';
+        function norm(t) {
+            return t.toLowerCase().replace(/^[^a-z0-9À-￿]+|[^a-z0-9À-￿]+$/gi, '');
+        }
+        var oldKeys = oldToks.map(norm);
+        var newKeys = newToks.map(norm);
+        var m = oldKeys.length, n = newKeys.length;
+        var dp = [];
+        for (var i = 0; i <= m; i++) dp.push(new Array(n + 1).fill(0));
+        for (var i2 = 1; i2 <= m; i2++) {
+            for (var j = 1; j <= n; j++) {
+                if (oldKeys[i2 - 1] && oldKeys[i2 - 1] === newKeys[j - 1]) {
+                    dp[i2][j] = dp[i2 - 1][j - 1] + 1;
+                } else {
+                    dp[i2][j] = Math.max(dp[i2 - 1][j], dp[i2][j - 1]);
+                }
+            }
+        }
+        var matched = new Array(n).fill(false);
+        var ii = m, jj = n;
+        while (ii > 0 && jj > 0) {
+            if (oldKeys[ii - 1] && oldKeys[ii - 1] === newKeys[jj - 1]) {
+                matched[jj - 1] = true;
+                ii--; jj--;
+            } else if (dp[ii - 1][jj] >= dp[ii][jj - 1]) {
+                ii--;
+            } else {
+                jj--;
+            }
+        }
+        var out = [];
+        for (var k = 0; k < newToks.length; k++) {
+            var tok = newToks[k];
+            var isWhitespace = /^\s+$/.test(tok);
+            if (!isWhitespace && !matched[k]) {
+                if (newKeys[k]) {
+                    out.push('<mark class="fb-diff-add">' + esc(tok) + '</mark>');
+                    continue;
+                }
+            }
+            out.push(esc(tok));
+        }
+        return out.join('');
+    }
+
     // Prefer the server-provided `<key>_html` field if it's a non-empty
     // string. That field carries pinyin-annotated <ruby> markup for
     // Chinese assignments and is already HTML-safe (text portions are
@@ -256,7 +351,548 @@
         renderShell(state);
     }
 
+    // ====================================================================
+    // RUBRICS-REDESIGN RENDERING (active when state.assignType === 'rubrics').
+    // Band-first overall summary + tab strip per criterion + YOU'RE HERE /
+    // TO REACH BAND X+1 cards + improvement-example pairs. Legacy rubrics
+    // submissions (no current_band_oneliner / improvement_target fields)
+    // get a "Re-mark to enable" affordance via the fallback paths in
+    // renderImprovementExamples + renderRubricsCards.
+    //
+    // Short-answer rendering is unchanged — Mistake Category, Layer 3 idea,
+    // Corrections (Now You Try), and the existing dot-strip nav stay in
+    // their existing functions below.
+    // ====================================================================
+
+    function computeOverallBand(questions) {
+        var ta = 0, tp = 0, weightedBand = 0;
+        (questions || []).forEach(function (q) {
+            var mt = q.marks_total || 0;
+            var ma = q.marks_awarded || 0;
+            ta += ma;
+            tp += mt;
+            var bm = (q.band || '').match(/Band\s+(\d+)/i);
+            if (bm && mt > 0) weightedBand += parseInt(bm[1], 10) * mt;
+        });
+        var avgBand = tp > 0 ? Math.round(weightedBand / tp) : 0;
+        return { bandNum: avgBand, marksAwarded: ta, marksTotal: tp };
+    }
+
+    function renderRubricsHeaderSummary(state) {
+        var ob = computeOverallBand(state.questions || []);
+        var bandLabel = ob.bandNum ? ('Band ' + ob.bandNum) : '—';
+        return '<div class="fb-summary-rubrics">' +
+            '<span class="fb-summary-band band-' + ob.bandNum + '">Overall ≈ ' + bandLabel + '</span>' +
+            '<span class="fb-summary-marks">' + ob.marksAwarded + ' / ' + ob.marksTotal + '</span>' +
+            '</div>';
+    }
+
+    function renderRubricsTabStrip(state) {
+        var questions = state.questions || [];
+        var hasErrors = (state.errors || []).length > 0;
+        var bits = ['<div class="fb-tab-strip">'];
+        questions.forEach(function (q, idx) {
+            var crit = q.criterion_name || ('Q' + (idx + 1));
+            var bandMatch = (q.band || '').match(/Band\s+(\d+)/i);
+            var bandNum = bandMatch ? parseInt(bandMatch[1], 10) : 0;
+            var bandClass = bandNum ? ('band-' + bandNum) : '';
+            var marks = (q.marks_awarded != null && q.marks_total != null) ? (q.marks_awarded + '/' + q.marks_total) : '';
+            var isActive = (idx === state.activeTabIdx);
+            bits.push(
+                '<div class="fb-tab' + (isActive ? ' active ' + bandClass : '') + '" data-tab-idx="' + idx + '">' +
+                esc(crit) +
+                '<span class="fb-tab-meta">' + (bandNum ? ('B' + bandNum) : '') + (marks ? (' · ' + esc(String(marks))) : '') + '</span>' +
+                '</div>'
+            );
+        });
+        bits.push('<div class="fb-tab-spacer"></div>');
+        if (hasErrors) {
+            var idxErrors = questions.length;
+            bits.push('<div class="fb-tab' + (state.activeTabIdx === idxErrors ? ' active' : '') + '" data-tab-idx="' + idxErrors + '">Errors (' + state.errors.length + ')</div>');
+        }
+        var idxOverall = questions.length + (hasErrors ? 1 : 0);
+        bits.push('<div class="fb-tab' + (state.activeTabIdx === idxOverall ? ' active' : '') + '" data-tab-idx="' + idxOverall + '">Overall</div>');
+        bits.push('</div>');
+        return bits.join('');
+    }
+
+    function renderRubricsCards(state, q, qIdx) {
+        var bandLabel = q.band || '';
+        var bandMatch = bandLabel.match(/Band\s+(\d+)/i);
+        var bandNum = bandMatch ? parseInt(bandMatch[1], 10) : 0;
+        var nextBandNum = bandNum + 1;
+        var qNum = q.question_num || (qIdx + 1);
+        var isTopBand = !!q.maintain_advice && !q.next_band_oneliner;
+
+        var currentText = q.current_band_oneliner;
+        if (currentText == null || currentText === '') currentText = q.feedback || '';
+
+        var bandDisplayLabel = bandLabel || '— pick band —';
+        var bandSelect =
+            '<span class="fb-inline-edit fb-band-edit editable" data-q-num="' + qNum + '" tabindex="0">' +
+                '<span class="fb-inline-display fb-band-display">' + esc(bandDisplayLabel) + '</span>' +
+            '</span>';
+
+        var marksAwardedStr = (q.marks_awarded != null ? String(q.marks_awarded) : '–');
+        var marksTotalStr = (q.marks_total != null ? String(q.marks_total) : '');
+        var marksInput =
+            '<span class="fb-marks-inline">' +
+                '<span class="fb-inline-edit fb-marks-edit editable" data-q-num="' + qNum + '" tabindex="0">' +
+                    '<span class="fb-inline-display fb-marks-display">' + esc(marksAwardedStr) + '</span>' +
+                '</span>' +
+                '<span class="fb-card-marks-total">/ ' + esc(marksTotalStr) + ' marks</span>' +
+            '</span>';
+
+        var bandStale = !!(q.band_ai_original && q.band_ai_original !== bandLabel);
+        var subId = state.submissionId || '';
+        var staleNotice = bandStale
+            ? '<div class="fb-stale-notice">Band manually changed (AI marked as ' + esc(q.band_ai_original) + '). Descriptions reflect AI grading. <a class="fb-remark-link" data-action="remark" data-stale="1" data-sub-id="' + esc(String(subId)) + '">Re-mark for tailored text</a> (AI keeps your band locked).</div>'
+            : '';
+
+        var leftCard = '<div class="fb-card fb-card-current band-' + bandNum + '">' +
+            '<div class="fb-card-label">YOU\'RE HERE</div>' +
+            '<div class="fb-card-row">' + bandSelect + marksInput + '</div>' +
+            '<div class="fb-marks-error" data-q-num="' + qNum + '" hidden></div>' +
+            staleNotice +
+            '<div class="fb-card-oneliner editable" data-field="current_band_oneliner" data-q-num="' + qNum + '" contenteditable="false">' + esc(currentText) + '</div>' +
+            '</div>';
+
+        var rightCard;
+        if (isTopBand) {
+            rightCard = '<div class="fb-card fb-card-next">' +
+                '<div class="fb-card-label">MAINTAIN BAND ' + bandNum + '</div>' +
+                '<div class="fb-card-oneliner editable" data-field="maintain_advice" data-q-num="' + qNum + '" contenteditable="false">' + esc(q.maintain_advice || '') + '</div>' +
+                '</div>';
+        } else {
+            var nextText = q.next_band_oneliner;
+            var fallbackUsed = false;
+            if (bandStale) {
+                nextText = 'Re-mark for a tailored Band ' + nextBandNum + ' description.';
+                fallbackUsed = true;
+            } else if (nextText == null || nextText === '') {
+                nextText = 'Reach Band ' + nextBandNum + ' — re-mark to enable a specific description.';
+                fallbackUsed = true;
+            }
+            rightCard = '<div class="fb-card fb-card-next">' +
+                '<div class="fb-card-label">TO REACH BAND ' + nextBandNum + '</div>' +
+                '<div class="fb-card-band">Band ' + nextBandNum + '</div>' +
+                '<div class="fb-card-oneliner editable" data-field="next_band_oneliner" data-q-num="' + qNum + '" contenteditable="false"' + (fallbackUsed ? ' data-fallback="1"' : '') + '>' + esc(nextText) + '</div>' +
+                '</div>';
+        }
+
+        return '<div class="fb-cards-row">' + leftCard + rightCard + '</div>';
+    }
+
+    var SENTINEL_NO_SUGGEST = '__NO_CONFIDENT_SUGGESTION__';
+
+    function renderImprovementExamples(state, q, qIdx) {
+        var qNum = q.question_num || (qIdx + 1);
+        var subId = state.submissionId || '';
+        var isTopBand = !!q.maintain_advice && !q.next_band_oneliner;
+
+        function pairColumn(slot, targetField, rewriteField, tgt, rew) {
+            var hasTgt = (tgt != null && tgt !== '');
+            var hasRew = (rew != null && rew !== '');
+            var sentinel = (tgt === SENTINEL_NO_SUGGEST || rew === SENTINEL_NO_SUGGEST);
+            if (!hasTgt && !hasRew) return null;
+            if (sentinel) return '<div class="fb-fallback-text">AI could not produce a confident rewrite for this example.</div>';
+            return '<div class="fb-rewrite-label">Your line:</div>' +
+                '<span class="fb-quote editable" data-field="' + targetField + '" data-q-num="' + qNum + '" contenteditable="false">' + esc(tgt || '') + '</span>' +
+                '<div class="fb-rewrite-label">Could become:</div>' +
+                '<span class="fb-quote fb-quote-rewrite editable" data-field="' + rewriteField + '" data-q-num="' + qNum + '" contenteditable="false">' + renderWordDiffHtml(tgt || '', rew || '') + '</span>';
+        }
+
+        var leftHtml, rightHtml;
+        if (isTopBand) {
+            leftHtml = '<div class="fb-fallback-text">No upgrade suggestion — already at top band.</div>';
+            rightHtml = '';
+        } else {
+            var p1 = pairColumn(1, 'improvement_target', 'improvement_rewrite', q.improvement_target, q.improvement_rewrite);
+            var p2 = pairColumn(2, 'improvement_target_2', 'improvement_rewrite_2', q.improvement_target_2, q.improvement_rewrite_2);
+            if (p1 === null && p2 === null) {
+                leftHtml = '<div class="fb-fallback-text">AI did not produce a rewrite suggestion for this submission. <a class="fb-remark-link" data-action="remark" data-sub-id="' + esc(String(subId)) + '">Re-mark to enable</a></div>';
+                rightHtml = '';
+            } else {
+                leftHtml = p1 !== null ? p1 : '';
+                rightHtml = p2 !== null ? p2 : '';
+            }
+        }
+
+        return '<div class="fb-evidence-row">' +
+            '<div class="fb-evidence-col" data-slot="1"><h5>Example 1</h5>' + leftHtml + '</div>' +
+            '<div class="fb-evidence-col" data-slot="2">' + (rightHtml ? '<h5>Example 2</h5>' + rightHtml : '') + '</div>' +
+            '</div>';
+    }
+
+    function rubricsLegacyQCardHtml(state, q, idx) {
+        var headerLabel = q.criterion_name || 'Criterion ' + (q.question_num || idx + 1);
+        var ansLabel = 'Assessment';
+        var refLabel = 'Band Descriptor';
+        var bandInfo = q.band ? ' <span style="font-size:12px;color:#667eea;font-weight:600;">(' + esc(q.band) + ')</span>' : '';
+
+        var statusCls = q.status || 'incorrect';
+        var badge = questionBadgeHtml(q, statusCls, state.editable, state.isMarksMode);
+
+        var cardClass = 'fb-q-card status-' + statusCls;
+        return renderRubricsCards(state, q, idx) +
+            renderImprovementExamples(state, q, idx) +
+            '<div class="' + cardClass + '" id="' + state.prefix + 'QCard">' +
+            '<div class="fb-q-card-header"><span class="fb-q-num">' + esc(headerLabel) + bandInfo + '</span>' +
+                '<span id="' + state.prefix + 'StatusBadgeWrap">' + badge + '</span>' +
+            '</div>' +
+            '<div class="fb-q-card-body">' +
+                '<div class="fb-q-field"><div class="fb-q-field-label">' + ansLabel + '</div><div class="fb-q-field-value">' + (q.student_answer_html || escMathBulletAware(q.student_answer || 'N/A')) + '</div></div>' +
+                '<div class="fb-q-field"><div class="fb-q-field-label">' + refLabel + '</div><div class="fb-q-field-value">' + (q.correct_answer_html || escMath(q.correct_answer || 'N/A')) + '</div></div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    function rubricsErrorsTabHtml(state) {
+        if (!state.errors || !state.errors.length) {
+            return '<div class="fb-overall-box"><h4>Line-by-Line Errors</h4><p style="color:#888;font-style:italic;">No errors recorded.</p></div>';
+        }
+        var html = '<div class="fb-overall-box"><h4>Line-by-Line Errors (' + state.errors.length + ')</h4><div class="fb-errors-list">';
+        state.errors.forEach(function (e) {
+            html += '<div class="fb-error-item"><strong>' + esc((e.type || 'error').toUpperCase()) + '</strong>';
+            if (e.location) html += ' <span style="color:#999;">' + esc(e.location) + '</span>';
+            html += '<div style="margin-top:4px;"><span style="text-decoration:line-through;color:#dc3545;">' + esc(e.original || '') + '</span> &rarr; <span style="color:#28a745;">' + esc(e.correction || '') + '</span></div></div>';
+        });
+        html += '</div></div>';
+        return html;
+    }
+
+    function rubricsOverallTabHtml(state) {
+        var html = overallSectionHtml(state);
+        if (state.recommended && state.recommended.length) {
+            html += '<div class="fb-overall-box"><h4>Recommended Actions</h4><ul>';
+            state.recommended.forEach(function (a) { html += '<li>' + esc(a) + '</li>'; });
+            html += '</ul></div>';
+        }
+        if (!html) {
+            html = '<div class="fb-overall-box"><p style="color:#888;font-style:italic;">No overall feedback.</p></div>';
+        }
+        return html;
+    }
+
+    function renderRubricsShell(state) {
+        var prefix = state.prefix;
+        var summaryHtml = renderRubricsHeaderSummary(state);
+        var tabStrip = renderRubricsTabStrip(state);
+        var idx = state.activeTabIdx || 0;
+        var questions = state.questions || [];
+        var hasErrors = (state.errors || []).length > 0;
+        var bodyHtml;
+        if (questions.length === 0) {
+            bodyHtml = rubricsOverallTabHtml(state);
+        } else if (idx < questions.length) {
+            bodyHtml = rubricsLegacyQCardHtml(state, questions[idx], idx);
+        } else if (idx === questions.length && hasErrors) {
+            bodyHtml = rubricsErrorsTabHtml(state);
+        } else {
+            bodyHtml = rubricsOverallTabHtml(state);
+        }
+
+        var html = summaryHtml + tabStrip +
+            '<div id="' + prefix + 'QCardContainer">' + bodyHtml + '</div>';
+
+        if (!state.containerEl || !state.containerEl.isConnected) return;
+        try { state.containerEl.innerHTML = html; }
+        catch (e) { return; }
+
+        rebindRubricsHandlers(state);
+        if (state.editable) {
+            var idx2 = state.activeTabIdx || 0;
+            if (idx2 < (state.questions || []).length) {
+                attachQuestionEditHandlers(state);
+                if (state.textEditMeta) {
+                    var qNow = state.questions[idx2];
+                    if (qNow) {
+                        var qKey = String(qNow.question_num != null ? qNow.question_num : (idx2 + 1));
+                        var qMeta = state.textEditMeta[qKey] || {};
+                        CALIBRATABLE_FIELDS.forEach(function (f) {
+                            if (qMeta[f] && typeof renderEditTag === 'function') renderEditTag(state, idx2, f, qMeta[f]);
+                        });
+                    }
+                }
+            } else {
+                attachOverallEditHandler(state);
+            }
+        }
+
+        if (window.MathJax && MathJax.typesetPromise) {
+            MathJax.typesetPromise([state.containerEl]).catch(function () {});
+        }
+    }
+
+    function attachRubricsTabStripHandler(state) {
+        if (state.assignType !== 'rubrics') return;
+        if (state.containerEl._fbTabHandler) {
+            state.containerEl.removeEventListener('click', state.containerEl._fbTabHandler);
+        }
+        var handler = function (e) {
+            var tab = e.target.closest && e.target.closest('.fb-tab');
+            if (!tab) return;
+            if (!state.containerEl.contains(tab)) return;
+            var idx = parseInt(tab.getAttribute('data-tab-idx'), 10);
+            if (isNaN(idx) || idx === state.activeTabIdx) return;
+            state.activeTabIdx = idx;
+            if (idx < (state.questions || []).length) {
+                state.currentQ = idx;
+            }
+            renderShell(state);
+        };
+        state.containerEl._fbTabHandler = handler;
+        state.containerEl.addEventListener('click', handler);
+    }
+
+    function attachRemarkLinkHandler(state) {
+        if (state.assignType !== 'rubrics') return;
+        if (state.containerEl._fbRemarkHandler) {
+            state.containerEl.removeEventListener('click', state.containerEl._fbRemarkHandler);
+        }
+        var handler = function (e) {
+            var link = e.target.closest && e.target.closest('a.fb-remark-link[data-action="remark"]');
+            if (!link) return;
+            if (!state.containerEl.contains(link)) return;
+            e.preventDefault();
+            var sid = link.getAttribute('data-sub-id');
+            var overrides = null;
+            if (link.getAttribute('data-stale') === '1') {
+                overrides = {};
+                (state.questions || []).forEach(function (q) {
+                    var crit = (q.criterion_name || '').trim();
+                    var band = (q.band || '').trim();
+                    if (crit && band) overrides[crit] = band;
+                });
+            }
+            if (typeof window.triggerRemark === 'function') {
+                window.triggerRemark(sid, overrides);
+            } else {
+                console.warn('feedback_render: window.triggerRemark not available');
+                alert('Re-mark trigger not available — please re-mark from the row actions on the table.');
+            }
+        };
+        state.containerEl.addEventListener('click', handler);
+        state.containerEl._fbRemarkHandler = handler;
+    }
+
+    function attachInlineEditTriggerHandler(state) {
+        if (state.assignType !== 'rubrics') return;
+        if (state.containerEl._fbInlineTriggerHandler) {
+            state.containerEl.removeEventListener('click', state.containerEl._fbInlineTriggerHandler);
+        }
+        var handler = function (e) {
+            var disp = e.target && e.target.closest && e.target.closest('.fb-inline-display');
+            if (!disp) return;
+            var wrap = disp.closest('.fb-inline-edit');
+            if (!wrap || !state.containerEl.contains(wrap)) return;
+            if (wrap.querySelector('select, input')) return;
+            var qNum = parseInt(wrap.getAttribute('data-q-num'), 10);
+            if (isNaN(qNum)) return;
+            var q = state.questions.find(function (qq) { return (qq.question_num || 0) === qNum; });
+            if (!q) return;
+            if (wrap.classList.contains('fb-band-edit')) {
+                _swapBandToEditor(wrap, q, qNum);
+            } else if (wrap.classList.contains('fb-marks-edit')) {
+                _swapMarksToEditor(wrap, q, qNum);
+            }
+        };
+        state.containerEl.addEventListener('click', handler);
+        state.containerEl._fbInlineTriggerHandler = handler;
+    }
+
+    function _swapBandToEditor(wrap, q, qNum) {
+        var bandLabel = q.band || '';
+        var bandsForCrit = (window.__rubricBandsByCriterion || {})[q.criterion_name] || [];
+        var html;
+        if (bandsForCrit.length > 0) {
+            var opts = bandsForCrit.map(function (b) {
+                var sel = (b === bandLabel) ? ' selected' : '';
+                return '<option value="' + esc(b) + '"' + sel + '>' + esc(b) + '</option>';
+            }).join('');
+            if (bandLabel && bandsForCrit.indexOf(bandLabel) === -1) {
+                opts = '<option value="' + esc(bandLabel) + '" selected>' + esc(bandLabel) + ' (legacy)</option>' + opts;
+            }
+            html = '<select class="fb-band-select" data-q-num="' + qNum + '">' + opts + '</select>';
+        } else {
+            html = '<input class="fb-band-input" type="text" data-q-num="' + qNum + '" value="' + esc(bandLabel) + '">';
+        }
+        wrap.innerHTML = html;
+        var ed = wrap.querySelector('select, input');
+        if (!ed) return;
+        ed.focus();
+        ed.addEventListener('blur', function () {
+            if (wrap.isConnected) _swapBandBackToDisplay(wrap, q);
+        });
+    }
+
+    function _swapBandBackToDisplay(wrap, q) {
+        var bandLabel = q.band || '— pick band —';
+        wrap.innerHTML = '<span class="fb-inline-display fb-band-display">' + esc(bandLabel) + '</span>';
+    }
+
+    function _swapMarksToEditor(wrap, q, qNum) {
+        var marksStr = (q.marks_awarded != null ? String(q.marks_awarded) : '');
+        wrap.innerHTML = '<input class="fb-marks-input" type="number" step="1" min="0" data-q-num="' + qNum + '" value="' + esc(marksStr) + '">';
+        var ed = wrap.querySelector('input');
+        if (!ed) return;
+        ed.focus();
+        try { ed.select(); } catch (e) { /* number input */ }
+        ed.addEventListener('blur', function () {
+            if (wrap.isConnected) _swapMarksBackToDisplay(wrap, q);
+        });
+    }
+
+    function _swapMarksBackToDisplay(wrap, q) {
+        var marksStr = (q.marks_awarded != null ? String(q.marks_awarded) : '–');
+        wrap.innerHTML = '<span class="fb-inline-display fb-marks-display">' + esc(marksStr) + '</span>';
+    }
+
+    function attachBandSelectHandler(state) {
+        if (state.assignType !== 'rubrics') return;
+        if (state.containerEl._fbBandHandler) {
+            state.containerEl.removeEventListener('change', state.containerEl._fbBandHandler);
+        }
+        var handler = function (e) {
+            var sel = e.target.closest && e.target.closest('.fb-band-select, .fb-band-input');
+            if (!sel) return;
+            if (!state.containerEl.contains(sel)) return;
+            var qNum = parseInt(sel.getAttribute('data-q-num'), 10);
+            if (isNaN(qNum)) return;
+            var newBand = sel.value;
+            fetch('/teacher/assignment/' + state.assignmentId + '/submission/' + state.submissionId + '/result', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ questions: [{ question_num: qNum, band: newBand }] }),
+            }).then(function (r) {
+                if (!r.ok) { alert('Failed to save band change.'); return; }
+                var q = state.questions.find(function (qq) { return (qq.question_num || 0) === qNum; });
+                if (q) {
+                    if (q.band_ai_original == null) q.band_ai_original = q.band || '';
+                    q.band = newBand;
+                }
+                renderShell(state);
+                if (typeof window.refreshSubmissionScore === 'function') {
+                    window.refreshSubmissionScore(state.submissionId);
+                }
+            }).catch(function () { alert('Network error saving band change.'); });
+        };
+        state.containerEl.addEventListener('change', handler);
+        state.containerEl._fbBandHandler = handler;
+    }
+
+    function parseBandRange(label) {
+        if (!label) return null;
+        var m = String(label).match(/\((\d+)\s*[\-–—]\s*(\d+)/);
+        if (!m) return null;
+        var lo = parseInt(m[1], 10);
+        var hi = parseInt(m[2], 10);
+        if (isNaN(lo) || isNaN(hi)) return null;
+        if (lo > hi) { var tmp = lo; lo = hi; hi = tmp; }
+        return { lo: lo, hi: hi };
+    }
+
+    function bandLabelForMarks(criterionName, marksAwarded) {
+        var bands = (window.__rubricBandsByCriterion || {})[criterionName] || [];
+        var lowest = null, highest = null;
+        for (var i = 0; i < bands.length; i++) {
+            var range = parseBandRange(bands[i]);
+            if (!range) continue;
+            if (marksAwarded >= range.lo && marksAwarded <= range.hi) return bands[i];
+            if (lowest === null || range.lo < lowest.lo) lowest = { label: bands[i], lo: range.lo, hi: range.hi };
+            if (highest === null || range.hi > highest.hi) highest = { label: bands[i], lo: range.lo, hi: range.hi };
+        }
+        if (lowest === null) return null;
+        if (marksAwarded < lowest.lo) return lowest.label;
+        if (marksAwarded > highest.hi) return highest.label;
+        return null;
+    }
+
+    function attachMarksInputHandler(state) {
+        if (state.assignType !== 'rubrics') return;
+        if (state.containerEl._fbMarksHandler) {
+            state.containerEl.removeEventListener('change', state.containerEl._fbMarksHandler);
+        }
+        var handler = function (e) {
+            var input = e.target.closest && e.target.closest('.fb-marks-input');
+            if (!input) return;
+            if (!state.containerEl.contains(input)) return;
+            var qNum = parseInt(input.getAttribute('data-q-num'), 10);
+            if (isNaN(qNum)) return;
+            var q = state.questions.find(function (qq) { return (qq.question_num || 0) === qNum; });
+            if (!q) return;
+
+            var raw = input.value;
+            var errEl = state.containerEl.querySelector('.fb-marks-error[data-q-num="' + qNum + '"]');
+            var clearError = function () { if (errEl) { errEl.hidden = true; errEl.textContent = ''; } };
+            var showError = function (msg) {
+                if (errEl) { errEl.textContent = msg; errEl.hidden = false; }
+                input.value = (q.marks_awarded != null ? String(q.marks_awarded) : '');
+            };
+            clearError();
+
+            if (raw === '' || raw == null) {
+                var payload = { question_num: qNum, marks_awarded: null };
+                fetch('/teacher/assignment/' + state.assignmentId + '/submission/' + state.submissionId + '/result', {
+                    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ questions: [payload] }),
+                }).then(function (r) { if (r.ok) { q.marks_awarded = null; renderShell(state); } });
+                return;
+            }
+
+            var newMarks = Number(raw);
+            if (isNaN(newMarks)) { showError('Marks must be a number.'); return; }
+            var maxMarks = q.marks_total != null ? q.marks_total : null;
+            if (maxMarks != null && newMarks > maxMarks) {
+                showError('Marks (' + newMarks + ') exceed the maximum (' + maxMarks + ') for this criterion. Cannot save.');
+                return;
+            }
+            if (newMarks < 0) { showError('Marks cannot be negative.'); return; }
+
+            var derivedBand = bandLabelForMarks(q.criterion_name, newMarks);
+            var body = { question_num: qNum, marks_awarded: newMarks };
+            if (derivedBand && derivedBand !== q.band) body.band = derivedBand;
+            fetch('/teacher/assignment/' + state.assignmentId + '/submission/' + state.submissionId + '/result', {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ questions: [body] }),
+            }).then(function (r) {
+                if (!r.ok) { showError('Failed to save marks.'); return; }
+                q.marks_awarded = newMarks;
+                if (body.band) {
+                    if (q.band_ai_original == null) q.band_ai_original = q.band || '';
+                    q.band = body.band;
+                }
+                renderShell(state);
+                if (typeof window.refreshSubmissionScore === 'function') {
+                    window.refreshSubmissionScore(state.submissionId);
+                }
+            }).catch(function () { showError('Network error.'); });
+        };
+        state.containerEl.addEventListener('change', handler);
+        state.containerEl._fbMarksHandler = handler;
+    }
+
+    function rebindRubricsHandlers(state) {
+        if (state.assignType !== 'rubrics') return;
+        attachRubricsTabStripHandler(state);
+        attachRemarkLinkHandler(state);
+        attachBandSelectHandler(state);
+        attachMarksInputHandler(state);
+        attachInlineEditTriggerHandler(state);
+    }
+
+    // ====================================================================
+    // END rubrics-redesign block. Short-answer rendering follows.
+    // ====================================================================
+
     function renderShell(state) {
+        // Rubrics-redesign branch: dispatch to the new shell. Always taken
+        // for assignType === 'rubrics' (legacy submissions show "Re-mark to
+        // enable" affordances inside the new shell — see plan decision Q1).
+        if (state.assignType === 'rubrics') {
+            return renderRubricsShell(state);
+        }
+
         var prefix = state.prefix;
         var summary = summaryBarHtml(state);
 

@@ -5419,6 +5419,94 @@ def teacher_assignment_issue_feedback(assignment_id):
 
 
 @app.route('/teacher/assignment/<assignment_id>')
+def _bands_for_assignment(asn):
+    """Build a {criterion_name: [band_label, ...]} dict for the modal's
+    band-edit dropdown.
+
+    Mines mark-range-bearing band labels (e.g. "Band 3 (5–6)") from the
+    cohort's done submissions so the teacher sees the rubric's exact
+    phrasing where it's known. Then INTERPOLATES ranges for the bands
+    the cohort hasn't covered yet, using the average band-width across
+    mined ranges and the criterion's marks_total — so every band 1–5 in
+    the dropdown carries a usable mark range.
+
+    Returns {} if no done submission exists. The client falls back to a
+    free-text input in that case.
+    """
+    out = {}
+    crit_marks_total = {}
+    subs = (Submission.query
+            .filter_by(assignment_id=asn.id, is_final=True, status='done')
+            .all())
+    for sub in subs:
+        r = sub.get_result() or {}
+        for q in (r.get('questions') or []):
+            crit = (q.get('criterion_name') or '').strip()
+            band = (q.get('band') or '').strip()
+            mt = q.get('marks_total')
+            if crit and band:
+                out.setdefault(crit, set()).add(band)
+            if crit and isinstance(mt, (int, float)) and mt > 0:
+                crit_marks_total[crit] = int(mt)
+
+    def band_num(b):
+        m = re.search(r'Band\s+(\d+)', b, re.IGNORECASE)
+        return int(m.group(1)) if m else 0
+
+    def parse_range(b):
+        m = re.search(r'\((\d+)\s*[\-–—]\s*(\d+)', b)
+        if not m:
+            return None
+        lo, hi = int(m.group(1)), int(m.group(2))
+        if lo > hi:
+            lo, hi = hi, lo
+        return (lo, hi)
+
+    final = {}
+    for crit, mined in out.items():
+        by_num_label = {}
+        ranges_by_num = {}
+        for b in mined:
+            n = band_num(b)
+            if not n:
+                continue
+            r = parse_range(b)
+            if r:
+                ranges_by_num[n] = r
+                by_num_label[n] = b
+            else:
+                by_num_label.setdefault(n, b)
+
+        widths = [hi - lo + 1 for (lo, hi) in ranges_by_num.values()]
+        avg_w = round(sum(widths) / len(widths)) if widths else 0
+        marks_total = crit_marks_total.get(crit, 0)
+
+        for n in range(1, 6):
+            if n in ranges_by_num:
+                continue
+            new_lo = new_hi = None
+            if avg_w > 0 and ranges_by_num:
+                anchor_n = min(ranges_by_num.keys(), key=lambda k: abs(k - n))
+                a_lo, a_hi = ranges_by_num[anchor_n]
+                delta = n - anchor_n
+                new_lo = a_lo + delta * avg_w
+                new_hi = a_hi + delta * avg_w
+                if n == 1:
+                    new_lo = max(0, new_lo)
+                if marks_total:
+                    new_hi = min(new_hi, marks_total)
+                    new_lo = max(0, min(new_lo, marks_total))
+                if new_lo > new_hi:
+                    new_lo = new_hi = None
+            if new_lo is not None and new_hi is not None:
+                by_num_label[n] = f"Band {n} ({new_lo}–{new_hi})"
+                ranges_by_num[n] = (new_lo, new_hi)
+            else:
+                by_num_label.setdefault(n, f"Band {n}")
+        final[crit] = [by_num_label[k] for k in sorted(by_num_label)]
+    return final
+
+
 def _rubric_pills_for_questions(questions):
     """Build the table-cell band pills for a rubrics submission.
 
@@ -5567,6 +5655,7 @@ def teacher_assignment_detail(assignment_id):
     available_providers = sorted(edit_api_keys.keys())
 
     from subjects import SUBJECT_DISPLAY_NAMES
+    rubric_bands_by_criterion = _bands_for_assignment(asn) if is_rubrics else {}
     resp = make_response(render_template('teacher_detail.html',
                            assignment=asn,
                            students=student_data,
@@ -5574,7 +5663,8 @@ def teacher_assignment_detail(assignment_id):
                            available_providers=available_providers,
                            canonical_subjects=SUBJECT_DISPLAY_NAMES,
                            is_rubrics=is_rubrics,
-                           eligible_remark_count=eligible_remark_count))
+                           eligible_remark_count=eligible_remark_count,
+                           rubric_bands_by_criterion=rubric_bands_by_criterion))
     # Prevent the browser/proxy from caching the score cells — a stale cache here
     # makes post-remark reloads show old marks even though the DB is fresh.
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
