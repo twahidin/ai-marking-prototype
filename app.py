@@ -7967,10 +7967,28 @@ def bank_page():
                 AssignmentBank.tags.ilike(like),
             )
         )
-    if level:
-        query = query.filter(AssignmentBank.level == level)
+    # Level is filtered client-side (so it can combine with subject without
+    # a page reload). The URL `?level=` still pre-selects the initial pill.
 
     items = query.order_by(AssignmentBank.created_at.desc()).all()
+
+    # Subject pills show the subjects actually present in the bank
+    # (across the whole bank, not just the current `q` results — pills are
+    # a stable UI control, not a content-dependent list).
+    # Dedupe case-insensitively since subjects are mostly canonical but can
+    # be free-text; pick the most-frequent casing per subject.
+    from collections import Counter
+    subj_counter = Counter()
+    for (s,) in db.session.query(AssignmentBank.subject).all():
+        s = (s or '').strip()
+        if s:
+            subj_counter[s] += 1
+    by_lower = {}
+    for s, n in subj_counter.items():
+        key = s.lower()
+        if key not in by_lower or subj_counter[by_lower[key]] < n:
+            by_lower[key] = s
+    available_subjects = sorted(by_lower.values(), key=str.lower)
 
     # Get classes for the "Use" modal
     if teacher and teacher.role in ('hod', 'owner'):
@@ -7997,6 +8015,7 @@ def bank_page():
     providers = get_available_providers(session_keys=sk)
     return render_template('bank.html', items=items, classes=classes, q=q, level=level, teacher=teacher,
                            canonical_subjects=SUBJECT_DISPLAY_NAMES,
+                           available_subjects=available_subjects,
                            sentinel_bank_item=sentinel_bank_item,
                            providers=providers,
                            all_providers=PROVIDERS)

@@ -161,21 +161,31 @@
         {% endif %}
     </div>
 
-    <!-- Level Pills -->
-    <div class="level-pills">
-        <a href="/bank{% if q %}?q={{ q | urlencode }}{% endif %}" class="level-pill {% if not level %}active{% endif %}">All Levels</a>
+    <!-- Level Pills (client-side filter) -->
+    <div class="level-pills" id="levelPills">
+        <a href="javascript:void(0)" class="level-pill" data-level="">All Levels</a>
         {% for lv in ['Sec 1', 'Sec 2', 'Sec 3', 'Sec 4', 'Sec 5'] %}
-        <a href="/bank?level={{ lv | urlencode }}{% if q %}&q={{ q | urlencode }}{% endif %}" class="level-pill {% if level == lv %}active{% endif %}">{{ lv }}</a>
+        <a href="javascript:void(0)" class="level-pill" data-level="{{ lv }}">{{ lv }}</a>
         {% endfor %}
     </div>
 
+    {% if available_subjects %}
+    <!-- Subject Pills (client-side filter; only subjects present in the bank) -->
+    <div class="level-pills" id="subjectPills">
+        <a href="javascript:void(0)" class="level-pill" data-subject="">All Subjects</a>
+        {% for subj in available_subjects %}
+        <a href="javascript:void(0)" class="level-pill" data-subject="{{ subj }}">{{ subj }}</a>
+        {% endfor %}
+    </div>
+    {% endif %}
+
     <!-- Bank Items -->
     {% if items %}
-    <div class="bank-grid">
+    <div class="bank-grid" id="bankGrid">
         {% for item in items %}
         {% set can_edit = teacher is not none and teacher %}
         {% set can_delete = teacher is not none and teacher %}
-        <div class="bank-card">
+        <div class="bank-card" data-level="{{ item.level or '' }}" data-subject="{{ item.subject or '' }}">
             <script type="application/json" class="bank-card-data">{{ {
                 'id': item.id,
                 'title': item.title or '',
@@ -237,6 +247,10 @@
             </div>
         </div>
         {% endfor %}
+    </div>
+    <div class="empty-state" id="noMatchMsg" style="display:none;">
+        <h3>No assignments match the selected filters</h3>
+        <p>Try removing a filter, or click "All Levels" / "All Subjects" to clear.</p>
     </div>
     {% else %}
     <div class="empty-state">
@@ -386,6 +400,69 @@ function updateEditPinyinVis() {
     var isChinese = /chinese|中文|华文|cn/i.test(subj.trim());
     grp.style.display = isChinese ? '' : 'none';
 }
+
+/* =====================================================================
+   Client-side filter pills (level + subject)
+   -----------------------------------------------------------------------
+   Both pill rows are toggleable independently — picking a level AND a
+   subject narrows the visible cards to the intersection. URL `?level=`
+   pre-selects the initial level pill so old bookmarked URLs still work,
+   but pill clicks themselves don't navigate (no full reload).
+   Subject comparison is case-insensitive because subjects are mostly
+   canonical but can be free-text.
+   ===================================================================== */
+(function() {
+    var activeLevel = (new URLSearchParams(window.location.search).get('level') || '').trim();
+    var activeSubject = '';
+
+    function applyFilters() {
+        var cards = document.querySelectorAll('#bankGrid .bank-card');
+        if (!cards.length) return;
+        var visibleCount = 0;
+        var subjLower = activeSubject.toLowerCase();
+        cards.forEach(function(card) {
+            var lv = card.getAttribute('data-level') || '';
+            var subj = (card.getAttribute('data-subject') || '').toLowerCase();
+            var levelMatch = !activeLevel || lv === activeLevel;
+            var subjectMatch = !subjLower || subj === subjLower;
+            var visible = levelMatch && subjectMatch;
+            card.style.display = visible ? '' : 'none';
+            if (visible) visibleCount += 1;
+        });
+        var emptyMsg = document.getElementById('noMatchMsg');
+        if (emptyMsg) emptyMsg.style.display = visibleCount === 0 ? 'block' : 'none';
+    }
+
+    function refreshActive() {
+        document.querySelectorAll('#levelPills .level-pill').forEach(function(pill) {
+            pill.classList.toggle('active', (pill.getAttribute('data-level') || '') === activeLevel);
+        });
+        document.querySelectorAll('#subjectPills .level-pill').forEach(function(pill) {
+            var pillSubj = (pill.getAttribute('data-subject') || '').toLowerCase();
+            pill.classList.toggle('active', pillSubj === activeSubject.toLowerCase());
+        });
+    }
+
+    document.querySelectorAll('#levelPills .level-pill').forEach(function(pill) {
+        pill.addEventListener('click', function(e) {
+            e.preventDefault();
+            activeLevel = pill.getAttribute('data-level') || '';
+            refreshActive();
+            applyFilters();
+        });
+    });
+    document.querySelectorAll('#subjectPills .level-pill').forEach(function(pill) {
+        pill.addEventListener('click', function(e) {
+            e.preventDefault();
+            activeSubject = pill.getAttribute('data-subject') || '';
+            refreshActive();
+            applyFilters();
+        });
+    });
+
+    refreshActive();
+    applyFilters();
+})();
 
 var useBankId = null;
 
