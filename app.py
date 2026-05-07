@@ -4771,10 +4771,18 @@ def _kick_categorisation_worker(submission_id):
     """Mark the submission as 'pending' and spawn the background worker.
     Caller is responsible for ensuring the worker SHOULD run (lost-marks
     gate satisfied). Commits in this helper; rolls back on failure.
-    Returns True on success."""
+    Returns True on success.
+
+    Skipped for rubrics-mode submissions: the rubrics-redesign view has no
+    Mistake Category UI and no per-question correction_prompt — bands are
+    the primary axis. Running categorisation would do useless DB writes
+    and waste an AI call."""
     try:
         sub = Submission.query.get(submission_id)
         if not sub:
+            return False
+        asn = Assignment.query.get(sub.assignment_id) if sub.assignment_id else None
+        if asn and getattr(asn, 'assign_type', 'short_answer') == 'rubrics':
             return False
         sub.categorisation_status = 'pending'
         db.session.commit()
