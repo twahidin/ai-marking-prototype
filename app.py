@@ -7475,6 +7475,21 @@ def student_feedback_page(assignment_id, submission_id):
         cat_status_for_view = 'disabled'  # never matches 'pending' so polling never starts
         grouping_data_for_view = None
 
+    # Rubrics-mode students see the same redesigned modal teachers see —
+    # band-first cards, improvement examples, etc. — rendered read-only via
+    # FeedbackRender. The Layer 1/2/3 + Corrections layout below is
+    # short-answer-only.
+    if getattr(asn, 'assign_type', 'short_answer') == 'rubrics':
+        return render_template(
+            'feedback_view_rubrics.html',
+            assignment=asn,
+            submission=sub,
+            student=student,
+            result=result,
+            score_pill=score_pill,
+            download_url=url_for('download_submission_pdf', assignment_id=assignment_id, submission_id=submission_id),
+        )
+
     return render_template(
         'feedback_view.html',
         assignment=asn,

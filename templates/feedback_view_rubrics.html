@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Your Feedback — {{ assignment.title or assignment.subject or 'Assignment' }} — {{ app_title }}{% endblock %}
+
+{# -----------------------------------------------------------------
+   Rubrics-mode student feedback view.
+   Renders the same band-first redesigned modal teachers see, but with
+   editable: false. This template is selected by the route in app.py
+   when assignment.assign_type == 'rubrics' (short_answer assignments
+   keep using feedback_view.html with the Layer 1/2/3 + Corrections
+   layout).
+   ----------------------------------------------------------------- #}
+
+{% block head %}
+<style>
+    body { background: #f6f7fb; margin: 0; }
+    .fv-root { max-width: 1080px; margin: 0 auto; padding: 24px 16px 80px; }
+    .fv-header { margin-bottom: 20px; }
+    .fv-student-name { font-size: 22px; font-weight: 700; color: #2D2D2D; margin-bottom: 4px; }
+    .fv-subject { font-size: 13px; color: #888; }
+    .fv-score-row { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+    .fv-score-pill {
+        display: inline-flex; align-items: center; padding: 10px 18px; border-radius: 999px;
+        background: #28a745; color: white; font-weight: 700; font-size: 16px;
+        box-shadow: 0 2px 8px rgba(40,167,69,0.25);
+    }
+    .fv-score-label { font-size: 13px; color: #666; font-weight: 500; }
+    .fv-download-line { margin-top: 14px; margin-bottom: 20px; }
+    .fv-download-link { font-size: 12px; color: #888; text-decoration: underline; }
+    .fv-download-link:hover { color: #667eea; }
+
+    /* The redesigned modal CSS (static/css/feedback_render.css) handles
+       most styling. This block just gives the surrounding student page
+       a bit of breathing room and removes the modal's chrome that's
+       only meaningful inside the teacher_detail flyout. */
+    #fvFeedbackContainer {
+        background: #ffffff; border-radius: 14px; padding: 24px;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.05);
+    }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="fv-root" data-assignment-id="{{ assignment.id }}" data-submission-id="{{ submission.id }}">
+    <div class="fv-header">
+        <div class="fv-student-name">{{ student.name if student else 'Student' }}</div>
+        <div class="fv-subject">{{ assignment.title or assignment.subject or 'Assignment' }}{% if assignment.subject and assignment.title %} · {{ assignment.subject }}{% endif %}</div>
+        <div class="fv-score-row">
+            <span class="fv-score-pill">{{ score_pill }}</span>
+            <span class="fv-score-label">Your score</span>
+        </div>
+        <div class="fv-download-line">
+            <a href="{{ download_url }}" class="fv-download-link" target="_blank" rel="noopener">Download full PDF</a>
+        </div>
+    </div>
+
+    <div id="fvFeedbackContainer"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/feedback_render.js') }}?v={{ static_version }}"></script>
+<script>
+    var FV_RESULT = {{ result | tojson }};
+    var FV_SCORING_MODE = {{ assignment.scoring_mode | tojson }};
+    var FV_ASSIGNMENT_ID = '{{ assignment.id }}';
+    var FV_SUBMISSION_ID = {{ submission.id | tojson }};
+
+    document.addEventListener('DOMContentLoaded', function () {
+        var container = document.getElementById('fvFeedbackContainer');
+        if (!container || !window.FeedbackRender) return;
+        window.FeedbackRender.render(container, FV_RESULT, {
+            idPrefix: 'fv',
+            editable: false,
+            assignmentId: FV_ASSIGNMENT_ID,
+            submissionId: FV_SUBMISSION_ID,
+            scoringMode: FV_SCORING_MODE,
+        });
+    });
+</script>
+{% endblock %}
