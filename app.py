@@ -6958,6 +6958,59 @@ def teacher_submission_remark(assignment_id, submission_id):
     return jsonify({'success': True})
 
 
+@app.route('/teacher/assignment/<assignment_id>/remark-all', methods=['POST'])
+def teacher_remark_all_submissions(assignment_id):
+    """Re-mark every already-submitted script for this assignment using the
+    current answer key / rubric. Used when the teacher updates marking
+    materials after students have submitted. Skips submissions still
+    in-flight ('pending' / 'processing' / 'extracting' / 'preview') and
+    submissions without a stored script.
+
+    Returns: { success: True, queued: N, skipped: M }
+    """
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+
+    subs = (Submission.query
+            .filter_by(assignment_id=assignment_id, is_final=True)
+            .filter(Submission.status.in_(['done', 'error']))
+            .all())
+    if not subs:
+        return jsonify({'success': False, 'error': 'No submitted scripts to re-mark.'}), 400
+
+    queued_ids = []
+    skipped = 0
+    now_utc = datetime.now(timezone.utc)
+    for sub in subs:
+        if not sub.get_script_pages():
+            skipped += 1
+            continue
+        sub.status = 'pending'
+        sub.result_json = None
+        sub.marked_at = None
+        sub.submitted_at = now_utc  # reset so 'stuck' clears
+        queued_ids.append(sub.id)
+    db.session.commit()
+
+    if not queued_ids:
+        return jsonify({'success': False, 'error': 'No re-markable scripts (all are missing stored script pages).'}), 400
+
+    for sub_id in queued_ids:
+        threading.Thread(
+            target=_run_submission_marking,
+            args=(app, sub_id, assignment_id),
+            daemon=True,
+        ).start()
+
+    logger.info(
+        f"Re-mark-all kicked off for assignment={assignment_id}: "
+        f"queued={len(queued_ids)} skipped={skipped}"
+    )
+    return jsonify({'success': True, 'queued': len(queued_ids), 'skipped': skipped})
+
+
 @app.route('/teacher/assignment/<assignment_id>/submission/<int:submission_id>/force-remark', methods=['POST'])
 def teacher_submission_force_remark(assignment_id, submission_id):
     """Re-kick the marking worker for a stuck submission. Bypasses the
