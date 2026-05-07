@@ -573,7 +573,77 @@ RIGHT:
 "Your evidence was there but dropped in rather than woven into your argument."
 
 The student should be able to act on the feedback without ever seeing the
-rubric."""
+rubric.
+
+STUDENT-FACING WORDING (applies to: current_band_oneliner, next_band_oneliner,
+feedback, improvement, maintain_advice, improvement_rewrite, improvement_rewrite_2):
+
+- Address the student directly in second person. "You did X." "You should Y."
+  Not "the student did X" or "the writer should Y".
+- USE WORDS THAT APPEAR IN THE RUBRIC. The rubric is the shared marking
+  vocabulary — re-using its phrasing keeps feedback consistent across
+  criteria and students, and gives the student language to recognise on
+  the rubric itself. If the rubric says "topic sentence" or "linking
+  devices" or "supporting evidence", say those phrases verbatim. Do NOT
+  paraphrase rubric vocabulary into your own jargon.
+- MATCH THE STUDENT'S LEVEL. If the student is in a LOW band (e.g. Band 1
+  or 2), prefer short, concrete, everyday words. A struggling student
+  will not parse "elevate", "showcase", "nuance", "compelling", "robust",
+  "ambitious vocabulary", "sharpen the call to action". Replace with the
+  simplest plain-English equivalent.
+- AVOID ELSEWHERE (and absolutely banned in low-band feedback): "elevate",
+  "ambitious", "sophisticated", "compelling", "robust", "leverage",
+  "showcase", "nuanced", "sharpen". These do not appear in most rubrics
+  and add friction without adding meaning.
+- Words borrowed from the rubric verbatim are exempt from the simplicity
+  test — that is the marking standard for this paper.
+
+NO VAGUE INTENSIFIERS. The following phrasings are BANNED across every
+student-facing field — they're vague, non-actionable, and tell a struggling
+student literally nothing about what to do next:
+- "more detail" / "in more detail" / "more details"
+- "more depth" / "go deeper" / "deeper analysis"
+- "more variety" / "more varied" (unless quoting the rubric verbatim)
+- "elaborate further" / "elaborate more"
+- "develop further" / "fuller development"
+- "expand on this" / "expand your ideas"
+- "be more specific" (without saying specific WHAT)
+- "stronger argument" / "make it stronger"
+Replace EVERY such phrase with a concrete prompt that names what the
+student should actually write or look at.
+
+NEXT_BAND_ONELINER MUST BE A QUESTION OR A SHORT DIRECTIVE. Phrase it as
+something the student can answer or do RIGHT NOW. Forms that work well:
+- "What X could you use to describe Y?"          (open-ended question)
+- "What would you see / hear / feel when Z?"     (sense-prompt — great for descriptive writing)
+- "Could you add a Y after the line about Z?"    (closed action)
+- "Try one example of X in paragraph Y."         (directive with location)
+- "Pick one of X, Y, Z and use it once in §3."   (multiple-choice action)
+The student should be able to act on it without re-reading the rubric.
+
+WRONG: "Develop each point in more detail."          ← vague + banned phrase
+WRONG: "Use more sophisticated vocabulary."          ← vague + banned word
+RIGHT: "What vivid verb could replace 'walked' in your second paragraph?"
+RIGHT: "Could you add one sound or smell to your description of the camp?"
+RIGHT: "Pick one quote from the poster and explain what it suggests about teenagers."
+
+Apply the same NO-VAGUE rule to "improvement", "current_band_oneliner",
+"feedback", and "maintain_advice" too — every student-facing string is
+held to it.
+
+CONFIDENCE SENTINELS (for the improvement-example pairs):
+- Each criterion can have UP TO TWO improvement-example pairs:
+  pair 1 = "improvement_target"   + "improvement_rewrite"
+  pair 2 = "improvement_target_2" + "improvement_rewrite_2"
+- For each pair: if you cannot confidently identify a specific sentence to
+  upgrade and propose a concrete rewrite, return "__NO_CONFIDENT_SUGGESTION__"
+  for both fields of that pair.
+- Pair 2 is optional. Only emit it when you have a SECOND, distinct example
+  worth showing (different sentence, different angle of improvement). If only
+  one strong example exists, omit pair 2 entirely (do not pad with sentinels
+  or duplicates of pair 1).
+- Never paraphrase or invent quotes. Verbatim only.
+- Quote = student's exact words. Rewrite = your proposed alternative."""
 
 
 # Shared rules for the per-question "correction_prompt" string. The prompt
@@ -756,11 +826,48 @@ student-facing field is still in English, rewrite it in {lang}.
 
 def _build_rubrics_prompt(subject, rubrics_pages, reference_pages, question_paper_pages,
                           script_pages, review_section, marking_section, total_marks,
-                          calibration_block=''):
-    """Build system prompt and content for rubrics/essay marking."""
+                          calibration_block='', band_overrides=None):
+    """Build system prompt and content for rubrics/essay marking.
+
+    band_overrides: optional dict {criterion_name: band_label} from the
+        teacher. When present, the AI is told to set "band" exactly as
+        specified for each listed criterion and to anchor all per-band text
+        (current_band_oneliner, next_band_oneliner, improvement examples)
+        to the teacher's chosen band rather than re-deciding it. Used by
+        the "Re-mark for tailored text" link in the band-stale notice so
+        the teacher's manual band override survives a re-mark.
+    """
     reference_section = ""
     if reference_pages:
         reference_section = "\nREFERENCE MATERIALS (sample works or other references) have been provided — use them to calibrate your expectations."
+
+    overrides_section = ""
+    if band_overrides:
+        lines = []
+        for crit, band in band_overrides.items():
+            if not crit or not band:
+                continue
+            lines.append(f"  - {crit}: {band}")
+        if lines:
+            overrides_section = (
+                "\n\nTEACHER BAND OVERRIDES (HIGH PRIORITY):\n"
+                "The teacher has graded the following criteria at the bands listed below. "
+                "Your job for THESE criteria is NOT to re-decide the band — set \"band\" "
+                "exactly as specified, choose marks_awarded WITHIN that band's mark range, "
+                "and anchor every per-band field (current_band_oneliner, next_band_oneliner, "
+                "improvement_target/_2, improvement_rewrite/_2) to the teacher's chosen "
+                "band. Specifically:\n"
+                "  - current_band_oneliner: describe what THIS student's work shows of the "
+                "teacher's chosen band qualities (you may note that the work falls short of "
+                "those qualities — be honest, but the band placement stands).\n"
+                "  - next_band_oneliner: describe what the band ABOVE the teacher's chosen "
+                "band would look like.\n"
+                "  - improvement examples: propose changes that would push this work toward "
+                "the band ABOVE the teacher's chosen band.\n"
+                "Criteria with overridden bands:\n"
+                + "\n".join(lines)
+                + "\nFor any criteria NOT in the list above, mark normally."
+            )
 
     language_block = _language_directive(subject)
 
@@ -768,6 +875,7 @@ def _build_rubrics_prompt(subject, rubrics_pages, reference_pages, question_pape
 
 Subject: {subject or 'General'}
 {reference_section}
+{overrides_section}
 {review_section}
 {marking_section}
 
@@ -803,10 +911,6 @@ LINE-BY-LINE ERROR IDENTIFICATION:
 
 {RUBRIC_FEEDBACK_RULES}
 
-{CORRECTION_PROMPT_RULES}
-
-{IDEA_RULES}
-
 HANDWRITING RULES:
 - IGNORE crossed-out or struck-through text — treat as deleted
 - A caret (^) or insertion mark means the student wants to INSERT text at that point
@@ -818,31 +922,27 @@ FORMATTING:
 - Use \times for multiplication, \div for division, \leq / \geq for inequalities, \pi for pi, \sqrt{{ }} for square roots.
 - Examples: $\frac{{3}}{{4}}$, $x^{{2}} + 3x = 0$, $5 \times 3 = 15$, $\sqrt{{16}} = 4$.
 
-TIERED FEEDBACK FOR THE STUDENT — mandatory.
-
-- "well_done" (top level): one sentence naming ONE specific thing done well. No generic phrases like "good effort".
-- "main_gap" (top level): one sentence (≤30 words) naming the single most important gap.
-- For each criterion, the "feedback" field is diagnostic, MAX 2 sentences. First sentence: what was present/correct. Second sentence: what was missing/wrong and why marks were lost. Never use "well done", "good attempt", "you demonstrated", "it is important to note", "however", "overall".
-- For any criterion where marks_awarded < marks_total, include "correction_prompt" — see CORRECTION PROMPT RULES above for the typology and constraints. Omit on full-marks criteria.
-
 Respond ONLY with valid JSON:
 {{
-    "well_done": "one specific thing done correctly (one sentence)",
-    "main_gap": "the single most important gap (one sentence, ≤30 words)",
     "questions": [
         {{
             "question_num": 1,
             "criterion_name": "the exact criterion name from the rubrics table heading",
             "band": "Band X (mark range)",
-            "student_answer": "summary of what the student demonstrated for this criterion",
+            "student_answer": "3 to 4 BULLET POINTS (markdown format: each bullet on its own line, prefixed with '- '). Each bullet ≤25 words. ORDER MATTERS: lead with the most rewarding observations (what the student did well) and the most redeemable issues (the ones closest to crossing into the next band), then the harder gaps. Concrete examples in parentheticals are welcome (e.g. 'Strong personal voice (\"I had never surfed before...\")'). Cap at 4 bullets — students stop reading after that.",
             "correct_answer": "the band descriptor text that best matches the student's level",
             "status": "correct | partially_correct | incorrect",
             "marks_awarded": number,
             "marks_total": number,
             "feedback": "single Feedback sentence — see FEEDBACK GENERATION RULES (≤20 words, diagnosis only)",
-            "improvement": "single Suggested Improvement sentence — see FEEDBACK GENERATION RULES (≤20 words)",
-            "idea": "single sentence — see LAYER 3 IDEA RULES (≤25 words, why this criterion matters)",
-            "correction_prompt": "OMIT if marks_awarded == marks_total; otherwise one scaffolded thinking task following CORRECTION PROMPT RULES above (anchor in student's actual answer, point at the gap WITHOUT revealing the correct answer/method/value/unit, end with a concrete action). Must not duplicate another criterion's wording."
+            "improvement": "single Suggested Improvement sentence — generic advice for next-step work; do NOT duplicate improvement_rewrite (which is a verbatim replacement of the student's prose) (≤20 words)",
+            "current_band_oneliner": "≤20 words: name the concrete quality of THIS student's work — do NOT mention bands by name or number (e.g. say 'Argument develops but stops at description' NOT 'Work at Band 3 develops...')",
+            "next_band_oneliner": "≤20 words: name the concrete quality the student is missing — do NOT mention bands by name or number (e.g. 'Link evidence back to the question after each example' NOT 'Band 4 work links evidence...')",
+            "improvement_target": "EXAMPLE 1: ≤25 words verbatim from the student's script with the clearest upgrade potential, OR '__NO_CONFIDENT_SUGGESTION__' (paired with improvement_rewrite — both sentinel or both populated, never mixed)",
+            "improvement_rewrite": "EXAMPLE 1: ≤30 words: your rewrite of improvement_target that would push this criterion higher, OR '__NO_CONFIDENT_SUGGESTION__' (paired with improvement_target)",
+            "improvement_target_2": "EXAMPLE 2 (OPTIONAL): ≤25 words verbatim from a DIFFERENT sentence in the student's script that has clear upgrade potential. Omit pair 2 entirely if there is no second strong example — do not pad. Paired with improvement_rewrite_2.",
+            "improvement_rewrite_2": "EXAMPLE 2 (OPTIONAL): ≤30 words: your rewrite of improvement_target_2 that would push this criterion higher. Omit alongside improvement_target_2 when there is no second example.",
+            "maintain_advice": "≤30 words, INCLUDE ONLY when the student is already at the top band: how to keep producing this quality of work"
         }}
     ],
     "errors": [
@@ -860,7 +960,11 @@ Respond ONLY with valid JSON:
 IMPORTANT:
 - The number of entries in "questions" MUST equal the number of criteria tables in the rubrics.
 - Use the EXACT criterion name from the rubrics as "criterion_name" (e.g. "Task Fulfilment", "Language").
-- Use the EXACT mark ranges from the rubrics — do NOT assume all criteria have the same max marks."""
+- Use the EXACT mark ranges from the rubrics — do NOT assume all criteria have the same max marks.
+- If the student is at the TOP band for a criterion, omit "next_band_oneliner" entirely and provide "maintain_advice" instead. For non-top bands, do the opposite: provide "next_band_oneliner" and omit "maintain_advice".
+- For each improvement-example pair, use the "__NO_CONFIDENT_SUGGESTION__" sentinel from RUBRIC-BASED FEEDBACK RULES if you cannot rewrite with high confidence. Do not invent quotes.
+- "improvement_target" and "improvement_rewrite" are PAIRED: either both contain content OR both contain "__NO_CONFIDENT_SUGGESTION__". Never one and not the other.
+- "improvement_target_2" and "improvement_rewrite_2" follow the same pairing rule, AND the whole pair is OPTIONAL — omit both fields entirely when there is no second strong example. Do not include the keys at all in that case."""
 
     content = []
     _append_pages(content, "QUESTION PAPER / ESSAY PROMPT:", question_paper_pages)
@@ -1137,7 +1241,8 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
                 subject='', rubrics_pages=None, reference_pages=None,
                 review_instructions='', marking_instructions='',
                 model=None, assign_type='short_answer', scoring_mode='status', total_marks='',
-                session_keys=None, calibration_block='', pinyin_mode='off'):
+                session_keys=None, calibration_block='', pinyin_mode='off',
+                band_overrides=None):
     """
     Mark a student script using AI vision.
 
@@ -1171,6 +1276,7 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
             subject, rubrics_pages, reference_pages, question_paper_pages, script_pages,
             review_section, marking_section, total_marks,
             calibration_block=calibration_block,
+            band_overrides=band_overrides,
         )
     else:
         system_prompt, content = _build_short_answer_prompt(
