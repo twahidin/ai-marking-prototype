@@ -6810,6 +6810,7 @@ def teacher_submission_remark(assignment_id, submission_id):
     sub.status = 'pending'
     sub.result_json = None
     sub.marked_at = None
+    sub.submitted_at = datetime.now(timezone.utc)  # reset so 'stuck' clears
     db.session.commit()
 
     thread = threading.Thread(
