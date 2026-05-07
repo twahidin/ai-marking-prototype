@@ -1,0 +1,396 @@
+/*
+ * Shared stylesheet for the feedback renderer (rubrics-mode redesign).
+ * Loaded from base.html so it's available on every page that includes
+ * feedback_render.js — currently teacher_detail.html and review.html.
+ *
+ * All rules here are RUBRICS-ONLY in the modal; short-answer rendering
+ * uses the existing legacy classes (defined in teacher_detail.html /
+ * styles.css) and is unchanged.
+ *
+ * Keep this file the single source of truth for rubrics-redesign visuals.
+ */
+
+/* Band palette — ordinal red→green ramp keyed to band number 1..5.
+   Used by table pills, modal tab strip, current-band card, summary pill. */
+:root {
+    --band-1: #d32f2f;  /* red */
+    --band-2: #f57c00;  /* orange */
+    --band-3: #f9a825;  /* amber */
+    --band-4: #689f38;  /* lime */
+    --band-5: #2e7d32;  /* green */
+}
+
+/* ---------- Whole-class table: 2-line score cell with band pills ---------- */
+
+.score-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    line-height: 1.2;
+}
+
+.score-stack-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    margin-top: 2px;
+}
+
+.band-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: 9px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #fff;
+    white-space: nowrap;
+    line-height: 1.4;
+    letter-spacing: 0.2px;
+}
+
+.band-pill.band-1 { background: var(--band-1); }
+.band-pill.band-2 { background: var(--band-2); }
+.band-pill.band-3 { background: var(--band-3); color: #1a1a1a; }
+.band-pill.band-4 { background: var(--band-4); }
+.band-pill.band-5 { background: var(--band-5); }
+
+/* ---------- Modal: folder-divider tab strip ---------- */
+
+.fb-tab-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    border-bottom: 2px solid #e0e0e0;
+    margin: 0 0 12px 0;
+    padding: 0;
+}
+
+.fb-tab {
+    position: relative;
+    padding: 8px 14px 8px 14px;
+    margin-right: 2px;
+    background: #f5f5f5;
+    border: 1px solid #d0d0d0;
+    border-bottom: none;
+    border-radius: 6px 12px 0 0;  /* asymmetric — reads as a folder ear */
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: #555;
+    line-height: 1.3;
+    user-select: none;
+    transition: background 0.15s, transform 0.1s;
+}
+
+.fb-tab:hover { background: #ececec; }
+
+.fb-tab.active {
+    background: #fff;
+    color: #1a1a1a;
+    border-bottom: 2px solid #fff;
+    margin-bottom: -2px;
+    z-index: 1;
+}
+
+.fb-tab.active.band-1 { background: #ffebee; border-top: 3px solid var(--band-1); }
+.fb-tab.active.band-2 { background: #fff3e0; border-top: 3px solid var(--band-2); }
+.fb-tab.active.band-3 { background: #fff8e1; border-top: 3px solid var(--band-3); }
+.fb-tab.active.band-4 { background: #f1f8e9; border-top: 3px solid var(--band-4); }
+.fb-tab.active.band-5 { background: #e8f5e9; border-top: 3px solid var(--band-5); }
+
+.fb-tab-meta {
+    display: inline-block;
+    margin-left: 6px;
+    font-weight: 500;
+    color: #777;
+}
+.fb-tab.active .fb-tab-meta { color: #444; }
+
+.fb-tab-spacer { flex: 1; min-width: 8px; }
+
+/* ---------- Modal: YOU'RE HERE / TO REACH BAND X+1 cards ---------- */
+
+.fb-cards-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 8px 0 16px 0;
+}
+
+@media (max-width: 768px) {
+    .fb-cards-row { grid-template-columns: 1fr; }
+}
+
+.fb-card {
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-size: 13px;
+    line-height: 1.45;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.fb-card-current.band-1 { background: #ffebee; border: 1px solid var(--band-1); }
+.fb-card-current.band-2 { background: #fff3e0; border: 1px solid var(--band-2); }
+.fb-card-current.band-3 { background: #fff8e1; border: 1px solid var(--band-3); }
+.fb-card-current.band-4 { background: #f1f8e9; border: 1px solid var(--band-4); }
+.fb-card-current.band-5 { background: #e8f5e9; border: 1px solid var(--band-5); }
+
+/* Brand-blue treatment for the next-band card — matches the primary
+   action colour (#667eea) used elsewhere in the app. */
+.fb-card-next {
+    background: #f0f2ff;
+    border: 1px dashed #667eea;
+}
+
+.fb-card-next .fb-card-label { color: #5a6fd6; }
+.fb-card-next .fb-card-band  { color: #4a5fc6; }
+
+.fb-card-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #777;
+    font-weight: 700;
+    margin-bottom: 4px;
+}
+
+.fb-card-band {
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+
+.fb-band-select, .fb-band-input {
+    font: inherit;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid #bbb;
+    background: rgba(255, 255, 255, 0.7);
+    cursor: pointer;
+}
+
+.fb-band-input { cursor: text; }
+
+/* Click-to-edit triggers for the band + marks fields. Default appearance
+   is plain text; hovering shows it's clickable; the editor (select/input)
+   only appears on click. Keeps the YOU'RE HERE card visually consistent
+   with the rest of the editable text fields. */
+.fb-inline-edit {
+    display: inline-block;
+    border-radius: 4px;
+    padding: 1px 4px;
+    margin: -1px -4px;
+}
+
+.fb-inline-edit .fb-inline-display {
+    font-weight: 700;
+    cursor: pointer;
+    border-bottom: 1px dashed transparent;
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.fb-inline-edit:hover .fb-inline-display,
+.fb-inline-edit:focus-within .fb-inline-display {
+    border-bottom-color: #aaa;
+    background: rgba(255, 255, 255, 0.5);
+}
+
+.fb-inline-edit .fb-band-display { display: inline; }
+.fb-inline-edit .fb-marks-display { display: inline; min-width: 1.5em; text-align: center; }
+
+/* Band dropdown + marks input share one inline row in the YOU'RE HERE card. */
+.fb-card-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.fb-marks-inline {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.fb-marks-input {
+    font: inherit;
+    font-weight: 700;
+    padding: 2px 6px;
+    width: 56px;
+    border-radius: 4px;
+    border: 1px solid #bbb;
+    background: rgba(255, 255, 255, 0.7);
+    text-align: right;
+}
+
+.fb-card-marks-total {
+    font-weight: 500;
+    color: #555;
+}
+
+.fb-marks-error {
+    margin-top: 2px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    color: #c62828;
+    background: #ffebee;
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+
+/* Stale-indicator strip shown above the 1-liner when teacher has manually
+   changed the band — surfaces that the AI's per-band text reflects the
+   AI's original assessment, not the current band. */
+.fb-stale-notice {
+    margin: 4px 0 6px 0;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: #fff8e1;
+    border: 1px solid #f9a825;
+    color: #6d4c00;
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.fb-stale-notice .fb-remark-link {
+    color: #b8860b;
+    font-weight: 600;
+}
+
+.fb-card-oneliner {
+    font-size: 13px;
+    color: #2a2a2a;
+}
+
+.fb-card-oneliner.editable[contenteditable="true"] {
+    background: #fffde7;
+    outline: 1px solid #ffc107;
+    border-radius: 4px;
+    padding: 2px 4px;
+}
+
+/* ---------- Modal: improvement-examples two-column section ---------- */
+
+.fb-evidence-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 8px 0 16px 0;
+}
+
+@media (max-width: 768px) {
+    .fb-evidence-row { grid-template-columns: 1fr; }
+}
+
+.fb-evidence-col {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.fb-evidence-col h5 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #777;
+    margin: 0 0 6px 0;
+}
+
+.fb-quote {
+    display: block;
+    font-style: italic;
+    color: #444;
+    border-left: 3px solid #ccc;
+    padding: 4px 0 4px 10px;
+    margin-bottom: 6px;
+    white-space: pre-wrap;
+}
+
+.fb-quote.fb-quote-rewrite {
+    border-left-color: #689f38;  /* lime — matches the band-4 hue, signals "improvement" */
+}
+
+/* Word-level diff highlights inside the "Could become" rewrite — added
+   or changed tokens vs the student's original line. Light green so it
+   reads as a positive (improvement, not error). */
+.fb-quote-rewrite mark.fb-diff-add {
+    background: #dcedc8;
+    color: inherit;
+    padding: 0 2px;
+    border-radius: 3px;
+    font-style: normal;
+}
+
+.fb-rewrite-label {
+    font-size: 11px;
+    color: #777;
+    margin-top: 6px;
+    margin-bottom: 2px;
+}
+
+.fb-fallback-text {
+    color: #999;
+    font-style: italic;
+    font-size: 12px;
+}
+
+.fb-remark-link {
+    color: #1976d2;
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+/* ---------- Modal: rubrics summary header (band-first) ---------- */
+
+.fb-summary-rubrics {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+    font-size: 14px;
+    flex-wrap: wrap;
+}
+
+.fb-summary-band {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 14px;
+    color: #fff;
+    font-weight: 700;
+    line-height: 1.4;
+}
+
+.fb-summary-band.band-0 { background: #999; color: #fff; }
+.fb-summary-band.band-1 { background: var(--band-1); }
+.fb-summary-band.band-2 { background: var(--band-2); }
+.fb-summary-band.band-3 { background: var(--band-3); color: #1a1a1a; }
+.fb-summary-band.band-4 { background: var(--band-4); }
+.fb-summary-band.band-5 { background: var(--band-5); }
+
+/* Scope the rubrics-summary marks rule to its container so it doesn't
+   collide with the legacy `.fb-summary-marks` rule used by short-answer
+   summary bars. */
+.fb-summary-rubrics .fb-summary-marks {
+    background: transparent;
+    color: #555;
+    font-size: 13px;
+}
+
+/* ---------- Bullet-form Assessment ---------- */
+
+.fb-bullet-list {
+    margin: 4px 0;
+    padding-left: 20px;
+    line-height: 1.5;
+}
+
+.fb-bullet-list li { margin-bottom: 4px; }
+.fb-bullet-list li:last-child { margin-bottom: 0; }

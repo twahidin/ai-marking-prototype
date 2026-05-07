@@ -6,6 +6,7 @@
     <title>{% block title %}{{ app_title }}{% endblock %}</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v={{ static_version }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/feedback_render.css') }}?v={{ static_version }}">
     {% block head %}{% endblock %}
 
     <!-- Math rendering: KaTeX. Stricter parser than MathJax (so what the
