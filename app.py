@@ -5418,7 +5418,6 @@ def teacher_assignment_issue_feedback(assignment_id):
     return jsonify({'success': True, 'show_results': True})
 
 
-@app.route('/teacher/assignment/<assignment_id>')
 def _bands_for_assignment(asn):
     """Build a {criterion_name: [band_label, ...]} dict for the modal's
     band-edit dropdown.
@@ -5544,6 +5543,7 @@ def _rubric_pills_for_questions(questions):
     return pills
 
 
+@app.route('/teacher/assignment/<assignment_id>')
 def teacher_assignment_detail(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)
     err = _check_assignment_ownership(asn)
