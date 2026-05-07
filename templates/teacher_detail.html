@@ -470,7 +470,17 @@
         </div>
 
         <div class="error-msg" id="bulkErrorMsg"></div>
-        <button class="action-btn primary" id="bulkMarkBtn" onclick="startBulkMarking()" style="margin-top:12px;">Mark All Scripts</button>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:12px;">
+            <button class="action-btn primary" id="bulkMarkBtn" onclick="startBulkMarking()">Mark All Scripts</button>
+            <button class="action-btn"
+                    id="remarkAllBtn"
+                    type="button"
+                    onclick="remarkAllSubmissions()"
+                    {% if not eligible_remark_count %}disabled{% endif %}
+                    title="Re-mark every already-submitted script using the latest answer key / rubric. Use this after updating marking materials.">
+                Re-mark All ({{ eligible_remark_count }})
+            </button>
+        </div>
 
         <!-- Progress (hidden until marking starts) -->
         <div id="bulkProgressCard" style="display:none;margin-top:16px;">
