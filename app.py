@@ -4289,8 +4289,16 @@ def _run_submission_extraction(app_obj, submission_id, assignment_id):
         db.session.commit()
 
 
-def _run_submission_marking(app_obj, submission_id, assignment_id):
-    """Background thread: mark a student submission."""
+def _run_submission_marking(app_obj, submission_id, assignment_id, band_overrides=None):
+    """Background thread: mark a student submission.
+
+    band_overrides: optional {criterion_name: band_label} dict. When set,
+        the AI is told to keep those bands fixed and anchor all per-band
+        descriptors / improvement examples to the teacher's chosen band.
+        After marking, we also clobber the AI's `band` field for those
+        criteria back to the teacher's choice (defence-in-depth in case
+        the model ignored the prompt instruction).
+    """
     with app_obj.app_context():
         sub = Submission.query.get(submission_id)
         asn = Assignment.query.get(assignment_id)
@@ -4370,7 +4378,22 @@ def _run_submission_marking(app_obj, submission_id, assignment_id):
                 session_keys=_resolve_api_keys(asn),
                 calibration_block=calibration_block,
                 pinyin_mode=getattr(asn, 'pinyin_mode', 'off'),
+                band_overrides=band_overrides,
             )
+
+            # Defence-in-depth: even with the prompt instruction, the model
+            # could drift on the band field. Clobber the AI's band back to
+            # the teacher's choice for any criterion in the override map,
+            # and persist band_ai_original so the modal still tracks where
+            # the AI would have placed the student.
+            if band_overrides and isinstance(result, dict) and not result.get('error'):
+                qs = result.get('questions') or []
+                for q in qs:
+                    crit = (q.get('criterion_name') or '').strip()
+                    forced = band_overrides.get(crit)
+                    if forced and (q.get('band') or '').strip() != forced:
+                        q['band_ai_original'] = (q.get('band') or '').strip()
+                        q['band'] = forced
 
             # Safety net: in marks mode, every question must have marks_total.
             # If the AI missed a bracket and left it blank, fill the gaps by
@@ -6476,6 +6499,40 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                     if v is not None and not isinstance(v, str):
                         return jsonify({'success': False, 'error': f'{field} must be a string'}), 400
                     target[field] = (v or '').strip()
+            # Rubrics-redesign editable string fields. Plain string writes —
+            # no calibration plumbing yet (these fields aren't on the
+            # short_answer track that calibration was built around).
+            for field in (
+                'current_band_oneliner',
+                'next_band_oneliner',
+                'evidence_quote',
+                'improvement_target',
+                'improvement_rewrite',
+                'improvement_target_2',
+                'improvement_rewrite_2',
+                'maintain_advice',
+            ):
+                if field in edit:
+                    v = edit[field]
+                    if v is not None and not isinstance(v, str):
+                        return jsonify({'success': False, 'error': f'{field} must be a string'}), 400
+                    if v is not None and len(v) > 2000:
+                        return jsonify({'success': False, 'error': f'{field} too long (max 2000 chars)'}), 400
+                    target[field] = (v or '').strip()
+            # Rubrics band override: capture band_ai_original on the FIRST
+            # change so the modal can show "AI placed at Band X" and the
+            # "Re-mark for tailored text" link can fire if the teacher
+            # wants the AI to redo descriptors at the new band.
+            if 'band' in edit:
+                v = edit['band']
+                if v is not None and not isinstance(v, str):
+                    return jsonify({'success': False, 'error': 'band must be a string'}), 400
+                new_band = (v or '').strip()
+                current_band = (target.get('band') or '').strip()
+                if new_band and new_band != current_band:
+                    if not target.get('band_ai_original'):
+                        target['band_ai_original'] = current_band
+                    target['band'] = new_band
             for field in ('marks_awarded', 'marks_total'):
                 if field in edit:
                     v = edit[field]
@@ -6869,6 +6926,21 @@ def teacher_submission_remark(assignment_id, submission_id):
     if not sub.get_script_pages():
         return jsonify({'success': False, 'error': 'No stored script available to re-mark'}), 400
 
+    # Optional teacher band overrides — locks bands across the re-mark so
+    # the AI produces fresh per-band descriptors / improvement examples
+    # anchored at the teacher's chosen band. Used by the modal's
+    # "Re-mark for tailored text" link in the band-stale notice.
+    payload = request.get_json(silent=True) or {}
+    raw_overrides = payload.get('band_overrides') if isinstance(payload, dict) else None
+    band_overrides = None
+    if isinstance(raw_overrides, dict):
+        cleaned = {}
+        for crit, band in raw_overrides.items():
+            if isinstance(crit, str) and isinstance(band, str) and crit.strip() and band.strip():
+                cleaned[crit.strip()] = band.strip()
+        if cleaned:
+            band_overrides = cleaned
+
     sub.status = 'pending'
     sub.result_json = None
     sub.marked_at = None
@@ -6878,6 +6950,7 @@ def teacher_submission_remark(assignment_id, submission_id):
     thread = threading.Thread(
         target=_run_submission_marking,
         args=(app, sub.id, assignment_id),
+        kwargs={'band_overrides': band_overrides},
         daemon=True,
     )
     thread.start()
