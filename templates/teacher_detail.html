@@ -550,7 +550,7 @@
                     </thead>
                     <tbody>
                         {% for s in students %}
-                        <tr>
+                        <tr data-student-id="{{ s.student_id }}"{% if s.submission_id %} data-submission-id="{{ s.submission_id }}"{% endif %}>
                             <td class="col-index">{{ s.index }}</td>
                             <td class="col-name" style="font-weight:600;">{% if s.status == 'done' and s.submission_id %}<a href="/teacher/assignment/{{ assignment.id }}/submission/{{ s.submission_id }}/review" target="_blank" rel="noopener" style="color:#667eea;text-decoration:none;" title="Open split-view review">{{ s.name }}</a>{% else %}{{ s.name }}{% endif %}</td>
                             <td class="col-status">
@@ -1384,29 +1384,180 @@ document.addEventListener('keydown', function(e) {
 var REMARK_ASSIGNMENT_ID = '{{ assignment.id }}';
 var remarkPollTimers = {};
 
+// Helpers for live-updating the table row when marking/remarking is in
+// progress, or after a modal-side edit changes the score. Each finds the
+// row via `data-submission-id` set on the <tr> at server-render time.
+
+function _rowForSubmission(submissionId) {
+    if (!submissionId) return null;
+    return document.querySelector('tr[data-submission-id="' + String(submissionId) + '"]');
+}
+
+// Map a submission status to the badge label + class used in the column.
+// Mirrors the server-side template branches at the top of the table.
+var STATUS_BADGES = {
+    pending:    { cls: 'badge-blue',  text: 'Marking...' },
+    processing: { cls: 'badge-blue',  text: 'Marking...' },
+    extracting: { cls: 'badge-blue',  text: 'Extracting...' },
+    preview:    { cls: 'badge-blue',  text: 'Extracting...' },
+    done:       { cls: 'badge-green', text: 'Done' },
+    error:      { cls: 'badge-red',   text: 'Error' },
+};
+
+window.updateRowStatus = function (submissionId, statusKey) {
+    var row = _rowForSubmission(submissionId);
+    if (!row) return;
+    var cell = row.querySelector('.col-status');
+    if (!cell) return;
+    var info = STATUS_BADGES[statusKey] || { cls: 'badge-gray', text: statusKey };
+    cell.innerHTML = '<span class="badge ' + info.cls + '">' + info.text + '</span>';
+};
+
+// Refresh the score cell for a submission. Used after the modal saves
+// marks or band changes — pulls the fresh result_json and rebuilds the
+// score-stack + band pills client-side. Falls back to a status reset if
+// the response says the submission is still processing.
+window.refreshSubmissionScore = async function (submissionId) {
+    var row = _rowForSubmission(submissionId);
+    if (!row) return;
+    try {
+        var res = await fetch('/teacher/assignment/' + REMARK_ASSIGNMENT_ID + '/submission/' + submissionId + '/result');
+        var data = await res.json();
+        if (!data.success) return;
+        var result = data.result || {};
+        var questions = result.questions || [];
+        var hasMarks = questions.some(function (q) { return q.marks_awarded != null; });
+        var ta = 0, tp = 0;
+        questions.forEach(function (q) { ta += (q.marks_awarded || 0); tp += (q.marks_total || 0); });
+        var scoreText = hasMarks ? (ta + '/' + tp) : '-';
+        var pills = [];
+        questions.forEach(function (q) {
+            var crit = (q.criterion_name || '').trim();
+            var band = (q.band || '').trim();
+            if (!crit || !band) return;
+            var m = band.match(/Band\s+(\d+)/i);
+            if (!m) return;
+            var bandNum = parseInt(m[1], 10);
+            // Mirrors app.py:_rubric_pills_for_questions abbreviation rule:
+            // first 2 alpha chars of the first word with ≥2 alpha chars.
+            var abbrev = '';
+            var words = crit.split(/\s+/);
+            for (var i = 0; i < words.length; i++) {
+                var clean = words[i].replace(/[^A-Za-z]/g, '');
+                if (clean.length >= 2) { abbrev = clean.slice(0, 2).toUpperCase(); break; }
+            }
+            if (!abbrev) {
+                var letters = crit.replace(/[^A-Za-z]/g, '');
+                abbrev = letters ? letters.slice(0, 2).toUpperCase() : '??';
+            }
+            pills.push({ abbrev: abbrev, bandNum: bandNum, crit: crit, band: band });
+        });
+        var cell = row.querySelector('.col-score');
+        if (!cell) return;
+        if (pills.length > 0) {
+            var pillHtml = pills.map(function (p) {
+                return '<span class="band-pill band-' + p.bandNum + '" title="' +
+                    p.crit.replace(/"/g, '&quot;') + ' — ' +
+                    p.band.replace(/"/g, '&quot;') + '">' +
+                    p.abbrev + '·B' + p.bandNum + '</span>';
+            }).join('');
+            cell.innerHTML = '<div class="score-stack"><div class="score-stack-total">' + scoreText + '</div><div class="score-stack-pills">' + pillHtml + '</div></div>';
+        } else {
+            cell.textContent = scoreText;
+        }
+    } catch (e) { /* swallow — score will refresh on next poll/reload */ }
+};
+
+// Shared core: posts the re-mark and chains into pollRemarkStatus.
+// Caller is responsible for the confirm() dialog and any button UX.
+//
+// bandOverrides (optional): { criterionName: bandLabel } — when present,
+//   the AI is told to keep those bands fixed and anchor all per-band
+//   text to the teacher's chosen band. Used by the modal's "Re-mark for
+//   tailored text" link in the band-stale notice.
+async function postRemark(submissionId, bandOverrides) {
+    try {
+        var body = bandOverrides && Object.keys(bandOverrides).length
+            ? JSON.stringify({ band_overrides: bandOverrides })
+            : null;
+        var res = await fetch('/teacher/assignment/' + REMARK_ASSIGNMENT_ID + '/submission/' + submissionId + '/remark', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body,
+        });
+        var data = await res.json();
+        if (!data.success) {
+            alert(data.error || 'Re-mark failed to start.');
+            return false;
+        }
+        // Flip the row status badge to "Marking..." immediately so the
+        // teacher sees the transition (server returns 'pending' on the next
+        // poll, but until then the row was still showing the old status).
+        window.updateRowStatus(submissionId, 'pending');
+        pollRemarkStatus(submissionId);
+        return true;
+    } catch (err) {
+        alert('Network error. Please try again.');
+        return false;
+    }
+}
+
 async function remarkStudent(btn, submissionId) {
     if (!confirm('Re-mark this student using the stored script?')) return;
     btn.disabled = true;
     btn.textContent = 'Marking…';
+    var ok = await postRemark(submissionId);
+    if (!ok) {
+        btn.disabled = false;
+        btn.textContent = 'Re-mark';
+    }
+}
+
+// Bulk re-mark: hits the assignment-level remark-all endpoint, then
+// reloads after a short delay so the table picks up the fresh "pending"
+// statuses. The endpoint kicks off one marking thread per submission.
+async function remarkAllSubmissions() {
+    var btn = document.getElementById('remarkAllBtn');
+    if (!confirm('Re-mark every submitted script using the current answer key / rubric?\n\nAny teacher edits to AI feedback will be overwritten.')) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Queuing…'; }
     try {
-        var res = await fetch('/teacher/assignment/' + REMARK_ASSIGNMENT_ID + '/submission/' + submissionId + '/remark', {
+        var res = await fetch('/teacher/assignment/' + REMARK_ASSIGNMENT_ID + '/remark-all', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
         });
         var data = await res.json();
         if (!data.success) {
             alert(data.error || 'Re-mark failed to start.');
-            btn.disabled = false;
-            btn.textContent = 'Re-mark';
+            if (btn) { btn.disabled = false; btn.textContent = 'Re-mark All'; }
             return;
         }
-        pollRemarkStatus(submissionId);
+        var msg = 'Re-marking ' + data.queued + ' script' + (data.queued === 1 ? '' : 's') + '.';
+        if (data.skipped) msg += ' (' + data.skipped + ' skipped — no stored script to re-mark.)';
+        alert(msg);
+        setTimeout(function () { window.location.reload(); }, 500);
     } catch (err) {
         alert('Network error. Please try again.');
-        btn.disabled = false;
-        btn.textContent = 'Re-mark';
+        if (btn) { btn.disabled = false; btn.textContent = 'Re-mark All'; }
     }
 }
+
+// Exposed for the modal's "Re-mark to enable" fallback link rendered by
+// feedback_render.js when a legacy submission lacks evidence/suggestion
+// fields. Same core as remarkStudent, no button UX.
+//
+// bandOverrides (optional): { criterion_name: band_label } — when set,
+//   re-marks with the AI's bands locked to the teacher's choices. Used
+//   by the band-stale notice's "Re-mark for tailored text" link so the
+//   teacher's manual band override doesn't get overwritten by the AI's
+//   re-decision.
+window.triggerRemark = async function(submissionId, bandOverrides) {
+    if (!submissionId) return;
+    var msg = bandOverrides && Object.keys(bandOverrides).length
+        ? 'Re-mark this student with your band override(s) locked? The AI will produce fresh descriptions and improvement examples anchored at your chosen band.'
+        : 'Re-mark this student using the stored script?';
+    if (!confirm(msg)) return;
+    await postRemark(submissionId, bandOverrides);
+};
 
 var remarkPollFailures = {};
 
@@ -1416,9 +1567,15 @@ function pollRemarkStatus(submissionId) {
         try {
             var res = await fetch('/teacher/assignment/' + REMARK_ASSIGNMENT_ID + '/submission/' + submissionId + '/result');
             var data = await res.json();
-            if (data.success && (data.status === 'done' || data.status === 'error')) {
-                window.location.reload();
-                return;
+            if (data.success && data.status) {
+                // Reflect the server's current status on the row's badge so
+                // the teacher sees "Extracting..." → "Marking..." → "Done"
+                // transitions instead of the stale post-load status.
+                window.updateRowStatus(submissionId, data.status);
+                if (data.status === 'done' || data.status === 'error') {
+                    window.location.reload();
+                    return;
+                }
             }
             remarkPollFailures[submissionId] = 0;
         } catch (err) {
