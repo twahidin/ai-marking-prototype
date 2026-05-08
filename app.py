@@ -867,8 +867,8 @@ def _demo_mark():
         files = request.files.getlist(field)
         if not files or not files[0].filename:
             return jsonify({'success': False, 'error': f'Missing required file: {field}'}), 400
-        if len(files) > 10:
-            return jsonify({'success': False, 'error': f'Maximum 10 files per upload ({field})'}), 400
+        if len(files) > 20:
+            return jsonify({'success': False, 'error': f'Maximum 20 files per upload ({field})'}), 400
 
     provider = request.form.get('provider', 'anthropic')
     model = request.form.get('model', '')
@@ -958,8 +958,8 @@ def mark():
     script_files = request.files.getlist('script')
     if not script_files or not script_files[0].filename:
         return jsonify({'success': False, 'error': 'Please upload the student script'}), 400
-    if len(script_files) > 10:
-        return jsonify({'success': False, 'error': 'Maximum 10 files'}), 400
+    if len(script_files) > 20:
+        return jsonify({'success': False, 'error': 'Maximum 20 files'}), 400
 
     script_pages = [f.read() for f in script_files if f.filename]
 
@@ -6199,8 +6199,8 @@ def teacher_submit_for_student(assignment_id, student_id):
     script_files = request.files.getlist('script')
     if not script_files or not script_files[0].filename:
         return jsonify({'success': False, 'error': 'Please upload a script'}), 400
-    if len(script_files) > 10:
-        return jsonify({'success': False, 'error': 'Maximum 10 files'}), 400
+    if len(script_files) > 20:
+        return jsonify({'success': False, 'error': 'Maximum 20 files'}), 400
 
     script_pages = [f.read() for f in script_files if f.filename]
 
@@ -8016,8 +8016,8 @@ def student_upload(assignment_id):
     script_files = request.files.getlist('script')
     if not script_files or not script_files[0].filename:
         return jsonify({'success': False, 'error': 'Please upload your script'}), 400
-    if len(script_files) > 10:
-        return jsonify({'success': False, 'error': 'Maximum 10 files per submission'}), 400
+    if len(script_files) > 20:
+        return jsonify({'success': False, 'error': 'Maximum 20 files per submission'}), 400
 
     MAX_IMAGE_SIZE = 5 * 1024 * 1024   # 5MB per image
     MAX_PDF_SIZE = 20 * 1024 * 1024    # 20MB per PDF

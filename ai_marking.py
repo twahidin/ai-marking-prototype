@@ -157,7 +157,7 @@ def get_ai_client(provider, model=None, session_keys=None):
     return None, None, None
 
 
-def convert_pdf_to_images(pdf_bytes, max_pages=10):
+def convert_pdf_to_images(pdf_bytes, max_pages=20):
     """Convert PDF pages to base64-encoded JPEG images."""
     if not PDF2IMAGE_AVAILABLE:
         return []
@@ -323,7 +323,7 @@ def make_ai_api_call(client, model_name, provider, system_prompt, messages_conte
                 elif item.get('type') == 'document':
                     pdf_data = item['source']['data']
                     pdf_bytes = base64.b64decode(pdf_data)
-                    pdf_images = convert_pdf_to_images(pdf_bytes, max_pages=10)
+                    pdf_images = convert_pdf_to_images(pdf_bytes, max_pages=20)
                     if pdf_images:
                         for page_num, img_b64 in enumerate(pdf_images, 1):
                             user_content.append({

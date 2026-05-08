@@ -184,11 +184,11 @@
                 <div class="form-group">
                     <label>Rubrics File</label>
                     <div class="upload-zone" style="max-width:260px;" onclick="this.querySelector('input').click()">
-                        <input type="file" id="teacher_rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 10)">
+                        <input type="file" id="teacher_rubrics" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 20)">
                         <div class="icon">&#128203;</div>
                         <div class="label">Rubrics</div>
                         <div class="filename"></div>
-                        <div class="hint">PDF or up to 10 images</div>
+                        <div class="hint">PDF or up to 20 images</div>
                     </div>
                 </div>
             </div>
@@ -217,18 +217,18 @@
             <!-- Question paper + answer key -->
             <div class="upload-grid">
                 <div class="upload-zone" onclick="this.querySelector('input').click()">
-                    <input type="file" id="teacher_question_paper" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 10)">
+                    <input type="file" id="teacher_question_paper" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 20)">
                     <div class="icon">&#128196;</div>
                     <div class="label">Question Paper</div>
                     <div class="filename"></div>
-                    <div class="hint">PDF or up to 10 images</div>
+                    <div class="hint">PDF or up to 20 images</div>
                 </div>
                 <div class="upload-zone" id="teacherAnswerKeyZone" onclick="this.querySelector('input').click()">
-                    <input type="file" id="teacher_answer_key" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 10)">
+                    <input type="file" id="teacher_answer_key" accept=".pdf,.jpg,.jpeg,.png,.heic" multiple onchange="fileSelected(this, 20)">
                     <div class="icon" id="teacherAnswerKeyIcon">&#9989;</div>
                     <div class="label" id="teacherAnswerKeyLabel">Answer Key</div>
                     <div class="filename"></div>
-                    <div class="hint" id="teacherAnswerKeyHint">PDF or up to 10 images</div>
+                    <div class="hint" id="teacherAnswerKeyHint">PDF or up to 20 images</div>
                 </div>
             </div>
 
@@ -461,7 +461,7 @@ function updateTeacherAssignType() {
     } else {
         akLabel.textContent = 'Answer Key';
         akIcon.innerHTML = '&#9989;';
-        akHint.textContent = 'PDF or up to 10 images';
+        akHint.textContent = 'PDF or up to 20 images';
         const refInput = document.getElementById('teacher_reference');
         if (refInput) refInput.id = 'teacher_answer_key';
     }
