@@ -1005,13 +1005,19 @@ async function forceRetryStuck(btn, submissionId) {
         var pop = menu.querySelector('.actions-menu-pop');
         if (!pop) return;
         var rect = menu.getBoundingClientRect();
-        // Estimate popover height from item count; pop hasn't been laid out
-        // when this runs (we set the class first), so we can't measure it
-        // directly without a forced reflow. ~36px per item + 8px padding is
-        // close enough for the flip decision.
-        var items = pop.children.length;
-        var estHeight = items * 36 + 8;
-        if (rect.bottom + estHeight > window.innerHeight - 12) {
+        // The popover is now display:block (we just added .open), so
+        // offsetHeight gives the real laid-out height. This is more
+        // accurate than estimating from item count, which undercounted
+        // for done/error rows with 5–6 items and let the popover clip.
+        var popHeight = pop.offsetHeight;
+        var GAP = 8; // popover sits ~8px below the button (top: 36px on a 30px button)
+        var MARGIN = 12; // safety margin from viewport edge
+        var spaceBelow = window.innerHeight - rect.bottom - GAP - MARGIN;
+        var spaceAbove = rect.top - GAP - MARGIN;
+        // Flip up when the popover doesn't fit below AND there's more room
+        // above. Works for stuck/error/done — any row whose kebab is close
+        // enough to the viewport bottom that the menu would otherwise clip.
+        if (popHeight > spaceBelow && spaceAbove > spaceBelow) {
             menu.classList.add('flip-up');
         }
     }
