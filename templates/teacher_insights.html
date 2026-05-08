@@ -2,6 +2,11 @@
 
 {% block title %}My Class Insights - {{ app_title }}{% endblock %}
 
+{# Force desktop layout on phone/tablet — user pans left/right + up/down
+   instead of the page reflowing into 1-col tiles. Pairs with
+   disableOneColumnMode:true on the GridStack init below. #}
+{% block viewport %}width=1280, initial-scale=1.0{% endblock %}
+
 {% block head %}
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack.min.css">
 <style>
@@ -1280,7 +1285,7 @@ document.addEventListener('DOMContentLoaded', function () {
         margin: 10,
         float: false,             /* tiles pack to the top, no gravity holes */
         animate: true,
-        disableOneColumnMode: false,
+        disableOneColumnMode: true,   /* never collapse to 1-col on narrow viewports — paired with width=1280 viewport so phones/tablets retain the desktop grid */
         staticGrid: true,         /* start in view mode */
         /* No handle restriction — clicking anywhere on the tile body in
            edit mode starts a drag. The cancel selector below excludes
