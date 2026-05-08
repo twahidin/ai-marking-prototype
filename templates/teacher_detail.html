@@ -998,41 +998,47 @@ async function forceRetryStuck(btn, submissionId) {
             m.classList.remove('flip-up');
             var btn = m.querySelector('.actions-menu-btn');
             if (btn) btn.setAttribute('aria-expanded', 'false');
+            // Reset the inline styles set by positionPopover so the
+            // CSS-default position:absolute is restored on next open.
+            var pop = m.querySelector('.actions-menu-pop');
+            if (pop) {
+                pop.style.position = '';
+                pop.style.top = '';
+                pop.style.bottom = '';
+                pop.style.left = '';
+                pop.style.right = '';
+            }
         });
     }
 
-    function maybeFlipUp(menu) {
+    function positionPopover(menu) {
         var pop = menu.querySelector('.actions-menu-pop');
-        if (!pop) return;
-        var rect = menu.getBoundingClientRect();
+        var btn = menu.querySelector('.actions-menu-btn');
+        if (!pop || !btn) return;
         // The popover is now display:block (we just added .open), so
         // offsetHeight gives the real laid-out height.
+        var btnRect = btn.getBoundingClientRect();
         var popHeight = pop.offsetHeight;
-        // Walk up to find the tightest clipping ancestor. The kebab pop
-        // is position:absolute, so it's clipped by any ancestor with
-        // overflow != visible — including .table-wrap (overflow-x:auto
-        // implicitly clips overflow-y per CSS spec). Without this, a
-        // 'done' row in the middle of a short table flips its decision
-        // off the viewport, even though .table-wrap is the real bound.
-        var clipBottom = window.innerHeight;
-        var clipTop = 0;
-        var node = menu.parentElement;
-        while (node && node !== document.body) {
-            var cs = window.getComputedStyle(node);
-            if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') {
-                var nr = node.getBoundingClientRect();
-                if (nr.bottom < clipBottom) clipBottom = nr.bottom;
-                if (nr.top > clipTop) clipTop = nr.top;
-            }
-            node = node.parentElement;
-        }
-        var GAP = 8; // popover sits ~8px below the button (top: 36px on a 30px button)
-        var MARGIN = 12; // safety margin from clip edge
-        var spaceBelow = clipBottom - rect.bottom - GAP - MARGIN;
-        var spaceAbove = rect.top - clipTop - GAP - MARGIN;
-        // Flip up when popover doesn't fit below AND above has more room.
-        if (popHeight > spaceBelow && spaceAbove > spaceBelow) {
-            menu.classList.add('flip-up');
+        var GAP = 6;
+        var MARGIN = 12;
+        var spaceBelow = window.innerHeight - btnRect.bottom - GAP - MARGIN;
+        var spaceAbove = btnRect.top - GAP - MARGIN;
+        var flipUp = popHeight > spaceBelow && spaceAbove > spaceBelow;
+        if (flipUp) menu.classList.add('flip-up');
+        // Switch to position:fixed so the popover escapes ancestors that
+        // clip overflow — most notably .table-wrap (overflow-x:auto
+        // implicitly clips overflow-y too per CSS spec). With position:
+        // absolute the popover was getting cut at the table-wrap's top
+        // edge after flipping up, hiding the first item (Download).
+        pop.style.position = 'fixed';
+        pop.style.right = (window.innerWidth - btnRect.right) + 'px';
+        pop.style.left = 'auto';
+        if (flipUp) {
+            pop.style.bottom = (window.innerHeight - btnRect.top + GAP) + 'px';
+            pop.style.top = 'auto';
+        } else {
+            pop.style.top = (btnRect.bottom + GAP) + 'px';
+            pop.style.bottom = 'auto';
         }
     }
 
@@ -1047,7 +1053,7 @@ async function forceRetryStuck(btn, submissionId) {
             if (!wasOpen) {
                 wrap.classList.add('open');
                 kbBtn.setAttribute('aria-expanded', 'true');
-                maybeFlipUp(wrap);
+                positionPopover(wrap);
             }
             return;
         }
