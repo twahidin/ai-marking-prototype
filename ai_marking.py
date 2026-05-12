@@ -5,18 +5,129 @@ import json
 import re
 import io
 import hashlib
+import threading as _threading
+import time as _time
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
 # Import providers
 from anthropic import Anthropic
+# UP-13: classes used by the tenacity retry filter. Older anthropic
+# wheels may not have all of these — fall back to Exception so
+# `retry_if_exception_type` is a no-op rather than a NameError.
+try:
+    from anthropic import (
+        RateLimitError as AnthropicRateLimitError,
+        APIConnectionError as AnthropicAPIConnectionError,
+        APITimeoutError as AnthropicAPITimeoutError,
+        InternalServerError as AnthropicInternalServerError,
+    )
+except ImportError:  # pragma: no cover
+    AnthropicRateLimitError = AnthropicAPIConnectionError = AnthropicAPITimeoutError = AnthropicInternalServerError = type('_Unused', (Exception,), {})
 
 try:
     from openai import OpenAI
+    from openai import (
+        RateLimitError as OpenAIRateLimitError,
+        APIConnectionError as OpenAIAPIConnectionError,
+        APITimeoutError as OpenAIAPITimeoutError,
+        InternalServerError as OpenAIInternalServerError,
+    )
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
+    OpenAIRateLimitError = OpenAIAPIConnectionError = OpenAIAPITimeoutError = OpenAIInternalServerError = type('_Unused', (Exception,), {})
+
+# UP-13: retry transient AI failures with exponential backoff. The
+# providers will occasionally 429/500 mid-bulk-mark — before this, a
+# single hiccup would mark that student `error` and require a manual
+# force-remark. 3 attempts, 2-30s backoff, reraise the last error so
+# `mark_script` can still surface it on permanent failure.
+from tenacity import (
+    retry, stop_after_attempt, wait_exponential, retry_if_exception_type,
+    before_sleep_log,
+)
+
+_TRANSIENT_AI_ERRORS = (
+    AnthropicRateLimitError, AnthropicAPIConnectionError, AnthropicAPITimeoutError, AnthropicInternalServerError,
+    OpenAIRateLimitError, OpenAIAPIConnectionError, OpenAIAPITimeoutError, OpenAIInternalServerError,
+)
+
+_ai_retry = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception_type(_TRANSIENT_AI_ERRORS),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+
+
+@_ai_retry
+def _openai_chat_create(client, **kwargs):
+    """UP-13: tenacity-decorated OpenAI/Qwen chat.completions wrapper used
+    by helper functions outside `make_ai_api_call`. Same retry semantics."""
+    return client.chat.completions.create(**kwargs)
+
+
+# UP-12: USD price per 1M tokens, (input, output). Used to estimate cost
+# in the structured log. Missing entries fall through to 0 — the log
+# still records tokens, just without a cost. Update when providers
+# repricе. Cached-read pricing is treated as full price for now (
+# providers don't always discount cache reads in the bill).
+_PROVIDER_PRICES_PER_M = {
+    ('anthropic', 'claude-sonnet-4-6'): (3.0, 15.0),
+    ('anthropic', 'claude-haiku-4-5-20251001'): (0.8, 4.0),
+    ('openai', 'gpt-5.4'): (5.0, 15.0),
+    ('openai', 'gpt-5.4-mini'): (0.25, 1.0),
+    ('qwen', 'qwen3.5-plus-2026-02-15'): (0.5, 2.0),
+}
+
+
+def _estimate_cost_usd(provider, model, in_tok, out_tok):
+    price_in, price_out = _PROVIDER_PRICES_PER_M.get((provider, model), (0.0, 0.0))
+    return round((in_tok * price_in + out_tok * price_out) / 1_000_000.0, 6)
+
+
+# UP-12: per-thread holder for the most recent AI call's usage so callers
+# can persist tokens/cost onto `Submission.usage_json` without us having to
+# change `make_ai_api_call`'s return signature.
+_call_state = _threading.local()
+
+
+def consume_last_usage():
+    """Pop and return the usage dict recorded by the most recent
+    `make_ai_api_call` on this thread, or None if none was captured.
+    Safe to call after every AI call: it clears the holder on read so
+    a follow-up call without usage capture returns None instead of stale
+    data."""
+    usage = getattr(_call_state, 'last_usage', None)
+    _call_state.last_usage = None
+    return usage
+
+
+def _record_usage(provider, model, in_tok, out_tok, cache_read, cache_creation, latency_ms):
+    """UP-12: persist usage into thread-local + emit structured log line."""
+    cost = _estimate_cost_usd(provider, model, in_tok, out_tok)
+    entry = {
+        'provider': provider,
+        'model': model,
+        'input_tokens': int(in_tok or 0),
+        'output_tokens': int(out_tok or 0),
+        'cache_read_input_tokens': int(cache_read or 0),
+        'cache_creation_input_tokens': int(cache_creation or 0),
+        'latency_ms': int(latency_ms),
+        'cost_usd': cost,
+        'ts': datetime.now(timezone.utc).isoformat(),
+    }
+    _call_state.last_usage = entry
+    logger.info(
+        "ai_call provider=%s model=%s in=%d out=%d cache_read=%d cache_creation=%d ms=%d cost=%.6f",
+        provider, model, entry['input_tokens'], entry['output_tokens'],
+        entry['cache_read_input_tokens'], entry['cache_creation_input_tokens'],
+        entry['latency_ms'], entry['cost_usd'],
+    )
+    return entry
 
 try:
     from pdf2image import convert_from_bytes
@@ -282,8 +393,19 @@ def build_content_block(file_bytes):
     }
 
 
+@_ai_retry
 def make_ai_api_call(client, model_name, provider, system_prompt, messages_content, max_tokens=32000):
-    """Unified API call across providers."""
+    """Unified API call across providers.
+
+    UP-13: decorated with `_ai_retry` so a transient 429/500/connection
+    reset triggers a backoff retry instead of marking the student
+    `error`. Permanent errors (auth, bad request, schema) still surface
+    on the last attempt.
+    """
+    # UP-12: capture wall-clock latency + token usage for the structured
+    # log line and thread-local persistence sink.
+    _call_state.last_usage = None
+    _t0 = _time.perf_counter()
     if provider == 'anthropic':
         # Convert system_prompt to a cached block list. The system text is
         # identical across every student of the same assignment, so caching
@@ -301,7 +423,25 @@ def make_ai_api_call(client, model_name, provider, system_prompt, messages_conte
             messages=[{"role": "user", "content": messages_content}],
             system=system_blocks
         ) as stream:
-            return stream.get_final_text()
+            text = stream.get_final_text()
+            # UP-12: usage lives on the final message — get_final_message()
+            # is idempotent after stream consumption and returns the same
+            # Message object the streaming context built up.
+            try:
+                msg = stream.get_final_message()
+                u = getattr(msg, 'usage', None)
+                if u is not None:
+                    _record_usage(
+                        provider, model_name,
+                        getattr(u, 'input_tokens', 0) or 0,
+                        getattr(u, 'output_tokens', 0) or 0,
+                        getattr(u, 'cache_read_input_tokens', 0) or 0,
+                        getattr(u, 'cache_creation_input_tokens', 0) or 0,
+                        (_time.perf_counter() - _t0) * 1000.0,
+                    )
+            except Exception as _usage_err:
+                logger.debug(f"Anthropic usage capture failed: {_usage_err}")
+            return text
 
     elif provider in ('openai', 'qwen'):
         openai_messages = []
@@ -357,6 +497,21 @@ def make_ai_api_call(client, model_name, provider, system_prompt, messages_conte
             messages=openai_messages,
             **{token_param: max_tokens}
         )
+        # UP-12: capture usage. OpenAI surfaces `prompt_tokens_details.cached_tokens`
+        # on prompts that hit the automatic prefix cache.
+        try:
+            u = getattr(response, 'usage', None)
+            if u is not None:
+                in_tok = getattr(u, 'prompt_tokens', 0) or 0
+                out_tok = getattr(u, 'completion_tokens', 0) or 0
+                details = getattr(u, 'prompt_tokens_details', None)
+                cache_read = getattr(details, 'cached_tokens', 0) if details else 0
+                _record_usage(
+                    provider, model_name, in_tok, out_tok, cache_read or 0, 0,
+                    (_time.perf_counter() - _t0) * 1000.0,
+                )
+        except Exception as _usage_err:
+            logger.debug(f"OpenAI/Qwen usage capture failed: {_usage_err}")
         return response.choices[0].message.content
 
     raise ValueError(f"Unknown provider: {provider}")
@@ -871,13 +1026,13 @@ def _build_rubrics_prompt(subject, rubrics_pages, reference_pages, question_pape
 
     language_block = _language_directive(subject)
 
-    system_prompt = f"""{calibration_block}{language_block}You are an experienced teacher marking a student's essay/extended response using rubrics.
-
-Subject: {subject or 'General'}
-{reference_section}
-{overrides_section}
-{review_section}
-{marking_section}
+    # UP-11: static rules + JSON schema lead the system prompt so OpenAI/
+    # Qwen prefix caching can match across students of the same assignment.
+    # Per-assignment variables (subject, calibration, custom instructions)
+    # are appended at the bottom. The per-STUDENT variable
+    # (`band_overrides`) moves out of the system prompt entirely and rides
+    # in the user message instead — see `content` below.
+    system_prompt = f"""You are an experienced teacher marking a student's essay/extended response using rubrics.
 
 Your task:
 1. Read the QUESTION PAPER to understand the essay prompt/task
@@ -964,9 +1119,23 @@ IMPORTANT:
 - If the student is at the TOP band for a criterion, omit "next_band_oneliner" entirely and provide "maintain_advice" instead. For non-top bands, do the opposite: provide "next_band_oneliner" and omit "maintain_advice".
 - For each improvement-example pair, use the "__NO_CONFIDENT_SUGGESTION__" sentinel from RUBRIC-BASED FEEDBACK RULES if you cannot rewrite with high confidence. Do not invent quotes.
 - "improvement_target" and "improvement_rewrite" are PAIRED: either both contain content OR both contain "__NO_CONFIDENT_SUGGESTION__". Never one and not the other.
-- "improvement_target_2" and "improvement_rewrite_2" follow the same pairing rule, AND the whole pair is OPTIONAL — omit both fields entirely when there is no second strong example. Do not include the keys at all in that case."""
+- "improvement_target_2" and "improvement_rewrite_2" follow the same pairing rule, AND the whole pair is OPTIONAL — omit both fields entirely when there is no second strong example. Do not include the keys at all in that case.
+
+--- PER-ASSIGNMENT CONTEXT ---
+Subject: {subject or 'General'}
+{language_block}
+{reference_section}
+{review_section}
+{marking_section}
+{calibration_block}"""
 
     content = []
+    # UP-11: per-student band overrides move from system prompt to user
+    # message so the system prompt stays identical across students and
+    # the OpenAI/Qwen prefix cache hits.
+    if overrides_section:
+        content.append({"type": "text", "text": overrides_section.strip()})
+
     _append_pages(content, "QUESTION PAPER / ESSAY PROMPT:", question_paper_pages)
 
     if reference_pages:
@@ -1077,12 +1246,12 @@ Include marks_awarded, marks_total, and status on EVERY entry."""
 
     language_block = _language_directive(subject)
 
-    system_prompt = f"""{calibration_block}{language_block}You are an experienced teacher marking a student's assignment script.
-
-Subject: {subject or 'General'}
-{rubrics_section}
-{review_section}
-{marking_section}
+    # UP-11: static task description + scoring rules + JSON schema lead so
+    # OpenAI/Qwen prefix caching catches the largest possible prefix across
+    # students of the same assignment. Per-assignment variables (subject,
+    # calibration, review/marking instructions, language directive) move
+    # to the bottom of the system prompt.
+    system_prompt = f"""You are an experienced teacher marking a student's assignment script.
 
 Your task:
 1. Read the QUESTION PAPER to understand what was asked
@@ -1120,7 +1289,15 @@ Respond ONLY with valid JSON:
     ],
     "overall_feedback": "general assessment of the submission",
     "recommended_actions": ["action 1", "action 2", "action 3"]
-}}"""
+}}
+
+--- PER-ASSIGNMENT CONTEXT ---
+Subject: {subject or 'General'}
+{language_block}
+{rubrics_section}
+{review_section}
+{marking_section}
+{calibration_block}"""
 
     content = []
     _append_pages(content, "QUESTION PAPER:", question_paper_pages)
@@ -1436,7 +1613,7 @@ def generate_exemplar_analysis(provider, model, session_keys, subject, submissio
             kwargs['max_completion_tokens'] = 4096
         else:
             kwargs['max_tokens'] = 4096
-        resp = client.chat.completions.create(**kwargs)
+        resp = _openai_chat_create(client, **kwargs)
         text = resp.choices[0].message.content
 
     match = re.search(r'\{[\s\S]*\}', text)
@@ -1490,7 +1667,7 @@ def _run_text_completion(provider, model, session_keys, system_prompt, user_prom
         kwargs['max_completion_tokens'] = max_tokens
     else:
         kwargs['max_tokens'] = max_tokens
-    resp = client.chat.completions.create(**kwargs)
+    resp = _openai_chat_create(client, **kwargs)
     return resp.choices[0].message.content
 
 
@@ -1532,7 +1709,7 @@ def _run_feedback_helper(provider, model, session_keys, system_prompt, user_prom
             kwargs['max_completion_tokens'] = max_tokens
         else:
             kwargs['max_tokens'] = max_tokens
-        resp = client.chat.completions.create(**kwargs)
+        resp = _openai_chat_create(client, **kwargs)
         text = resp.choices[0].message.content
 
     match = re.search(r'\{[\s\S]*\}', text)

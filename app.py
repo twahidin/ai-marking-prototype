@@ -9,19 +9,28 @@ import logging
 import threading
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for, Response, abort, make_response
 from flask_wtf.csrf import CSRFProtect, CSRFError
+from werkzeug.middleware.proxy_fix import ProxyFix
 import io
 
-from ai_marking import mark_script, get_available_providers, PROVIDERS, generate_exemplar_analysis, explain_criterion, evaluate_correction
+from ai_marking import mark_script, get_available_providers, PROVIDERS, generate_exemplar_analysis, explain_criterion, evaluate_correction, consume_last_usage
 from pdf_generator import generate_report_pdf, generate_overview_pdf
-from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig, TeacherDashboardLayout
+from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig, TeacherDashboardLayout, BulkJob
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+# UP-18: surface real client IPs through Railway's load balancer so the
+# in-memory rate limiter (request.remote_addr) doesn't collapse every
+# visitor into the LB's address. One hop of trust (x_for/x_proto = 1)
+# matches Railway's single reverse-proxy layer.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+
 _flask_secret = os.getenv('FLASK_SECRET_KEY', '')
 _secret_from_env = bool(_flask_secret)
 if not _flask_secret:
@@ -285,9 +294,94 @@ def _check_rate_limit(key):
         _rate_limits[key].append(now)
         return True
 
-# In-memory job store (thread-safe via GIL for dict ops)
+# In-memory job store for single-marking (demo). UP-15 moved bulk jobs
+# to the `bulk_jobs` table so they survive Railway redeploys; this dict
+# now holds only short-lived single-marking jobs (`/mark` route) and the
+# print-all-reports state.
 jobs = {}
 JOB_TTL_SECONDS = 3600  # 1 hour
+
+
+def _bulk_job_load(job_id):
+    """UP-15: read a BulkJob and shape it like the legacy in-memory dict so
+    the rest of the bulk routes can stay untouched. Returns None if no
+    such job (so callers can fall back to the in-memory `jobs` dict for
+    single-marking job ids)."""
+    bj = BulkJob.query.get(job_id)
+    if not bj:
+        return None
+    return {
+        'status': bj.status,
+        'subject': bj.subject or '',
+        'progress': bj.get_progress(),
+        'results': bj.get_results(),
+        'skipped': bj.get_skipped(),
+        'errors': bj.get_errors(),
+        'assignment_id': bj.assignment_id,
+        'bulk': True,
+        'created_at': bj.started_at.timestamp() if bj.started_at else time.time(),
+        '_persistent': True,
+    }
+
+
+def _bulk_job_create(job_id, *, assignment_id, subject, total, skipped):
+    """UP-15: create a BulkJob row at the start of a bulk-mark request."""
+    bj = BulkJob(
+        id=job_id,
+        kind='bulk_mark',
+        status='processing',
+        assignment_id=assignment_id,
+        subject=subject,
+    )
+    bj.set_progress({'current': 0, 'total': total, 'current_name': 'Starting...'})
+    bj.set_results([])
+    bj.set_skipped(skipped or [])
+    db.session.add(bj)
+    db.session.commit()
+    return bj
+
+
+def _bulk_job_update(job_id, *, progress=None, results=None, status=None, error_message=None, finished=False, errors_append=None):
+    """UP-15: in-place update for a BulkJob during the worker loop.
+
+    Best-effort under a fresh app context — callers from worker threads
+    must wrap this in `with app.app_context(): ...` themselves (the
+    `run_bulk_marking_job` worker already opens its own context).
+    """
+    bj = BulkJob.query.get(job_id)
+    if not bj:
+        return None
+    if progress is not None:
+        bj.set_progress(progress)
+    if results is not None:
+        bj.set_results(results)
+    if status is not None:
+        bj.status = status
+    if error_message is not None:
+        bj.error_message = error_message
+    if errors_append:
+        bj.append_error(errors_append)
+    if finished:
+        bj.finished_at = datetime.now(timezone.utc)
+    db.session.commit()
+    return bj
+
+# UP-16: bound AI-call fan-outs. Re-marking a 40-student class previously
+# spawned 40 simultaneous outbound API calls — provider rate limits would
+# kick in and the failing attempts would burn billable cost on retry.
+# `max_workers=4` is the sweet spot for Anthropic/OpenAI default tiers and
+# matches the gunicorn thread budget. Workers persist across requests;
+# the daemon=False default is fine because we let them drain on shutdown.
+_MARK_EXEC = ThreadPoolExecutor(max_workers=4, thread_name_prefix='mark')
+
+
+def _submit_marking(fn, *args, **kwargs):
+    """Submit a marking/AI worker through the bounded executor.
+
+    Drop-in for `threading.Thread(target=fn, args=(...), daemon=True).start()`
+    on AI-call paths. Boot warmups and short one-shots stay as raw threads.
+    """
+    return _MARK_EXEC.submit(fn, *args, **kwargs)
 
 
 def cleanup_old_jobs():
@@ -299,8 +393,53 @@ def cleanup_old_jobs():
 
 
 def _get_session_keys():
-    """Get session-stored API keys (used when DEMO_MODE is FALSE or for bulk)."""
-    return session.get('api_keys') or {}
+    """Get session-stored API keys (used when DEMO_MODE is FALSE or for bulk).
+
+    UP-14: Flask cookies are signed but not encrypted. Anyone reading the
+    cookie (browser extension, shared device) would see API keys in
+    base64. We wrap the keys dict in Fernet ciphertext on save and unwrap
+    here on read. Legacy dict-shaped sessions still work — they're
+    transparently re-encrypted on next `save_keys`.
+    """
+    raw = session.get('api_keys')
+    if not raw:
+        return {}
+    # Legacy: a bare dict was stored before UP-14.
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            from db import _get_fernet
+            f = _get_fernet()
+            if not f:
+                return {}
+            plaintext = f.decrypt(raw.encode('utf-8')).decode('utf-8')
+            data = json.loads(plaintext)
+            return data if isinstance(data, dict) else {}
+        except Exception as _decrypt_err:
+            # Tampered or stale ciphertext — drop and let user re-enter keys.
+            # Log it so operators notice a key rotation (or attack).
+            logger.warning('Session api_keys decrypt failed (stale/tampered): %s', _decrypt_err)
+            return {}
+    return {}
+
+
+def _set_session_keys(keys):
+    """UP-14: encrypt the api-keys dict with Fernet before stuffing it into
+    `session['api_keys']`. If Fernet isn't available (FLASK_SECRET_KEY
+    missing AND no DB-stored secret), fall back to plaintext so the app
+    still works — surface a warning instead of breaking auth."""
+    if not keys:
+        session.pop('api_keys', None)
+        return
+    from db import _get_fernet
+    f = _get_fernet()
+    if not f:
+        logger.warning('No Fernet key available — storing session api_keys in plaintext. Set FLASK_SECRET_KEY.')
+        session['api_keys'] = keys
+        return
+    payload = json.dumps(keys, ensure_ascii=False).encode('utf-8')
+    session['api_keys'] = f.encrypt(payload).decode('utf-8')
 
 
 
@@ -901,7 +1040,7 @@ def verify_code():
     # Normal mode with teacher code
     _tc = get_teacher_code()
     if _tc:
-        if code == _tc:
+        if secrets.compare_digest(str(code), str(_tc)):
             # Master key — find the owner teacher
             teacher = Teacher.query.filter_by(role='owner').first()
             if not teacher:
@@ -919,7 +1058,7 @@ def verify_code():
         return jsonify({'success': False, 'error': 'Invalid code'}), 401
 
     # Legacy ACCESS_CODE fallback
-    if _ENV_ACCESS_CODE and code == _ENV_ACCESS_CODE:
+    if _ENV_ACCESS_CODE and secrets.compare_digest(str(code), str(_ENV_ACCESS_CODE)):
         session['authenticated'] = True
         return jsonify({'success': True})
     return jsonify({'success': False, 'error': 'Invalid access code'}), 401
@@ -936,7 +1075,7 @@ def save_keys():
         val = (data.get(prov) or '').strip()
         if val:
             keys[prov] = val
-    session['api_keys'] = keys
+    _set_session_keys(keys)
     sk = keys if (not is_demo_mode()) else None
     providers = get_available_providers(session_keys=sk)
     return jsonify({'success': True, 'providers': {k: v for k, v in providers.items()}})
@@ -984,6 +1123,16 @@ def _demo_mark():
     rubrics_pages = [f.read() for f in request.files.getlist('rubrics') if f.filename]
     reference_pages = [f.read() for f in request.files.getlist('reference') if f.filename]
 
+    # UP-17: validate every file before passing to the AI provider — demo
+    # mode is the only fully-open route, so a malicious renamed-PDF could
+    # otherwise crash Pillow during PDF-to-image conversion.
+    err = _validate_upload_blobs(
+        question_paper_pages + answer_key_pages + script_pages + rubrics_pages + reference_pages,
+        label='upload',
+    )
+    if err:
+        return err
+
     # Resolve API keys: check wizard-stored keys for demo mode
     demo_session_keys = None
     from db import _get_fernet
@@ -1007,15 +1156,12 @@ def _demo_mark():
         'created_at': time.time(),
     }
 
-    thread = threading.Thread(
-        target=run_marking_job,
-        args=(job_id, provider, model, question_paper_pages, answer_key_pages,
-              script_pages, subject, rubrics_pages, reference_pages,
-              review_instructions, marking_instructions,
-              assign_type, scoring_mode, total_marks, demo_session_keys),
-        daemon=True
+    _submit_marking(
+        run_marking_job, job_id, provider, model, question_paper_pages, answer_key_pages,
+        script_pages, subject, rubrics_pages, reference_pages,
+        review_instructions, marking_instructions,
+        assign_type, scoring_mode, total_marks, demo_session_keys,
     )
-    thread.start()
 
     return jsonify({'success': True, 'job_id': job_id})
 
@@ -1055,6 +1201,9 @@ def mark():
         return jsonify({'success': False, 'error': 'Maximum 20 files'}), 400
 
     script_pages = [f.read() for f in script_files if f.filename]
+    err = _validate_upload_blobs(script_pages, label='script')
+    if err:
+        return err
 
     sub, err = _prepare_new_submission(student, asn)
     if err:
@@ -1065,12 +1214,7 @@ def mark():
     db.session.commit()
 
     # Start marking in background using the assignment's stored files/settings
-    thread = threading.Thread(
-        target=_run_submission_marking,
-        args=(app, sub.id, assignment_id),
-        daemon=True,
-    )
-    thread.start()
+    _submit_marking(_run_submission_marking, app, sub.id, assignment_id)
 
     return jsonify({
         'success': True,
@@ -1084,9 +1228,22 @@ def job_status(job_id):
     if not is_demo_mode() and not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
-    job = jobs.get(job_id)
+    # UP-15: try the persistent BulkJob table first; fall back to the
+    # in-memory `jobs` dict for short-lived single-marking demo jobs.
+    job = _bulk_job_load(job_id) or jobs.get(job_id)
     if not job:
         return jsonify({'success': False, 'error': 'Job not found'}), 404
+
+    # UP-15 + IDOR-fix: a persistent BulkJob is scoped to one assignment, so
+    # check the calling teacher actually owns that assignment before
+    # spilling progress/results. In-memory single-marking jobs stay
+    # auth-gated only (no assignment).
+    if job.get('_persistent') and job.get('assignment_id'):
+        asn = Assignment.query.get(job['assignment_id'])
+        if asn is not None:
+            err = _check_assignment_ownership(asn)
+            if err:
+                return err
 
     response = {'success': True, 'status': job['status']}
     if job.get('bulk') and 'skipped' in job:
@@ -1867,8 +2024,10 @@ def _missed_submissions_payload(class_id):
     asn_ids = [a.id for a in asns]
 
     # Pull every relevant submission in one query, indexed by (student_id, asn_id).
+    # UP-10: skip the four large blob/JSON columns — this widget only needs
+    # status + scores, not the underlying PDFs or extracted text.
     sub_rows = (
-        Submission.query
+        Submission.query_no_blobs()
         .filter(Submission.assignment_id.in_(asn_ids))
         .filter(Submission.is_final.is_(True))
         .all()
@@ -2005,8 +2164,9 @@ def teacher_widget_performance_trend():
         return jsonify({'success': True, 'points': []})
 
     asn_ids = [a.id for a in asns]
+    # UP-10: defer blob columns — only stats are needed here.
     sub_rows = (
-        Submission.query
+        Submission.query_no_blobs()
         .filter(Submission.assignment_id.in_(asn_ids))
         .filter(Submission.is_final.is_(True))
         .filter(Submission.status == 'done')
@@ -2147,8 +2307,9 @@ def teacher_widget_consultation():
 
     students = Student.query.filter_by(class_id=class_id).all()
     asn_ids = [a.id for a in asns]
+    # UP-10: defer blob columns — only stats are needed here.
     sub_rows = (
-        Submission.query
+        Submission.query_no_blobs()
         .filter(Submission.assignment_id.in_(asn_ids))
         .filter(Submission.is_final.is_(True))
         .filter(Submission.status == 'done')
@@ -2259,8 +2420,9 @@ def teacher_widget_encourage():
 
     students = Student.query.filter_by(class_id=class_id).all()
     asn_ids = [a.id for a in asns_4]
+    # UP-10: defer blob columns — only stats are needed here.
     sub_rows = (
-        Submission.query
+        Submission.query_no_blobs()
         .filter(Submission.assignment_id.in_(asn_ids))
         .filter(Submission.is_final.is_(True))
         .filter(Submission.status == 'done')
@@ -2400,8 +2562,9 @@ def _compute_area_wrong_rates(assignment_id, areas):
     norms = [_first_qpart((a or {}).get('question_part') or '') for a in (areas or [])]
     if not any(norms):
         return [{'pct': None} for _ in (areas or [])]
+    # UP-10: only result_json is read in the loop below.
     subs = (
-        Submission.query
+        Submission.query_no_blobs()
         .filter_by(assignment_id=assignment_id, status='done', is_final=True)
         .all()
     )
@@ -2468,8 +2631,9 @@ def teacher_widget_weak_questions():
         return jsonify({'success': True, 'groups': []})
 
     asn_ids = [a.id for a in asns]
+    # UP-10: defer blob columns — only stats are needed here.
     sub_rows = (
-        Submission.query
+        Submission.query_no_blobs()
         .filter(Submission.assignment_id.in_(asn_ids))
         .filter(Submission.is_final.is_(True))
         .filter(Submission.status == 'done')
@@ -2547,8 +2711,9 @@ def teacher_widget_submission_rate_trend():
 
     students = Student.query.filter_by(class_id=class_id).all()
     asn_ids = [a.id for a in asns]
+    # UP-10: defer blob columns — only stats are needed here.
     sub_rows = (
-        Submission.query
+        Submission.query_no_blobs()
         .filter(Submission.assignment_id.in_(asn_ids))
         .filter(Submission.is_final.is_(True))
         .filter(Submission.status == 'done')
@@ -2627,7 +2792,8 @@ def department_insights_data():
     assignment_id = request.args.get('assignment_id')
     class_id = request.args.get('class_id')
 
-    query = Submission.query.filter_by(status='done', is_final=True)
+    # UP-10: defer blob columns — analytics path only reads result_json.
+    query = Submission.query_no_blobs().filter_by(status='done', is_final=True)
     if assignment_id:
         query = query.filter_by(assignment_id=assignment_id)
 
@@ -2828,8 +2994,8 @@ def department_analyze():
     if not client:
         return jsonify({'success': False, 'error': f'No API key for {provider}'}), 400
 
-    # Gather insights data
-    query = Submission.query.filter_by(status='done', is_final=True)
+    # Gather insights data. UP-10: defer blob columns.
+    query = Submission.query_no_blobs().filter_by(status='done', is_final=True)
     if asn_filter:
         query = query.filter_by(assignment_id=asn_filter)
 
@@ -2999,8 +3165,10 @@ def _build_class_performance_data(assignment_id):
     cls = Class.query.get(asn.class_id)
     students = Student.query.filter_by(class_id=asn.class_id)\
         .order_by(Student.index_number).all()
+    # UP-10: defer large blob columns — class-performance analysis touches
+    # result_json only, never script bytes or extracted text.
     subs = {s.student_id: s for s in
-            Submission.query.filter_by(assignment_id=assignment_id, is_final=True).all()}
+            Submission.query_no_blobs().filter_by(assignment_id=assignment_id, is_final=True).all()}
 
     heatmap = []
     all_scores = []  # (student_id, total_pct)
@@ -3599,7 +3767,8 @@ def department_export_csv():
     assignment_id = request.args.get('assignment_id')
     class_id = request.args.get('class_id')
 
-    query = Submission.query.filter_by(status='done', is_final=True)
+    # UP-10: defer blob columns — analytics path only reads result_json.
+    query = Submission.query_no_blobs().filter_by(status='done', is_final=True)
     if assignment_id:
         query = query.filter_by(assignment_id=assignment_id)
 
@@ -3967,12 +4136,21 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
 
     try:
         for i, (student, script_bytes) in enumerate(zip(students, student_scripts)):
-            jobs[job_id]['progress'] = {
-                'current': i + 1,
-                'total': total,
-                'current_name': student['name'],
-            }
+            # UP-15: progress writes go to the bulk_jobs table so the
+            # `/status` poller stays accurate across a redeploy.
+            try:
+                with app.app_context():
+                    _bulk_job_update(job_id, progress={
+                        'current': i + 1,
+                        'total': total,
+                        'current_name': student['name'],
+                    })
+            except Exception as _pe:
+                logger.debug(f'bulk progress write skipped: {_pe}')
 
+            # UP-12: reset per-iteration so a `mark_script` raise can't leak
+            # the previous student's usage onto the next DB write.
+            bulk_usage_entry = None
             try:
                 result = mark_script(
                     provider=provider,
@@ -3992,6 +4170,8 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                     pinyin_mode=pinyin_mode,
                     calibration_block=calibration_block,
                 )
+                # UP-12: usage will be appended to the submission row below.
+                bulk_usage_entry = consume_last_usage()
             except Exception as e:
                 logger.error(f"Bulk job {job_id}, student {student['name']} failed: {e}")
                 result = {'error': str(e)}
@@ -4033,6 +4213,12 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                                 sub.status = 'error' if result.get('error') else 'done'
                                 sub.set_result(result)
                                 sub.marked_at = datetime.now(timezone.utc)
+                                # UP-12: persist this student's AI call usage.
+                                if bulk_usage_entry:
+                                    try:
+                                        sub.append_usage(bulk_usage_entry)
+                                    except Exception:
+                                        pass
                                 db.session.commit()
                         else:
                             # Legacy path retained for safety; currently unreachable
@@ -4054,9 +4240,18 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                     db.session.rollback()
                     logger.error(f"Failed to save submission for {student['name']}: {e}")
 
-        jobs[job_id]['results'] = results
-        jobs[job_id]['status'] = 'done'
-        jobs[job_id]['progress'] = {'current': total, 'total': total, 'current_name': 'Complete'}
+        # UP-15: final results + status to the bulk_jobs row.
+        try:
+            with app.app_context():
+                _bulk_job_update(
+                    job_id,
+                    results=results,
+                    status='done',
+                    progress={'current': total, 'total': total, 'current_name': 'Complete'},
+                    finished=True,
+                )
+        except Exception as _fe:
+            logger.error(f'bulk final write failed: {_fe}')
 
         # Clear the "needs re-mark" flag on the assignment now that bulk-mark finished.
         if assignment_id:
@@ -4093,14 +4288,22 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                     logger.error(
                         f"Failed to finalize interrupted submission {sid}: {finalize_err}"
                     )
-        jobs[job_id]['results'] = results
-        jobs[job_id]['status'] = 'error'
-        jobs[job_id]['error'] = str(job_err)
-        jobs[job_id]['progress'] = {
-            'current': len(processed_indices),
-            'total': total,
-            'current_name': 'Interrupted',
-        }
+        try:
+            with app.app_context():
+                _bulk_job_update(
+                    job_id,
+                    results=results,
+                    status='error',
+                    error_message=str(job_err),
+                    progress={
+                        'current': len(processed_indices),
+                        'total': total,
+                        'current_name': 'Interrupted',
+                    },
+                    finished=True,
+                )
+        except Exception as _ie:
+            logger.error(f'bulk error write failed: {_ie}')
 
 
 @app.route('/bulk')
@@ -4153,6 +4356,10 @@ def bulk_mark():
     if not bulk_file or not bulk_file.filename:
         return jsonify({'success': False, 'error': 'Please upload the bulk scripts PDF'}), 400
     bulk_pdf = bulk_file.read()
+    # UP-17: must be a PDF (magic-byte verified). Bulk only accepts PDFs by
+    # design — `_split_pdf_variable` can't split an image stack.
+    if _detect_mime(bulk_pdf) != 'application/pdf':
+        return jsonify({'success': False, 'error': 'Bulk upload must be a PDF file.'}), 415
 
     # Build list of students to mark (skip those with page_count=0)
     students_to_mark = []
@@ -4237,17 +4444,15 @@ def bulk_mark():
     cleanup_old_jobs()
 
     job_id = str(uuid.uuid4())
-    jobs[job_id] = {
-        'status': 'processing',
-        'result': None,
-        'results': [],
-        'skipped': skipped,
-        'subject': asn.subject,
-        'created_at': time.time(),
-        'progress': {'current': 0, 'total': len(students_to_mark), 'current_name': 'Starting...'},
-        'bulk': True,
-        'assignment_id': assignment_id,
-    }
+    # UP-15: persist bulk-job state to DB so a Railway redeploy mid-mark
+    # doesn't lose progress. The status route now reads this row.
+    _bulk_job_create(
+        job_id,
+        assignment_id=assignment_id,
+        subject=asn.subject,
+        total=len(students_to_mark),
+        skipped=skipped,
+    )
 
     thread = threading.Thread(
         target=run_bulk_marking_job,
@@ -4277,9 +4482,17 @@ def bulk_download(job_id):
     if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
-    job = jobs.get(job_id)
+    # UP-15: read from persistent BulkJob with in-memory fallback for any
+    # in-flight job created before this code shipped.
+    job = _bulk_job_load(job_id) or jobs.get(job_id)
     if not job or job['status'] != 'done' or not job.get('results'):
         return jsonify({'success': False, 'error': 'No results available'}), 404
+    if job.get('_persistent') and job.get('assignment_id'):
+        asn = Assignment.query.get(job['assignment_id'])
+        if asn is not None:
+            err = _check_assignment_ownership(asn)
+            if err:
+                return err
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -4310,9 +4523,16 @@ def bulk_overview(job_id):
     if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
-    job = jobs.get(job_id)
+    # UP-15: read from persistent BulkJob with in-memory fallback.
+    job = _bulk_job_load(job_id) or jobs.get(job_id)
     if not job or job['status'] != 'done' or not job.get('results'):
         return jsonify({'success': False, 'error': 'No results available'}), 404
+    if job.get('_persistent') and job.get('assignment_id'):
+        asn = Assignment.query.get(job['assignment_id'])
+        if asn is not None:
+            err = _check_assignment_ownership(asn)
+            if err:
+                return err
 
     student_results = [
         {'name': item['name'], 'index': item['index'], 'result': item['result']}
@@ -4379,6 +4599,14 @@ def _run_submission_extraction(app_obj, submission_id, assignment_id):
                 model=asn.model,
                 session_keys=_resolve_api_keys(asn),
             )
+
+            # UP-12: capture extraction-call usage too.
+            try:
+                usage = consume_last_usage()
+                if usage:
+                    sub.append_usage(usage)
+            except Exception as _u:
+                logger.debug(f"usage append skipped for sub {submission_id} (extract): {_u}")
 
             if result.get('error'):
                 sub.set_result({'error': result['error']})
@@ -4457,6 +4685,15 @@ def _run_submission_marking(app_obj, submission_id, assignment_id, band_override
                 pinyin_mode=getattr(asn, 'pinyin_mode', 'off'),
                 band_overrides=band_overrides,
             )
+
+            # UP-12: persist per-call usage on the submission. Best-effort —
+            # a None means provider didn't expose usage on this attempt.
+            try:
+                usage = consume_last_usage()
+                if usage:
+                    sub.append_usage(usage)
+            except Exception as _u:
+                logger.debug(f"usage append skipped for sub {submission_id}: {_u}")
 
             # Defence-in-depth: even with the prompt instruction, the model
             # could drift on the band field. Clobber the AI's band back to
@@ -4886,11 +5123,7 @@ def _kick_categorisation_worker(submission_id):
             return False
         sub.categorisation_status = 'pending'
         db.session.commit()
-        threading.Thread(
-            target=_run_categorisation_worker,
-            args=(app, submission_id),
-            daemon=True,
-        ).start()
+        _submit_marking(_run_categorisation_worker, app, submission_id)
         return True
     except Exception as kick_err:
         db.session.rollback()
@@ -5189,6 +5422,7 @@ def teacher_create():
     qp_files = request.files.getlist('question_paper')
     if not qp_files or not qp_files[0].filename:
         return jsonify({'success': False, 'error': 'Please upload a question paper'}), 400
+    qp_bytes_new = qp_files[0].read()
 
     assign_type = request.form.get('assign_type', 'short_answer')
 
@@ -5213,6 +5447,16 @@ def teacher_create():
     ref_files = request.files.getlist('reference')
     if ref_files and ref_files[0].filename:
         ref_bytes = ref_files[0].read()
+
+    # UP-17: validate teacher-supplied files at the boundary. They flow into
+    # Pillow (image-mode AI calls) and LuaLaTeX (PDF generation); a malicious
+    # rename-to-PDF could trigger a Pillow crash or worse.
+    err = _validate_upload_blobs(
+        [b for b in (qp_bytes_new, ak_bytes, rub_bytes, ref_bytes) if b],
+        label='assignment file',
+    )
+    if err:
+        return err
 
     provider = request.form.get('provider', '')
     if provider not in api_keys:
@@ -5248,7 +5492,7 @@ def teacher_create():
         max_drafts=_parse_max_drafts(request.form.get('max_drafts')),
         review_instructions=request.form.get('review_instructions', ''),
         marking_instructions=request.form.get('marking_instructions', ''),
-        question_paper=qp_files[0].read(),
+        question_paper=qp_bytes_new,
         answer_key=ak_bytes,
         rubrics=rub_bytes,
         reference=ref_bytes,
@@ -5371,6 +5615,16 @@ def teacher_edit(assignment_id):
         return jsonify({'success': False, 'error': 'Rubrics file cannot be empty for essay type'}), 400
     if asn.assign_type != 'rubrics' and ak_changed and not ak_bytes:
         return jsonify({'success': False, 'error': 'Answer key cannot be empty for short answer type'}), 400
+
+    # UP-17: validate any replaced file before persisting it.
+    _changed_blobs = [b for b, changed in
+                      ((qp_bytes, qp_changed), (ak_bytes, ak_changed),
+                       (rub_bytes, rub_changed), (ref_bytes, ref_changed))
+                      if changed and b]
+    if _changed_blobs:
+        err = _validate_upload_blobs(_changed_blobs, label='assignment file')
+        if err:
+            return err
 
     # Detect major change BEFORE applying writes
     major_change = (
@@ -5759,7 +6013,9 @@ def teacher_download_all(assignment_id):
     err = _check_assignment_ownership(asn)
     if err:
         return err
-    submissions = Submission.query.filter_by(assignment_id=assignment_id, status='done', is_final=True).all()
+    # UP-10: the zip writer only needs `result_json` (via get_result) plus
+    # `student_id` for the filename — defer all four blob columns.
+    submissions = Submission.query_no_blobs().filter_by(assignment_id=assignment_id, status='done', is_final=True).all()
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -6284,6 +6540,9 @@ def teacher_submit_for_student(assignment_id, student_id):
         return jsonify({'success': False, 'error': 'Maximum 20 files'}), 400
 
     script_pages = [f.read() for f in script_files if f.filename]
+    err = _validate_upload_blobs(script_pages, label='script')
+    if err:
+        return err
 
     sub, err = _prepare_new_submission(student, asn)
     if err:
@@ -6294,12 +6553,7 @@ def teacher_submit_for_student(assignment_id, student_id):
     db.session.add(sub)
     db.session.commit()
 
-    thread = threading.Thread(
-        target=_run_submission_marking,
-        args=(app, sub.id, assignment_id),
-        daemon=True,
-    )
-    thread.start()
+    _submit_marking(_run_submission_marking, app, sub.id, assignment_id)
 
     return jsonify({'success': True})
 
@@ -6373,10 +6627,15 @@ def teacher_student_drafts(assignment_id, student_id):
 
 
 def _detect_mime(data):
-    """Infer MIME type from the first bytes of a blob. Falls back to octet-stream."""
+    """Infer MIME type from the first bytes of a blob. Falls back to octet-stream.
+
+    UP-17: must be magic-byte based, not extension based — student uploads
+    arrive from iOS/Android and renaming .jpg → .pdf is trivial. Keep this
+    list in lock-step with `_ALLOWED_UPLOAD_MIMES`.
+    """
     if not data:
         return 'application/octet-stream'
-    b = bytes(data[:8])
+    b = bytes(data[:16])
     if b.startswith(b'%PDF'):
         return 'application/pdf'
     if b.startswith(b'\xff\xd8\xff'):
@@ -6387,7 +6646,48 @@ def _detect_mime(data):
         return 'image/gif'
     if b.startswith(b'RIFF') and b[8:12] == b'WEBP':
         return 'image/webp'
+    # HEIC/HEIF: ISO-BMFF with `ftyp` box. The brand at bytes 8:12 tells us
+    # heic vs heif. iOS photos default to .heic; many "heif" brands also
+    # work via pillow-heif.
+    if len(b) >= 12 and b[4:8] == b'ftyp':
+        brand = b[8:12]
+        if brand in (b'heic', b'heix', b'hevc', b'hevx', b'heim', b'heis', b'hevm', b'hevs', b'mif1', b'msf1'):
+            return 'image/heic'
+        if brand == b'heif':
+            return 'image/heif'
     return 'application/octet-stream'
+
+
+# UP-17: allow-list for student/teacher script uploads. PDFs and the
+# image formats Pillow/pillow-heif can decode. Anything else (Word docs,
+# zip-bombs disguised with a .pdf rename, Pillow-vulnerable old formats
+# we don't need) is rejected at the boundary.
+_ALLOWED_UPLOAD_MIMES = frozenset({
+    'application/pdf',
+    'image/jpeg',
+    'image/png',
+    'image/heic',
+    'image/heif',
+})
+
+
+def _validate_upload_blobs(blobs, label='script'):
+    """Validate a list of uploaded file bytes against `_ALLOWED_UPLOAD_MIMES`.
+
+    Returns `None` on success, or a Flask JSON response tuple on failure.
+    Use at every external-facing upload entry point (single, bulk,
+    student-submit, demo).
+    """
+    for idx, data in enumerate(blobs or ()):
+        if not data:
+            continue
+        mime = _detect_mime(data)
+        if mime not in _ALLOWED_UPLOAD_MIMES:
+            return jsonify({
+                'success': False,
+                'error': f'Unsupported file type for {label} page {idx + 1}. Accepted: PDF, JPG, PNG, HEIC.',
+            }), 415
+    return None
 
 
 def _build_text_edit_meta(submission_id, teacher_id=None):
@@ -6930,14 +7230,10 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             except Exception:
                 pass
 
-        # Spawn one insight worker per fresh edit.
+        # Spawn one insight worker per fresh edit. UP-16: bounded pool.
         for fe in fresh_calibration_edits:
             try:
-                threading.Thread(
-                    target=_run_insight_extraction_worker,
-                    args=(app, fe.id),
-                    daemon=True,
-                ).start()
+                _submit_marking(_run_insight_extraction_worker, app, fe.id)
             except Exception as worker_err:
                 logger.warning(f"Could not spawn insight worker for edit {fe.id}: {worker_err}")
 
@@ -6957,11 +7253,7 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             if target_ids:
                 anchor.propagation_status = 'pending'
                 db.session.commit()
-                threading.Thread(
-                    target=_run_propagation_worker,
-                    args=(app, anchor.id, target_ids),
-                    daemon=True,
-                ).start()
+                _submit_marking(_run_propagation_worker, app, anchor.id, target_ids)
                 logger.info(f"Auto-propagation worker started for edit_id={anchor.id}")
         except Exception as _cand_err:
             logger.error(
@@ -7118,13 +7410,7 @@ def teacher_submission_remark(assignment_id, submission_id):
     sub.submitted_at = datetime.now(timezone.utc)  # reset so 'stuck' clears
     db.session.commit()
 
-    thread = threading.Thread(
-        target=_run_submission_marking,
-        args=(app, sub.id, assignment_id),
-        kwargs={'band_overrides': band_overrides},
-        daemon=True,
-    )
-    thread.start()
+    _submit_marking(_run_submission_marking, app, sub.id, assignment_id, band_overrides=band_overrides)
 
     return jsonify({'success': True})
 
@@ -7168,12 +7454,11 @@ def teacher_remark_all_submissions(assignment_id):
     if not queued_ids:
         return jsonify({'success': False, 'error': 'No re-markable scripts (all are missing stored script pages).'}), 400
 
+    # UP-16: re-mark-all is the fan-out we explicitly want to bound. Going
+    # through `_submit_marking` caps concurrent provider calls at 4 even
+    # for a 40-student class.
     for sub_id in queued_ids:
-        threading.Thread(
-            target=_run_submission_marking,
-            args=(app, sub_id, assignment_id),
-            daemon=True,
-        ).start()
+        _submit_marking(_run_submission_marking, app, sub_id, assignment_id)
 
     logger.info(
         f"Re-mark-all kicked off for assignment={assignment_id}: "
@@ -7209,11 +7494,7 @@ def teacher_submission_force_remark(assignment_id, submission_id):
     sub.submitted_at = datetime.now(timezone.utc)  # reset so 'stuck' clears
     db.session.commit()
 
-    threading.Thread(
-        target=_run_submission_marking,
-        args=(app, sub.id, assignment_id),
-        daemon=True,
-    ).start()
+    _submit_marking(_run_submission_marking, app, sub.id, assignment_id)
 
     return jsonify({'success': True})
 
@@ -7378,7 +7659,7 @@ def student_verify(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)
     data = request.get_json()
     code = (data.get('code') or '').strip().upper()
-    if code != asn.classroom_code:
+    if not secrets.compare_digest(str(code), str(asn.classroom_code or '')):
         return jsonify({'success': False, 'error': 'Invalid classroom code'}), 401
 
     students = _sort_by_index(Student.query.filter_by(class_id=asn.class_id).all()) if asn.class_id else _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
@@ -8126,11 +8407,7 @@ def feedback_propagate():
 
     edit.propagation_status = 'pending'
     db.session.commit()
-    threading.Thread(
-        target=_run_propagation_worker,
-        args=(app, edit_id, target_ids),
-        daemon=True,
-    ).start()
+    _submit_marking(_run_propagation_worker, app, edit_id, target_ids)
     return jsonify({'status': 'started', 'edit_id': edit_id, 'candidate_count': len(target_ids)})
 
 
@@ -8226,6 +8503,7 @@ def student_upload(assignment_id):
         return jsonify({'success': False, 'error': 'Maximum 20 files per submission'}), 400
 
     MAX_IMAGE_SIZE = 5 * 1024 * 1024   # 5MB per image
+    # UP-17: MIME validation happens after size-bounded `f.read()` below.
     MAX_PDF_SIZE = 20 * 1024 * 1024    # 20MB per PDF
     MAX_TOTAL_SIZE = 30 * 1024 * 1024  # 30MB total
 
@@ -8253,6 +8531,10 @@ def student_upload(assignment_id):
             return jsonify({'success': False, 'error': 'Total upload too large. Maximum is 30MB combined.'}), 400
         script_pages.append(data)
 
+    err = _validate_upload_blobs(script_pages, label='script')
+    if err:
+        return err
+
     sub, err = _prepare_new_submission(student, asn)
     if err:
         return jsonify({'success': False, 'error': err}), 400
@@ -8263,12 +8545,7 @@ def student_upload(assignment_id):
     db.session.commit()
 
     # Start extraction in background
-    thread = threading.Thread(
-        target=_run_submission_extraction,
-        args=(app, sub.id, assignment_id),
-        daemon=True,
-    )
-    thread.start()
+    _submit_marking(_run_submission_extraction, app, sub.id, assignment_id)
 
     return jsonify({
         'success': True,
@@ -8311,12 +8588,7 @@ def student_confirm(assignment_id, submission_id):
     db.session.commit()
 
     # Start marking in background
-    thread = threading.Thread(
-        target=_run_submission_marking,
-        args=(app, sub.id, assignment_id),
-        daemon=True,
-    )
-    thread.start()
+    _submit_marking(_run_submission_marking, app, sub.id, assignment_id)
 
     return jsonify({'success': True})
 

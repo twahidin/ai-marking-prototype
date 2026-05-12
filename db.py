@@ -3,7 +3,7 @@ import json
 import base64
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from flask_sqlalchemy import SQLAlchemy
 
 try:
@@ -83,6 +83,12 @@ def _migrate_add_columns(app):
                 db.session.execute(text("ALTER TABLE submissions ADD COLUMN categorisation_status VARCHAR(20) DEFAULT 'pending'"))
                 db.session.commit()
                 logger.info('Added categorisation_status column to submissions table')
+            if 'usage_json' not in columns:
+                # UP-12: per-AI-call usage log. Legacy rows stay NULL —
+                # readers tolerate that. New marking runs append entries.
+                db.session.execute(text('ALTER TABLE submissions ADD COLUMN usage_json TEXT'))
+                db.session.commit()
+                logger.info('Added usage_json column to submissions table')
         if 'students' in inspector.get_table_names():
             columns = [c['name'] for c in inspector.get_columns('students')]
             if 'class_id' not in columns:
@@ -509,6 +515,39 @@ def _sweep_stuck_submissions(app):
             logger.warning(f'UP-06 stuck-submission sweep failed: {e}')
 
 
+def _sweep_stuck_bulk_jobs(app):
+    """UP-15: flip BulkJob rows stuck in 'processing' more than 30 minutes
+    to 'error'. Same shape as `_sweep_stuck_submissions` — a redeploy
+    mid-bulk-mark would otherwise leave a row reading 'processing' forever
+    even though the worker is gone.
+
+    Idempotent, best-effort, never blocks startup.
+    """
+    with app.app_context():
+        try:
+            from sqlalchemy import inspect as _i
+            if 'bulk_jobs' not in _i(db.engine).get_table_names():
+                return
+            # `started_at` is tz-aware; comparing against naive `utcnow()` would
+            # raise on PostgreSQL and silently mis-compare on SQLite.
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+            stuck = BulkJob.query.filter(
+                BulkJob.status == 'processing',
+                BulkJob.started_at < cutoff,
+            ).all()
+            if not stuck:
+                return
+            for j in stuck:
+                j.status = 'error'
+                j.error_message = (j.error_message or '') + ' Worker died during deploy — please re-trigger.'
+                j.finished_at = datetime.now(timezone.utc)
+            db.session.commit()
+            logger.info(f'UP-15 sweep: marked {len(stuck)} stuck bulk job(s) as error')
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f'UP-15 bulk-job sweep failed: {e}')
+
+
 def init_db(app):
     """Configure and initialize database."""
     db_url = os.getenv('DATABASE_URL', '')
@@ -523,6 +562,7 @@ def init_db(app):
         db.create_all()
         _migrate_add_columns(app)
         _sweep_stuck_submissions(app)
+        _sweep_stuck_bulk_jobs(app)
         # Belt-and-suspenders: confirm feedback_edit table actually exists.
         # If create_all silently failed for any reason, force-create it now
         # so calibration writes don't go to /dev/null.
@@ -721,6 +761,9 @@ class Submission(db.Model):
     # done once the background thread writes categorisation + group_habits
     # into result_json, failed if the AI call errored.
     categorisation_status = db.Column(db.String(20), default='pending')
+    # UP-12: per-call AI usage log (tokens + latency + cost + cache stats).
+    # Optional — legacy rows have NULL, readers must tolerate that.
+    usage_json = db.Column(db.Text)
 
     assignment = db.relationship('Assignment', backref=db.backref('submissions', cascade='all, delete-orphan'))
 
@@ -763,6 +806,44 @@ class Submission(db.Model):
 
     def set_student_text(self, answers_list):
         self.student_text_json = json.dumps(answers_list, ensure_ascii=False)
+
+    def get_usage(self):
+        """UP-12: per-call AI usage entries. Returns [] for legacy submissions
+        with no `usage_json` column populated."""
+        try:
+            return json.loads(self.usage_json or '[]')
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def append_usage(self, entry):
+        """Append a single AI-call usage entry. `entry` is a dict like
+        {'provider', 'model', 'input_tokens', 'output_tokens',
+         'cache_read_input_tokens', 'cache_creation_input_tokens',
+         'latency_ms', 'cost_usd', 'ts'}.
+        Readers tolerate missing keys per the schema-evolution policy."""
+        items = self.get_usage()
+        items.append(entry)
+        self.usage_json = json.dumps(items, ensure_ascii=False)
+
+    @classmethod
+    def query_no_blobs(cls):
+        """UP-10: return a `Submission.query` with the four large columns
+        deferred. Use on analytics / insight / list-style queries that don't
+        need the actual PDF bytes or extracted text — a 40-student class has
+        ~100-300 MB of blobs, and loading them on every insight render is
+        the single biggest perf liability in the codebase.
+
+        Touching any deferred attribute later triggers a per-row lazy fetch;
+        that's safe but defeats the perf win, so prefer to keep the blob
+        attrs untouched in callers that use this helper.
+        """
+        from sqlalchemy.orm import defer
+        return cls.query.options(
+            defer(cls.script_bytes),
+            defer(cls.script_pages_json),
+            defer(cls.extracted_text_json),
+            defer(cls.student_text_json),
+        )
 
 
 class FeedbackLog(db.Model):
@@ -857,6 +938,63 @@ class CategorisationCorrection(db.Model):
     __table_args__ = (
         db.Index('ix_cat_corr_assignment', 'assignment_id'),
     )
+
+
+class BulkJob(db.Model):
+    """UP-15: persistent state for bulk-mark and print-all jobs. Replaces
+    the in-memory `jobs` dict in app.py for these long-running flows so a
+    Railway redeploy mid-bulk-mark doesn't lose progress. The job_id is the
+    same UUID the route hands the frontend, used as the primary key so the
+    `/status/<job_id>` poller can `BulkJob.query.get(job_id)` directly.
+
+    JSON columns store opaque dict payloads — readers must tolerate older
+    shapes (per the schema-evolution policy)."""
+    __tablename__ = 'bulk_jobs'
+
+    id = db.Column(db.String(36), primary_key=True)
+    kind = db.Column(db.String(20), nullable=False, default='bulk_mark')
+    status = db.Column(db.String(20), nullable=False, default='processing')
+    assignment_id = db.Column(db.String(36), nullable=True, index=True)
+    subject = db.Column(db.String(120), nullable=True)
+    progress_json = db.Column(db.Text)
+    results_json = db.Column(db.Text)
+    skipped_json = db.Column(db.Text)
+    errors_json = db.Column(db.Text)
+    error_message = db.Column(db.Text)
+    started_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    finished_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    def _decode(self, col):
+        try:
+            return json.loads(getattr(self, col) or 'null')
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def get_progress(self):
+        return self._decode('progress_json') or {}
+
+    def set_progress(self, d):
+        self.progress_json = json.dumps(d or {}, ensure_ascii=False)
+
+    def get_results(self):
+        return self._decode('results_json') or []
+
+    def set_results(self, items):
+        self.results_json = json.dumps(items or [], ensure_ascii=False)
+
+    def get_skipped(self):
+        return self._decode('skipped_json') or []
+
+    def set_skipped(self, items):
+        self.skipped_json = json.dumps(items or [], ensure_ascii=False)
+
+    def get_errors(self):
+        return self._decode('errors_json') or []
+
+    def append_error(self, entry):
+        items = self.get_errors()
+        items.append(entry)
+        self.errors_json = json.dumps(items, ensure_ascii=False)
 
 
 class TeacherDashboardLayout(db.Model):

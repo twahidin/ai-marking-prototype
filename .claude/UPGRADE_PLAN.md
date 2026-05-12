@@ -134,7 +134,7 @@ db.session.commit()
 ---
 
 ### UP-10 — `defer()` blob columns on insights queries
-**Status:** TODO
+**Status:** DONE — Added `Submission.query_no_blobs()` classmethod (db.py) deferring `script_bytes`, `script_pages_json`, `extracted_text_json`, `student_text_json`. Migrated `_missed_dots_for_class`, `teacher_widget_performance_trend`, `teacher_widget_consultation`, `teacher_widget_encourage`, `teacher_widget_weak_questions`, `teacher_widget_submission_rate_trend`, `department_insights_data`, `_build_class_performance_data`, `teacher_download_all` to use the helper. Skipped `teacher_remark_all_submissions` (legitimately needs `get_script_pages()`).
 **Why:** Single biggest perf win. Every analytics route loads full student PDFs into RAM (`script_bytes`, `script_pages_json`, `extracted_text_json`, `student_text_json`). 40-student class = 100-300 MB per request. Single 100-thread gunicorn worker → 5-10 concurrent HOD insight requests = OOM-kill on 512 MB Railway dyno.
 **Where:** Fix these 12 routes (copy pattern from `app.py:3705` which already does it right):
 - `app.py:2541` `department_insights_data`
@@ -159,7 +159,7 @@ Even better: add a `Submission.query_no_blobs()` classmethod in `db.py` so futur
 ---
 
 ### UP-11 — Reorder system prompt for OpenAI/Qwen prefix caching
-**Status:** TODO
+**Status:** DONE — `_build_rubrics_prompt` and `_build_short_answer_prompt` (ai_marking.py) now lead with static rules ("You are an experienced teacher..." + task list + FEEDBACK/CORRECTION/IDEA rules + JSON schema). Per-assignment variables (`subject`, `calibration_block`, `review_section`, `marking_section`, `language_block`, `rubrics_section`/`reference_section`) appended at the bottom under a `--- PER-ASSIGNMENT CONTEXT ---` header. The per-STUDENT variable `overrides_section` (band_overrides) moved out of the system prompt entirely and is appended to the user message before the question paper. Anthropic cache_control still wraps the whole system prompt.
 **Why:** Anthropic gets ~80% input-token discount via `cache_control`. OpenAI/Qwen also cache automatically on prefixes >1024 tokens — but `_build_*_prompt` puts variable per-student text (`subject`, `band_overrides`) **above** the static rules in the system prompt, breaking prefix match.
 **Where:** `ai_marking.py:874, 1080` (where `system_prompt` is built).
 **Fix:** Reorder so static content (rules, rubric extraction instructions, JSON schema) comes first; move `band_overrides` into the user message, not the system prompt. Estimated dollar savings: same ~80% input-cost cut as Anthropic, only applies when teacher picks OpenAI/Qwen.
@@ -168,7 +168,7 @@ Even better: add a `Submission.query_no_blobs()` classmethod in `db.py` so futur
 ---
 
 ### UP-12 — Per-AI-call usage logging
-**Status:** TODO
+**Status:** DONE — New `Submission.usage_json` column + `get_usage()` / `append_usage()` methods (db.py); migration with idempotent guard. Anthropic capture via `stream.get_final_message().usage` (input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens); OpenAI/Qwen capture via `response.usage` + `prompt_tokens_details.cached_tokens`. Module-level price table `_PROVIDER_PRICES_PER_M`; thread-local `_call_state.last_usage` plus `consume_last_usage()` exported helper (cleared per-call so ThreadPoolExecutor re-use can't leak across runs). Structured `logger.info` line `ai_call provider=… in=… out=… cache_read=… ms=… cost=…` on every call. Persisted in `_run_submission_marking`, `_run_submission_extraction`, and the bulk loop (`bulk_usage_entry` initialised per iteration).
 **Why:** Zero token/cost/latency observability. Cannot verify prompt caching is hitting, cannot compare providers, cannot detect a prompt edit that silently breaks caching.
 **Where:** `ai_marking.py:285-365` (`make_ai_api_call`).
 **Fix:** Switch Anthropic from `get_final_text()` to `get_final_message()`; capture `usage.input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`. For OpenAI/Qwen, capture `response.usage`. Persist on `Submission.usage_json` (new column, lazy-fill at write). Log one structured line per call:
@@ -184,7 +184,7 @@ Add a price table dict in `ai_marking.py` keyed on model.
 ---
 
 ### UP-13 — Retry + backoff on transient AI failures
-**Status:** TODO
+**Status:** DONE — `tenacity>=8.2` added to requirements.txt; `_ai_retry` decorator (stop_after_attempt=3, wait_exponential 2-30s, before_sleep_log) applied to `make_ai_api_call` (ai_marking.py). Retry filter `_TRANSIENT_AI_ERRORS` covers Anthropic + OpenAI `RateLimitError`/`APIConnectionError`/`APITimeoutError`/`InternalServerError`. New `_openai_chat_create` wrapper (also decorated) used by `generate_exemplar_analysis`, `_run_text_completion`, `_run_feedback_helper` so the helper paths share retry semantics.
 **Why:** Zero retry. A single 429/500/connection-reset mid-bulk-mark marks that student `error`. Estimated bulk-row error rate drops from ~3% to <0.3%.
 **Where:** `ai_marking.py:298, 355`. Wrap `client.messages.stream(...)` and `client.chat.completions.create(...)`.
 **Fix:** `pip install tenacity`, then:
@@ -202,7 +202,7 @@ def _call_anthropic(...): ...
 ---
 
 ### UP-14 — Encrypt API keys in session
-**Status:** TODO
+**Status:** DONE — `_set_session_keys()` encrypts the keys dict with Fernet (via existing `db._get_fernet()`) and stores the ciphertext string in `session['api_keys']`. `_get_session_keys()` decrypts on read; legacy dict-shape sessions still accepted for graceful rollover; decrypt failures return `{}` with a `logger.warning` so operators notice key-rotation/tamper events. `save_keys` route migrated to `_set_session_keys`.
 **Why:** Flask cookies are signed (tamper-proof) but not encrypted. Anyone reading the cookie (browser extension, shared device) gets the API keys in base64.
 **Where:** `app.py:846` (and the corresponding read).
 **Fix:** Encrypt with existing `_get_fernet()` before storing in `session['api_keys']`; decrypt on read. Cheap.
@@ -211,7 +211,7 @@ def _call_anthropic(...): ...
 ---
 
 ### UP-15 — Persist bulk-job state to DB
-**Status:** TODO
+**Status:** DONE — New `BulkJob` model (`db.py`: id PK, kind, status, assignment_id, subject, progress_json, results_json, skipped_json, errors_json, error_message, started_at, finished_at) with `get_progress` / `set_progress` / `get_results` / `set_results` / `append_error` helpers. Boot-time sweeper `_sweep_stuck_bulk_jobs` flips processing>30min to `error` (tz-aware comparison). New `_bulk_job_create` / `_bulk_job_load` / `_bulk_job_update` helpers in app.py. `bulk_mark` route creates a row instead of dict entry; `run_bulk_marking_job` writes progress + final results to DB; `/status/<job_id>`, `/bulk/download/<job_id>`, `/bulk/overview/<job_id>` load from DB first with in-memory fallback for single-marking demo jobs. Added `_check_assignment_ownership` after load on persistent jobs (closes a side IDOR).
 **Why:** Full fix for in-memory `jobs` dict loss on restart. UP-06 sweeper papers over symptoms; this fixes the cause. Also unblocks a sane bulk blueprint split (UP-43).
 **Where:** New `BulkJob` model in `db.py` (id, assignment_id, status, progress_json, errors_json, started_at, finished_at). Migrate `jobs[]` reads/writes in `app.py` to query/update this table. The status poller (`/status/<job_id>`) reads from DB.
 **Effort:** ~half day.
@@ -220,7 +220,7 @@ def _call_anthropic(...): ...
 ---
 
 ### UP-16 — Bounded ThreadPoolExecutor for fan-outs
-**Status:** TODO
+**Status:** DONE — Module-level `_MARK_EXEC = ThreadPoolExecutor(max_workers=4, thread_name_prefix='mark')` + `_submit_marking()` helper. Converted: `run_marking_job` (demo path), all `_run_submission_marking` thread starts (single mark, force-remark, re-mark-all loop, student_confirm), `_run_submission_extraction`, `_run_categorisation_worker`, `_run_insight_extraction_worker`, both `_run_propagation_worker` paths. Re-mark-all on a 40-student class now caps at 4 concurrent provider calls. Boot warmup, bulk dispatcher, and print-all-reports stay as raw threads (long-running orchestrators that manage their own concurrency).
 **Why:** Re-marking 40 students currently spawns 40 simultaneous outbound API calls — hits rate limits, double-bills on retries.
 **Where:** `app.py:7094, 6859, 6883, 7944, 8064, 8111` (raw `threading.Thread(...).start()`).
 **Fix:** One module-level `_MARK_EXEC = ThreadPoolExecutor(max_workers=4)`. Replace `threading.Thread(target=_run_x, args=(...)).start()` with `_MARK_EXEC.submit(_run_x, ...)`.
@@ -229,7 +229,7 @@ def _call_anthropic(...): ...
 ---
 
 ### UP-17 — File upload MIME validation
-**Status:** TODO
+**Status:** DONE — Extended `_detect_mime` to recognise HEIC/HEIF brands. Added `_ALLOWED_UPLOAD_MIMES` allow-list (PDF, JPEG, PNG, HEIC, HEIF) and `_validate_upload_blobs(blobs, label)` helper. Wired into student_upload, teacher_assignment_submit, teacher single-mark, demo mark, teacher_create (assignment files), teacher_assignment_edit (replaced files). Bulk PDF path adds a strict `_detect_mime == 'application/pdf'` check (415 if not). requirements.txt floors bumped to `Pillow>=10.3.0,<12`, `pillow-heif>=0.18`, `pdf2image>=1.17` for Pillow CVE coverage.
 **Why:** Pillow has had RCE CVEs (e.g. CVE-2023-50447). Currently extension-checked, not magic-byte-checked.
 **Where:** `app.py:8020, 5112, 4041` (student/single/bulk upload paths). The helper exists at `_detect_mime` — just call it.
 **Fix:**
@@ -244,7 +244,7 @@ Also pin in `requirements.txt`: `Pillow>=10.3.0,<12`, `pillow-heif>=0.18`, `pdf2
 ---
 
 ### UP-18 — ProxyFix middleware
-**Status:** TODO
+**Status:** DONE — `app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)` immediately after `Flask(__name__)` (app.py). One trusted hop matches Railway's single reverse-proxy layer.
 **Why:** Rate limiter sees only Railway's load-balancer IP. One teacher hitting refresh trips it for everyone.
 **Where:** `app.py` near boot.
 **Fix:**
@@ -257,7 +257,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 ---
 
 ### UP-19 — `secrets.compare_digest` for code comparisons
-**Status:** TODO
+**Status:** DONE — Replaced `==` with `secrets.compare_digest(str(...), str(...))` at: `verify_code` TEACHER_CODE branch, legacy ACCESS_CODE branch, and `student_verify` classroom_code. The `if _tc:` falsy guard prevents `compare_digest('', '')` ever firing; `or ''` on `asn.classroom_code` keeps None-safety.
 **Why:** Theoretical timing attack on 8-char codes. Cheap to close.
 **Where:** `app.py:811, 829, 7303, 797`.
 **Fix:** Replace `code == _tc` with `secrets.compare_digest(code, _tc)`. Wrap both args in `str(...)` if they might be None.
