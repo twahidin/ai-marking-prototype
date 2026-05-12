@@ -5534,11 +5534,15 @@ def _rubric_pills_for_questions(questions):
         if not abbrev:
             letters = ''.join(c for c in crit if c.isalpha())
             abbrev = letters[:2].upper() if letters else '??'
+        marks_awarded = q.get('marks_awarded')
+        marks_total = q.get('marks_total')
         pills.append({
             'abbrev': abbrev,
             'band_num': band_num,
             'criterion_name': crit,
             'band_label': band,
+            'marks_awarded': marks_awarded,
+            'marks_total': marks_total,
         })
     return pills
 

@@ -67,7 +67,7 @@
     /* Short columns: fixed widths, no wrapping. */
     .results-table th.col-index,     .results-table td.col-index     { width: 56px; white-space: nowrap; }
     .results-table th.col-status,    .results-table td.col-status    { width: 112px; white-space: nowrap; }
-    .results-table th.col-score,     .results-table td.col-score     { width: 70px; white-space: nowrap; }
+    .results-table th.col-score,     .results-table td.col-score     { width: 92px; white-space: nowrap; }
     .results-table th.col-submitted, .results-table td.col-submitted { width: 96px; white-space: nowrap; font-size: 13px; }
     .results-table th.col-feedback,  .results-table td.col-feedback  { width: 132px; white-space: nowrap; }
     .results-table th.col-actions,   .results-table td.col-actions   { width: 168px; white-space: nowrap; }
@@ -570,7 +570,7 @@
                                         <div class="score-stack-total">{{ s.score if s.score else '-' }}</div>
                                         <div class="score-stack-pills">
                                             {% for pill in s.rubric_pills %}
-                                                <span class="band-pill band-{{ pill.band_num }}" title="{{ pill.criterion_name }} — {{ pill.band_label }}">{{ pill.abbrev }}·B{{ pill.band_num }}</span>
+                                                <span class="band-pill band-{{ pill.band_num }}" title="{{ pill.criterion_name }} — {{ pill.band_label }}">{{ pill.abbrev }}{% if pill.marks_total is not none %}-{{ (pill.marks_awarded if pill.marks_awarded is not none else 0) }}/{{ pill.marks_total }}{% else %}·B{{ pill.band_num }}{% endif %}</span>
                                             {% endfor %}
                                         </div>
                                     </div>
@@ -1480,16 +1480,26 @@ window.refreshSubmissionScore = async function (submissionId) {
                 var letters = crit.replace(/[^A-Za-z]/g, '');
                 abbrev = letters ? letters.slice(0, 2).toUpperCase() : '??';
             }
-            pills.push({ abbrev: abbrev, bandNum: bandNum, crit: crit, band: band });
+            pills.push({
+                abbrev: abbrev,
+                bandNum: bandNum,
+                crit: crit,
+                band: band,
+                marksAwarded: q.marks_awarded,
+                marksTotal: q.marks_total,
+            });
         });
         var cell = row.querySelector('.col-score');
         if (!cell) return;
         if (pills.length > 0) {
             var pillHtml = pills.map(function (p) {
+                var label = (p.marksTotal != null)
+                    ? p.abbrev + '-' + (p.marksAwarded != null ? p.marksAwarded : 0) + '/' + p.marksTotal
+                    : p.abbrev + '·B' + p.bandNum;
                 return '<span class="band-pill band-' + p.bandNum + '" title="' +
                     p.crit.replace(/"/g, '&quot;') + ' — ' +
                     p.band.replace(/"/g, '&quot;') + '">' +
-                    p.abbrev + '·B' + p.bandNum + '</span>';
+                    label + '</span>';
             }).join('');
             cell.innerHTML = '<div class="score-stack"><div class="score-stack-total">' + scoreText + '</div><div class="score-stack-pills">' + pillHtml + '</div></div>';
         } else {
