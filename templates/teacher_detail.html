@@ -1098,7 +1098,13 @@ async function openFeedbackModal(submissionId, studentName) {
     var dl = document.getElementById('fbDownloadLink');
     dl.href = '/submit/' + FB_ASSIGNMENT_ID + '/download/' + submissionId;
     dl.style.display = 'inline-block';
-    document.getElementById('feedbackModal').classList.add('active');
+    var fbModal = document.getElementById('feedbackModal');
+    // Defensive: an earlier close path (modal.js's UP-20 a11y helper) used
+    // to leave an inline `display:none` behind that outranked the
+    // .feedback-modal.active CSS rule, silently breaking reopen until a
+    // full page reload. Clear any stale inline display so .active wins.
+    if (fbModal.style.display === 'none') fbModal.style.display = '';
+    fbModal.classList.add('active');
 
     try {
         var res = await fetch('/teacher/assignment/' + FB_ASSIGNMENT_ID + '/submission/' + submissionId + '/result');

@@ -133,8 +133,23 @@
         var ev = new CustomEvent('modal-a11y:close', { bubbles: true, cancelable: true, detail: { modal: modal } });
         var allowed = modal.dispatchEvent(ev);
         if (!allowed) return;
-        if (modal.classList.contains('active')) modal.classList.remove('active');
-        modal.style.display = 'none';
+        // Two modal patterns coexist in this codebase:
+        //  (a) class-toggle: `.feedback-modal { display:none } .feedback-modal.active { display:flex }`
+        //  (b) style-toggle: page sets `.style.display = 'flex'/'none'` directly (e.g. bankPickerModal)
+        // We must respect whichever one the page uses. Previously this
+        // function always set `style.display = 'none'` AND removed `.active`,
+        // which closed both patterns at once — but the inline `display:none`
+        // then OUTRANKED the `.feedback-modal.active { display:flex }` rule
+        // on the next open (inline > class specificity in CSS), leaving
+        // the modal silently invisible on reopen until a full page reload.
+        if (modal.classList.contains('active')) {
+            modal.classList.remove('active');
+            // Defensive: if a previous close left an inline display:none
+            // behind, clear it now so the CSS .active rule can reassert.
+            if (modal.style.display === 'none') modal.style.display = '';
+        } else {
+            modal.style.display = 'none';
+        }
     }
 
     function trapTab(ev) {

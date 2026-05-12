@@ -8215,7 +8215,7 @@ def student_feedback_page(assignment_id, submission_id):
             student=student,
             result=result,
             score_pill=score_pill,
-            download_url=url_for('download_submission_pdf', assignment_id=assignment_id, submission_id=submission_id),
+            download_url=url_for('student.download_submission_pdf', assignment_id=assignment_id, submission_id=submission_id),
         )
 
     return render_template(
@@ -8225,7 +8225,7 @@ def student_feedback_page(assignment_id, submission_id):
         student=student,
         result=result,
         score_pill=score_pill,
-        download_url=url_for('download_submission_pdf', assignment_id=assignment_id, submission_id=submission_id),
+        download_url=url_for('student.download_submission_pdf', assignment_id=assignment_id, submission_id=submission_id),
         themes=theme_meta,
         categorisation_status=cat_status_for_view,
         grouping_data=grouping_data_for_view,

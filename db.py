@@ -587,10 +587,49 @@ def init_db(app):
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     db.init_app(app)
     with app.app_context():
-        db.create_all()
-        _migrate_add_columns(app)
-        _sweep_stuck_submissions(app)
-        _sweep_stuck_bulk_jobs(app)
+        # Concurrent gunicorn workers each call init_db() at boot. On
+        # PostgreSQL two workers racing `db.create_all()` can both pass
+        # the internal "does this table exist?" check, both issue
+        # `CREATE TABLE bulk_jobs ...`, and one then dies with
+        # `pg_type_typname_nsp_index UniqueViolation` because the table
+        # already exists. Serialise with a session-level advisory lock so
+        # only one worker runs schema bootstrap at a time; the other
+        # blocks here, then wakes up and runs an idempotent no-op
+        # create_all + idempotent migrations.
+        boot_conn = None
+        boot_lock_held = False
+        if db.engine.dialect.name == 'postgresql':
+            try:
+                boot_conn = db.engine.connect()
+                boot_conn.exec_driver_sql('SELECT pg_advisory_lock(8989898989)')
+                boot_lock_held = True
+            except Exception:
+                logger.warning(
+                    'Failed to acquire boot advisory lock — proceeding '
+                    'without serialisation (concurrent create_all may race)',
+                    exc_info=True,
+                )
+                if boot_conn is not None:
+                    try:
+                        boot_conn.close()
+                    except Exception:
+                        pass
+                    boot_conn = None
+        try:
+            db.create_all()
+            _migrate_add_columns(app)
+            _sweep_stuck_submissions(app)
+            _sweep_stuck_bulk_jobs(app)
+        finally:
+            if boot_lock_held and boot_conn is not None:
+                try:
+                    boot_conn.exec_driver_sql('SELECT pg_advisory_unlock(8989898989)')
+                except Exception:
+                    logger.exception('failed to release boot advisory lock')
+                try:
+                    boot_conn.close()
+                except Exception:
+                    pass
         # Belt-and-suspenders: confirm feedback_edit table actually exists.
         # If create_all silently failed for any reason, force-create it now
         # so calibration writes don't go to /dev/null.
