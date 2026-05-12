@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block math_libs %}{% include "_math_libs.html" %}{% endblock %}
 
 {% block title %}{{ assignment.title or assignment.subject or 'Assignment' }} - {{ app_title }}{% endblock %}
 

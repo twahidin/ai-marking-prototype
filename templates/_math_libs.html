@@ -1,0 +1,52 @@
+{# KaTeX math-rendering libraries + MathJax-API shim.
+
+   Opt-in include — only pages that actually render LaTeX/math content
+   pull these in, via `{% block math_libs %}{% include "_math_libs.html" %}{% endblock %}`.
+   Pages without math (hub, dashboard, settings, setup wizard, etc.)
+   skip these 330+ KB of downloads entirely.
+
+   The shim defines `window.MathJax.typesetPromise` so existing call
+   sites of the form `if (window.MathJax && MathJax.typesetPromise) {
+   MathJax.typesetPromise(...); }` keep working unchanged. On pages
+   without this include, `window.MathJax` is undefined and the guarded
+   calls safely skip. #}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
+      integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+"
+      crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
+        integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg"
+        crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/mhchem.min.js"
+        integrity="sha384-ifpG+NlgMq0kvOSGqGQxW1mJKpjjMDmZdpKGq3tbvD3WPhyshCEEYClriK/wRVU0"
+        crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+        integrity="sha384-43gviWU0YVjaDtb/GhzOouOXtZMP/7XUzwPTstBeZFe/+rCMvRwr4yROQP43s0Xk"
+        crossorigin="anonymous"
+        onload="window.__renderKatex && window.__renderKatex(document.body);"></script>
+<script>
+(function () {
+    var KATEX_OPTS = {
+        delimiters: [
+            {left: '$$', right: '$$', display: true},
+            {left: '\\[', right: '\\]', display: true},
+            {left: '$',  right: '$',  display: false},
+            {left: '\\(', right: '\\)', display: false}
+        ],
+        throwOnError: false,
+        errorColor: '#cc0000',
+        strict: 'ignore',
+        trust: false
+    };
+    window.__renderKatex = function (root) {
+        if (!root || typeof renderMathInElement !== 'function') return;
+        try { renderMathInElement(root, KATEX_OPTS); } catch (e) {}
+    };
+    window.MathJax = {
+        typesetPromise: function (roots) {
+            var els = (roots && roots.length) ? roots : [document.body];
+            els.forEach(function (el) { window.__renderKatex(el); });
+            return Promise.resolve();
+        }
+    };
+})();
+</script>

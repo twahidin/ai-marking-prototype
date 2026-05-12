@@ -12,7 +12,7 @@ import unicodedata
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
-from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for, Response, abort, make_response
+from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for, Response, abort, make_response, g
 from flask_wtf.csrf import CSRFProtect, CSRFError
 from werkzeug.middleware.proxy_fix import ProxyFix
 import io
@@ -184,14 +184,34 @@ with app.app_context():
 # ---------------------------------------------------------------------------
 
 def _get_config(key, default=''):
-    """Get config from DB (DepartmentConfig), falling back to env var."""
+    """Get config from DB (DepartmentConfig), falling back to env var.
+
+    Per-request memoised via `g._cfg_cache`. Templates + helpers hit the
+    same handful of keys (app_mode, app_title, teacher_code,
+    setup_complete) up to 6–10 times per render — without this cache,
+    each call is a separate DB roundtrip. Cache is cleared on writes via
+    `_set_config` so the post-write read inside the same request sees
+    fresh data.
+    """
+    cache = getattr(g, '_cfg_cache', None)
+    if cache is None:
+        cache = {}
+        try:
+            g._cfg_cache = cache
+        except RuntimeError:
+            # Outside a request context (boot-time helpers) — skip caching.
+            cache = None
+    if cache is not None and key in cache:
+        v = cache[key]
+        return v if v is not None else default
     try:
         cfg = DepartmentConfig.query.filter_by(key=key).first()
-        if cfg and cfg.value:
-            return cfg.value
+        val = cfg.value if (cfg and cfg.value) else None
     except Exception:
-        pass
-    return default
+        val = None
+    if cache is not None:
+        cache[key] = val
+    return val if val is not None else default
 
 
 def _set_config(key, value):
@@ -203,25 +223,27 @@ def _set_config(key, value):
         cfg = DepartmentConfig(key=key, value=value)
         db.session.add(cfg)
     db.session.commit()
+    # Invalidate per-request cache so subsequent reads in the same
+    # request see the new value (e.g. setup wizard saves config then
+    # redirects to hub which reads it back).
+    try:
+        cache = getattr(g, '_cfg_cache', None)
+        if isinstance(cache, dict):
+            cache.pop(key, None)
+    except RuntimeError:
+        pass
 
 
 def _is_setup_complete():
     """Check if the setup wizard has been completed."""
-    try:
-        cfg = DepartmentConfig.query.filter_by(key='setup_complete').first()
-        if cfg and cfg.value == 'true':
-            return True
-    except Exception:
-        pass
-    return False
+    return _get_config('setup_complete') == 'true'
 
 
 def get_app_mode():
-    """Get app mode from DB, falling back to env vars."""
-    cfg = DepartmentConfig.query.filter_by(key='app_mode').first()
-    if cfg and cfg.value:
-        return cfg.value
-    # Fall back to env vars
+    """Get app mode from DB, falling back to env vars. Per-request cached."""
+    val = _get_config('app_mode')
+    if val:
+        return val
     if _ENV_DEMO_MODE and _ENV_DEPT_MODE:
         return 'demo_department'
     if _ENV_DEMO_MODE:
@@ -232,11 +254,8 @@ def get_app_mode():
 
 
 def get_app_title():
-    """Get app title from DB, falling back to env var."""
-    cfg = DepartmentConfig.query.filter_by(key='app_title').first()
-    if cfg and cfg.value:
-        return cfg.value
-    return _ENV_APP_TITLE
+    """Get app title from DB, falling back to env var. Per-request cached."""
+    return _get_config('app_title') or _ENV_APP_TITLE
 
 
 def normalize_name(name):
@@ -257,11 +276,8 @@ def normalize_name(name):
 
 
 def get_teacher_code():
-    """Get teacher code from DB, falling back to env var."""
-    cfg = DepartmentConfig.query.filter_by(key='teacher_code').first()
-    if cfg and cfg.value:
-        return cfg.value
-    return _ENV_TEACHER_CODE
+    """Get teacher code from DB, falling back to env var. Per-request cached."""
+    return _get_config('teacher_code') or _ENV_TEACHER_CODE
 
 
 def is_demo_mode():
@@ -700,11 +716,29 @@ def _is_authenticated():
 
 
 def _current_teacher():
-    """Get the currently logged-in teacher. Returns None if not logged in."""
+    """Get the currently logged-in teacher. Returns None if not logged in.
+
+    Per-request memoised via `g._current_teacher` — the inject_dept_context
+    context processor plus most route handlers each call this 1–3 times
+    per render; without memoisation that's the same SQL roundtrip 3–6×.
+    """
     teacher_id = session.get('teacher_id')
     if not teacher_id:
         return None
-    return Teacher.query.get(teacher_id)
+    try:
+        cached = getattr(g, '_current_teacher_obj', None)
+        cached_id = getattr(g, '_current_teacher_id', None)
+        if cached is not None and cached_id == teacher_id:
+            return cached
+    except RuntimeError:
+        cached = None
+    obj = Teacher.query.get(teacher_id)
+    try:
+        g._current_teacher_obj = obj
+        g._current_teacher_id = teacher_id
+    except RuntimeError:
+        pass
+    return obj
 
 
 # ---------------------------------------------------------------------------
