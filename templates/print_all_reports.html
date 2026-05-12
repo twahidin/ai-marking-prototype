@@ -2,6 +2,12 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
+    {# This template doesn't extend base.html, so the CSRF meta tag +
+       fetch-shim from base.html aren't loaded automatically. Without
+       this tag the POST to /print-all-reports/start below ships without
+       X-CSRFToken and Flask-WTF rejects it with a plain-text 400 that
+       crashes the response.json() parser. #}
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Print all reports — {{ assignment.title or assignment.classroom_code }}</title>
     <style>
         html, body { margin: 0; padding: 0; height: 100%; background: #f5f6f8; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; color: #333; }
@@ -183,17 +189,39 @@
             });
         }
 
+        function getCsrfToken() {
+            var m = document.querySelector('meta[name="csrf-token"]');
+            return m ? m.getAttribute('content') : '';
+        }
+
+        function parseJsonOrText(r) {
+            // Defensive: server may return plain text for some error
+            // shapes (e.g. CSRF 400 from Flask-WTF). Unconditional r.json()
+            // throws "Unexpected token 'C' ..." in that case and the
+            // print page shows a useless error instead of the real reason.
+            return r.text().then(function (body) {
+                try { return { ok: r.ok, status: r.status, json: JSON.parse(body), text: body }; }
+                catch (e) { return { ok: r.ok, status: r.status, json: null, text: body }; }
+            });
+        }
+
         function startPrintJob() {
             fetch('/teacher/assignment/' + ASSIGNMENT_ID +
                   '/print-all-reports/start', {
                 method: 'POST',
                 credentials: 'same-origin',
-            }).then(function (r) { return r.json(); }).then(function (data) {
-                if (!data || !data.success || !data.job_id) {
-                    showError((data && data.error) || 'Could not start print job.');
+                headers: {
+                    'X-CSRFToken': getCsrfToken(),
+                    'Accept': 'application/json',
+                },
+            }).then(parseJsonOrText).then(function (res) {
+                if (!res.ok || !res.json || !res.json.success || !res.json.job_id) {
+                    var msg = (res.json && res.json.error)
+                        || (res.text ? res.text.slice(0, 200) : 'HTTP ' + res.status);
+                    showError('Could not start print job: ' + msg);
                     return;
                 }
-                pollProgress(data.job_id);
+                pollProgress(res.json.job_id);
             }).catch(function (e) {
                 showError('Could not start print job: ' + e.message);
             });
