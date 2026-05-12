@@ -470,7 +470,7 @@ Free tier covers ~5k events/month. Pair with UP-27.
 ---
 
 ### UP-35 — Custom exception classes
-**Status:** TODO
+**Status:** DONE — three new exception classes in `ai_marking.py`: `MarkingError` (base), `AIProviderError` (provider unavailable / rate-limit-exhausted / 413 / network / auth), `ResponseParseError` (AI returned but the JSON couldn't be parsed). `mark_script` now `raise`s instead of returning `{'error': str}` from the happy path — the no-key check raises `AIProviderError`, `make_ai_api_call` exceptions are translated to `AIProviderError` (preserving the 413 "Files too large" message), and a parse failure dict from `parse_ai_response` is translated to `ResponseParseError`. The three orchestrators (`run_marking_job`, `run_bulk_marking_job`, `_run_submission_marking` in app.py) catch the typed errors and still convert to the persisted `{'error': str}` shape exactly once at the boundary. `MarkingError` is a subclass of `Exception`, so existing `except Exception` blocks continue to catch — the typed path is differentiated by `isinstance` to downgrade the redundant `logger.exception` (already logged at the raise site) to a single-line `logger.info`. `parse_ai_response` itself keeps its legacy dict-return shape (the `test_ai_parse.py` suite reads it that way). `mark_script` import in app.py extended to include `MarkingError`. Acceptance: `grep "result.get('error')"` still has many downstream consumer hits (readers of `Submission.result_json`) but every WRITER site is now typed.
 **Why:** `mark_script` returns `dict | {'error': str}`. Every caller must remember to check `.get('error')` before reading `.get('questions')`. No grep ever surfaces "marking failure paths" because they're not exceptions.
 **Where:** `ai_marking.py` (define + raise), `app.py:584, 4292` (catch at boundary).
 **Fix:**
@@ -485,7 +485,7 @@ Raise from `mark_script`. Catch in `run_marking_job` / `_run_submission_marking`
 ---
 
 ### UP-36 — Type hints on top 3 functions
-**Status:** TODO
+**Status:** DONE — `from typing import Any` added to `db.py`, `app.py`, and `ai_marking.py`. Annotations applied: `Submission.get_result(self) -> dict[str, Any]` (db.py:783); `mark_script(...) -> dict[str, Any]` plus an explicit docstring note that it now raises `MarkingError` subclasses on failure paths (UP-35); `_resolve_api_keys(assignment) -> dict[str, str] | None` (the `None` sentinel means "fall back to env vars" — documented inline). Python 3.10+ built-in generic syntax (`dict[str, str] | None`) — no `Optional`/`Dict` legacy aliases. Future Claude sessions and IDE tooling can now flag a caller that treats these return values incorrectly.
 **Why:** Zero return-type annotations across 14,350 lines. Future Claude sessions burn context re-reading bodies to learn shapes.
 **Where:** Start with three highest-leverage:
 - `Submission.get_result() -> dict[str, Any]` (`db.py:708`)
@@ -497,7 +497,7 @@ Raise from `mark_script`. Catch in `run_marking_job` / `_run_submission_marking`
 ---
 
 ### UP-37 — Status `Enum` + `_utc(dt)` helper
-**Status:** TODO
+**Status:** DONE — `SubmissionStatus(str, Enum)` (PENDING / EXTRACTING / PREVIEW / PROCESSING / DONE / ERROR) and `utc(dt)` helper added to `db.py`. The `str` mixin keeps `sub.status == 'done'` working everywhere — Jinja templates, SQLAlchemy filters, JSON serialization — so the migration is one-way: writers can switch to the enum, readers keep getting plain strings. Persistence verified in a fresh SQLite — `SubmissionStatus.DONE` writes `'done'` and reads back as `'done'`. First-site migrations done: `_run_submission_marking` writes `SubmissionStatus.ERROR if result.get('error') else SubmissionStatus.DONE` (app.py:4929); `_hours_to_submit` inside the encourage-widget helper uses `utc()` to coerce naive datetimes (app.py:2589). Exposed via `from db import ..., SubmissionStatus, utc`. Rest of the 430-ish raw-string sites and 9 duplicated tzinfo coercions can migrate progressively — the pattern is established.
 **Why:** Status strings (`'pending', 'processing', 'done', 'error', 'extracting', 'preview'`) are scattered as raw literals in 430 places — a typo silently breaks status filters. Timezone-aware coercion (`if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)`) is duplicated 9× — one missed location and prod gets `TypeError`.
 **Where:** `db.py` (new Enum + helper).
 **Fix:**
@@ -520,7 +520,7 @@ Migrate progressively — `str` subclass means Jinja templates keep working.
 ---
 
 ### UP-38 — Centralise provider dispatch in `ai_marking.py`
-**Status:** TODO
+**Status:** DONE — `_simple_completion(provider, model, system, user, max_tokens, session_keys=None) -> str` extracted in `ai_marking.py`. Decorated with `@_ai_retry`, so transient Anthropic/OpenAI errors now retry uniformly across helper paths (previously OpenAI-only via `_openai_chat_create`). The three helpers (`generate_exemplar_analysis`, `_run_text_completion`, `_run_feedback_helper`) collapse from ~30 lines of provider branching each to a single call into `_simple_completion`. Net: model-string change is now one edit; `max_tokens` vs `max_completion_tokens` (OpenAI GPT-5+) decided in one place; Qwen `base_url` in one place. `make_ai_api_call` (the streaming + cached path used by `mark_script` itself) intentionally stays separate — it streams (vs single-shot), carries Anthropic prompt-cache breakpoints, and handles multi-modal image/PDF content blocks that the helpers don't need.
 **Why:** Three near-identical provider-branching blocks: `generate_exemplar_analysis` (`ai_marking.py:1412-1440`), `_run_text_completion` (`1467-1494`), `_run_feedback_helper` (`1508-1536`). Plus `make_ai_api_call`. Every model change is a 4-place edit. Already drifted: helper paths skip prompt caching.
 **Where:** `ai_marking.py`.
 **Fix:** Extract `_simple_completion(provider: str, model: str, system: str, user: str, max_tokens: int) -> str` shared by all four. Single source of truth for `max_completion_tokens` vs `max_tokens`, Qwen base_url, cache headers.
@@ -529,7 +529,7 @@ Migrate progressively — `str` subclass means Jinja templates keep working.
 ---
 
 ### UP-39 — Split `app.py`: student blueprint
-**Status:** TODO
+**Status:** PARTIAL — `routes/` package scaffolded with `__init__.py` documenting the migration strategy. `routes/student.py` Blueprint created and registered via `app.register_blueprint(student_bp)` at the bottom of `app.py` (after all top-level defs so deferred `from app import ...` resolves at request time). First wave of 5 simple self-contained routes ported: `student_page`, `student_question_paper`, `student_review_submission`, `student_submission_status`, `download_submission_pdf`. Boot verified — Flask `url_map` registers all 22 `/submit/*` + `/feedback/*` routes; the ported ones now belong to the `student.` blueprint. **Remaining (still on the monolith)**: `student_verify`, `student_switch`, `student_undo`, `student_upload`, `student_confirm`, `student_feedback_page` (+ tiered helpers `_student_feedback_auth`, `_tiered_bucket`, `_compute_grouping_payload`), `student_feedback_explain`, `student_feedback_correction`, `student_feedback_mark_reviewed`, `student_feedback_grouping_status`. These touch heavier helpers (`_check_rate_limit`, `_sort_by_index`, `_validate_upload_blobs`, `_submit_marking`, `_resolve_api_keys`, `_build_calibration_block_for`, `_finalise_login_session`, AI dispatch) and a wholesale move warrants a manual end-to-end smoke test that the current test scaffold (UP-31) doesn't cover.
 **Why:** `app.py` is 9,250 lines. Student routes (`/submit/*`, `/feedback/*`) are the cleanest split — fully self-contained, distinct URL prefix, no shared module-level state besides `jobs` (which goes away with UP-15).
 **Where:** Extract `app.py:7272-8189` (~900 lines) → `routes/student.py`.
 **Fix:** Create Flask Blueprint, register in `app.py`. Helpers (`_require_student_auth_for`, etc.) move with it. **Do this AFTER UP-05** (student recovery flow) and **AFTER UP-15** (persistent job state) — otherwise it's a refactor + behavior change in one PR.
@@ -538,7 +538,7 @@ Migrate progressively — `str` subclass means Jinja templates keep working.
 ---
 
 ### UP-40 — Split `app.py`: insights blueprint
-**Status:** TODO
+**Status:** PARTIAL — `routes/insights.py` Blueprint scaffolded and registered alongside the student blueprint. First wave: `teacher_insights_layout_get` and `teacher_insights_layout_put` ported (the dashboard-layout GET/PUT pair — simplest insights routes with only `_check_class_access_for_teacher` as a shared helper, deferred-imported inside the route). Boot verified; the two `/teacher/insights/layout` routes (GET and PUT) now belong to the `insights.` blueprint. **Remaining**: `teacher_widget_missed_submissions`, `teacher_widget_performance_trend`, `teacher_widget_consultation`, `teacher_widget_encourage`, `teacher_widget_weak_questions`, `teacher_widget_submission_rate_trend`, plus the `/insights`, `/teacher/insights`, and `/department/insights/*` page routes and their data endpoints. These depend on `_submission_percent`, `_missed_submissions_payload`, `_build_class_performance_data`, and the blob-deferred query helpers (`Submission.query_no_blobs()`, `_missed_dots_for_class`) — the broader move warrants extracting `insights_helpers.py` first so the blueprint stays clean.
 **Why:** 1900 lines of `teacher_widget_*` and analytics. Second-largest cohesive section.
 **Where:** Extract `app.py:1612-3500` → `routes/insights.py` + `insights_helpers.py`.
 **Fix:** Extract shared helpers (`_check_class_access_for_teacher`, `_submission_percent`) to a separate module first; then move routes. **Do AFTER UP-10** (defer blob columns) so the move is structural, not behavioral.
@@ -547,7 +547,7 @@ Migrate progressively — `str` subclass means Jinja templates keep working.
 ---
 
 ### UP-41 — Split `app.py`: bulk blueprint
-**Status:** TODO
+**Status:** PARTIAL — `routes/bulk.py` Blueprint scaffolded and registered alongside `student` + `insights` blueprints. First wave: `bulk_page` (the `/bulk` legacy redirect to `class_page`) ported as a clean proof-of-concept that needs no shared helpers. Boot verified — Flask `url_map` resolves `/bulk` to `bulk.bulk_page`. **Remaining**: `bulk_mark` (POST /bulk/mark — depends on `_check_assignment_ownership`, `_validate_upload_blobs`, `_bulk_job_create`, `_submit_marking`, `run_bulk_marking_job`), `bulk_download` (`/bulk/download/<job_id>` — needs `_bulk_job_load`, `_jobs_get`, `_check_assignment_ownership`, `generate_report_pdf`), `bulk_overview` (`/bulk/overview/<job_id>` — same dependency set plus `generate_overview_pdf`). These three couple to the bulk-job machinery (`_bulk_job_create` / `_bulk_job_load` / `_bulk_job_update`) added in UP-15; the cleanest path is to extract those helpers into `bulk_helpers.py` first, then move the routes.
 **Why:** 450 lines tightly coupled to `jobs` dict.
 **Where:** Extract `app.py:3777-4226` → `routes/bulk.py`.
 **Fix:** **Do AFTER UP-15** (persistent job state).
@@ -556,7 +556,7 @@ Migrate progressively — `str` subclass means Jinja templates keep working.
 ---
 
 ### UP-42 — `MarkResult` and `BulkMarkingContext` dataclasses
-**Status:** TODO
+**Status:** DONE — `MarkResult` (frozen dataclass) and `BulkMarkingContext` (frozen dataclass) added to `ai_marking.py`. `MarkResult` captures the 11 common fields produced by both short-answer and rubrics modes, plus the `error` sentinel set by the orchestrator when UP-35's `MarkingError` raises; `is_error` property avoids the `.get('error')` lookups. `to_dict()` rebuilds the legacy dict shape (stripping empty optionals so the persisted JSON is byte-identical to hand-built dicts — no churn on existing rows); `from_dict(d)` is tolerant of missing fields AND unknown fields (forwards-compat — older writers produced fewer keys, newer writers may add some). The per-question shape stays as `list[dict[str, Any]]` because its inner shape evolves over time (CLAUDE.md "Submission.result_json shape" policy). `BulkMarkingContext` bundles the 18+ params of `run_bulk_marking_job` (provider/model/subject + heavy asset lists + per-run wiring like assignment_id/student_id_map/submission_id_map) so future field additions are one edit instead of 4 callsite edits — exactly the drift UP-08 was. The dataclass lands now; threading it through `run_bulk_marking_job`'s actual signature is a follow-up that touches every caller and so warrants its own PR. Roundtrip verified — `MarkResult.from_dict(legacy).to_dict()` produces the same key set, unknown fields dropped silently.
 **Why:** Marking `result` dict has ~14 keys, passed by structural convention only. `run_bulk_marking_job` has 18+ positional params — already a reason calibration kwargs weren't threaded through (UP-08).
 **Where:** New `ai_marking.py` types.
 **Fix:**

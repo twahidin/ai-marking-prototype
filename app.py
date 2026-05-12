@@ -16,9 +16,9 @@ from flask_wtf.csrf import CSRFProtect, CSRFError
 from werkzeug.middleware.proxy_fix import ProxyFix
 import io
 
-from ai_marking import mark_script, get_available_providers, PROVIDERS, generate_exemplar_analysis, explain_criterion, evaluate_correction, consume_last_usage
+from ai_marking import mark_script, get_available_providers, PROVIDERS, generate_exemplar_analysis, explain_criterion, evaluate_correction, consume_last_usage, MarkingError
 from pdf_generator import generate_report_pdf, generate_overview_pdf
-from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig, TeacherDashboardLayout, BulkJob
+from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig, TeacherDashboardLayout, BulkJob, SubmissionStatus, utc
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -914,8 +914,14 @@ def _build_calibration_block_for(asn, sub=None):
         return ''
 
 
-def _resolve_api_keys(assignment):
-    """Resolve API keys: assignment-stored → department config → env vars (None)."""
+def _resolve_api_keys(assignment) -> dict[str, str] | None:
+    """Resolve API keys: assignment-stored → department config → env vars (None).
+
+    UP-36: explicit return type. `None` means "fall back to env vars" — the
+    AI client builder reads `os.environ` when no session keys are passed.
+    A non-empty dict maps provider key (`'anthropic'`/`'openai'`/`'qwen'`)
+    to the API key string.
+    """
     keys = assignment.get_api_keys()
     if keys:
         return keys
@@ -970,11 +976,11 @@ def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pa
             session_keys=session_keys,
             pinyin_mode=pinyin_mode,
         )
-        _jobs_update(
-            job_id,
-            result=result,
-            status='error' if result.get('error') else 'done',
-        )
+        # UP-35: `mark_script` now raises on failure; a returned dict is success.
+        _jobs_update(job_id, result=result, status='done')
+    except MarkingError as e:
+        # UP-35: typed marking failure — already logged in mark_script.
+        _jobs_update(job_id, result={'error': str(e)}, status='error')
     except Exception as e:
         logger.exception("Job %s failed", job_id)
         _jobs_update(job_id, result={'error': str(e)}, status='error')
@@ -2075,56 +2081,8 @@ def _check_class_access_for_teacher(class_id):
     return teacher, None
 
 
-@app.route('/teacher/insights/layout', methods=['GET'])
-def teacher_insights_layout_get():
-    """Return the saved dashboard layout for (current teacher, class_id).
-    Empty list means no widgets yet — that's the expected first-load state."""
-    class_id = (request.args.get('class_id') or '').strip()
-    if not class_id:
-        return jsonify({'success': False, 'error': 'class_id required'}), 400
-    teacher, err = _check_class_access_for_teacher(class_id)
-    if err:
-        return err
-    row = TeacherDashboardLayout.query.filter_by(
-        teacher_id=teacher.id, class_id=class_id
-    ).first()
-    layout = []
-    if row and row.layout_json:
-        try:
-            parsed = json.loads(row.layout_json)
-            if isinstance(parsed, list):
-                layout = parsed
-        except (json.JSONDecodeError, TypeError):
-            layout = []
-    return jsonify({'success': True, 'layout': layout})
-
-
-@app.route('/teacher/insights/layout', methods=['PUT'])
-def teacher_insights_layout_put():
-    """Upsert the dashboard layout for (current teacher, class_id)."""
-    data = request.get_json(silent=True) or {}
-    class_id = (data.get('class_id') or '').strip()
-    layout = data.get('layout')
-    if not class_id:
-        return jsonify({'success': False, 'error': 'class_id required'}), 400
-    if not isinstance(layout, list):
-        return jsonify({'success': False, 'error': 'layout must be a list'}), 400
-    teacher, err = _check_class_access_for_teacher(class_id)
-    if err:
-        return err
-    row = TeacherDashboardLayout.query.filter_by(
-        teacher_id=teacher.id, class_id=class_id
-    ).first()
-    payload = json.dumps(layout)
-    if row:
-        row.layout_json = payload
-    else:
-        row = TeacherDashboardLayout(
-            teacher_id=teacher.id, class_id=class_id, layout_json=payload
-        )
-        db.session.add(row)
-    db.session.commit()
-    return jsonify({'success': True})
+# UP-40: `teacher_insights_layout_get` / `_put` moved to
+# `routes/insights.py` (registered via `app.register_blueprint(insights_bp)`).
 
 
 # ---------------------------------------------------------------------------
@@ -2576,10 +2534,12 @@ def teacher_widget_encourage():
     def _hours_to_submit(sub, asn):
         if not sub or not sub.submitted_at or not asn.created_at:
             return None
-        sa = sub.submitted_at
-        aw = asn.created_at
-        if sa.tzinfo is None: sa = sa.replace(tzinfo=timezone.utc)
-        if aw.tzinfo is None: aw = aw.replace(tzinfo=timezone.utc)
+        # UP-37: `utc()` is the centralised "ensure tz-aware" helper. The
+        # `if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)`
+        # pattern lived in ~9 places across this file — migrate the rest
+        # over time.
+        sa = utc(sub.submitted_at)
+        aw = utc(asn.created_at)
         return max(0.0, (sa - aw).total_seconds() / 3600.0)
 
     evaluations = []
@@ -4320,7 +4280,20 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                 # UP-12: usage will be appended to the submission row below.
                 bulk_usage_entry = consume_last_usage()
             except Exception as e:
-                logger.exception("Bulk job %s, student %s failed", job_id, student['name'])
+                # UP-35: `MarkingError` is a subclass of `Exception`, so the
+                # typed raise from `mark_script` still flows here — we just
+                # downgrade the log level for it (the typed path is already
+                # logged inside `mark_script`; only genuinely unexpected
+                # exceptions warrant a fresh `logger.exception`).
+                if isinstance(e, MarkingError):
+                    logger.info(
+                        "Bulk job %s, student %s: marking error: %s",
+                        job_id, student['name'], e,
+                    )
+                else:
+                    logger.exception(
+                        "Bulk job %s, student %s failed", job_id, student['name'],
+                    )
                 result = {'error': str(e)}
                 # Ensure the pre-created row is finalized as 'error' so it doesn't
                 # linger as 'pending' and count against the student's draft cap.
@@ -4452,9 +4425,10 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
             logger.exception('bulk error write failed')
 
 
-@app.route('/bulk')
-def bulk_page():
-    return redirect(url_for('class_page'))
+# UP-41: `bulk_page` moved to `routes/bulk.py`. Heavier `/bulk/mark`,
+# `/bulk/download/<job_id>`, `/bulk/overview/<job_id>` remain on the
+# monolith until the bulk-job helpers (`_bulk_job_*`) stabilise enough
+# to move with their routes.
 
 
 @app.route('/bulk/mark', methods=['POST'])
@@ -4914,7 +4888,9 @@ def _run_submission_marking(app_obj, submission_id, assignment_id, band_override
                                     q['marks_awarded'] = mt
 
             sub.set_result(result)
-            sub.status = 'error' if result.get('error') else 'done'
+            # UP-37: typed status (str-Enum stays compatible with the
+            # `sub.status == 'done'` comparison below + Jinja templates).
+            sub.status = SubmissionStatus.ERROR if result.get('error') else SubmissionStatus.DONE
             sub.marked_at = datetime.now(timezone.utc)
             if sub.status == 'done':
                 qs = (result or {}).get('questions') or []
@@ -4926,7 +4902,14 @@ def _run_submission_marking(app_obj, submission_id, assignment_id, band_override
                 )
         except Exception as e:
             db.session.rollback()
-            logger.exception("Submission %s marking failed", submission_id)
+            # UP-35: typed MarkingError already logged in `mark_script`;
+            # only genuinely unexpected exceptions need a fresh traceback.
+            if isinstance(e, MarkingError):
+                logger.info(
+                    "Submission %s: marking error: %s", submission_id, e,
+                )
+            else:
+                logger.exception("Submission %s marking failed", submission_id)
             sub.set_result({'error': str(e)})
             sub.status = 'error'
             sub.marked_at = datetime.now(timezone.utc)
@@ -7771,26 +7754,10 @@ def teacher_delete_assignment(assignment_id):
 
 # --- Student submission ---
 
-@app.route('/submit/<assignment_id>')
-def student_page(assignment_id):
-    asn = Assignment.query.get_or_404(assignment_id)
-    return render_template('submit.html', assignment_id=assignment_id, subject=asn.subject, demo_mode=is_demo_mode())
-
-
-@app.route('/submit/<assignment_id>/question-paper')
-def student_question_paper(assignment_id):
-    """Serve the assignment's question paper to a student who has verified the classroom code."""
-    if not session.get(f'student_auth_{assignment_id}'):
-        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-    asn = Assignment.query.get_or_404(assignment_id)
-    if not asn.question_paper:
-        return jsonify({'success': False, 'error': 'No question paper available'}), 404
-    return send_file(
-        io.BytesIO(asn.question_paper),
-        mimetype='application/pdf',
-        as_attachment=False,
-        download_name=f'{asn.classroom_code}_question_paper.pdf',
-    )
+# UP-39: `student_page` and `student_question_paper` moved to
+# `routes/student.py` (registered via `app.register_blueprint(student_bp)`
+# at boot). Other `/submit/*` routes follow on a per-route basis as the
+# helpers they depend on get stable enough to lazy-import.
 
 
 @app.route('/submit/<assignment_id>/verify', methods=['POST'])
@@ -7955,24 +7922,7 @@ def student_undo(assignment_id, submission_id):
     return jsonify({'success': True})
 
 
-@app.route('/submit/<assignment_id>/review/<int:submission_id>')
-def student_review_submission(assignment_id, submission_id):
-    """Let a student review their previous submission results."""
-    is_student = session.get(f'student_auth_{assignment_id}')
-    is_teacher = _is_authenticated()
-    if not is_student and not is_teacher:
-        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-
-    sub = Submission.query.get_or_404(submission_id)
-    if sub.assignment_id != assignment_id or sub.status != 'done':
-        return jsonify({'success': False, 'error': 'Not found'}), 404
-
-    asn = Assignment.query.get(assignment_id)
-    if not asn or not asn.show_results:
-        return jsonify({'success': False, 'error': 'Results are not available for this assignment'}), 403
-
-    result = sub.get_result()
-    return jsonify({'success': True, 'result': result})
+# UP-39: `student_review_submission` moved to `routes/student.py`.
 
 
 # ---------------------------------------------------------------------------
@@ -8737,72 +8687,8 @@ def student_confirm(assignment_id, submission_id):
     return jsonify({'success': True})
 
 
-@app.route('/submit/<assignment_id>/status/<int:submission_id>')
-def student_submission_status(assignment_id, submission_id):
-    is_teacher = _is_authenticated()
-    is_student = session.get(f'student_auth_{assignment_id}')
-    if not is_student and not is_teacher:
-        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-    sub = Submission.query.get_or_404(submission_id)
-    if sub.assignment_id != assignment_id:
-        return jsonify({'success': False, 'error': 'Not found'}), 404
-
-    asn = Assignment.query.get(assignment_id)
-    response = {'success': True, 'status': sub.status}
-
-    if sub.status == 'preview':
-        # Return extracted answers for student preview
-        response['extracted'] = sub.get_extracted_text()
-
-    if sub.status in ('done', 'error'):
-        result = sub.get_result()
-        # Teachers always see results; students only if show_results is on
-        if is_teacher or (asn and asn.show_results):
-            response['result'] = result
-        elif result.get('error'):
-            response['result'] = {'error': result['error']}
-
-    return jsonify(response)
-
-
-@app.route('/submit/<assignment_id>/download/<int:submission_id>')
-def download_submission_pdf(assignment_id, submission_id):
-    """Download a PDF report for a specific submission. Allowed for the
-    assignment's teacher OR a student authenticated for this assignment;
-    students additionally require asn.show_results=True so the teacher's
-    'Issue AI Feedback' gate covers downloads as well as the in-browser
-    view."""
-    is_teacher = _is_authenticated()
-    is_student = bool(session.get(f'student_auth_{assignment_id}'))
-    if not is_teacher and not is_student:
-        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-
-    sub = Submission.query.get_or_404(submission_id)
-    if sub.assignment_id != assignment_id:
-        return jsonify({'success': False, 'error': 'Not found'}), 404
-    if sub.status != 'done':
-        return jsonify({'success': False, 'error': 'No results available'}), 404
-
-    asn = Assignment.query.get(assignment_id)
-    if not is_teacher and not (asn and asn.show_results):
-        return jsonify({'success': False, 'error': 'Feedback not yet released by the teacher'}), 403
-    result = sub.get_result()
-    subject = asn.subject if asn else ''
-    asn_title = (asn.title if asn else '') or ''
-    student = Student.query.get(sub.student_id) if sub.student_id else None
-    student_name = (student.name if student else '') or ''
-    pdf_bytes = generate_report_pdf(
-        result, subject=subject, app_title=get_app_title(),
-        assignment_name=asn_title,
-        student_name=student_name,
-    )
-
-    return send_file(
-        io.BytesIO(pdf_bytes),
-        mimetype='application/pdf',
-        as_attachment=True,
-        download_name='AI_Marking_Report.pdf'
-    )
+# UP-39: `student_submission_status` and `download_submission_pdf`
+# moved to `routes/student.py`.
 
 
 @app.route('/api/class/<class_id>/assignments')
@@ -9884,6 +9770,19 @@ def _run_propagation_worker(app_obj, edit_id, target_ids):
                 db.session.rollback()
 
 
+
+
+# UP-39 / UP-40 / UP-41: register Flask Blueprints AFTER all top-level
+# definitions so the deferred imports inside blueprint route bodies
+# (`from app import ...`) resolve to fully-constructed symbols at
+# request time.
+from routes.student import bp as _student_bp  # noqa: E402
+from routes.insights import bp as _insights_bp  # noqa: E402
+from routes.bulk import bp as _bulk_bp  # noqa: E402
+
+app.register_blueprint(_student_bp)
+app.register_blueprint(_insights_bp)
+app.register_blueprint(_bulk_bp)
 
 
 if __name__ == '__main__':

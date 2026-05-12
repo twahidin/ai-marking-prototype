@@ -7,7 +7,9 @@ import io
 import hashlib
 import threading as _threading
 import time as _time
+from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,125 @@ _ai_retry = retry(
     before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
+
+
+# UP-35: typed exceptions for the marking pipeline. `mark_script` now
+# raises these instead of returning `{'error': str}` from the happy
+# path. Callers catch `MarkingError` at the orchestrator boundary
+# (`run_marking_job`, `run_bulk_marking_job`, `_run_submission_marking`)
+# and convert to the persisted `{'error': str}` shape exactly once. A
+# grep for `MarkingError` now surfaces every failure path.
+class MarkingError(Exception):
+    """Base class for marking pipeline failures."""
+
+
+class AIProviderError(MarkingError):
+    """The AI provider rejected, errored, or is unavailable.
+
+    Covers: no API key, rate limit / connection / timeout exhausted by
+    retry, 413 oversize payload, schema/auth errors from the provider."""
+
+
+class ResponseParseError(MarkingError):
+    """The AI returned, but the response could not be parsed as marking JSON."""
+
+
+# UP-42: typed shapes for the marking result and the bulk-marking
+# parameter pack. These do NOT change the persisted JSON contract —
+# `to_dict()` rebuilds the legacy dict shape and `from_dict()` is
+# tolerant of missing fields per the backwards-compat policy in
+# CLAUDE.md ("Read with q.get('field', default) — never q['field']").
+@dataclass(frozen=True)
+class MarkResult:
+    """Typed view over the AI marking output.
+
+    Fields cover the common keys produced by both short-answer and
+    rubrics modes. The per-question shape (`questions`) intentionally
+    stays as `list[dict]` because its inner shape evolves over time
+    (CLAUDE.md "Submission.result_json shape" policy — readers tolerate
+    older shapes via `.get(default)`).
+
+    Stored on disk as the raw legacy dict; `MarkResult.from_dict(sub.get_result())`
+    is the migration path for callers that want type-checker help on
+    new code without breaking old persisted submissions.
+    """
+    questions: list[dict[str, Any]] = field(default_factory=list)
+    overall_feedback: str = ''
+    recommended_actions: list[str] = field(default_factory=list)
+    errors: list[dict[str, Any]] = field(default_factory=list)
+    assign_type: str = 'short_answer'
+    scoring_mode: str = 'status'
+    generated_at: str = ''
+    provider: str = ''
+    model: str = ''
+    provider_label: str = ''
+    pinyin_mode: str = ''
+    # Failure marker — set when the orchestrator persists an error
+    # instead of a result. Callers MUST check `is_error` before reading
+    # other fields.
+    error: str = ''
+
+    @property
+    def is_error(self) -> bool:
+        return bool(self.error)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the legacy dict shape for `Submission.set_result()`.
+        Empty optional fields are stripped so the persisted JSON stays
+        identical to what handcrafted writers produce — diffability."""
+        d = asdict(self)
+        # Strip empty optionals so the persisted shape matches the
+        # legacy hand-built dict.
+        for k in ('errors', 'pinyin_mode', 'error', 'recommended_actions',
+                  'overall_feedback', 'provider_label'):
+            v = d.get(k)
+            if v in ('', [], None):
+                d.pop(k, None)
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> 'MarkResult':
+        """Tolerant constructor — missing fields fall back to defaults,
+        unknown fields are ignored. Use on every read of
+        `Submission.result_json` if you want the typed view."""
+        d = d or {}
+        # Known field names — anything else is dropped (forwards-compat
+        # for fields older code wrote but this version doesn't know).
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        return cls(**{k: v for k, v in d.items() if k in known})
+
+
+@dataclass(frozen=True)
+class BulkMarkingContext:
+    """Parameter pack for `run_bulk_marking_job`.
+
+    Currently `run_bulk_marking_job` takes 18+ positional args, which
+    is exactly the shape that let UP-08 (calibration drift) happen —
+    adding a kwarg requires editing every callsite. This context
+    bundles the per-assignment, per-class state so a new field is one
+    edit. Threading this through `run_bulk_marking_job` is a follow-up
+    refactor; the dataclass lands first so the type exists.
+    """
+    provider: str
+    model: str
+    subject: str = ''
+    assign_type: str = 'short_answer'
+    scoring_mode: str = 'status'
+    total_marks: str = ''
+    review_instructions: str = ''
+    marking_instructions: str = ''
+    calibration_block: str = ''
+    pinyin_mode: str = 'off'
+    # Heavy assets — held as references; the orchestrator owns lifetimes.
+    question_paper_pages: list[bytes] = field(default_factory=list)
+    answer_key_pages: list[bytes] = field(default_factory=list)
+    rubrics_pages: list[bytes] = field(default_factory=list)
+    reference_pages: list[bytes] = field(default_factory=list)
+    # Per-run wiring.
+    session_keys: dict[str, str] | None = None
+    assignment_id: str | None = None
+    student_id_map: dict[int, int] | None = None
+    submission_id_map: dict[int, int] | None = None
 
 
 @_ai_retry
@@ -1419,7 +1540,7 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
                 review_instructions='', marking_instructions='',
                 model=None, assign_type='short_answer', scoring_mode='status', total_marks='',
                 session_keys=None, calibration_block='', pinyin_mode='off',
-                band_overrides=None):
+                band_overrides=None) -> dict[str, Any]:
     """
     Mark a student script using AI vision.
 
@@ -1435,10 +1556,20 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
 
     Returns dict with questions, overall_feedback, recommended_actions.
     For rubrics mode, also returns errors (line-by-line) and assign_type.
+
+    UP-35: raises `AIProviderError` if the provider call fails (no key,
+    rate-limit exhausted, 413, network errors) and `ResponseParseError`
+    if the response cannot be parsed as JSON. Callers MUST catch
+    `MarkingError` at the orchestrator boundary.
     """
     client, model_name, prov = get_ai_client(provider, model=model, session_keys=session_keys)
     if not client:
-        return {'error': f'AI provider "{provider}" is not available (no API key configured)'}
+        # UP-35: raise instead of returning a sentinel dict. The orchestrator
+        # (`run_marking_job` / `_run_submission_marking` / `run_bulk_marking_job`)
+        # catches `MarkingError` and persists the `{'error': ...}` shape.
+        raise AIProviderError(
+            f'AI provider "{provider}" is not available (no API key configured)'
+        )
 
     review_section = ""
     if review_instructions.strip():
@@ -1462,6 +1593,9 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
             calibration_block=calibration_block,
         )
 
+    # UP-35: provider call → AIProviderError on failure, response parse →
+    # ResponseParseError on garbage JSON. Both bubble out as MarkingError
+    # for the orchestrator to catch exactly once and persist.
     try:
         response_text = make_ai_api_call(
             client=client,
@@ -1471,44 +1605,110 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
             messages_content=content,
             max_tokens=32000
         )
-
-        result = parse_ai_response(response_text)
-        result['assign_type'] = assign_type
-        result['generated_at'] = datetime.now(timezone.utc).isoformat()
-        result['provider'] = provider
-        result['model'] = model_name
-        prov_config = PROVIDERS.get(provider, {})
-        model_label = prov_config.get('models', {}).get(model_name, model_name)
-        result['provider_label'] = f"{prov_config.get('label', provider)} — {model_label}"
-
-        # Pinyin annotation: when the assignment is Chinese AND the teacher
-        # opted in via Assignment.pinyin_mode, add ruby-annotated HTML
-        # siblings ('feedback_html', 'improvement_html', etc.) alongside
-        # the raw Chinese fields. Templates render the _html version when
-        # present and fall back to the raw text otherwise — old submissions
-        # are unaffected.
-        if pinyin_mode and pinyin_mode != 'off':
-            from subjects import resolve_subject_key
-            if resolve_subject_key(subject or '') == 'chinese':
-                try:
-                    from pinyin_annotate import annotate_result_for_pinyin
-                    annotate_result_for_pinyin(result, pinyin_mode)
-                    result['pinyin_mode'] = pinyin_mode
-                except Exception as _e:
-                    logger.warning(f'pinyin annotation skipped: {_e}')
-
-        return result
-
+    except MarkingError:
+        raise
     except Exception as e:
         logger.exception("Error marking script with %s", provider)
         err_str = str(e)
-        is_413 = '413' in err_str or 'request_too_large' in err_str.lower()
-        return {
-            'error': (
+        if '413' in err_str or 'request_too_large' in err_str.lower():
+            raise AIProviderError(
                 'Files too large for AI processing. Try smaller images or fewer pages.'
-                if is_413 else f'Error from {provider}: {err_str}'
-            )
-        }
+            ) from e
+        raise AIProviderError(f'Error from {provider}: {err_str}') from e
+
+    result = parse_ai_response(response_text)
+    # `parse_ai_response` keeps its legacy dict-return shape (used by
+    # tests + helper paths); convert its sentinel into an exception here
+    # so `mark_script`'s contract is "raise on failure, return dict on success".
+    if isinstance(result, dict) and result.get('error'):
+        logger.warning(
+            "AI response parse failed for %s: %s",
+            provider, result.get('error'),
+        )
+        raise ResponseParseError(result.get('error') or 'Could not parse response')
+
+    result['assign_type'] = assign_type
+    result['generated_at'] = datetime.now(timezone.utc).isoformat()
+    result['provider'] = provider
+    result['model'] = model_name
+    prov_config = PROVIDERS.get(provider, {})
+    model_label = prov_config.get('models', {}).get(model_name, model_name)
+    result['provider_label'] = f"{prov_config.get('label', provider)} — {model_label}"
+
+    # Pinyin annotation: when the assignment is Chinese AND the teacher
+    # opted in via Assignment.pinyin_mode, add ruby-annotated HTML
+    # siblings ('feedback_html', 'improvement_html', etc.) alongside
+    # the raw Chinese fields. Templates render the _html version when
+    # present and fall back to the raw text otherwise — old submissions
+    # are unaffected.
+    if pinyin_mode and pinyin_mode != 'off':
+        from subjects import resolve_subject_key
+        if resolve_subject_key(subject or '') == 'chinese':
+            try:
+                from pinyin_annotate import annotate_result_for_pinyin
+                annotate_result_for_pinyin(result, pinyin_mode)
+                result['pinyin_mode'] = pinyin_mode
+            except Exception as _e:
+                logger.warning(f'pinyin annotation skipped: {_e}')
+
+    return result
+
+
+# UP-38: single source of truth for provider-agnostic single-shot chat
+# completions. The three helpers below (`generate_exemplar_analysis`,
+# `_run_text_completion`, `_run_feedback_helper`) used to carry three
+# near-identical 30-line provider-branch blocks; they now route through
+# this one function. Behaviour changes from consolidation:
+#   - Anthropic helper paths now share the `_ai_retry` decorator (was
+#     previously OpenAI-only), so a transient 429/500 on Anthropic mid-
+#     student-grouping no longer fails the whole pass.
+#   - `max_tokens` vs `max_completion_tokens` (OpenAI GPT-5+) is decided
+#     in exactly one place — a future model-string change is one edit.
+@_ai_retry
+def _simple_completion(provider: str, model: str, system: str, user: str,
+                       max_tokens: int, session_keys=None) -> str:
+    """Run a single chat completion across Anthropic/OpenAI/Qwen and
+    return the RAW response text. Callers parse JSON if they need to.
+    Raises `ValueError` on unknown provider or missing key, the SDK's
+    own errors on auth/rate-limit/etc."""
+    if provider not in PROVIDERS:
+        raise ValueError(f"Unknown provider: {provider}")
+    api_key = _resolve_api_key(provider, session_keys)
+    if not api_key:
+        raise ValueError(f"No API key configured for provider: {provider}")
+
+    if provider == 'anthropic':
+        client = Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{'role': 'user', 'content': user}],
+        )
+        return resp.content[0].text
+
+    if not OPENAI_AVAILABLE:
+        raise RuntimeError("OpenAI SDK not installed")
+    if provider == 'qwen':
+        client = OpenAI(api_key=api_key, base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+    else:
+        client = OpenAI(api_key=api_key)
+    kwargs: dict[str, Any] = {
+        'model': model,
+        'messages': [
+            {'role': 'system', 'content': system},
+            {'role': 'user', 'content': user},
+        ],
+    }
+    if provider == 'openai':
+        kwargs['max_completion_tokens'] = max_tokens
+    else:
+        kwargs['max_tokens'] = max_tokens
+    # `_openai_chat_create` is itself `_ai_retry`-decorated, so retries
+    # are idempotent and the outer decorator on `_simple_completion`
+    # simply short-circuits if the inner one has already exhausted them.
+    resp = _openai_chat_create(client, **kwargs)
+    return resp.choices[0].message.content
 
 
 def generate_exemplar_analysis(provider, model, session_keys, subject, submissions_data):
@@ -1579,42 +1779,9 @@ def generate_exemplar_analysis(provider, model, session_keys, subject, submissio
         '}]}'
     )
 
-    if provider not in PROVIDERS:
-        raise ValueError(f"Unknown provider: {provider}")
-
-    api_key = _resolve_api_key(provider, session_keys)
-    if not api_key:
-        raise ValueError(f"No API key configured for provider: {provider}")
-
-    if provider == 'anthropic':
-        client = Anthropic(api_key=api_key)
-        resp = client.messages.create(
-            model=model,
-            max_tokens=4096,
-            system=system_prompt,
-            messages=[{'role': 'user', 'content': user_prompt}],
-        )
-        text = resp.content[0].text
-    else:
-        if not OPENAI_AVAILABLE:
-            raise RuntimeError("OpenAI SDK not installed")
-        if provider == 'qwen':
-            client = OpenAI(api_key=api_key, base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-        else:
-            client = OpenAI(api_key=api_key)
-        kwargs = {
-            'model': model,
-            'messages': [
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': user_prompt},
-            ],
-        }
-        if provider == 'openai':
-            kwargs['max_completion_tokens'] = 4096
-        else:
-            kwargs['max_tokens'] = 4096
-        resp = _openai_chat_create(client, **kwargs)
-        text = resp.choices[0].message.content
+    # UP-38: route through the centralised provider-agnostic helper.
+    text = _simple_completion(provider, model, system_prompt, user_prompt,
+                              max_tokens=4096, session_keys=session_keys)
 
     match = re.search(r'\{[\s\S]*\}', text)
     if not match:
@@ -1634,84 +1801,23 @@ def generate_exemplar_analysis(provider, model, session_keys, subject, submissio
 def _run_text_completion(provider, model, session_keys, system_prompt, user_prompt, max_tokens=400):
     """Run a single chat completion and return the RAW response text (no JSON
     parsing). Use this when the response is mixed reasoning + a tagged JSON
-    block (the "Group by Mistake Type" Pass 1 prompt does this)."""
-    if provider not in PROVIDERS:
-        raise ValueError(f"Unknown provider: {provider}")
-    api_key = _resolve_api_key(provider, session_keys)
-    if not api_key:
-        raise ValueError(f"No API key configured for provider: {provider}")
+    block (the "Group by Mistake Type" Pass 1 prompt does this).
 
-    if provider == 'anthropic':
-        client = Anthropic(api_key=api_key)
-        resp = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{'role': 'user', 'content': user_prompt}],
-        )
-        return resp.content[0].text
-    if not OPENAI_AVAILABLE:
-        raise RuntimeError("OpenAI SDK not installed")
-    if provider == 'qwen':
-        client = OpenAI(api_key=api_key, base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-    else:
-        client = OpenAI(api_key=api_key)
-    kwargs = {
-        'model': model,
-        'messages': [
-            {'role': 'system', 'content': system_prompt},
-            {'role': 'user', 'content': user_prompt},
-        ],
-    }
-    if provider == 'openai':
-        kwargs['max_completion_tokens'] = max_tokens
-    else:
-        kwargs['max_tokens'] = max_tokens
-    resp = _openai_chat_create(client, **kwargs)
-    return resp.choices[0].message.content
+    UP-38: thin shim over `_simple_completion` — kept as a named entry
+    point so call sites read clearly ("text completion, no parsing")."""
+    return _simple_completion(provider, model, system_prompt, user_prompt,
+                              max_tokens=max_tokens, session_keys=session_keys)
 
 
 def _run_feedback_helper(provider, model, session_keys, system_prompt, user_prompt, max_tokens=400):
     """Single-shot chat completion that parses the first {...} block from
     the response as JSON. Used by extract_correction_insight,
-    refresh_criterion_feedback, and any other tier-2 JSON helper."""
+    refresh_criterion_feedback, and any other tier-2 JSON helper.
+
+    UP-38: provider dispatch consolidated into `_simple_completion`."""
     import json as _json
-    if provider not in PROVIDERS:
-        raise ValueError(f"Unknown provider: {provider}")
-    api_key = _resolve_api_key(provider, session_keys)
-    if not api_key:
-        raise ValueError(f"No API key configured for provider: {provider}")
-
-    if provider == 'anthropic':
-        client = Anthropic(api_key=api_key)
-        resp = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{'role': 'user', 'content': user_prompt}],
-        )
-        text = resp.content[0].text
-    else:
-        if not OPENAI_AVAILABLE:
-            raise RuntimeError("OpenAI SDK not installed")
-        if provider == 'qwen':
-            client = OpenAI(api_key=api_key, base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-        else:
-            client = OpenAI(api_key=api_key)
-        kwargs = {
-            'model': model,
-            'messages': [
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': user_prompt},
-            ],
-        }
-        if provider == 'openai':
-            kwargs['max_completion_tokens'] = max_tokens
-        else:
-            kwargs['max_tokens'] = max_tokens
-        resp = _openai_chat_create(client, **kwargs)
-        text = resp.choices[0].message.content
-
+    text = _simple_completion(provider, model, system_prompt, user_prompt,
+                              max_tokens=max_tokens, session_keys=session_keys)
     match = re.search(r'\{[\s\S]*\}', text)
     if not match:
         raise ValueError("AI response contained no JSON object")

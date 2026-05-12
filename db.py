@@ -4,6 +4,8 @@ import base64
 import hashlib
 import logging
 from datetime import datetime, timezone, timedelta
+from enum import Enum
+from typing import Any
 from flask_sqlalchemy import SQLAlchemy
 
 try:
@@ -15,6 +17,32 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 db = SQLAlchemy()
+
+
+# UP-37: typed status set for `Submission.status`. The `str` mixin lets
+# Jinja and SQLAlchemy treat instances exactly like the raw strings they
+# replace — `sub.status == 'done'` keeps working, and so does
+# `sub.status = SubmissionStatus.DONE`. Migrate progressively; the index
+# is fine because the persisted values are identical.
+class SubmissionStatus(str, Enum):
+    PENDING = 'pending'
+    EXTRACTING = 'extracting'
+    PREVIEW = 'preview'
+    PROCESSING = 'processing'
+    DONE = 'done'
+    ERROR = 'error'
+
+
+def utc(dt: datetime | None) -> datetime | None:
+    """UP-37: coerce a naive `datetime` to UTC, leaving aware datetimes
+    untouched. Centralises the `if dt.tzinfo is None: dt = dt.replace(
+    tzinfo=timezone.utc)` pattern that's duplicated ~9× across app.py.
+    Returns `None` unchanged so callers can drop dead `if dt is None`
+    guards around the coercion.
+    """
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 def _get_fernet():
@@ -780,7 +808,11 @@ class Submission(db.Model):
         """Store list of file bytes as base64 JSON."""
         self.script_pages_json = json.dumps([base64.b64encode(p).decode() for p in pages_list], ensure_ascii=False)
 
-    def get_result(self):
+    def get_result(self) -> dict[str, Any]:
+        # UP-36: declares the persisted marking-result shape so callers
+        # know to expect either the success dict ({'questions': [...],
+        # 'overall_feedback': str, ...}) or the failure shape
+        # ({'error': str}) written by the orchestrators after UP-35.
         try:
             return json.loads(self.result_json or '{}')
         except (json.JSONDecodeError, TypeError):
