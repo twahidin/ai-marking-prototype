@@ -11,6 +11,7 @@ import time
 import zipfile
 from datetime import datetime, timezone, timedelta
 from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for, Response, abort, make_response
+from flask_wtf.csrf import CSRFProtect, CSRFError
 import io
 
 from ai_marking import mark_script, get_available_providers, PROVIDERS, generate_exemplar_analysis, explain_criterion, evaluate_correction
@@ -31,6 +32,23 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SECURE'] = os.getenv('FLASK_ENV') != 'development'
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
+
+# UP-04: CSRF protection. Default-on for every POST/PUT/DELETE/PATCH;
+# student-submission routes are opted out below via @csrf.exempt because
+# they're auth-gated by classroom code (no teacher session to bind a
+# token to). The token is exposed in `base.html`'s <meta> tag and a small
+# fetch() shim injects it as the `X-CSRFToken` header on every AJAX call.
+csrf = CSRFProtect(app)
+
+
+@app.errorhandler(CSRFError)
+def _handle_csrf_error(e):
+    """Return a JSON 400 (consistent with the rest of the API) instead of
+    the default Flask-WTF HTML page so XHR callers can react cleanly."""
+    if request.path.startswith('/api/') or request.accept_mimetypes.best == 'application/json' \
+       or request.is_json or request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return jsonify({'success': False, 'error': 'CSRF token missing or invalid'}), 400
+    return Response(f'CSRF check failed: {e.description}', status=400, mimetype='text/plain')
 
 _ENV_ACCESS_CODE = os.getenv('ACCESS_CODE', '').strip()  # keep for legacy
 _ENV_TEACHER_CODE = os.getenv('TEACHER_CODE', '').strip() or _ENV_ACCESS_CODE
@@ -288,7 +306,16 @@ def _get_session_keys():
 
 
 def _is_authenticated():
-    """Check if user is authenticated."""
+    """Check if user is authenticated.
+
+    UP-03: default-deny. Previously, when no ACCESS_CODE env var and no DB
+    teacher_code were set, this returned True for every visitor — anyone with
+    the Railway URL got owner-level access on first boot. The hub route
+    redirects to the setup wizard before reaching auth checks, so first-run
+    still works. Demo mode is intentionally open (no auth surface).
+    """
+    if is_demo_mode():
+        return True  # Demo mode is a sandbox; no auth surface
     if is_dept_mode():
         return session.get('teacher_id') is not None
     # Teacher-based auth (TEACHER_CODE set explicitly, not just inherited from ACCESS_CODE)
@@ -298,10 +325,10 @@ def _is_authenticated():
     # Also accept teacher_id session (wizard-created teachers)
     if session.get('teacher_id'):
         return True
-    # Legacy ACCESS_CODE path
-    if not _ENV_ACCESS_CODE:
-        return True
-    return session.get('authenticated', False)
+    # Legacy ACCESS_CODE path (only honored when explicitly set)
+    if _ENV_ACCESS_CODE:
+        return session.get('authenticated', False)
+    return False
 
 
 def _current_teacher():
@@ -509,7 +536,24 @@ def _prepare_new_submission(student, assignment):
 
 
 def _require_hod():
-    """Return error response if not a managing role, or None if OK."""
+    """UP-01: STRICT gate — only role == 'hod'. Use for actions that have
+    org-wide blast radius (API keys, code rotation, data purge). Previously
+    this was loose (any management role); a `manager` could overwrite the
+    org's Anthropic/OpenAI/Qwen keys → instant billing hijack.
+    """
+    if not is_dept_mode() or not _is_authenticated():
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    teacher = _current_teacher()
+    if not teacher or teacher.role != 'hod':
+        return jsonify({'success': False, 'error': 'HOD access required'}), 403
+    return None
+
+
+def _require_management():
+    """UP-01: LOOSE gate — any management role (hod, subject_head, manager).
+    Use for class/teacher CRUD where any management role legitimately needs
+    access. Equivalent to the historical `_require_hod` behaviour.
+    """
     if not is_dept_mode() or not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
     if not _can_manage_accounts():
@@ -547,6 +591,55 @@ def _get_dept_keys():
                     pass
             keys[prov] = cfg.value
     return keys
+
+
+def _build_calibration_block_for(asn, sub=None):
+    """UP-08: shared calibration resolver so the single, re-mark, and bulk
+    paths see the same behaviour. Best-effort — any failure yields '' and
+    rolls back the SQLAlchemy session so a later commit isn't poisoned.
+
+    `asn` must carry teacher_id, subject, provider, model.
+    `sub`, if provided, contributes theme_keys harvested from its prior
+    result_json — used for Tier-1 calibration retrieval on re-marks.
+    """
+    try:
+        from ai_marking import build_calibration_block
+        theme_keys = []
+        if sub is not None:
+            try:
+                prior = sub.get_result() or {}
+                theme_keys = list({
+                    q.get('theme_key')
+                    for q in (prior.get('questions') or [])
+                    if q.get('theme_key')
+                })
+            except Exception:
+                theme_keys = []
+        block = build_calibration_block(
+            teacher_id=asn.teacher_id,
+            asn=asn,
+            subject=(asn.subject or ''),
+            theme_keys=theme_keys,
+            provider=asn.provider,
+            model=asn.model,
+            session_keys=_resolve_api_keys(asn),
+        )
+        if block:
+            logger.info(
+                f"Calibration block resolved for asn={getattr(asn,'id',None)}: "
+                f"{len(block)} chars"
+            )
+        return block or ''
+    except Exception as cal_err:
+        logger.warning(
+            f"Calibration lookup failed for asn={getattr(asn,'id',None)}, "
+            f"marking without it: {cal_err}"
+        )
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        return ''
 
 
 def _resolve_api_keys(assignment):
@@ -1039,7 +1132,7 @@ def download_pdf(job_id):
 
 @app.route('/department')
 def department_page():
-    err = _require_hod()
+    err = _require_management()
     if err:
         return redirect(url_for('hub'))
 
@@ -1110,7 +1203,7 @@ def department_page():
 
 @app.route('/department/classes')
 def department_manage():
-    err = _require_hod()
+    err = _require_management()
     if err:
         return redirect(url_for('hub'))
 
@@ -1165,7 +1258,7 @@ def _generate_teacher_code():
 
 @app.route('/department/teacher/create', methods=['POST'])
 def dept_create_teacher():
-    err = _require_hod()
+    err = _require_management()
     if err:
         return err
 
@@ -1208,7 +1301,7 @@ def dept_create_teacher():
 
 @app.route('/department/teacher/<teacher_id>/update', methods=['POST'])
 def dept_update_teacher(teacher_id):
-    err = _require_hod()
+    err = _require_management()
     if err:
         return err
     t = Teacher.query.get_or_404(teacher_id)
@@ -1233,7 +1326,7 @@ def dept_update_teacher(teacher_id):
 
 @app.route('/department/teacher/<teacher_id>/delete', methods=['POST'])
 def dept_delete_teacher(teacher_id):
-    err = _require_hod()
+    err = _require_management()
     if err:
         return err
 
@@ -1272,7 +1365,7 @@ def dept_reset_code(teacher_id):
 
 @app.route('/department/teacher/<teacher_id>/revoke', methods=['POST'])
 def dept_revoke_teacher(teacher_id):
-    err = _require_hod()
+    err = _require_management()
     if err:
         return err
     t = Teacher.query.get_or_404(teacher_id)
@@ -1314,7 +1407,7 @@ def dept_purge_teacher(teacher_id):
 
 @app.route('/department/class/create', methods=['POST'])
 def dept_create_class():
-    err = _require_hod()
+    err = _require_management()
     if err:
         return err
 
@@ -1335,7 +1428,7 @@ def dept_create_class():
 
 @app.route('/department/class/<class_id>/delete', methods=['POST'])
 def dept_delete_class(class_id):
-    err = _require_hod()
+    err = _require_management()
     if err:
         return err
 
@@ -1544,7 +1637,7 @@ def api_classes():
 
 @app.route('/department/class/<class_id>/assign', methods=['POST'])
 def dept_assign_teacher(class_id):
-    err = _require_hod()
+    err = _require_management()
     if err:
         return err
 
@@ -1566,7 +1659,7 @@ def dept_assign_teacher(class_id):
 
 @app.route('/department/class/<class_id>/unassign', methods=['POST'])
 def dept_unassign_teacher(class_id):
-    err = _require_hod()
+    err = _require_management()
     if err:
         return err
 
@@ -2880,9 +2973,9 @@ Respond in JSON format:
 
     cfg = DepartmentConfig.query.filter_by(key=config_key).first()
     if cfg:
-        cfg.value = json.dumps(saved)
+        cfg.value = json.dumps(saved, ensure_ascii=False)
     else:
-        cfg = DepartmentConfig(key=config_key, value=json.dumps(saved))
+        cfg = DepartmentConfig(key=config_key, value=json.dumps(saved, ensure_ascii=False))
         db.session.add(cfg)
     db.session.commit()
 
@@ -3389,9 +3482,9 @@ Respond ONLY with valid JSON:
     config_key = f'class_insight_analysis:{assignment_id}'
     cfg = DepartmentConfig.query.filter_by(key=config_key).first()
     if cfg:
-        cfg.value = json.dumps(saved)
+        cfg.value = json.dumps(saved, ensure_ascii=False)
     else:
-        cfg = DepartmentConfig(key=config_key, value=json.dumps(saved))
+        cfg = DepartmentConfig(key=config_key, value=json.dumps(saved, ensure_ascii=False))
         db.session.add(cfg)
     db.session.commit()
 
@@ -3471,7 +3564,7 @@ Answer the teacher's questions about this data. Be conversational, specific, and
                     messages=messages,
                 ) as stream:
                     for text in stream.text_stream:
-                        yield f"data: {json.dumps({'text': text})}\n\n"
+                        yield f"data: {json.dumps({'text': text}, ensure_ascii=False)}\n\n"
             else:
                 stream = client.chat.completions.create(
                     model=model_name,
@@ -3481,7 +3574,7 @@ Answer the teacher's questions about this data. Be conversational, specific, and
                 )
                 for chunk in stream:
                     if chunk.choices and chunk.choices[0].delta.content:
-                        yield f"data: {json.dumps({'text': chunk.choices[0].delta.content})}\n\n"
+                        yield f"data: {json.dumps({'text': chunk.choices[0].delta.content}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
             logger.error(f'Chat stream error: {e}')
@@ -3855,6 +3948,23 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
     total = len(students)
     processed_indices = set()
 
+    # UP-08: resolve calibration once for the whole bulk run. The block is
+    # per-assignment (subject + teacher), not per-student. Computing it
+    # inside the loop would be the same answer N times and N× the cost.
+    calibration_block = ''
+    if assignment_id:
+        try:
+            with app.app_context():
+                asn_for_cal = Assignment.query.get(assignment_id)
+                if asn_for_cal:
+                    calibration_block = _build_calibration_block_for(asn_for_cal)
+        except Exception as cal_err:
+            logger.warning(
+                f"Bulk job {job_id}: calibration pre-fetch failed, "
+                f"proceeding without it: {cal_err}"
+            )
+            calibration_block = ''
+
     try:
         for i, (student, script_bytes) in enumerate(zip(students, student_scripts)):
             jobs[job_id]['progress'] = {
@@ -3880,6 +3990,7 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                     total_marks=total_marks,
                     session_keys=session_keys,
                     pinyin_mode=pinyin_mode,
+                    calibration_block=calibration_block,
                 )
             except Exception as e:
                 logger.error(f"Bulk job {job_id}, student {student['name']} failed: {e}")
@@ -4320,46 +4431,12 @@ def _run_submission_marking(app_obj, submission_id, assignment_id, band_override
             ref = [asn.reference] if asn.reference else []
             script = sub.get_script_pages()
 
-            # Calibration injection. build_calibration_block gives the
-            # tiered behaviour — raw examples below the principles
-            # threshold, shared markdown principles at/above —
-            # everything keyed on assignments.subject (canonical
-            # dropdown string). Best-effort: a failure here never blocks
-            # marking, and we roll back so the session isn't poisoned for
-            # the result-write commit.
-            calibration_block = ''
-            try:
-                from ai_marking import build_calibration_block
-                prior = sub.get_result() or {}
-                theme_keys = list({
-                    q.get('theme_key')
-                    for q in (prior.get('questions') or [])
-                    if q.get('theme_key')
-                })
-                calibration_block = build_calibration_block(
-                    teacher_id=asn.teacher_id,
-                    asn=asn,
-                    subject=(asn.subject or ''),
-                    theme_keys=theme_keys,
-                    provider=asn.provider,
-                    model=asn.model,
-                    session_keys=_resolve_api_keys(asn),
-                )
-                if calibration_block:
-                    logger.info(
-                        f"Marking sub {submission_id}: prepended calibration "
-                        f"block ({len(calibration_block)} chars)"
-                    )
-            except Exception as cal_err:
-                logger.warning(
-                    f"Calibration lookup failed for sub {submission_id}, "
-                    f"marking without it: {cal_err}"
-                )
-                try:
-                    db.session.rollback()
-                except Exception:
-                    pass
-                calibration_block = ''
+            # Calibration injection. Tiered behaviour — raw examples below
+            # the principles threshold, shared markdown principles at/above
+            # — everything keyed on assignments.subject (canonical dropdown
+            # string). Centralised in `_build_calibration_block_for` (UP-08)
+            # so the bulk path applies the same calibration.
+            calibration_block = _build_calibration_block_for(asn, sub=sub)
 
             result = mark_script(
                 provider=asn.provider,
@@ -4688,7 +4765,7 @@ def _run_propagation_worker(app_obj, edit_id, target_ids):
             # Seed propagated_to with pending entries so the progress poll
             # has the full list visible from the very first poll.
             seeded = [{'submission_id': int(sid), 'status': 'pending'} for sid in target_ids]
-            edit.propagated_to = _json.dumps(seeded)
+            edit.propagated_to = _json.dumps(seeded, ensure_ascii=False)
             edit.propagation_status = 'pending'
             db.session.commit()
 
@@ -4748,7 +4825,7 @@ def _run_propagation_worker(app_obj, edit_id, target_ids):
                         if int(c.get('submission_id')) == int(sid):
                             current[i] = entry
                             break
-                    edit_fresh.propagated_to = _json.dumps(current)
+                    edit_fresh.propagated_to = _json.dumps(current, ensure_ascii=False)
                     db.session.commit()
                 except Exception as persist_err:
                     db.session.rollback()
@@ -6137,7 +6214,7 @@ def teacher_exemplars_generate(assignment_id):
         return jsonify({'success': False, 'error': 'AI analysis could not produce valid exemplars. Try regenerating.'}), 502
 
     sanitised = {'areas': areas_out}
-    asn.exemplar_analysis_json = json.dumps(sanitised)
+    asn.exemplar_analysis_json = json.dumps(sanitised, ensure_ascii=False)
     asn.exemplar_analyzed_at = datetime.now(timezone.utc)
 
     # Mark every prior log row for this assignment as superseded, then
@@ -6152,7 +6229,7 @@ def teacher_exemplars_generate(assignment_id):
         assignment_id=asn.id,
         submissions_count=len(submissions_data),
         roster_size=total,
-        areas_json=json.dumps(sanitised),
+        areas_json=json.dumps(sanitised, ensure_ascii=False),
         created_at=asn.exemplar_analyzed_at,
     ))
     db.session.commit()
@@ -7292,6 +7369,7 @@ def student_question_paper(assignment_id):
 
 
 @app.route('/submit/<assignment_id>/verify', methods=['POST'])
+@csrf.exempt  # UP-04: student-facing route, auth by classroom code (no session)
 def student_verify(assignment_id):
     if is_demo_mode():
         return jsonify({'success': False, 'error': 'Submissions are disabled in demo mode'}), 403
@@ -7338,6 +7416,9 @@ def student_verify(assignment_id):
         student_list.append(entry)
 
     session[f'student_auth_{assignment_id}'] = True
+    # UP-05: re-authenticating with the classroom code releases any
+    # previous student binding so the user can pick a different name.
+    session.pop(f'student_id_{assignment_id}', None)
     return jsonify({
         'success': True,
         'students': student_list,
@@ -7346,6 +7427,107 @@ def student_verify(assignment_id):
         'max_drafts': asn.max_drafts,
         'has_question_paper': bool(asn.question_paper),
     })
+
+
+@app.route('/submit/<assignment_id>/switch-student', methods=['POST'])
+@csrf.exempt  # UP-04: student-facing route, auth-gated by classroom code
+def student_switch(assignment_id):
+    """UP-05: free switch to a name that has no submission yet; require
+    classroom-code re-entry to switch to a name that already has one
+    (closes the snooping vector — see plan acceptance (c))."""
+    if not session.get(f'student_auth_{assignment_id}'):
+        return jsonify({'success': False, 'error': 'Not authenticated', 'auth_required': True}), 401
+    asn = Assignment.query.get_or_404(assignment_id)
+    data = request.get_json(silent=True) or {}
+    try:
+        new_sid = int(data.get('student_id'))
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'student_id required'}), 400
+
+    student = Student.query.get(new_sid)
+    if not student:
+        return jsonify({'success': False, 'error': 'Invalid student'}), 400
+    # Roster check (same shape as student_upload)
+    if asn.class_id:
+        if not student.class_id or student.class_id != asn.class_id:
+            return jsonify({'success': False, 'error': 'Invalid student'}), 400
+    elif student.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Invalid student'}), 400
+
+    # If the target name already has any submission, force re-auth so an
+    # opportunist with the classroom code can't enumerate other students'
+    # work just by rotating the name dropdown.
+    has_sub = Submission.query.filter_by(
+        student_id=new_sid, assignment_id=assignment_id,
+    ).first() is not None
+    if has_sub:
+        session.pop(f'student_auth_{assignment_id}', None)
+        session.pop(f'student_id_{assignment_id}', None)
+        return jsonify({
+            'success': False,
+            'error': 'This name already has a submission — please enter the classroom code to continue.',
+            'auth_required': True,
+        }), 403
+
+    # Otherwise: free switch.
+    session[f'student_id_{assignment_id}'] = new_sid
+    return jsonify({'success': True})
+
+
+@app.route('/submit/<assignment_id>/undo/<int:submission_id>', methods=['POST'])
+@csrf.exempt  # UP-04: student-facing route, auth-gated by classroom code
+def student_undo(assignment_id, submission_id):
+    """UP-05: 30-minute undo window after submit. Deletes the new
+    submission and, if it had bumped a prior final to is_final=False,
+    flips that prior row back. Clears the session student binding so the
+    re-pick is unconstrained."""
+    if is_demo_mode():
+        return jsonify({'success': False, 'error': 'Undo disabled in demo mode'}), 403
+    if not session.get(f'student_auth_{assignment_id}'):
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    sub = Submission.query.get_or_404(submission_id)
+    if sub.assignment_id != assignment_id:
+        return jsonify({'success': False, 'error': 'Not found'}), 404
+    # UP-05 (review fix): bound_sid MUST be set and match. The previous
+    # `if not None and !=` shape skipped the check when the binding was
+    # absent — e.g. directly after `/verify` clears it — letting anyone
+    # with the classroom code delete any roster submission within 30 min.
+    bound_sid = session.get(f'student_id_{assignment_id}')
+    if bound_sid is None or int(bound_sid) != sub.student_id:
+        return jsonify({'success': False, 'error': 'Not your submission'}), 403
+
+    # 30-minute window. submitted_at may be tz-naive (depends on column type).
+    submitted_at = sub.submitted_at
+    if submitted_at is None:
+        return jsonify({'success': False, 'error': 'Submission has no timestamp'}), 400
+    if submitted_at.tzinfo is None:
+        submitted_at = submitted_at.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - submitted_at
+    if age.total_seconds() > 30 * 60:
+        return jsonify({
+            'success': False,
+            'error': 'Undo window has closed (30 minutes). Ask your teacher to delete this submission.',
+        }), 410
+
+    try:
+        student_id = sub.student_id
+        sub_asn_id = sub.assignment_id
+        db.session.delete(sub)
+        # Restore the most recent prior submission as final, if any.
+        prior = (Submission.query
+                 .filter_by(student_id=student_id, assignment_id=sub_asn_id)
+                 .order_by(Submission.draft_number.desc())
+                 .first())
+        if prior:
+            prior.is_final = True
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.exception('UP-05 undo failed')
+        return jsonify({'success': False, 'error': 'Could not undo submission'}), 500
+
+    session.pop(f'student_id_{assignment_id}', None)
+    return jsonify({'success': True})
 
 
 @app.route('/submit/<assignment_id>/review/<int:submission_id>')
@@ -7598,6 +7780,7 @@ def _compute_grouping_payload(sub, result, themes):
 
 
 @app.route('/feedback/<assignment_id>/<int:submission_id>/explain', methods=['POST'])
+@csrf.exempt  # UP-04: student-facing route, auth-gated by classroom code
 def student_feedback_explain(assignment_id, submission_id):
     """Layer 3 on-demand: "The idea" for one criterion. Cached on result_json.
 
@@ -7664,6 +7847,7 @@ def student_feedback_explain(assignment_id, submission_id):
 
 
 @app.route('/feedback/<assignment_id>/<int:submission_id>/correction', methods=['POST'])
+@csrf.exempt  # UP-04: student-facing route, auth-gated by classroom code
 def student_feedback_correction(assignment_id, submission_id):
     """Evaluate a "Now You Try" correction attempt. Stores the attempt."""
     asn, sub, err = _student_feedback_auth(assignment_id, submission_id)
@@ -7725,6 +7909,7 @@ def student_feedback_correction(assignment_id, submission_id):
 
 
 @app.route('/feedback/<assignment_id>/<int:submission_id>/mark-reviewed', methods=['POST'])
+@csrf.exempt  # UP-04: student-facing route, auth-gated by classroom code
 def student_feedback_mark_reviewed(assignment_id, submission_id):
     """Record that the student has expanded a group — powers the "Where was I?"
     return-visit landing. Idempotent: calling twice for the same theme_key is
@@ -7994,6 +8179,7 @@ def feedback_propagation_progress(edit_id):
 
 
 @app.route('/submit/<assignment_id>/upload', methods=['POST'])
+@csrf.exempt  # UP-04: student-facing route, auth-gated by classroom code
 def student_upload(assignment_id):
     """Upload script and start AI extraction (preview step before marking)."""
     if is_demo_mode():
@@ -8016,6 +8202,22 @@ def student_upload(assignment_id):
             return jsonify({'success': False, 'error': 'Invalid student'}), 400
     elif student.assignment_id != assignment_id:
         return jsonify({'success': False, 'error': 'Invalid student'}), 400
+
+    # UP-05: write-side IDOR fix. Without this, anyone with the classroom
+    # code can post an upload as any other student in the class. We bind
+    # the chosen student_id to the session on first upload; subsequent
+    # attempts as a different student are rejected and the client is told
+    # to go through the switch-student flow (which re-auths if needed).
+    bound_sid = session.get(f'student_id_{assignment_id}')
+    form_sid = int(student_id)
+    if bound_sid is None:
+        session[f'student_id_{assignment_id}'] = form_sid
+    elif int(bound_sid) != form_sid:
+        return jsonify({
+            'success': False,
+            'error': 'You are bound to a different name in this session. Use "Not me?" to switch.',
+            'auth_required': True,
+        }), 403
 
     script_files = request.files.getlist('script')
     if not script_files or not script_files[0].filename:
@@ -8076,6 +8278,7 @@ def student_upload(assignment_id):
 
 
 @app.route('/submit/<assignment_id>/confirm/<int:submission_id>', methods=['POST'])
+@csrf.exempt  # UP-04: student-facing route, auth-gated by classroom code
 def student_confirm(assignment_id, submission_id):
     """Student confirms (possibly edited) extracted text, then start marking."""
     if is_demo_mode():
@@ -8190,6 +8393,14 @@ def download_submission_pdf(assignment_id, submission_id):
 def api_class_assignments(class_id):
     if not _is_authenticated():
         return jsonify([])
+    # UP-02: ownership check. In dept mode a teacher with no roster entry
+    # for this class can otherwise enumerate any class's assignment list.
+    # Senior roles (hod/subject_head/lead/owner) keep cross-class access.
+    teacher = _current_teacher()
+    if teacher and teacher.role not in ROLES_CAN_VIEW_INSIGHTS:
+        tc = TeacherClass.query.filter_by(teacher_id=teacher.id, class_id=class_id).first()
+        if not tc:
+            return jsonify({'success': False, 'error': 'Class not in your roster'}), 403
     assignments = Assignment.query.filter_by(class_id=class_id).order_by(Assignment.created_at.desc()).all()
     return jsonify([{
         'id': a.id,
@@ -8205,6 +8416,11 @@ def api_assignment_students(assignment_id):
     if not _is_authenticated():
         return jsonify([])
     asn = Assignment.query.get_or_404(assignment_id)
+    # UP-02: anyone authenticated could otherwise fetch any roster + per-
+    # student submission status by URL enumeration.
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
 
     # Get students from class level
     if asn.class_id:
@@ -8233,6 +8449,15 @@ def api_submission_extracted(submission_id):
     if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
     sub = Submission.query.get_or_404(submission_id)
+    # UP-02: submission_id is an integer URL parameter (1..N) — easy to
+    # enumerate. Resolve to the assignment and run the ownership check so
+    # teacher A can't read teacher B's student OCR text.
+    asn = Assignment.query.get(sub.assignment_id)
+    if asn is None:
+        return jsonify({'success': False, 'error': 'Assignment not found'}), 404
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
     return jsonify({
         'success': True,
         'extracted': sub.get_extracted_text(),
@@ -9153,7 +9378,7 @@ def _run_propagation_worker(app_obj, edit_id, target_ids):
             # Seed propagated_to with pending entries so the progress poll has
             # the full target list visible from the very first poll.
             seeded = [{'submission_id': int(sid), 'status': 'pending'} for sid in target_ids]
-            edit.propagated_to = _json.dumps(seeded)
+            edit.propagated_to = _json.dumps(seeded, ensure_ascii=False)
             edit.propagation_status = 'pending'
             db.session.commit()
 
@@ -9213,7 +9438,7 @@ def _run_propagation_worker(app_obj, edit_id, target_ids):
                         if int(c.get('submission_id')) == int(sid):
                             current[i] = entry
                             break
-                    edit_fresh.propagated_to = _json.dumps(current)
+                    edit_fresh.propagated_to = _json.dumps(current, ensure_ascii=False)
                     db.session.commit()
                 except Exception as persist_err:
                     db.session.rollback()

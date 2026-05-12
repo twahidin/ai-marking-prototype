@@ -478,6 +478,37 @@ def _migrate_add_columns(app):
                 logger.warning(f'exemplar_analysis_log backfill skipped: {_e}')
 
 
+def _sweep_stuck_submissions(app):
+    """UP-06: flip submissions stuck in an in-flight status older than 10
+    minutes to 'error'. The job system (`jobs = {}`) is in-memory, so a
+    Railway redeploy mid-bulk-mark leaves rows pending forever — invisible
+    to the bulk loop's exception handler because the worker process died.
+
+    Idempotent: filtered by status + cutoff, safe to run on every boot.
+    Best-effort: a failure here never blocks startup.
+    """
+    with app.app_context():
+        try:
+            cutoff = datetime.utcnow() - timedelta(minutes=10)
+            stuck_statuses = ('pending', 'processing', 'extracting', 'preview')
+            stuck = Submission.query.filter(
+                Submission.status.in_(stuck_statuses),
+                Submission.submitted_at < cutoff,
+            ).all()
+            if not stuck:
+                return
+            for s in stuck:
+                s.status = 'error'
+                s.set_result({'error': 'Marking worker died during deploy — please retry.'})
+                if not s.marked_at:
+                    s.marked_at = datetime.now(timezone.utc)
+            db.session.commit()
+            logger.info(f'UP-06 sweep: marked {len(stuck)} stuck submission(s) as error')
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f'UP-06 stuck-submission sweep failed: {e}')
+
+
 def init_db(app):
     """Configure and initialize database."""
     db_url = os.getenv('DATABASE_URL', '')
@@ -491,6 +522,7 @@ def init_db(app):
     with app.app_context():
         db.create_all()
         _migrate_add_columns(app)
+        _sweep_stuck_submissions(app)
         # Belt-and-suspenders: confirm feedback_edit table actually exists.
         # If create_all silently failed for any reason, force-create it now
         # so calibration writes don't go to /dev/null.
@@ -703,7 +735,7 @@ class Submission(db.Model):
 
     def set_script_pages(self, pages_list):
         """Store list of file bytes as base64 JSON."""
-        self.script_pages_json = json.dumps([base64.b64encode(p).decode() for p in pages_list])
+        self.script_pages_json = json.dumps([base64.b64encode(p).decode() for p in pages_list], ensure_ascii=False)
 
     def get_result(self):
         try:
@@ -712,7 +744,7 @@ class Submission(db.Model):
             return {}
 
     def set_result(self, result_dict):
-        self.result_json = json.dumps(result_dict)
+        self.result_json = json.dumps(result_dict, ensure_ascii=False)
 
     def get_extracted_text(self):
         try:
@@ -721,7 +753,7 @@ class Submission(db.Model):
             return []
 
     def set_extracted_text(self, answers_list):
-        self.extracted_text_json = json.dumps(answers_list)
+        self.extracted_text_json = json.dumps(answers_list, ensure_ascii=False)
 
     def get_student_text(self):
         try:
@@ -730,7 +762,7 @@ class Submission(db.Model):
             return []
 
     def set_student_text(self, answers_list):
-        self.student_text_json = json.dumps(answers_list)
+        self.student_text_json = json.dumps(answers_list, ensure_ascii=False)
 
 
 class FeedbackLog(db.Model):

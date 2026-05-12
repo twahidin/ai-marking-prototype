@@ -124,6 +124,24 @@
     .draft-row { padding: 0.15em 0; font-size: 0.9em; }
     .final-badge { color: #b8860b; font-weight: 600; }
     .drafts-empty { color: #888; font-style: italic; font-size: 0.9em; }
+
+    /* UP-05: recovery affordances */
+    .not-me-bar {
+        background: #fff8e1; border-bottom: 1px solid #f0d878;
+        padding: 8px 12px; text-align: center; font-size: 13px;
+    }
+    .not-me-bar a { color: #8a6d00; font-weight: 600; cursor: pointer; text-decoration: underline; }
+    .undo-card {
+        background: #fff8e1; border: 1px solid #f0d878; border-radius: 10px;
+        padding: 12px 16px; margin-top: 16px; font-size: 13px; color: #5a4400;
+    }
+    .undo-card .undo-btn {
+        margin-top: 8px; padding: 10px 18px; background: #e68a00; color: white;
+        border: none; border-radius: 8px; font-size: 13px; font-weight: 700;
+        cursor: pointer; -webkit-tap-highlight-color: transparent;
+    }
+    .undo-card .undo-btn:disabled { background: #ccc; cursor: not-allowed; }
+    .undo-card .undo-countdown { color: #8a6d00; font-weight: 600; }
 </style>
 {% endblock %}
 
@@ -137,6 +155,12 @@
         <div class="gate-error" id="gateError"></div>
         <button class="gate-btn" id="gateBtn" onclick="verifyClassCode()">Enter</button>
     </div>
+</div>
+
+<!-- UP-05: "Not me?" bar — shown on every state after the gate. JS pops it
+     in/out as the section changes and as a student_id binds in session. -->
+<div id="notMeBar" class="not-me-bar hidden">
+    Signed in as <strong id="notMeName">…</strong>. <a onclick="notMe()">Not me?</a>
 </div>
 
 <!-- State 2: Submission Form -->
@@ -261,6 +285,12 @@
             <div class="success-icon">&#10003;</div>
             <h3>Submitted Successfully</h3>
             <p>Your work has been submitted and marked successfully. Your teacher will share your results.</p>
+            {# UP-05: 30-min undo window — only meaningful for fresh uploads. #}
+            <div id="undoCard" class="undo-card hidden">
+                Submitted as <strong id="undoName">…</strong> — wrong?
+                You can undo within <span class="undo-countdown" id="undoCountdown">30:00</span>.
+                <div><button class="undo-btn" id="undoBtn" type="button" onclick="confirmUndo()">Undo &amp; re-pick</button></div>
+            </div>
         </div>
     </div>
 </div>
@@ -300,6 +330,128 @@ function showSection(id) {
         .forEach(function(s) { document.getElementById(s).classList.add('hidden'); });
     document.getElementById(id).classList.remove('hidden');
     window.scrollTo(0, 0);
+    refreshNotMeBar(id);
+}
+
+/* UP-05: "Not me?" recovery flow. */
+
+var boundStudentName = '';
+var undoDeadline = null;     // ms epoch
+var undoTimer = null;
+
+function refreshNotMeBar(activeSection) {
+    var bar = document.getElementById('notMeBar');
+    if (!bar) return;
+    var hideOn = {gateSection: 1, errorSection: 1};
+    if (hideOn[activeSection] || !boundStudentName) {
+        bar.classList.add('hidden');
+        return;
+    }
+    document.getElementById('notMeName').textContent = boundStudentName;
+    bar.classList.remove('hidden');
+}
+
+async function notMe() {
+    // Try a server-side switch. Server decides whether to allow free
+    // switch (no re-auth) or force the classroom-code gate again.
+    var sel = document.getElementById('studentSelect');
+    var newSid = sel ? sel.value : '';
+    if (!newSid) {
+        // No new pick yet — just send them back to the form.
+        boundStudentName = '';
+        refreshNotMeBar('formSection');
+        showSection('formSection');
+        return;
+    }
+    try {
+        var res = await fetch('/submit/' + ASSIGNMENT_ID + '/switch-student', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({student_id: parseInt(newSid, 10)})
+        });
+        var data = await res.json();
+        if (data.success) {
+            boundStudentName = (sel.options[sel.selectedIndex] || {}).textContent || '';
+            refreshNotMeBar('formSection');
+            showSection('formSection');
+            return;
+        }
+        if (data.auth_required) {
+            // Force the classroom-code gate to close the snooping vector.
+            boundStudentName = '';
+            students = [];
+            var codeInput = document.getElementById('codeInput');
+            if (codeInput) { codeInput.value = ''; codeInput.classList.remove('error'); }
+            var errEl = document.getElementById('gateError');
+            if (errEl) {
+                errEl.textContent = data.error || 'Please re-enter the classroom code to switch names.';
+                errEl.style.display = 'block';
+            }
+            refreshNotMeBar('gateSection');
+            showSection('gateSection');
+            return;
+        }
+        alert(data.error || 'Could not switch.');
+    } catch (err) {
+        alert('Connection error. Please try again.');
+    }
+}
+
+function startUndoCountdown(submittedAtMs) {
+    undoDeadline = submittedAtMs + 30 * 60 * 1000;
+    if (undoTimer) clearInterval(undoTimer);
+    var card = document.getElementById('undoCard');
+    var btn = document.getElementById('undoBtn');
+    var nameEl = document.getElementById('undoName');
+    var countEl = document.getElementById('undoCountdown');
+    if (!card || !btn || !nameEl || !countEl) return;
+    nameEl.textContent = boundStudentName || 'this name';
+    card.classList.remove('hidden');
+    function tick() {
+        var remaining = undoDeadline - Date.now();
+        if (remaining <= 0) {
+            countEl.textContent = '0:00';
+            btn.disabled = true;
+            clearInterval(undoTimer);
+            return;
+        }
+        var mins = Math.floor(remaining / 60000);
+        var secs = Math.floor((remaining % 60000) / 1000);
+        countEl.textContent = mins + ':' + (secs < 10 ? '0' : '') + secs;
+    }
+    tick();
+    undoTimer = setInterval(tick, 1000);
+}
+
+async function confirmUndo() {
+    if (!submissionId) return;
+    if (!confirm('Undo this submission and pick your name again? Your uploaded script will be deleted.')) return;
+    var btn = document.getElementById('undoBtn');
+    btn.disabled = true; btn.textContent = 'Undoing…';
+    try {
+        var res = await fetch('/submit/' + ASSIGNMENT_ID + '/undo/' + submissionId, {method: 'POST'});
+        var data = await res.json();
+        if (!data.success) {
+            alert(data.error || 'Could not undo.');
+            btn.disabled = false; btn.textContent = 'Undo & re-pick';
+            return;
+        }
+        if (undoTimer) { clearInterval(undoTimer); undoTimer = null; }
+        document.getElementById('undoCard').classList.add('hidden');
+        boundStudentName = '';
+        submissionId = null;
+        // Pull a fresh roster so the just-undone student is back to "no
+        // submission" in the drop-down and the recovery flow doesn't re-
+        // bounce them through the auth gate.
+        try {
+            // We can't re-call /verify without the code; ask the student to
+            // re-enter it. (Auth state still valid here.) Simpler UX:
+            // send them back to the gate.
+        } catch (_) {}
+        showSection('gateSection');
+    } catch (err) {
+        alert('Connection error. Please try again.');
+        btn.disabled = false; btn.textContent = 'Undo & re-pick';
+    }
 }
 
 /* --- State 1: Verify classroom code --- */
@@ -527,9 +679,23 @@ async function submitWork() {
     try {
         var res = await fetch('/submit/' + ASSIGNMENT_ID + '/upload', { method: 'POST', body: fd });
         var data = await res.json();
-        if (!data.success) { showFormError(data.error || 'Upload failed.'); btn.disabled = false; btn.textContent = 'Submit'; return; }
+        if (!data.success) {
+            if (data.auth_required) {
+                // UP-05: server says we're bound to a different name. Send
+                // the student back to the classroom-code gate.
+                boundStudentName = '';
+                refreshNotMeBar('gateSection');
+                showSection('gateSection');
+                return;
+            }
+            showFormError(data.error || 'Upload failed.');
+            btn.disabled = false; btn.textContent = 'Submit'; return;
+        }
         submissionId = data.submission_id;
         showResults = data.show_results;
+        // UP-05: bind the name + open the 30-min undo window.
+        boundStudentName = studentName;
+        startUndoCountdown(Date.now());
         showSection('extractingSection');
         statusElapsed = 0;
         startExtractionPolling();

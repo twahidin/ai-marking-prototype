@@ -3,7 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="{% block viewport %}width=device-width, initial-scale=1.0{% endblock %}">
+    {# UP-04: CSRF token. base.html runs on every page so every fetch() in
+       common.js / inline templates picks it up via the shim below. #}
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>{% block title %}{{ app_title }}{% endblock %}</title>
+    <script>
+    // UP-04: auto-attach X-CSRFToken header to every state-changing fetch().
+    // Idempotent for already-set headers. Cross-origin requests are left
+    // untouched (don't leak the token to other hosts).
+    (function () {
+        var meta = document.querySelector('meta[name="csrf-token"]');
+        var token = meta ? meta.getAttribute('content') : '';
+        if (!token || !window.fetch) return;
+        var _origFetch = window.fetch.bind(window);
+        var SAFE_METHODS = {GET: 1, HEAD: 1, OPTIONS: 1, TRACE: 1};
+        window.fetch = function (input, init) {
+            init = init || {};
+            var method = (init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
+            if (SAFE_METHODS[method]) return _origFetch(input, init);
+            var url;
+            try { url = new URL(typeof input === 'string' ? input : input.url, window.location.origin); }
+            catch (e) { url = null; }
+            if (url && url.origin !== window.location.origin) return _origFetch(input, init);
+            var headers = new Headers(init.headers || (typeof input === 'object' ? input.headers : null) || {});
+            if (!headers.has('X-CSRFToken')) headers.set('X-CSRFToken', token);
+            init.headers = headers;
+            return _origFetch(input, init);
+        };
+    })();
+    </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v={{ static_version }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/feedback_render.css') }}?v={{ static_version }}">

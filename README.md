@@ -92,6 +92,36 @@ Header row is auto-detected and skipped.
 
 Upload a single PDF containing all student scripts. Set the number of pages per student (can vary per student). Set page count to 0 to skip a student and keep their existing result.
 
+## Backups
+
+`scripts/backup_db.sh` runs `pg_dump`, gzips, and uploads to S3 or B2.
+`scripts/restore_db.sh` pulls a dump back into a *scratch* DB (the
+`TARGET_DATABASE_URL` env, not `DATABASE_URL`, so a fat-finger can't clobber
+production). Both require `aws` CLI + `postgresql-client` on the runner.
+
+Required env on the backup runner (Railway Cron or GitHub Actions):
+
+```
+DATABASE_URL=postgres://...           # the DB to dump
+BACKUP_S3_BUCKET=s3://aifb-prod-backups
+# OR for Backblaze:
+# BACKUP_B2_BUCKET=s3://aifb-prod-backups
+# BACKUP_B2_ENDPOINT=https://s3.eu-central-003.backblazeb2.com
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+```
+
+Suggested cron: daily at 02:00 UTC. Apply 30-day retention via the bucket's
+lifecycle rule, not in the script.
+
+**Restore drill.** Backups you haven't restored are theatre — run a drill
+before you depend on them:
+
+```bash
+TARGET_DATABASE_URL=postgres://scratch... \
+  ./scripts/restore_db.sh s3://aifb-prod-backups/daily/aifb-...-2026-05-12T02-00-00Z.sql.gz
+```
+
 ## Tech Stack
 
 - **Backend**: Flask, SQLAlchemy, Gunicorn
