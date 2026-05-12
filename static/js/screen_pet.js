@@ -925,15 +925,17 @@
 
     function setEnabled(on) {
         try {
-            if (on) localStorage.setItem(STORAGE_KEY, '1');
+            if (on) localStorage.setItem(STORAGE_KEY, 'true');
             else localStorage.removeItem(STORAGE_KEY);
         } catch (e) {}
         if (on) mount(); else unmount();
     }
 
     function isEnabled() {
-        try { return localStorage.getItem(STORAGE_KEY) === '1'; }
-        catch (e) { return false; }
+        try {
+            var v = localStorage.getItem(STORAGE_KEY);
+            return v === 'true' || v === '1';
+        } catch (e) { return false; }
     }
 
     // ------------------------------------------------ viewport / global hooks

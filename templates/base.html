@@ -176,7 +176,25 @@
         s.defer = true;
         document.head.appendChild(s);
     }
-    if (localStorage.getItem(KEY) === 'true') {
+    // Accept either 'true' (current) or '1' (legacy from earlier screen_pet.js
+    // versions) so users who toggled it on before this fix don't lose state.
+    function isOn() {
+        var v = localStorage.getItem(KEY);
+        return v === 'true' || v === '1';
+    }
+    if (isOn()) {
+        // Pre-check the box on this page render so the user doesn't see it
+        // briefly unchecked while screen_pet.js loads — the script's init()
+        // will set the same value on arrival.
+        var preCheck = function () {
+            var box = document.getElementById('screenPetToggle');
+            if (box) box.checked = true;
+        };
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', preCheck);
+        } else {
+            preCheck();
+        }
         load();
     } else {
         // Bind the toggle ourselves so enabling lazily loads the script.
