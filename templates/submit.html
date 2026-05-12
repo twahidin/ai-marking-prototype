@@ -427,7 +427,12 @@ function startUndoCountdown(submittedAtMs) {
 
 async function confirmUndo() {
     if (!submissionId) return;
-    if (!confirm('Undo this submission and pick your name again? Your uploaded script will be deleted.')) return;
+    // uiConfirm: in-page modal, no native dialog — robust to iOS Safari
+    // dialog suppression that silently aborted the previous confirm() flow.
+    if (!await uiConfirm(
+        'Undo this submission and pick your name again? Your uploaded script will be deleted.',
+        {okLabel: 'Undo', danger: true}
+    )) return;
     var btn = document.getElementById('undoBtn');
     btn.disabled = true; btn.textContent = 'Undoing…';
     try {

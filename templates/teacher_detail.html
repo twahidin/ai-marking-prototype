@@ -614,7 +614,7 @@ document.getElementById('uploadModal').addEventListener('click', function(e) {
 {% endif %}
 
 async function issueAiFeedback() {
-    if (!confirm('Issue AI feedback to students now? They will be able to view feedback in the browser and download PDFs after this.')) return;
+    if (!await uiConfirm('Issue AI feedback to students now? They will be able to view feedback in the browser and download PDFs after this.', {okLabel: 'Issue feedback'})) return;
     try {
         var res = await fetch(
             '/teacher/assignment/{{ assignment.id }}/issue-feedback',
@@ -632,7 +632,7 @@ async function issueAiFeedback() {
 }
 
 async function forceRetryStuck(btn, submissionId) {
-    if (!confirm('Retry this stuck submission? The marking worker will be re-kicked.')) return;
+    if (!await uiConfirm('Retry this stuck submission? The marking worker will be re-kicked.', {okLabel: 'Retry'})) return;
     var orig = btn.textContent;
     btn.disabled = true;
     btn.textContent = 'Retrying…';
@@ -1280,7 +1280,7 @@ async function postRemark(submissionId, bandOverrides) {
 }
 
 async function remarkStudent(btn, submissionId) {
-    if (!confirm('Re-mark this student using the stored script?')) return;
+    if (!await uiConfirm('Re-mark this student using the stored script?', {okLabel: 'Re-mark'})) return;
     btn.disabled = true;
     btn.textContent = 'Marking…';
     var ok = await postRemark(submissionId);
@@ -1295,7 +1295,7 @@ async function remarkStudent(btn, submissionId) {
 // statuses. The endpoint kicks off one marking thread per submission.
 async function remarkAllSubmissions() {
     var btn = document.getElementById('remarkAllBtn');
-    if (!confirm('Re-mark every submitted script using the current answer key / rubric?\n\nAny teacher edits to AI feedback will be overwritten.')) return;
+    if (!await uiConfirm('Re-mark every submitted script using the current answer key / rubric?\n\nAny teacher edits to AI feedback will be overwritten.', {okLabel: 'Re-mark all', danger: true})) return;
     if (btn) { btn.disabled = true; btn.textContent = 'Queuing…'; }
     try {
         var res = await fetch('/teacher/assignment/' + REMARK_ASSIGNMENT_ID + '/remark-all', {
@@ -1332,7 +1332,7 @@ window.triggerRemark = async function(submissionId, bandOverrides) {
     var msg = bandOverrides && Object.keys(bandOverrides).length
         ? 'Re-mark this student with your band override(s) locked? The AI will produce fresh descriptions and improvement examples anchored at your chosen band.'
         : 'Re-mark this student using the stored script?';
-    if (!confirm(msg)) return;
+    if (!await uiConfirm(msg, {okLabel: 'Re-mark'})) return;
     await postRemark(submissionId, bandOverrides);
 };
 
@@ -1369,7 +1369,7 @@ function pollRemarkStatus(submissionId) {
 // --- Delete Assignment (from this class only; bank copy is unaffected) ---
 async function deleteAssignment() {
     var label = {{ (assignment.title or assignment.subject or 'this assignment') | tojson }};
-    if (!confirm('Delete "' + label + '" from this class?\n\nStudent submissions for this assignment will also be removed. This will NOT delete it from the assignment bank.\n\nThis cannot be undone.')) return;
+    if (!await uiConfirm('Delete "' + label + '" from this class?\n\nStudent submissions for this assignment will also be removed. This will NOT delete it from the assignment bank.\n\nThis cannot be undone.', {okLabel: 'Delete', danger: true})) return;
     try {
         var res = await fetch('/teacher/assignment/{{ assignment.id }}/delete', { method: 'POST' });
         var data = await res.json();
@@ -1474,7 +1474,7 @@ async function setFinal(assignmentId, submissionId) {
 }
 
 async function deleteDraft(assignmentId, studentId, submissionId) {
-    if (!confirm('Delete this draft? This cannot be undone.')) return;
+    if (!await uiConfirm('Delete this draft? This cannot be undone.', {okLabel: 'Delete', danger: true})) return;
     try {
         var res = await fetch('/teacher/assignment/' + assignmentId + '/submission/' + submissionId + '/delete', { method: 'POST' });
         var data = await res.json();

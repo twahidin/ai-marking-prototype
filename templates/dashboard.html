@@ -309,7 +309,7 @@ async function deleteStudentFromBtn(btn) {
     var studentId = btn.dataset.id;
     var classId = btn.dataset.class;
     var name = btn.dataset.name;
-    if (!confirm('Delete ' + name + '? This cannot be undone.')) return;
+    if (!await uiConfirm('Delete ' + name + '? This cannot be undone.', {okLabel: 'Delete', danger: true})) return;
     try {
         var res = await fetch('/class/' + classId + '/students/' + studentId + '/delete', { method: 'POST' });
         var data = await res.json();

@@ -311,8 +311,8 @@ function addClass() {
     });
 }
 
-function deleteClass(id) {
-    if (!confirm('Delete this class? This cannot be undone.')) return;
+async function deleteClass(id) {
+    if (!await uiConfirm('Delete this class? This cannot be undone.', {okLabel: 'Delete', danger: true})) return;
     fetch('/department/class/' + id + '/delete', { method: 'POST' })
     .then(r => r.json()).then(data => {
         if (data.success) { document.getElementById('class-' + id).remove(); showToast('Class deleted', 'success'); }
@@ -373,8 +373,8 @@ function resetCode(teacherId) {
     });
 }
 
-function deleteTeacher(id) {
-    if (!confirm('Delete this teacher?')) return;
+async function deleteTeacher(id) {
+    if (!await uiConfirm('Delete this teacher?', {okLabel: 'Delete', danger: true})) return;
     fetch('/department/teacher/' + id + '/delete', { method: 'POST' })
     .then(r => r.json()).then(data => {
         if (data.success) { document.getElementById('teacher-' + id).remove(); showToast('Teacher deleted', 'success'); }
@@ -412,10 +412,10 @@ function revokeTeacher(id) {
     });
 }
 
-function purgeTeacher(id) {
-    var choice = confirm('PURGE this teacher?\n\nThis will permanently delete the teacher account.\n\nClick OK to proceed, Cancel to abort.');
+async function purgeTeacher(id) {
+    var choice = await uiConfirm('PURGE this teacher?\n\nThis will permanently delete the teacher account.', {okLabel: 'Purge', danger: true});
     if (!choice) return;
-    var keepData = confirm('Keep the teacher\'s assignments and marking data?\n\nClick OK to keep data (only remove teacher account).\nClick Cancel to delete everything.');
+    var keepData = await uiConfirm('Keep the teacher\'s assignments and marking data?\n\nOK = keep data (only remove teacher account).\nCancel = delete everything.', {okLabel: 'Keep data', cancelLabel: 'Delete everything'});
     fetch('/department/teacher/' + id + '/purge', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({keep_data: keepData})

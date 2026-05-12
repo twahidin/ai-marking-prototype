@@ -657,7 +657,7 @@ async function createAssignment() {
 Delete assignment
    ===================================================================== */
 async function deleteAssignment(id, subject) {
-    if (!confirm('Delete assignment "' + (subject || 'Untitled') + '"? This cannot be undone.')) return;
+    if (!await uiConfirm('Delete assignment "' + (subject || 'Untitled') + '"? This cannot be undone.', {okLabel: 'Delete', danger: true})) return;
     try {
         const res = await fetch('/teacher/assignment/' + id + '/delete', { method: 'POST' });
         const data = await res.json();

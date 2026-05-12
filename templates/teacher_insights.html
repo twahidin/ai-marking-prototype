@@ -609,13 +609,13 @@ function buildTemplateOptions() {
 /* Replace the current grid layout with a template's layout. If the grid
    already has tiles, we confirm — applying a template is destructive
    for any custom arrangement they've built. */
-function applyTemplate(key, options) {
+async function applyTemplate(key, options) {
     options = options || {};
     var tpl = STARTER_TEMPLATES.find(function (t) { return t.key === key; });
     if (!tpl) return;
     var hasTiles = grid && grid.engine && grid.engine.nodes.length > 0;
     if (hasTiles && !options.silent) {
-        if (!confirm('Replace your current dashboard with the "' + tpl.label + '" layout?\n\nYou can always rebuild it from the widget panel.')) return;
+        if (!await uiConfirm('Replace your current dashboard with the "' + tpl.label + '" layout?\n\nYou can always rebuild it from the widget panel.', {okLabel: 'Replace'})) return;
     }
     grid.removeAll();
     var items = tpl.layout

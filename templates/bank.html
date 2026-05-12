@@ -569,7 +569,7 @@ function downloadSampleCsv() {
 
 /* Delete */
 async function deleteItem(bankId) {
-    if (!confirm('Delete this assignment from the bank?')) return;
+    if (!await uiConfirm('Delete this assignment from the bank?', {okLabel: 'Delete', danger: true})) return;
     try {
         var res = await fetch('/bank/delete/' + bankId, { method: 'POST' });
         var data = await res.json();
