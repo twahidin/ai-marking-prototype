@@ -88,9 +88,19 @@ csrf = CSRFProtect(app)
 @app.errorhandler(CSRFError)
 def _handle_csrf_error(e):
     """Return a JSON 400 (consistent with the rest of the API) instead of
-    the default Flask-WTF HTML page so XHR callers can react cleanly."""
-    if request.path.startswith('/api/') or request.accept_mimetypes.best == 'application/json' \
-       or request.is_json or request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+    the default Flask-WTF HTML page so XHR callers can react cleanly.
+    Reuses `_wants_json_response()` (defined below) — but that helper
+    isn't in scope at decorator-eval time, so we inline its checks here.
+    Kept in sync with `_wants_json_response`: any signal that says "this
+    is a fetch/XHR call" routes to JSON; everything else gets plain text."""
+    is_fetch = (
+        request.path.startswith('/api/')
+        or request.is_json
+        or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+        or request.headers.get('Sec-Fetch-Dest') == 'empty'
+        or request.accept_mimetypes.best == 'application/json'
+    )
+    if is_fetch:
         return jsonify({'success': False, 'error': 'CSRF token missing or invalid'}), 400
     return Response(f'CSRF check failed: {e.description}', status=400, mimetype='text/plain')
 
@@ -366,12 +376,25 @@ def healthz():
 
 
 def _wants_json_response():
-    """True for XHR / API callers — they get JSON; humans get the branded page."""
+    """True for XHR / API callers — they get JSON; humans get the branded page.
+
+    Detection signals (any one triggers JSON):
+      * `/api/` path prefix
+      * Content-Type is JSON (POST body)
+      * Legacy `X-Requested-With: XMLHttpRequest`
+      * `Accept: application/json` outranks text/html
+      * `Sec-Fetch-Dest: empty` — modern browsers tag every `fetch()` call
+        with this header, so a server-side 5xx from a feature endpoint
+        called via fetch returns JSON (not the HTML _error.html page that
+        would then crash the caller's `r.json()` parser).
+    """
     if request.path.startswith('/api/'):
         return True
     if request.is_json:
         return True
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return True
+    if request.headers.get('Sec-Fetch-Dest') == 'empty':
         return True
     accept = request.accept_mimetypes
     return accept.best == 'application/json' and accept['text/html'] < accept['application/json']
