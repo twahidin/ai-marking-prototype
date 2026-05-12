@@ -37,6 +37,9 @@
     .submit-btn:hover { background: #5a6fd6; }
     .submit-btn:active { background: #4e60c4; }
     .submit-btn:disabled { background: #ccc; cursor: not-allowed; }
+    /* Two-step confirmation state — visible cue that the next tap submits. */
+    .submit-btn.confirming { background: #28a745; font-size: 15px; }
+    .submit-btn.confirming:hover { background: #22963d; }
 
     .processing-card {
         background: white; border-radius: 16px; padding: 48px 28px;
@@ -626,80 +629,114 @@ function compressImage(file) {
     });
 }
 
+var SUBMIT_LABEL = 'Submit';
+var SUBMIT_CONFIRM_TIMEOUT_MS = 8000;
+
 async function submitWork() {
     hideFormError();
+    var btn = document.getElementById('submitBtn');
+    if (!btn) return;
     var studentId = document.getElementById('studentSelect').value;
     if (!studentId) return showFormError('Please select your name.');
     var scriptInput = document.getElementById('scriptInput');
     if (!scriptInput.files.length) return showFormError('Please upload your script.');
 
-    // Confirm student identity before submitting
     var sel = document.getElementById('studentSelect');
     var selectedText = sel.options[sel.selectedIndex].textContent;
     var studentName = selectedText.split(' - ').slice(1).join(' - ');
-    if (!confirm('Please confirm you are:\n\n' + studentName)) return;
 
-    var btn = document.getElementById('submitBtn');
+    // Two-step in-page confirmation. Replaces the previous native confirm()
+    // dialog: iOS Safari (and some Android browsers) silently suppress
+    // confirm() in certain states, making it return `false` without ever
+    // showing a dialog — the click then looks completely dead because the
+    // button-state changes below are gated behind it. Two-tap pattern gives
+    // the same anti-misclick guarantee with zero reliance on native dialogs.
+    if (btn.dataset.confirming !== '1') {
+        btn.dataset.confirming = '1';
+        btn.classList.add('confirming');
+        btn.textContent = 'Tap again to confirm: I am ' + studentName;
+        if (btn._confirmTimer) clearTimeout(btn._confirmTimer);
+        btn._confirmTimer = setTimeout(function () {
+            if (btn.dataset.confirming === '1') {
+                btn.dataset.confirming = '';
+                btn.classList.remove('confirming');
+                btn.textContent = SUBMIT_LABEL;
+            }
+        }, SUBMIT_CONFIRM_TIMEOUT_MS);
+        return;
+    }
+    btn.dataset.confirming = '';
+    btn.classList.remove('confirming');
+    if (btn._confirmTimer) { clearTimeout(btn._confirmTimer); btn._confirmTimer = null; }
+
     btn.disabled = true; btn.textContent = 'Compressing...';
 
-    // Compress images and validate sizes
-    var files = [];
-    var totalSize = 0;
-    for (var i = 0; i < scriptInput.files.length; i++) {
-        var f = scriptInput.files[i];
-        var ext = (f.name.split('.').pop() || '').toLowerCase();
-        if (ext === 'pdf') {
-            if (f.size > MAX_PDF_SIZE) {
-                showFormError('PDF too large (' + Math.round(f.size / (1024*1024)) + 'MB). Maximum is 20MB.');
-                btn.disabled = false; btn.textContent = 'Submit'; return;
-            }
-            files.push(f);
-        } else {
-            var compressed = await compressImage(f);
-            if (compressed.size > MAX_IMAGE_SIZE) {
-                showFormError('Image "' + f.name + '" too large after compression (' + Math.round(compressed.size / (1024*1024)) + 'MB). Maximum is 5MB.');
-                btn.disabled = false; btn.textContent = 'Submit'; return;
-            }
-            files.push(compressed);
-        }
-        totalSize += files[files.length - 1].size;
-    }
-    if (totalSize > MAX_TOTAL_SIZE) {
-        showFormError('Total upload too large (' + Math.round(totalSize / (1024*1024)) + 'MB). Maximum is 30MB combined.');
-        btn.disabled = false; btn.textContent = 'Submit'; return;
-    }
-
-    btn.textContent = 'Uploading...';
-    var fd = new FormData();
-    fd.append('student_id', studentId);
-    for (var j = 0; j < files.length; j++) {
-        fd.append('script', files[j]);
-    }
-
+    // Outer try/catch so any unexpected throw (e.g. a future compressImage
+    // edge case) produces a visible error rather than the silent dead-click
+    // that motivated this fix.
     try {
-        var res = await fetch('/submit/' + ASSIGNMENT_ID + '/upload', { method: 'POST', body: fd });
-        var data = await res.json();
-        if (!data.success) {
-            if (data.auth_required) {
-                // UP-05: server says we're bound to a different name. Send
-                // the student back to the classroom-code gate.
-                boundStudentName = '';
-                refreshNotMeBar('gateSection');
-                showSection('gateSection');
-                return;
+        var files = [];
+        var totalSize = 0;
+        for (var i = 0; i < scriptInput.files.length; i++) {
+            var f = scriptInput.files[i];
+            var ext = (f.name.split('.').pop() || '').toLowerCase();
+            if (ext === 'pdf') {
+                if (f.size > MAX_PDF_SIZE) {
+                    showFormError('PDF too large (' + Math.round(f.size / (1024*1024)) + 'MB). Maximum is 20MB.');
+                    btn.disabled = false; btn.textContent = SUBMIT_LABEL; return;
+                }
+                files.push(f);
+            } else {
+                var compressed = await compressImage(f);
+                if (compressed.size > MAX_IMAGE_SIZE) {
+                    showFormError('Image "' + f.name + '" too large after compression (' + Math.round(compressed.size / (1024*1024)) + 'MB). Maximum is 5MB.');
+                    btn.disabled = false; btn.textContent = SUBMIT_LABEL; return;
+                }
+                files.push(compressed);
             }
-            showFormError(data.error || 'Upload failed.');
-            btn.disabled = false; btn.textContent = 'Submit'; return;
+            totalSize += files[files.length - 1].size;
         }
-        submissionId = data.submission_id;
-        showResults = data.show_results;
-        // UP-05: bind the name + open the 30-min undo window.
-        boundStudentName = studentName;
-        startUndoCountdown(Date.now());
-        showSection('extractingSection');
-        statusElapsed = 0;
-        startExtractionPolling();
-    } catch (err) { showFormError('Connection error. Please try again.'); btn.disabled = false; btn.textContent = 'Submit'; }
+        if (totalSize > MAX_TOTAL_SIZE) {
+            showFormError('Total upload too large (' + Math.round(totalSize / (1024*1024)) + 'MB). Maximum is 30MB combined.');
+            btn.disabled = false; btn.textContent = SUBMIT_LABEL; return;
+        }
+
+        btn.textContent = 'Uploading...';
+        var fd = new FormData();
+        fd.append('student_id', studentId);
+        for (var j = 0; j < files.length; j++) {
+            fd.append('script', files[j]);
+        }
+
+        try {
+            var res = await fetch('/submit/' + ASSIGNMENT_ID + '/upload', { method: 'POST', body: fd });
+            var data = await res.json();
+            if (!data.success) {
+                if (data.auth_required) {
+                    // UP-05: server says we're bound to a different name. Send
+                    // the student back to the classroom-code gate.
+                    boundStudentName = '';
+                    refreshNotMeBar('gateSection');
+                    showSection('gateSection');
+                    return;
+                }
+                showFormError(data.error || 'Upload failed.');
+                btn.disabled = false; btn.textContent = SUBMIT_LABEL; return;
+            }
+            submissionId = data.submission_id;
+            showResults = data.show_results;
+            // UP-05: bind the name + open the 30-min undo window.
+            boundStudentName = studentName;
+            startUndoCountdown(Date.now());
+            showSection('extractingSection');
+            statusElapsed = 0;
+            startExtractionPolling();
+        } catch (err) { showFormError('Connection error. Please try again.'); btn.disabled = false; btn.textContent = SUBMIT_LABEL; }
+    } catch (err) {
+        console.error('submitWork failed:', err);
+        showFormError('Something went wrong preparing your upload. Please try again.');
+        btn.disabled = false; btn.textContent = SUBMIT_LABEL;
+    }
 }
 
 /* --- State 3a: Extraction Polling --- */
@@ -970,7 +1007,13 @@ function goQ(idx) { if (idx < 0 || idx >= resultQuestions.length) return; curren
 
 function goBackToForm() {
     var btn = document.getElementById('submitBtn');
-    if (btn) { btn.disabled = false; btn.textContent = 'Submit'; }
+    if (btn) {
+        btn.disabled = false;
+        btn.textContent = SUBMIT_LABEL;
+        btn.dataset.confirming = '';
+        btn.classList.remove('confirming');
+        if (btn._confirmTimer) { clearTimeout(btn._confirmTimer); btn._confirmTimer = null; }
+    }
     var confirmBtn = document.getElementById('confirmBtn');
     if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = 'Confirm & Submit for Marking'; }
     submissionId = null;
