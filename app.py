@@ -8,6 +8,7 @@ import secrets
 import logging
 import threading
 import time
+import unicodedata
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
@@ -16,7 +17,7 @@ from flask_wtf.csrf import CSRFProtect, CSRFError
 from werkzeug.middleware.proxy_fix import ProxyFix
 import io
 
-from ai_marking import mark_script, get_available_providers, PROVIDERS, generate_exemplar_analysis, explain_criterion, evaluate_correction, consume_last_usage, MarkingError
+from ai_marking import mark_script, get_available_providers, PROVIDERS, generate_exemplar_analysis, explain_criterion, evaluate_correction, consume_last_usage, MarkingError, AIProviderError, ResponseParseError
 from pdf_generator import generate_report_pdf, generate_overview_pdf
 from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig, TeacherDashboardLayout, BulkJob, SubmissionStatus, utc
 
@@ -228,6 +229,23 @@ def get_app_title():
     return _ENV_APP_TITLE
 
 
+def normalize_name(name):
+    """UP-47: Unicode NFC normalisation + whitespace trim for any
+    human-typed or CSV-ingested name. Tamil / Mandarin / Malay surnames
+    in NFD form (separate base char + combining marks) and NFC form
+    (precomposed) compare unequal in Python dicts / SQL `=`, sort
+    inconsistently, and would produce two `Student` rows for the same
+    person. Apply at every write boundary; readers can then trust
+    `==` and dict-lookup semantics.
+
+    Returns '' for falsy / non-string inputs."""
+    if not name:
+        return ''
+    if not isinstance(name, str):
+        name = str(name)
+    return unicodedata.normalize('NFC', name).strip()
+
+
 def get_teacher_code():
     """Get teacher code from DB, falling back to env var."""
     cfg = DepartmentConfig.query.filter_by(key='teacher_code').first()
@@ -347,17 +365,72 @@ def healthz():
     return ('ok', 200, {'Content-Type': 'text/plain; charset=utf-8'})
 
 
+def _wants_json_response():
+    """True for XHR / API callers — they get JSON; humans get the branded page."""
+    if request.path.startswith('/api/'):
+        return True
+    if request.is_json:
+        return True
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return True
+    accept = request.accept_mimetypes
+    return accept.best == 'application/json' and accept['text/html'] < accept['application/json']
+
+
+def _render_error_page(code, heading, message, json_error):
+    """UP-44: branded HTML for browsers, JSON for XHR/API. Falls back to a
+    plain string if the template render itself raises (defence in depth so
+    the error handler can never itself 500)."""
+    if _wants_json_response():
+        return jsonify({'success': False, 'error': json_error}), code
+    try:
+        html = render_template('_error.html', code=code, heading=heading, message=message)
+        return html, code
+    except Exception:
+        logger.exception("error template render failed for code=%s", code)
+        return (f'{code} {heading}. {message}', code, {'Content-Type': 'text/plain; charset=utf-8'})
+
+
+@app.errorhandler(404)
+def not_found(e):
+    return _render_error_page(
+        404,
+        'Page not found',
+        "That link looks broken or the page was moved.",
+        'Not found',
+    )
+
+
 @app.errorhandler(413)
 def too_large(e):
-    return jsonify({'success': False, 'error': 'Upload too large. Maximum 100MB total.'}), 413
+    return _render_error_page(
+        413,
+        'Upload too large',
+        'Maximum 100 MB total per upload. Try splitting the PDF or reducing image sizes.',
+        'Upload too large. Maximum 100MB total.',
+    )
+
+
+@app.errorhandler(429)
+def rate_limited(e):
+    return _render_error_page(
+        429,
+        'Too many requests',
+        'You are doing that too often. Wait a minute and try again.',
+        'Too many requests',
+    )
 
 
 @app.errorhandler(500)
 def internal_error(e):
     # Make the full traceback visible in Railway logs so 500s can be diagnosed.
     logger.exception("500 on %s %s", request.method, request.path)
-    # Return a plain message — clients that expected JSON still get a readable error.
-    return ('Internal server error. Check server logs for details.', 500)
+    return _render_error_page(
+        500,
+        'Something went wrong',
+        'The server hit an unexpected error. The team has been notified — try again in a moment.',
+        'Internal server error. Check server logs for details.',
+    )
 
 
 _rate_limits = {}
@@ -770,7 +843,21 @@ def _prepare_new_submission(student, assignment):
       with draft_number = next, is_final = True.
 
     Caller is responsible for db.session.add(new_sub) and db.session.commit().
+
+    UP-48: the count/check/flip/insert sequence is **not** atomic on its own.
+    Two simultaneous `/student_upload` calls for the same student previously
+    both passed the cap check, both flipped any prior `is_final=True`, and
+    both inserted a new `is_final=True` row — producing either two finals
+    or `cap + 1` drafts. We serialise per-student by taking a row-level
+    `SELECT ... FOR UPDATE` on the Student row: any concurrent caller for
+    the same student blocks here until the first one commits, after which
+    its count read picks up the new state. On SQLite (dev) `with_for_update`
+    silently no-ops but SQLite's whole-DB write lock provides the same
+    guarantee. On PostgreSQL (prod) this is a real per-row lock.
     """
+    # Lock first — everything below this point runs serially per student.
+    db.session.query(Student).filter_by(id=student.id).with_for_update().first()
+
     if not assignment.allow_drafts:
         existing = _get_final_submission(student.id, assignment.id)
         if existing:
@@ -1403,6 +1490,11 @@ def job_status(job_id):
             response['result'] = job.get('results', [])
         else:
             response['result'] = job['result']
+        # UP-46: surface per-student errors so the class page can show
+        # "N failed — retry these" with names + reasons (no need for the
+        # teacher to scrape the server log).
+        if job.get('errors'):
+            response['errors'] = job['errors']
     if 'progress' in job:
         response['progress'] = job['progress']
     return jsonify(response)
@@ -1834,7 +1926,9 @@ def edit_class_student(class_id, student_id):
 
     data = request.get_json() or {}
     new_index = (data.get('index') or '').strip()
-    new_name = (data.get('name') or '').strip()
+    # UP-47: NFC + strip in one helper so an inline-edited name matches
+    # the CSV-ingested form for the same person.
+    new_name = normalize_name(data.get('name'))
     if not new_index or not new_name:
         return jsonify({'success': False, 'error': 'Index and name are required'}), 400
     if len(new_name) > 200 or len(new_index) > 50:
@@ -4052,10 +4146,20 @@ def teacher_dashboard():
     for a in all_assignments:
         assignments_by_class.setdefault(a.class_id, []).append(a)
 
-    # Bulk load student counts by class
-    student_counts_by_class = {}
-    for cls in teacher_classes:
-        student_counts_by_class[cls.id] = Student.query.filter_by(class_id=cls.id).count()
+    # UP-49: bulk load student counts by class in a single GROUP BY query.
+    # Previously this loop fired one `COUNT(*)` per class — N round trips
+    # for a teacher with N assigned classes.
+    student_counts_by_class = {cls.id: 0 for cls in teacher_classes}
+    if teacher_class_ids:
+        from sqlalchemy import func as _func
+        rows = (
+            db.session.query(Student.class_id, _func.count(Student.id))
+            .filter(Student.class_id.in_(teacher_class_ids))
+            .group_by(Student.class_id)
+            .all()
+        )
+        for cid, n in rows:
+            student_counts_by_class[cid] = n
 
     # Bulk load all submissions for these assignments. Defer the heavy
     # blob columns (`script_bytes`, the per-page image base64 dump,
@@ -4178,10 +4282,14 @@ def _parse_class_list(file_bytes, filename):
                     continue
                 if cells[0].lower() in ('index', 'no', 'no.', 's/n', 'sn', '#', 'number', 'name'):
                     continue
+                # UP-47: NFC-normalise at the ingest boundary so a Tamil /
+                # CJK name typed in NFD form (from MOE class lists) and a
+                # precomposed-NFC form (from manual entry) collapse to the
+                # same string for dedup, sort, and dict lookups.
                 if len(cells) >= 2 and cells[1]:
-                    students.append({'index': cells[0], 'name': cells[1]})
+                    students.append({'index': cells[0], 'name': normalize_name(cells[1])})
                 elif cells[0]:
-                    students.append({'index': str(len(students) + 1), 'name': cells[0]})
+                    students.append({'index': str(len(students) + 1), 'name': normalize_name(cells[0])})
             wb.close()
             return students
         except ImportError:
@@ -4206,10 +4314,11 @@ def _parse_class_list(file_bytes, filename):
         # Skip header row
         if row[0].strip().lower() in ('index', 'no', 'no.', 's/n', 'sn', '#', 'number'):
             continue
+        # UP-47: NFC at ingest — see Excel branch above for rationale.
         if len(row) >= 2:
-            students.append({'index': row[0].strip(), 'name': row[1].strip()})
+            students.append({'index': row[0].strip(), 'name': normalize_name(row[1])})
         else:
-            students.append({'index': str(len(students) + 1), 'name': row[0].strip()})
+            students.append({'index': str(len(students) + 1), 'name': normalize_name(row[0])})
     return students
 
 
@@ -4295,6 +4404,43 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                         "Bulk job %s, student %s failed", job_id, student['name'],
                     )
                 result = {'error': str(e)}
+                # UP-46: capture a per-student error entry on the persistent
+                # BulkJob so the class page can surface "3 failed — retry
+                # these" affordance after the job completes. `retryable=True`
+                # for transient AI/network failures (AIProviderError covers
+                # rate limit / timeout / connection exhausted by retry);
+                # `False` for ResponseParseError and unexpected exceptions
+                # — those need a real fix (rubric tweak, prompt edit, manual
+                # remark), not a blind retry.
+                if isinstance(e, AIProviderError):
+                    err_class = 'provider'
+                    retryable = True
+                elif isinstance(e, ResponseParseError):
+                    err_class = 'parse'
+                    retryable = False
+                elif isinstance(e, MarkingError):
+                    err_class = 'marking'
+                    retryable = False
+                else:
+                    err_class = 'unexpected'
+                    retryable = False
+                try:
+                    with app.app_context():
+                        student_db_id = (student_id_map or {}).get(student['index'])
+                        _bulk_job_update(job_id, errors_append={
+                            'student_id': student_db_id,
+                            'student_index': student['index'],
+                            'student_name': student['name'],
+                            'error_class': err_class,
+                            'error_msg': str(e)[:500],  # cap so a giant traceback can't bloat the JSON column
+                            'retryable': retryable,
+                            'at': datetime.now(timezone.utc).isoformat(),
+                        })
+                except Exception:
+                    logger.exception(
+                        "Bulk job %s: failed to record per-student error for %s",
+                        job_id, student['name'],
+                    )
                 # Ensure the pre-created row is finalized as 'error' so it doesn't
                 # linger as 'pending' and count against the student's draft cap.
                 if assignment_id and submission_id_map:
@@ -6028,9 +6174,30 @@ def teacher_assignment_detail(assignment_id):
     IN_PROGRESS = ('pending', 'processing', 'extracting', 'preview')
     now_utc = datetime.now(timezone.utc)
 
+    # UP-49: batch-load every final Submission for this assignment in ONE
+    # query, then dict-lookup inside the per-student loop. The previous
+    # `Submission.query.filter_by(...).first()` inside the loop was one
+    # round trip per student — 40 students = 40 SELECTs + ~3 s render
+    # time. Heavy blob columns are deferred per UP-10 since none are
+    # read on this page; `result_json` stays eagerly loaded because the
+    # loop calls `sub.get_result()` below.
+    from sqlalchemy.orm import defer as _defer
+    _final_subs = (
+        Submission.query
+        .filter_by(assignment_id=assignment_id, is_final=True)
+        .options(
+            _defer(Submission.script_bytes),
+            _defer(Submission.script_pages_json),
+            _defer(Submission.extracted_text_json),
+            _defer(Submission.student_text_json),
+        )
+        .all()
+    )
+    subs_by_student_id = {s.student_id: s for s in _final_subs}
+
     student_data = []
     for s in students:
-        sub = Submission.query.filter_by(student_id=s.id, assignment_id=assignment_id, is_final=True).first()
+        sub = subs_by_student_id.get(s.id)
         result = sub.get_result() if sub else {}
         questions = result.get('questions', [])
         has_marks = any(q.get('marks_awarded') is not None for q in questions)

@@ -581,7 +581,7 @@ Backwards-compat: keep `to_dict()` for JSON persistence. Pairs with UP-35 + UP-3
 ---
 
 ### UP-43 — Refresh `CLAUDE.md`
-**Status:** TODO
+**Status:** DONE
 **Why:** `CLAUDE.md:121, 137, 192` still references `subject_family` and `classify_subject_family`, which `db.py:200, 333, 406` explicitly drops. The schema-evolution policy IS the contract — when it's stale, every future Claude session is misled.
 **Where:** `CLAUDE.md`.
 **Fix:**
@@ -593,7 +593,7 @@ Backwards-compat: keep `to_dict()` for JSON persistence. Pairs with UP-35 + UP-3
 ---
 
 ### UP-44 — Generic error templates (404, 413, 429, 500)
-**Status:** TODO
+**Status:** DONE
 **Why:** Generic 500 returns plain text "Internal server error. Check server logs." No 404 handler (Flask default). LaTeX error log can leak tmpdir paths.
 **Where:** New `templates/_error.html`; register handlers in `app.py:240, 245`. Also fix `pdf_generator.py:1006` — drop log tail from the public `RuntimeError`, keep it in `logger.exception` only.
 **Fix:** Branded error page with a "Report to Joe" mailto link. Register handlers for 404, 413, 429, 500.
@@ -602,7 +602,7 @@ Backwards-compat: keep `to_dict()` for JSON persistence. Pairs with UP-35 + UP-3
 ---
 
 ### UP-45 — `.gitignore` cleanup
-**Status:** TODO
+**Status:** DONE
 **Why:** 5-line `.gitignore` misses `.DS_Store` (already tracked!), `.venv/`, `.idea/`, `.vscode/`, `*.log`.
 **Where:** `.gitignore`.
 **Fix:** Append GitHub's standard Python `.gitignore`. Then `git rm --cached .DS_Store` to untrack the existing file. Also add `.env` if you haven't already (grep showed no leaked secrets — keep it that way).
@@ -611,7 +611,7 @@ Backwards-compat: keep `to_dict()` for JSON persistence. Pairs with UP-35 + UP-3
 ---
 
 ### UP-46 — Bulk-mark per-student error surfacing
-**Status:** TODO
+**Status:** DONE
 **Why:** Bulk-mark failures only land in server logs. Teacher sees "done" with N missing students, no reason. They re-click force-remark per student to discover what failed.
 **Where:** `app.py:3885` and the bulk completion path.
 **Fix:** Append `{student_id, student_name, error_class, error_msg, retryable: bool}` to `jobs[job_id]['errors']` (or `BulkJob.errors_json` after UP-15). Surface a "3 failed — retry these" affordance on the class page after bulk-mark completes.
@@ -620,7 +620,7 @@ Backwards-compat: keep `to_dict()` for JSON persistence. Pairs with UP-35 + UP-3
 ---
 
 ### UP-47 — Unicode `NFC` normalization on student names
-**Status:** TODO
+**Status:** DONE
 **Why:** No normalization anywhere. A Tamil name in NFD form vs NFC form will compare unequal in dict lookups, sort wrong, produce two cache keys for the same student. Real risk in Singaporean context (CSV from MOE vs typed names).
 **Where:** Every place that ingests student names: `app.py:1322, 1437` (add_students-style endpoints), CSV parsing paths.
 **Fix:** `import unicodedata; name = unicodedata.normalize('NFC', name.strip())` at write boundaries.
@@ -629,7 +629,7 @@ Backwards-compat: keep `to_dict()` for JSON persistence. Pairs with UP-35 + UP-3
 ---
 
 ### UP-48 — Race condition on "single final" submission
-**Status:** TODO
+**Status:** DONE
 **Why:** `_prepare_new_submission` (`app.py:463-508`) does count → update → insert without a row lock. Two simultaneous submissions interleave: both pass the cap check, both flip prior drafts, both insert `is_final=True`. Result: two finals or cap+1 drafts.
 **Where:** `app.py:463-508`, `db.py:669` (Submission model).
 **Fix:** Either:
@@ -640,7 +640,7 @@ Backwards-compat: keep `to_dict()` for JSON persistence. Pairs with UP-35 + UP-3
 ---
 
 ### UP-49 — N+1 fixes (teacher_assignment_detail + dashboard)
-**Status:** TODO
+**Status:** DONE
 **Why:** `teacher_assignment_detail` (`app.py:5571`) does one `Submission.query.filter_by(student_id=s.id, ...).first()` inside `for s in students` — 40 students = 40 round trips per page render. Teacher dashboard does one `COUNT(*)` per class.
 **Where:** `app.py:5571, 3688-3689`.
 **Fix:**

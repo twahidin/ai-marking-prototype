@@ -36,8 +36,17 @@ gunicorn -w 1 --threads 100 --timeout 300 --bind 0.0.0.0:$PORT app:app
 | `FLASK_ENV` | Set to `development` to disable `SESSION_COOKIE_SECURE` |
 | `DATABASE_URL` | PostgreSQL URL (default: SQLite `marking.db`) |
 | `PORT` | Server port (default: `5000`) |
+| `STUDENT_GROUPING_UI_ENABLED` | `TRUE` un-hides the student-facing "By mistake type" toggle / grouped view. Default `FALSE`. The categorisation pipeline (`theme_key` on `result_json`, calibration Tier 1, propagation) still runs regardless — this flag only controls the student UI surface. |
 
 At least one AI provider API key must be set. Providers only appear in the UI if their key is configured.
+
+## Branch workflow
+
+`staging` and the `sandbox_*` branches have **parallel cherry-picked histories** that have diverged intentionally. Treat them as separate trunks:
+
+- **Never `git merge` between `staging` and any `sandbox_*` branch.** Cherry-pick individual commits across when needed.
+- **Never push to `staging` without explicit confirmation from the user.** Sandbox branches are the working surface for upgrade work; `staging` is closer to production.
+- When in doubt about which branch a change belongs on, ask before pushing.
 
 ## Three Operating Modes
 
@@ -118,7 +127,7 @@ This app is in active use. Any code change that adds or relies on a new column /
 
 **When adding a column that ANY query filters or groups on:**
 
-1. **Lazy-fill at the closest write path.** If the value is derivable (e.g. `subject_family` from `asn.subject` via `classify_subject_family`), compute it inline before the first INSERT/UPDATE that needs it, and persist it back to the parent row too. Never write `NULL` into a column the new feature filters on.
+1. **Lazy-fill at the closest write path.** If the value is derivable (e.g. `Submission.categorisation_status` from a successful theme-key write, or `Assignment.title` from `subject`), compute it inline before the first INSERT/UPDATE that needs it, and persist it back to the parent row too. Never write `NULL` into a column the new feature filters on.
 2. **Add a one-shot backfill** in the boot path (or as a `flask` CLI command). Idempotent — guard with `WHERE col IS NULL`, safe to re-run on every boot.
 3. **Do NOT add `if row.col is None: skip` branches in readers.** If the reader needs the column populated, the writer + backfill are responsible. Branching in readers is how this gets unmaintainable.
 
@@ -134,9 +143,10 @@ This app is in active use. Any code change that adds or relies on a new column /
 
 **Currently load-bearing fields** (treat as required, not optional, on writes):
 
-- `Assignment.subject_family` and `FeedbackEdit.subject_family` — drive marking-patterns aggregation, calibration lookup, and propagation candidate detection.
-- `FeedbackEdit.theme_key` — drives Tier-1 calibration retrieval and student-facing "Group by Mistake Type".
+- `Assignment.subject` — drives the canonical subject taxonomy (see `subjects.py`), marking-patterns aggregation grouping, and per-subject calibration lookup. `subject_family` and `subject_bucket` columns were **dropped** (see `db.py:_migrate_add_columns`); do not reintroduce them.
+- `FeedbackEdit.theme_key` — drives Tier-1 calibration retrieval and student-facing "Group by Mistake Type" (UI gated by `STUDENT_GROUPING_UI_ENABLED`, but pipeline always populates).
 - `Submission.categorisation_status` — gates UI rendering of the category line.
+- `Assignment.title` — required by the PDF generator's header row (see "load-bearing" note below).
 
 ## Backwards-compatibility policy
 
@@ -189,7 +199,7 @@ The PDF generator's "Assignment" header row reads `Assignment.title`. The boot-t
 - `SUBJECTS` — list of dicts with `key` (slugged DB value), `display` (human label), `aliases` (common typed strings).
 - `SUBJECT_KEYS`, `SUBJECT_DISPLAY_NAMES`, `KEY_TO_DISPLAY` — derived lookups.
 - `LEGACY_FAMILY_KEYS` — old taxonomy keys; only used by the boot-time backfill to detect rows that need re-classification.
-- `resolve_subject_key(text)` — fast alias→key resolver used by `classify_subject_family` to skip the AI call when a typed subject matches a known display name or alias.
+- `resolve_subject_key(text)` — fast alias→key resolver to skip the AI call when a typed subject matches a known display name or alias. Writers call this before persisting `Assignment.subject`.
 - `display_name(key)` — human label for a key, used in marking-patterns headers.
 
 Anywhere that needs subject-family logic — the assignment dropdown (via `canonical_subjects` in the template context), the AI classifier, the marking-patterns page header, the backfill — must read from `subjects.py`. Don't hardcode subject lists or keys elsewhere.

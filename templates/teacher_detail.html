@@ -154,6 +154,25 @@
             <div style="font-weight:600;margin-bottom:6px;">Skipped students (cap reached):</div>
             <ul id="bulkSkippedList" style="margin:0;padding-left:20px;"></ul>
         </div>
+
+        <!-- UP-46: per-student failures from the last bulk-mark run. Replaces
+             the old "everything succeeded — surprise!" UX where the teacher
+             had to scan the submissions table for missing rows. -->
+        <div id="bulkErrorsCard" style="display:none;margin-top:16px;padding:12px;border:1px solid #e0a3a3;background:#fdecec;border-radius:6px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
+                <div style="font-weight:600;">
+                    <span id="bulkErrorsCount">0</span> student(s) failed to mark:
+                </div>
+                <button type="button" id="bulkErrorsDismissBtn"
+                        style="font-size:12px;padding:4px 10px;background:transparent;border:1px solid #c97a7a;color:#a13c3c;border-radius:4px;cursor:pointer;">
+                    Dismiss
+                </button>
+            </div>
+            <ul id="bulkErrorsList" style="margin:0;padding-left:20px;"></ul>
+            <div style="margin-top:8px;font-size:12px;color:#7a3c3c;">
+                Re-uploading the bulk PDF will retry these. Parse errors usually mean the AI returned malformed output — try again or mark individually.
+            </div>
+        </div>
     </details>
 
     <!-- Submissions Table -->
@@ -950,13 +969,63 @@ async function pollBulkStatus() {
 
         if (data.status === 'error') {
             showBulkError(data.result?.error || 'Marking failed.');
+            // UP-46: even on top-level job failure there can be per-student
+            // entries — surface them so the teacher knows which students
+            // never got marked.
+            renderBulkErrors(data.errors);
             return;
         }
+
+        // UP-46: render per-student errors before reload. If any are
+        // present, hold the page open so the teacher can read them; the
+        // affordance has its own "Dismiss" button to clear without
+        // refreshing.
+        var hadErrors = renderBulkErrors(data.errors);
+        if (hadErrors) return;
 
         // If any students were skipped, pause 3s so the teacher can see the notice before reload
         var delay = (data.skipped && data.skipped.length) ? 3000 : 0;
         setTimeout(function() { window.location.reload(); }, delay);
     } catch (err) { setTimeout(pollBulkStatus, 3000); }
+}
+
+// UP-46: surface per-student bulk-mark errors so teachers know which
+// students need attention. Without this they'd see "done" with N missing
+// rows and have to scrape the server log to find out why. Returns true if
+// any errors were rendered (caller suppresses auto-reload in that case).
+function renderBulkErrors(errors) {
+    var card = document.getElementById('bulkErrorsCard');
+    var list = document.getElementById('bulkErrorsList');
+    var count = document.getElementById('bulkErrorsCount');
+    if (!card || !list || !count) return false;
+    if (!errors || !errors.length) {
+        card.style.display = 'none';
+        return false;
+    }
+    count.textContent = String(errors.length);
+    list.innerHTML = '';
+    var classLabel = {
+        provider: 'AI provider error (likely retryable)',
+        parse: 'AI response could not be parsed',
+        marking: 'Marking error',
+        unexpected: 'Unexpected error',
+    };
+    for (var i = 0; i < errors.length; i++) {
+        var e = errors[i];
+        var li = document.createElement('li');
+        var head = (e.student_index ? e.student_index + ' — ' : '') + (e.student_name || '(unknown)');
+        var cls = classLabel[e.error_class] || (e.error_class || 'Error');
+        var msg = e.error_msg ? ' — ' + e.error_msg : '';
+        li.textContent = head + ' [' + cls + ']' + msg;
+        list.appendChild(li);
+    }
+    card.style.display = 'block';
+    var dismiss = document.getElementById('bulkErrorsDismissBtn');
+    if (dismiss && !dismiss._wired) {
+        dismiss._wired = true;
+        dismiss.addEventListener('click', function () { card.style.display = 'none'; });
+    }
+    return true;
 }
 
 // Init page count display

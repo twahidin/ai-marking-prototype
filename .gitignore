@@ -1,6 +1,57 @@
+# --- Python ---
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Flask / project data ---
 instance/
 *.db
-~$*
+*.sqlite
+*.sqlite3
+
+# --- Local config & secrets ---
 .env
+.env.*
+!.env.example
+
+# --- Logs / temp ---
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+~$*
+
+# --- Coverage / test artifacts ---
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+.cache/
+
+# --- Type checkers / linters ---
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# --- OS / IDE ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.code-workspace

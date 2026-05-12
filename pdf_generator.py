@@ -1003,9 +1003,15 @@ def _compile_tex_to_pdf(tex_str, jobname='report'):
                 "lualatex compile failed (rc=%s).\nLog tail:\n%s\nStderr:\n%s",
                 proc.returncode, log_tail, stderr_tail,
             )
+            # UP-44: do NOT include the log tail in the public exception
+            # message — the lualatex log embeds the absolute path of the
+            # temp build directory (e.g. /tmp/lualatex-XXXXXX/...) and
+            # other host-specific paths that should not leak into HTTP
+            # responses. The full tail is already logged above for
+            # operators to inspect via Railway logs / Sentry.
             raise RuntimeError(
                 f"lualatex compile failed (rc={proc.returncode}). "
-                f"Log tail:\n{log_tail[-800:]}"
+                "See server logs for details."
             )
 
         with open(pdf_path, 'rb') as f:

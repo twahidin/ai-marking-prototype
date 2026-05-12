@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} — {{ app_title }}{% endblock %}
+{% block body %}
+<div class="error-page" style="max-width:640px;margin:6vh auto;padding:0 1.25rem;text-align:center;">
+    <div style="font-size:4rem;font-weight:700;color:#888;line-height:1;margin-bottom:0.25rem;">{{ code }}</div>
+    <h1 style="margin:0 0 1rem;font-size:1.5rem;">{{ heading }}</h1>
+    <p style="color:#555;margin-bottom:1.5rem;">{{ message }}</p>
+    <div style="display:flex;gap:0.75rem;justify-content:center;flex-wrap:wrap;">
+        <a href="{{ url_for('hub') if current_teacher else url_for('index') }}"
+           style="padding:0.6rem 1.1rem;background:#3b5998;color:#fff;border-radius:6px;text-decoration:none;">
+            Back to home
+        </a>
+        <a href="javascript:history.back()"
+           style="padding:0.6rem 1.1rem;background:#eee;color:#333;border-radius:6px;text-decoration:none;">
+            Go back
+        </a>
+    </div>
+    <p style="margin-top:2rem;font-size:0.9rem;color:#888;">
+        Still stuck?
+        <a href="mailto:joe_tay@ctss.edu.sg?subject=%5B{{ app_title|urlencode }}%5D%20{{ code }}%20on%20{{ request.path|urlencode }}"
+           style="color:#3b5998;">Report this to Joe</a>.
+    </p>
+</div>
+{% endblock %}
