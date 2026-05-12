@@ -75,6 +75,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Railway injects $PORT at runtime; shell form expands it. One worker +
-# many threads matches the original Procfile.
-CMD gunicorn -w 1 --threads 100 --timeout 300 --bind "0.0.0.0:$PORT" app:app
+# UP-34: two workers (so one OOM doesn't kill the whole instance), 50
+# threads each (still 100 concurrent requests — was -w1 --threads 100),
+# explicit gthread worker class, max-requests + jitter so each worker
+# recycles after ~1000 requests to bound memory growth from leaky
+# C extensions, and a graceful-timeout so in-flight requests get
+# a chance to finish before SIGKILL on rolling restart.
+# Railway injects $PORT at runtime; shell form expands it.
+CMD gunicorn -w 2 --threads 50 --worker-class gthread --timeout 300 --graceful-timeout 30 --max-requests 1000 --max-requests-jitter 100 --bind "0.0.0.0:$PORT" app:app

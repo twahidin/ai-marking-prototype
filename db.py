@@ -239,9 +239,9 @@ def _migrate_add_columns(app):
                         db.session.execute(text(f'ALTER TABLE assignment_bank ADD COLUMN {col} {ddl}'))
                         db.session.commit()
                         logger.info(f'Added {col} column to assignment_bank table')
-                    except Exception as _e:
+                    except Exception:
                         db.session.rollback()
-                        logger.error(f'assignment_bank ALTER ADD {col} failed: {_e}')
+                        logger.exception('assignment_bank ALTER ADD %s failed', col)
             try:
                 db.session.execute(text(
                     "UPDATE assignment_bank SET provider = '' WHERE provider IS NULL"
@@ -295,9 +295,9 @@ def _migrate_add_columns(app):
                         db.session.execute(text(f'ALTER TABLE feedback_edit ADD COLUMN {col} {ddl}'))
                         db.session.commit()
                         logger.info(f'Added {col} column to feedback_edit table')
-                    except Exception as _e:
+                    except Exception:
                         db.session.rollback()
-                        logger.error(f'feedback_edit ALTER ADD {col} failed: {_e}')
+                        logger.exception('feedback_edit ALTER ADD %s failed', col)
 
             # Widen theme_key column for richer per-subject taxonomy keys
             # (longest key is 42 chars; bumped to 64 for headroom).
@@ -573,8 +573,8 @@ def init_db(app):
             try:
                 FeedbackEdit.__table__.create(db.engine)
                 logger.error('feedback_edit table created via fallback')
-            except Exception as _ce:
-                logger.error(f'fallback feedback_edit create failed: {_ce}')
+            except Exception:
+                logger.exception('fallback feedback_edit create failed')
         else:
             logger.info('feedback_edit table present at boot')
 

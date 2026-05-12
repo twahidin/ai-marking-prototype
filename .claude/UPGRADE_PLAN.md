@@ -361,7 +361,7 @@ Pass `ASSIGNMENT_ID` once via a `<meta>` tag or `data-` attr; collapse the 4 dup
 ---
 
 ### UP-27 — Convert `logger.error(f"... {e}")` to `logger.exception(...)`
-**Status:** TODO
+**Status:** DONE — all `logger.error(f"... {e}")` sites inside `except` blocks in `app.py` (27 sites), `ai_marking.py` (4 sites), and `db.py` (3 sites) converted to `logger.exception(...)` with `%`-style args. Two prior `exc_info=True` sites collapsed to plain `logger.exception` for consistency. Non-except `logger.error` calls (ai_marking.py:339 HEIC-missing-lib, db.py:572/575 informational, pdf_generator.py:1002 returncode check) left as-is. The `@app.errorhandler(500)` handler also switched to `logger.exception` so the manual `traceback.format_exc()` no longer runs in two places. Pairs naturally with UP-32: with Sentry's LoggingIntegration at `event_level=ERROR`, every converted call now ships a Sentry event with a real traceback.
 **Why:** `logger.exception` is used **once** in the codebase. `logger.error(f"... {e}")` is used 30+ times — every catch site loses the traceback. Bulk-mark failure logs read "Bulk job xyz, student Tan Wei failed: 'NoneType' object has no attribute 'get'" with no stack, no line. Single most leveraged fix in the audit.
 **Where:** Every `except Exception as e:` block in `app.py` (~30 sites) and `ai_marking.py` (~5 sites).
 **Fix:** sed-like replacement. `logger.error(f"... failed: {e}")` → `logger.exception("... failed")`.
@@ -370,7 +370,7 @@ Pass `ASSIGNMENT_ID` once via a `<meta>` tag or `data-` attr; collapse the 4 dup
 ---
 
 ### UP-28 — Session hardening (clear on login, lifetime, debug guard)
-**Status:** TODO
+**Status:** DONE — `PERMANENT_SESSION_LIFETIME = timedelta(hours=8)` set in `app.config`. New `_finalise_login_session(preserve=None)` helper that calls `session.clear()` + `session.permanent = True` (with optional whitelisted-key preservation) is invoked at every login boundary: dept-mode `/verify-code`, normal-mode TEACHER_CODE master path, normal-mode custom-teacher-code path, legacy ACCESS_CODE fallback, demo+dept HOD auto-login, `department_setup` HOD creation, and `teacher_setup_page` owner creation. `app.run` debug guard requires BOTH `FLASK_DEBUG=true` AND `FLASK_ENV=development`, and binds to `127.0.0.1` in that mode so the Werkzeug debug console can't be reached from the LAN.
 **Why:** Three related session issues:
 - No `session.clear()` on login (`app.py:802, 817, 823, 830, 3595, 3633`) — session fixation possible.
 - No `PERMANENT_SESSION_LIFETIME` — sessions live forever.
@@ -393,7 +393,7 @@ app.run(host='127.0.0.1' if debug else '0.0.0.0', debug=debug)
 ---
 
 ### UP-29 — CSP + HSTS + SRI on CDN scripts
-**Status:** TODO
+**Status:** DONE — `add_security_headers` (app.py) now sets a default-allow `Content-Security-Policy` (default-src 'self'; CDN allow-list for script/style; data:+blob: for img; blob: for worker-src so pdfjs's worker URL works; frame-ancestors 'self' to coexist with the print-all wrapper iframe; base-uri/form-action self; object-src 'none') and `Strict-Transport-Security: max-age=63072000; includeSubDomains` (no `preload` yet — that commitment is effectively irreversible). SHA-384 integrity attributes pinned on every CDN-loaded script/link tag: KaTeX × 4 (css + js + mhchem + auto-render in `base.html`), animate.css (base.html), gridstack css + gridstack-all js + chart.js (teacher_insights.html), and pdfjs `pdf.min.mjs` × 3 (review.html, exemplars.html, bank_preview.html). The pdfjs `pdf.worker.min.mjs` is loaded dynamically by pdf.js itself from a JS string, so SRI can't be pinned on it directly; CSP `script-src https://cdn.jsdelivr.net` constrains the origin instead.
 **Why:** No CSP, no HSTS, no Subresource Integrity on 7 CDN-loaded scripts (KaTeX, mhchem, auto-render, gridstack, Chart.js, pdfjs-dist). A jsdelivr/cdnjs compromise lands a malicious build in every teacher session — full session takeover + key exfil from `session['api_keys']`.
 **Where:** `app.py:228` (`add_security_headers`); `templates/base.html:7, 17-20`; `teacher_insights.html:11, 408, 409`; `review.html:155`; `bank_preview.html:102, 104, 105`; `exemplars.html:106, 108, 109`.
 **Fix:** Add headers:
@@ -407,7 +407,7 @@ Pin SRI on each CDN `<script integrity="sha384-..." crossorigin="anonymous">`. U
 ---
 
 ### UP-30 — `_jobs_lock` mutex on `jobs` dict
-**Status:** TODO
+**Status:** DONE — `_jobs_lock = threading.Lock()` plus three helpers in app.py: `_jobs_get(job_id)` returns a shallow copy under lock so callers don't need to hold it for the rest of the request; `_jobs_set(job_id, value)` for create/replace; `_jobs_update(job_id, **fields)` for in-place worker writes (no-op if the entry was TTL-pruned mid-flight). All five direct `jobs[...]` mutation/read sites (`run_marking_job` write-back, marking dispatch initial set, `/status/<job_id>`, `/download/<job_id>`, `/bulk/download/<job_id>`, `/bulk/overview/<job_id>`) migrated. `cleanup_old_jobs` now wraps the iterate+pop loop in the lock so the TTL pruner can't race a worker write. Single iteration uses `.get('created_at', now)` as a defensive fallback for partially-constructed entries.
 **Why:** Module-level `jobs = {}` mutated from foreground requests + background threads with no lock. `_PRINT_JOBS` already has `_PRINT_JOBS_LOCK` — same pattern needed here. Likely cause of observed "stuck at 99%" half-built progress reads.
 **Where:** `app.py:271, 608-613, 910, 3860, 3946-3948`.
 **Fix:** Add `_jobs_lock = threading.Lock()`. Wrap every read-modify-write on `jobs[k]`. Replace bare `jobs[k] = v` with `with _jobs_lock: jobs[k] = v`.
@@ -416,7 +416,7 @@ Pin SRI on each CDN `<script integrity="sha384-..." crossorigin="anonymous">`. U
 ---
 
 ### UP-31 — Smoke test scaffold (5-7 tests)
-**Status:** TODO
+**Status:** DONE — `pytest.ini` + `requirements-dev.txt` (pytest>=8, pytest-flask>=1.3) + `tests/conftest.py` (sets DATABASE_URL to a throwaway SQLite file, plus deterministic TEACHER_CODE / FLASK_SECRET_KEY before importing app, and exposes `app` / `client` / `db_session` fixtures with CSRF disabled). Five test modules: `test_boot.py` (routes registered, GET / responds 200|302, CSP+HSTS+nosniff headers present, `_migrate_add_columns` idempotent across two consecutive runs), `test_auth.py` (wrong code → 401, correct TEACHER_CODE → 200 + redirect to /setup or /, empty code → 401), `test_ai_parse.py` (clean JSON, smart quotes, markdown fence, Qwen `<think>` block, truncated repair, empty input, garbage input, parametrized valid shapes), `test_pdf_compile.py` (skipped via `pytest.mark.skipif` when lualatex isn't on PATH; otherwise compiles a minimal `result` dict and asserts the `%PDF-` magic + >1 KB size), `test_error_paths.py` (404 on unknown route, /api/class/... blocked unauthenticated, /save-keys returns 401). **Verification**: pytest itself wasn't installable in this sandbox (no project venv, `pip install --user` denied by the auto-mode classifier), so I verified the test *logic* by running each assertion path manually with `python3 -c '...'` — all paths return the expected values. To actually run: `pip install -r requirements-dev.txt && pytest`.
 **Why:** Zero tests. Every change is unverified. These 5-7 catch ~80% of "broke main on Friday evening" regressions.
 **Where:** New `tests/` directory + `pytest.ini` + `requirements-dev.txt`.
 **Fix:** `pip install pytest pytest-flask`, write:
@@ -432,7 +432,7 @@ Pin SRI on each CDN `<script integrity="sha384-..." crossorigin="anonymous">`. U
 ---
 
 ### UP-32 — Sentry free tier
-**Status:** TODO
+**Status:** DONE — `sentry-sdk[flask]>=2.0,<3` added to requirements.txt. Init lives at the top of app.py (before `Flask(__name__)`) and is gated on `SENTRY_DSN`: when set, initialises `FlaskIntegration` + `LoggingIntegration(level=INFO, event_level=ERROR)` so every UP-27 `logger.exception` ships a Sentry event. `traces_sample_rate` defaults to 0.1 (overridable via `SENTRY_TRACES_SAMPLE_RATE`); `release` reads `RAILWAY_GIT_COMMIT_SHA` / `GIT_SHA` for source-mapped stack traces; `environment` reads `SENTRY_ENVIRONMENT` / `FLASK_ENV` with a 'production' default; `send_default_pii=False` (PII is in student names / submission content — opt-in if needed later). Init failures are caught and logged so a misconfigured DSN can never block boot.
 **Why:** Plain `logging.INFO` to stderr → Railway logs (ephemeral, no search). When a teacher says "marking failed for X", you can't grep for it.
 **Where:** `app.py` boot path.
 **Fix:** `pip install sentry-sdk[flask]`; in `app.py`:
@@ -448,7 +448,7 @@ Free tier covers ~5k events/month. Pair with UP-27.
 ---
 
 ### UP-33 — Pin `requirements.txt`
-**Status:** TODO
+**Status:** DONE — every entry in requirements.txt now has BOTH a lower bound (the current feature floor) and an upper bound (the next major) so a Railway rebuild can't pull a breaking minor/major upgrade silently. Affected: flask `<4`, flask-wtf `<2`, gunicorn `<26`, anthropic `<1`, openai `<3`, tenacity `<10`, pdf2image `<2`, Pillow `<12` (kept), pillow-heif `<2`, pypdf `<7`, flask-sqlalchemy `<4`, psycopg2-binary `<3`, cryptography `<47`, openpyxl `<4`, pypinyin `<1`, jieba `<1`, sentry-sdk `<3`. Added `.python-version` (3.11) so pyenv/uv match the Dockerfile's `python:3.11-slim` base image. Note: the audit's "pip freeze" recipe wasn't followed because there's no shared known-good production lockfile yet — when one becomes available (e.g. via `pip freeze` on a Railway shell), replace the `>=,<` ranges with `==` pins.
 **Why:** All entries use `>=` floors with no upper bounds. Every Railway rebuild can pull a newer minor that broke something. "Worked yesterday, broken today" deploys with no code change.
 **Where:** `requirements.txt`.
 **Fix:** Run `pip freeze > requirements.txt` once on a known-good build. Add `runtime.txt` or `.python-version` with `python-3.11.10` for local parity with Dockerfile. Optionally add Dependabot weekly.
@@ -457,7 +457,7 @@ Free tier covers ~5k events/month. Pair with UP-27.
 ---
 
 ### UP-34 — `gunicorn` config hardening
-**Status:** TODO
+**Status:** DONE — Procfile + Dockerfile CMD switched from `-w 1 --threads 100` to `-w 2 --threads 50 --worker-class gthread --timeout 300 --graceful-timeout 30 --max-requests 1000 --max-requests-jitter 100`. Net concurrency is unchanged (still 100 threads) but a single worker OOM no longer takes down the whole instance, and worker recycling (every ~1000 requests with jitter to avoid synchronous restart storms) caps memory growth from leaky C extensions like Pillow/pdf2image. Added `/healthz` route in app.py that returns `('ok', 200)` with `Content-Type: text/plain` — no DB touch, designed for Railway's container healthcheck and gunicorn's worker-restart probes without hammering the DB.
 **Why:** `-w 1 --threads 100` means one bad LuaLaTeX OOM kills everything mid-bulk-mark. No worker recycling — long-running process bloats.
 **Where:** `Procfile` and `Dockerfile`.
 **Fix:** `gunicorn -w 2 --threads 50 --worker-class gthread --timeout 300 --max-requests 1000 --max-requests-jitter 100 --bind 0.0.0.0:$PORT app:app`. Optionally add `/healthz` route that returns 200 without DB touch.

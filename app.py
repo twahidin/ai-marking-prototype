@@ -23,6 +23,35 @@ from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Tea
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# UP-32: Sentry. Opt-in via SENTRY_DSN env var so local dev / CI doesn't
+# ship events; Railway sets SENTRY_DSN once and every deploy reports.
+# Initialised BEFORE `Flask(__name__)` so the Flask integration's
+# request-context hooks see every request.
+_SENTRY_DSN = os.getenv('SENTRY_DSN', '').strip()
+if _SENTRY_DSN:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.flask import FlaskIntegration
+        from sentry_sdk.integrations.logging import LoggingIntegration
+
+        sentry_sdk.init(
+            dsn=_SENTRY_DSN,
+            integrations=[
+                FlaskIntegration(),
+                # `logger.exception(...)` (UP-27) is now a real Sentry event;
+                # plain `logger.info(...)` stays as a breadcrumb only.
+                LoggingIntegration(level=logging.INFO, event_level=logging.ERROR),
+            ],
+            traces_sample_rate=float(os.getenv('SENTRY_TRACES_SAMPLE_RATE', '0.1')),
+            release=os.getenv('RAILWAY_GIT_COMMIT_SHA') or os.getenv('GIT_SHA') or None,
+            environment=os.getenv('SENTRY_ENVIRONMENT') or os.getenv('FLASK_ENV') or 'production',
+            send_default_pii=False,
+        )
+        logger.info('Sentry initialised (DSN configured)')
+    except Exception:
+        # Never let a misconfigured Sentry block app boot.
+        logger.exception('Sentry init failed — continuing without it')
+
 app = Flask(__name__)
 
 # UP-18: surface real client IPs through Railway's load balancer so the
@@ -41,6 +70,11 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SECURE'] = os.getenv('FLASK_ENV') != 'development'
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
+# UP-28: bound idle session lifetime. Teachers re-auth after 8h of inactivity,
+# which closes the "left the laptop unlocked" hole without nagging during a
+# normal marking session. Honored only when `session.permanent = True`, which
+# every successful login branch sets via `_finalise_login_session()`.
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=8)
 
 # UP-04: CSRF protection. Default-on for every POST/PUT/DELETE/PATCH;
 # student-submission routes are opted out below via @csrf.exempt because
@@ -252,6 +286,36 @@ def inject_dept_context():
     }
 
 
+_CDN_SCRIPT_SRCS = "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com"
+_CDN_STYLE_SRCS = "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com"
+_CDN_FONT_SRCS = "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com"
+
+# UP-29: Content-Security-Policy. Goal: limit blast radius if a CDN bundle
+# is compromised or if AI-rendered HTML smuggles a script. Notes:
+#   * `script-src 'unsafe-inline'` stays for now because UP-26 inline-onclick
+#     migration is only partial (dashboard.html done; ~165 sites remain). The
+#     SRI hashes pinned in base.html / teacher_insights.html / review.html /
+#     bank_preview.html / exemplars.html still constrain CDN integrity.
+#   * `worker-src 'self' blob:` is for pdfjs-dist, which spawns its worker
+#     from a blob URL constructed in-page.
+#   * `frame-ancestors 'self'` plays nicely with the print-all endpoint
+#     that wraps a merged PDF in a same-origin iframe (replaces the legacy
+#     X-Frame-Options: SAMEORIGIN override at print_all_reports).
+_CSP_POLICY = (
+    "default-src 'self'; "
+    f"script-src 'self' 'unsafe-inline' 'unsafe-eval' {_CDN_SCRIPT_SRCS}; "
+    f"style-src 'self' 'unsafe-inline' {_CDN_STYLE_SRCS}; "
+    "img-src 'self' data: blob:; "
+    f"font-src 'self' data: {_CDN_FONT_SRCS}; "
+    "worker-src 'self' blob:; "
+    "connect-src 'self'; "
+    "frame-ancestors 'self'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "object-src 'none'"
+)
+
+
 @app.after_request
 def add_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -261,7 +325,26 @@ def add_security_headers(response):
     response.headers.setdefault('X-Frame-Options', 'DENY')
     response.headers['X-XSS-Protection'] = '1; mode=block'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    # UP-29: defense-in-depth against XSS / CDN supply-chain compromise.
+    response.headers.setdefault('Content-Security-Policy', _CSP_POLICY)
+    # UP-29: HSTS — browsers ignore this on plain-HTTP responses, so it's
+    # safe to set unconditionally. 2-year max-age + includeSubDomains is the
+    # current OWASP recommendation. No `preload` until we're sure we want
+    # the preload commitment (it's effectively irreversible).
+    response.headers.setdefault(
+        'Strict-Transport-Security',
+        'max-age=63072000; includeSubDomains',
+    )
     return response
+
+
+@app.route('/healthz')
+def healthz():
+    """UP-34: cheap liveness probe. No DB touch — Railway's container
+    healthcheck and gunicorn's worker recycling poll this constantly,
+    and we don't want to hammer the DB on every probe. If the Flask
+    request-response cycle works, the worker is alive."""
+    return ('ok', 200, {'Content-Type': 'text/plain; charset=utf-8'})
 
 
 @app.errorhandler(413)
@@ -272,9 +355,7 @@ def too_large(e):
 @app.errorhandler(500)
 def internal_error(e):
     # Make the full traceback visible in Railway logs so 500s can be diagnosed.
-    import traceback
-    tb = traceback.format_exc()
-    logger.error(f"500 on {request.method} {request.path}:\n{tb}")
+    logger.exception("500 on %s %s", request.method, request.path)
     # Return a plain message — clients that expected JSON still get a readable error.
     return ('Internal server error. Check server logs for details.', 500)
 
@@ -299,7 +380,37 @@ def _check_rate_limit(key):
 # now holds only short-lived single-marking jobs (`/mark` route) and the
 # print-all-reports state.
 jobs = {}
+# UP-30: protect `jobs` from concurrent read/write between request handlers
+# and background worker threads. Mirrors the existing `_PRINT_JOBS_LOCK`
+# pattern. We hold this only across the dict op itself — never around an
+# AI call or DB commit — so contention stays sub-microsecond.
+_jobs_lock = threading.Lock()
 JOB_TTL_SECONDS = 3600  # 1 hour
+
+
+def _jobs_get(job_id):
+    """UP-30: lock-guarded read that returns a *shallow copy* of the job dict
+    so callers can read fields without holding the lock. Returns None if no
+    such job. Use this instead of `jobs.get(job_id)` everywhere."""
+    with _jobs_lock:
+        job = jobs.get(job_id)
+        return dict(job) if job is not None else None
+
+
+def _jobs_set(job_id, value):
+    """UP-30: lock-guarded create/replace of a job entry."""
+    with _jobs_lock:
+        jobs[job_id] = value
+
+
+def _jobs_update(job_id, **fields):
+    """UP-30: lock-guarded in-place update of selected fields on an existing
+    job entry. No-op if the entry was already removed (TTL cleanup race)."""
+    with _jobs_lock:
+        job = jobs.get(job_id)
+        if job is None:
+            return
+        job.update(fields)
 
 
 def _bulk_job_load(job_id):
@@ -387,9 +498,13 @@ def _submit_marking(fn, *args, **kwargs):
 def cleanup_old_jobs():
     """Remove jobs older than TTL."""
     now = time.time()
-    expired = [jid for jid, j in list(jobs.items()) if now - j['created_at'] > JOB_TTL_SECONDS]
-    for jid in expired:
-        jobs.pop(jid, None)
+    with _jobs_lock:
+        expired = [
+            jid for jid, j in jobs.items()
+            if now - j.get('created_at', now) > JOB_TTL_SECONDS
+        ]
+        for jid in expired:
+            jobs.pop(jid, None)
 
 
 def _get_session_keys():
@@ -441,6 +556,24 @@ def _set_session_keys(keys):
     payload = json.dumps(keys, ensure_ascii=False).encode('utf-8')
     session['api_keys'] = f.encrypt(payload).decode('utf-8')
 
+
+def _finalise_login_session(*, preserve=None):
+    """UP-28: rotate the session ID on every successful login.
+
+    Wipes any pre-auth session (e.g. the `pending_setup` flag captured before
+    a teacher record existed) so a fixated cookie from the gate page can't
+    inherit teacher privileges. Pass `preserve=('key', ...)` to keep specific
+    values across the rotation — currently unused but available if a future
+    auth path needs it. Always marks the new session permanent so
+    `PERMANENT_SESSION_LIFETIME` (8h) actually kicks in; without `permanent`,
+    Flask treats the cookie as session-scope and the lifetime is ignored.
+    """
+    preserve = preserve or ()
+    kept = {k: session[k] for k in preserve if k in session}
+    session.clear()
+    for k, v in kept.items():
+        session[k] = v
+    session.permanent = True
 
 
 
@@ -837,12 +970,14 @@ def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pa
             session_keys=session_keys,
             pinyin_mode=pinyin_mode,
         )
-        jobs[job_id]['result'] = result
-        jobs[job_id]['status'] = 'error' if result.get('error') else 'done'
+        _jobs_update(
+            job_id,
+            result=result,
+            status='error' if result.get('error') else 'done',
+        )
     except Exception as e:
-        logger.error(f"Job {job_id} failed: {e}")
-        jobs[job_id]['result'] = {'error': str(e)}
-        jobs[job_id]['status'] = 'error'
+        logger.exception("Job %s failed", job_id)
+        _jobs_update(job_id, result={'error': str(e)}, status='error')
 
 
 def _has_conflicts_in_my_subjects(teacher_id):
@@ -896,6 +1031,7 @@ def hub():
         if not session.get('teacher_id'):
             hod = Teacher.query.filter_by(role='hod').first()
             if hod:
+                _finalise_login_session()
                 session['teacher_id'] = hod.id
                 session['teacher_role'] = hod.role
                 session['teacher_name'] = hod.name
@@ -1031,6 +1167,7 @@ def verify_code():
             return jsonify({'success': False, 'error': 'Invalid code'}), 401
         if hasattr(teacher, 'is_active') and not teacher.is_active:
             return jsonify({'success': False, 'error': 'Account has been deactivated. Contact your HOD.'}), 403
+        _finalise_login_session()
         session['teacher_id'] = teacher.id
         session['teacher_role'] = teacher.role
         session['teacher_name'] = teacher.name
@@ -1044,14 +1181,17 @@ def verify_code():
             # Master key — find the owner teacher
             teacher = Teacher.query.filter_by(role='owner').first()
             if not teacher:
+                _finalise_login_session()
                 session['pending_setup'] = True
                 return jsonify({'success': True, 'redirect': '/setup'})
+            _finalise_login_session()
             session['teacher_id'] = teacher.id
             session['teacher_name'] = teacher.name
             return jsonify({'success': True, 'redirect': '/'})
         # Also check if they have a custom code
         teacher = Teacher.query.filter_by(code=code, role='owner').first()
         if teacher:
+            _finalise_login_session()
             session['teacher_id'] = teacher.id
             session['teacher_name'] = teacher.name
             return jsonify({'success': True, 'redirect': '/'})
@@ -1059,6 +1199,7 @@ def verify_code():
 
     # Legacy ACCESS_CODE fallback
     if _ENV_ACCESS_CODE and secrets.compare_digest(str(code), str(_ENV_ACCESS_CODE)):
+        _finalise_login_session()
         session['authenticated'] = True
         return jsonify({'success': True})
     return jsonify({'success': False, 'error': 'Invalid access code'}), 401
@@ -1149,12 +1290,12 @@ def _demo_mark():
 
     cleanup_old_jobs()
     job_id = str(uuid.uuid4())
-    jobs[job_id] = {
+    _jobs_set(job_id, {
         'status': 'processing',
         'result': None,
         'subject': subject,
         'created_at': time.time(),
-    }
+    })
 
     _submit_marking(
         run_marking_job, job_id, provider, model, question_paper_pages, answer_key_pages,
@@ -1230,7 +1371,9 @@ def job_status(job_id):
 
     # UP-15: try the persistent BulkJob table first; fall back to the
     # in-memory `jobs` dict for short-lived single-marking demo jobs.
-    job = _bulk_job_load(job_id) or jobs.get(job_id)
+    # UP-30: `_jobs_get` returns a shallow copy under lock so further reads
+    # in this handler can't race with the marking worker writing back.
+    job = _bulk_job_load(job_id) or _jobs_get(job_id)
     if not job:
         return jsonify({'success': False, 'error': 'Job not found'}), 404
 
@@ -1264,7 +1407,7 @@ def download_pdf(job_id):
     if not is_demo_mode() and not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
-    job = jobs.get(job_id)
+    job = _jobs_get(job_id)
     if not job or job['status'] != 'done':
         return jsonify({'success': False, 'error': 'No results available'}), 404
 
@@ -1631,8 +1774,8 @@ def manage_class_students(class_id):
         students_data = _parse_class_list(file_bytes, cl_file.filename)
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
-    except Exception as e:
-        logger.error(f'Class list parse error: {e}')
+    except Exception:
+        logger.exception('Class list parse error')
         return jsonify({'success': False, 'error': 'Could not parse file. Please upload a CSV or Excel file.'}), 400
     if not students_data:
         return jsonify({'success': False, 'error': 'Could not parse class list. Check the file format.'}), 400
@@ -3122,7 +3265,7 @@ Respond in JSON format:
         action_items = parsed.get('action_items', [])
 
     except Exception as e:
-        logger.error(f'AI analysis failed: {e}')
+        logger.exception('AI analysis failed')
         return jsonify({'success': False, 'error': str(e)}), 500
 
     # Save to DepartmentConfig
@@ -3636,8 +3779,8 @@ Respond ONLY with valid JSON:
                       'areas_needing_clarification': [], 'recommended_actions': [],
                       'per_question_notes': []}
 
-    except Exception as e:
-        logger.error(f'Class AI analysis failed: {e}')
+    except Exception:
+        logger.exception('Class AI analysis failed')
         return jsonify({'success': False, 'error': 'AI analysis failed. Check server logs.'}), 500
 
     saved = {
@@ -3744,8 +3887,8 @@ Answer the teacher's questions about this data. Be conversational, specific, and
                     if chunk.choices and chunk.choices[0].delta.content:
                         yield f"data: {json.dumps({'text': chunk.choices[0].delta.content}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"
-        except Exception as e:
-            logger.error(f'Chat stream error: {e}')
+        except Exception:
+            logger.exception('Chat stream error')
             yield f"data: {json.dumps({'error': 'Chat failed. Please try again.'})}\n\n"
 
     return app.response_class(
@@ -3854,6 +3997,7 @@ def department_setup():
         db.session.add(hod)
         db.session.commit()
 
+        _finalise_login_session()
         session['teacher_id'] = hod.id
         session['teacher_role'] = hod.role
         session['teacher_name'] = hod.name
@@ -3891,7 +4035,10 @@ def teacher_setup_page():
         db.session.add(teacher)
         db.session.commit()
 
-        session.pop('pending_setup', None)
+        # UP-28: rotate session ID at the actual authentication boundary
+        # (account creation). `pending_setup` is dropped implicitly by
+        # session.clear() inside the helper.
+        _finalise_login_session()
         session['teacher_id'] = teacher.id
         session['teacher_name'] = teacher.name
         return jsonify({'success': True, 'redirect': '/'})
@@ -4173,7 +4320,7 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                 # UP-12: usage will be appended to the submission row below.
                 bulk_usage_entry = consume_last_usage()
             except Exception as e:
-                logger.error(f"Bulk job {job_id}, student {student['name']} failed: {e}")
+                logger.exception("Bulk job %s, student %s failed", job_id, student['name'])
                 result = {'error': str(e)}
                 # Ensure the pre-created row is finalized as 'error' so it doesn't
                 # linger as 'pending' and count against the student's draft cap.
@@ -4188,10 +4335,11 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                                     sub.set_result({'error': str(e)})
                                     sub.marked_at = datetime.now(timezone.utc)
                                     db.session.commit()
-                        except Exception as finalize_err:
+                        except Exception:
                             db.session.rollback()
-                            logger.error(
-                                f"Failed to finalize errored submission for {student['name']}: {finalize_err}"
+                            logger.exception(
+                                "Failed to finalize errored submission for %s",
+                                student['name'],
                             )
 
             results.append({
@@ -4236,9 +4384,9 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                                 sub.marked_at = datetime.now(timezone.utc)
                                 db.session.add(sub)
                                 db.session.commit()
-                except Exception as e:
+                except Exception:
                     db.session.rollback()
-                    logger.error(f"Failed to save submission for {student['name']}: {e}")
+                    logger.exception("Failed to save submission for %s", student['name'])
 
         # UP-15: final results + status to the bulk_jobs row.
         try:
@@ -4250,8 +4398,8 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                     progress={'current': total, 'total': total, 'current_name': 'Complete'},
                     finished=True,
                 )
-        except Exception as _fe:
-            logger.error(f'bulk final write failed: {_fe}')
+        except Exception:
+            logger.exception('bulk final write failed')
 
         # Clear the "needs re-mark" flag on the assignment now that bulk-mark finished.
         if assignment_id:
@@ -4261,14 +4409,14 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                     if asn and asn.needs_remark:
                         asn.needs_remark = False
                         db.session.commit()
-            except Exception as flag_err:
+            except Exception:
                 db.session.rollback()
-                logger.error(f"Failed to clear needs_remark for assignment {assignment_id}: {flag_err}")
+                logger.exception("Failed to clear needs_remark for assignment %s", assignment_id)
     except Exception as job_err:
         # Top-level safety: if any unexpected exception escapes the per-student
         # handler, finalize any remaining pre-created rows so they don't stay
         # 'pending' forever and count against students' draft caps.
-        logger.error(f"Bulk job {job_id} interrupted by unexpected error: {job_err}")
+        logger.exception("Bulk job %s interrupted by unexpected error", job_id)
         if assignment_id and submission_id_map:
             remaining_ids = [
                 sid for idx, sid in submission_id_map.items()
@@ -4283,11 +4431,9 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                             sub.set_result({'error': 'bulk job interrupted'})
                             sub.marked_at = datetime.now(timezone.utc)
                             db.session.commit()
-                except Exception as finalize_err:
+                except Exception:
                     db.session.rollback()
-                    logger.error(
-                        f"Failed to finalize interrupted submission {sid}: {finalize_err}"
-                    )
+                    logger.exception("Failed to finalize interrupted submission %s", sid)
         try:
             with app.app_context():
                 _bulk_job_update(
@@ -4302,8 +4448,8 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                     },
                     finished=True,
                 )
-        except Exception as _ie:
-            logger.error(f'bulk error write failed: {_ie}')
+        except Exception:
+            logger.exception('bulk error write failed')
 
 
 @app.route('/bulk')
@@ -4484,7 +4630,8 @@ def bulk_download(job_id):
 
     # UP-15: read from persistent BulkJob with in-memory fallback for any
     # in-flight job created before this code shipped.
-    job = _bulk_job_load(job_id) or jobs.get(job_id)
+    # UP-30: shallow-copy under lock to avoid racing the bulk worker.
+    job = _bulk_job_load(job_id) or _jobs_get(job_id)
     if not job or job['status'] != 'done' or not job.get('results'):
         return jsonify({'success': False, 'error': 'No results available'}), 404
     if job.get('_persistent') and job.get('assignment_id'):
@@ -4524,7 +4671,8 @@ def bulk_overview(job_id):
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     # UP-15: read from persistent BulkJob with in-memory fallback.
-    job = _bulk_job_load(job_id) or jobs.get(job_id)
+    # UP-30: shallow-copy under lock to avoid racing the bulk worker.
+    job = _bulk_job_load(job_id) or _jobs_get(job_id)
     if not job or job['status'] != 'done' or not job.get('results'):
         return jsonify({'success': False, 'error': 'No results available'}), 404
     if job.get('_persistent') and job.get('assignment_id'):
@@ -4621,7 +4769,7 @@ def _run_submission_extraction(app_obj, submission_id, assignment_id):
                     sub.status = 'preview'
         except Exception as e:
             db.session.rollback()
-            logger.error(f"Submission {submission_id} extraction failed: {e}")
+            logger.exception("Submission %s extraction failed", submission_id)
             sub.set_result({'error': str(e)})
             sub.status = 'error'
 
@@ -4778,7 +4926,7 @@ def _run_submission_marking(app_obj, submission_id, assignment_id, band_override
                 )
         except Exception as e:
             db.session.rollback()
-            logger.error(f"Submission {submission_id} marking failed: {e}")
+            logger.exception("Submission %s marking failed", submission_id)
             sub.set_result({'error': str(e)})
             sub.status = 'error'
             sub.marked_at = datetime.now(timezone.utc)
@@ -4799,9 +4947,9 @@ def _run_submission_marking(app_obj, submission_id, assignment_id, band_override
                 if not stale_exists:
                     asn_refreshed.needs_remark = False
                     db.session.commit()
-        except Exception as flag_err:
+        except Exception:
             db.session.rollback()
-            logger.error(f"Failed to auto-clear needs_remark for assignment {assignment_id}: {flag_err}")
+            logger.exception("Failed to auto-clear needs_remark for assignment %s", assignment_id)
 
         # Log the AI-generated originals to feedback_log (v1 rows). Synchronous
         # but best-effort: any error is logged and swallowed.
@@ -5078,11 +5226,11 @@ def _run_propagation_worker(app_obj, edit_id, target_ids):
                 db.session.commit()
                 logger.info(f"propagation finished edit={edit_id} status={final_status} "
                             f"done={len(results) - failed_n} failed={failed_n}")
-            except Exception as final_err:
+            except Exception:
                 db.session.rollback()
-                logger.error(f"propagation final-status persist failed: {final_err}")
-        except Exception as outer:
-            logger.error(f"propagation worker crashed for edit {edit_id}: {outer}")
+                logger.exception("propagation final-status persist failed")
+        except Exception:
+            logger.exception("propagation worker crashed for edit %s", edit_id)
             try:
                 edit_err = FeedbackEdit.query.get(edit_id)
                 if edit_err and edit_err.propagation_status == 'pending':
@@ -5250,8 +5398,8 @@ def _run_categorisation_worker(app_obj, submission_id):
             db.session.commit()
             logger.info(f"Categorisation done for submission {submission_id}: "
                         f"{len(cats_by_id)} criteria, {len(tiered['group_habits'])} group habits")
-        except Exception as e:
-            logger.error(f"Categorisation failed for submission {submission_id}: {e}")
+        except Exception:
+            logger.exception("Categorisation failed for submission %s", submission_id)
             try:
                 sub = Submission.query.get(submission_id)
                 if sub:
@@ -5664,9 +5812,9 @@ def teacher_edit(assignment_id):
 
     try:
         db.session.commit()
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        logger.error(f"Failed to save edits for assignment {assignment_id}: {e}")
+        logger.exception("Failed to save edits for assignment %s", assignment_id)
         return jsonify({'success': False, 'error': 'Failed to save changes. Please try again.'}), 500
 
     # If pinyin_mode flipped (off→on, on→off, or between vocab/full), re-derive
@@ -6425,7 +6573,7 @@ def teacher_exemplars_generate(assignment_id):
             submissions_data=submissions_data,
         )
     except Exception as e:
-        logger.error(f"Exemplar analysis failed for assignment {assignment_id}: {e}")
+        logger.exception("Exemplar analysis failed for assignment %s", assignment_id)
         return jsonify({'success': False, 'error': f'AI analysis failed: {e}'}), 502
 
     # Validate + sanitise AI output.
@@ -7160,12 +7308,11 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                         if log_meta and log_meta.get('version'):
                             entry['version'] = log_meta['version']
                         edit_meta.setdefault(str(qn), {})[_field] = entry
-                    except Exception as _log_err:
+                    except Exception:
                         sp.rollback()
-                        logger.error(
-                            f"feedback_edit write failed (sub={sub.id}, crit={qn}, "
-                            f"field={_field}): {type(_log_err).__name__}: {_log_err}",
-                            exc_info=True,
+                        logger.exception(
+                            "feedback_edit write failed (sub=%s, crit=%s, field=%s)",
+                            sub.id, qn, _field,
                         )
                         calibration_write_errors.append(
                             f"{type(_log_err).__name__}: {_log_err}"
@@ -7255,11 +7402,8 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                 db.session.commit()
                 _submit_marking(_run_propagation_worker, app, anchor.id, target_ids)
                 logger.info(f"Auto-propagation worker started for edit_id={anchor.id}")
-        except Exception as _cand_err:
-            logger.error(
-                f"Auto-propagation kickoff failed: {type(_cand_err).__name__}: {_cand_err}",
-                exc_info=True,
-            )
+        except Exception:
+            logger.exception("Auto-propagation kickoff failed")
             auto_propagation = None
 
     response = {'success': True, 'result': sub.get_result()}
@@ -8113,7 +8257,7 @@ def student_feedback_explain(assignment_id, submission_id):
             feedback_sentence=q.get('feedback') or '',
         )
     except Exception as e:
-        logger.error(f"Layer 3 explain failed for sub {submission_id} q {qkey}: {e}")
+        logger.exception("Layer 3 explain failed for sub %s q %s", submission_id, qkey)
         return jsonify({'success': False, 'error': f'Could not generate explanation: {e}'}), 502
 
     cache[qkey] = explanation
@@ -8162,7 +8306,7 @@ def student_feedback_correction(assignment_id, submission_id):
             attempt_text=attempt_text,
         )
     except Exception as e:
-        logger.error(f"Correction eval failed for sub {submission_id} q {qkey}: {e}")
+        logger.exception("Correction eval failed for sub %s q %s", submission_id, qkey)
         return jsonify({'success': False, 'error': f'Could not evaluate: {e}'}), 502
 
     # Store the attempt on the submission's tiered bucket.
@@ -8269,9 +8413,9 @@ def feedback_deprecate_edit():
         edit.active = False
         try:
             db.session.commit()
-        except Exception as e:
+        except Exception:
             db.session.rollback()
-            logger.error(f"Could not retire edit {edit_id}: {e}")
+            logger.exception("Could not retire edit %s", edit_id)
             return jsonify({'status': 'error', 'message': 'Could not save'}), 500
     return jsonify({'status': 'ok'})
 
@@ -9726,11 +9870,11 @@ def _run_propagation_worker(app_obj, edit_id, target_ids):
                 db.session.commit()
                 logger.info(f"propagation finished edit={edit_id} status={final_status} "
                             f"done={len(results) - failed_n} failed={failed_n}")
-            except Exception as final_err:
+            except Exception:
                 db.session.rollback()
-                logger.error(f"propagation final-status persist failed: {final_err}")
-        except Exception as outer:
-            logger.error(f"propagation worker crashed for edit {edit_id}: {outer}")
+                logger.exception("propagation final-status persist failed")
+        except Exception:
+            logger.exception("propagation worker crashed for edit %s", edit_id)
             try:
                 edit_err = FeedbackEdit.query.get(edit_id)
                 if edit_err and edit_err.propagation_status == 'pending':
@@ -9744,4 +9888,12 @@ def _run_propagation_worker(app_obj, edit_id, target_ids):
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=os.getenv('FLASK_DEBUG', 'false').lower() == 'true')
+    # UP-28: Werkzeug's debug console is a remote-code-execution surface.
+    # Require both FLASK_DEBUG=true AND FLASK_ENV=development to enable it,
+    # and bind to loopback in that mode so it can't be reached from the LAN
+    # by accident. Production (gunicorn) doesn't hit this code path at all.
+    _debug = (
+        os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
+        and os.getenv('FLASK_ENV') == 'development'
+    )
+    app.run(host='127.0.0.1' if _debug else '0.0.0.0', port=port, debug=_debug)

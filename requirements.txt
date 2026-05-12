@@ -1,17 +1,25 @@
-flask>=3.0
-flask-wtf>=1.2
-gunicorn>=23.0
-anthropic>=0.40
-openai>=1.50
-tenacity>=8.2
-pdf2image>=1.17
+# UP-33: every entry has BOTH a lower bound (current feature floor) and an
+# upper bound (next major) so a Railway rebuild can't pull a breaking
+# upgrade we didn't authorize. Major bumps are explicit, opt-in edits.
+# Verified against the Dockerfile's `python:3.11-slim` base image; see
+# `.python-version` for local-dev parity.
+flask>=3.0,<4
+flask-wtf>=1.2,<2
+gunicorn>=23.0,<26
+anthropic>=0.40,<1
+openai>=1.50,<3
+tenacity>=8.2,<10
+pdf2image>=1.17,<2
 Pillow>=10.3.0,<12
-pillow-heif>=0.18
-pypdf>=4.0
-flask-sqlalchemy>=3.1
-psycopg2-binary>=2.9
-cryptography>=42.0
-openpyxl>=3.1
-pypinyin>=0.50
-jieba>=0.42
+pillow-heif>=0.18,<2
+pypdf>=4.0,<7
+flask-sqlalchemy>=3.1,<4
+psycopg2-binary>=2.9,<3
+cryptography>=42.0,<47
+openpyxl>=3.1,<4
+pypinyin>=0.50,<1
+jieba>=0.42,<1
+# UP-32: opt-in error reporting via SENTRY_DSN env var. The Flask integration
+# is pulled via the [flask] extra.
+sentry-sdk[flask]>=2.0,<3
 

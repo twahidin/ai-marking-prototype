@@ -283,8 +283,8 @@ def convert_pdf_to_images(pdf_bytes, max_pages=20):
             buf.seek(0)
             result.append(base64.b64encode(buf.read()).decode('utf-8'))
         return result
-    except Exception as e:
-        logger.error(f"Error converting PDF to images: {e}")
+    except Exception:
+        logger.exception("Error converting PDF to images")
         return []
 
 
@@ -355,8 +355,8 @@ def build_content_block(file_bytes):
             img.save(buf, format='JPEG', quality=85)
             file_bytes = buf.getvalue()
             media_type = "image/jpeg"
-        except Exception as e:
-            logger.error(f"Failed to convert HEIC to JPEG: {e}")
+        except Exception:
+            logger.exception("Failed to convert HEIC to JPEG")
             return {
                 "type": "document",
                 "source": {
@@ -1403,7 +1403,7 @@ Extract ALL questions you can identify from the student script. Match question n
         return {'answers': result.get('answers', []), 'assign_type': assign_type}
 
     except Exception as e:
-        logger.error(f"Error extracting answers with {provider}: {e}")
+        logger.exception("Error extracting answers with %s", provider)
         err_str = str(e)
         is_413 = '413' in err_str or 'request_too_large' in err_str.lower()
         return {
@@ -1500,7 +1500,7 @@ def mark_script(provider, question_paper_pages, answer_key_pages, script_pages,
         return result
 
     except Exception as e:
-        logger.error(f"Error marking script with {provider}: {e}")
+        logger.exception("Error marking script with %s", provider)
         err_str = str(e)
         is_413 = '413' in err_str or 'request_too_large' in err_str.lower()
         return {
