@@ -1,0 +1,34 @@
+{# UP-20: shared modal macro.
+
+   Wraps content in an overlay element that the page's existing
+   open/close JS can toggle (.active class or style.display). The modal
+   a11y helper (static/js/modal.js) auto-tags this element with
+   role=dialog, aria-modal, focus trap, Escape close, and click-outside
+   close — so new modals get those behaviours for free.
+
+   Use it like:
+
+       {% import "_modal.html" as m %}
+
+       {% call m.modal(id="myModal", title="Edit Class") %}
+         <p>Body...</p>
+         <div class="modal-actions">
+           <button class="modal-cancel" data-modal-close>Cancel</button>
+           <button class="modal-submit" onclick="doSave()">Save</button>
+         </div>
+       {% endcall %}
+
+   - `id`        DOM id used by the page's open/close JS.
+   - `title`     Heading text, used as aria-labelledby.
+   - `extra_classes`  Extra classes on the overlay (e.g. "edit-modal").
+   - `box_class` Class on the inner content box.
+   - `box_style` Inline style on the inner content box (e.g. width). #}
+
+{% macro modal(id, title="", extra_classes="modal-overlay", box_class="modal-box", box_style="") -%}
+<div class="{{ extra_classes }}" id="{{ id }}" data-modal hidden>
+    <div class="{{ box_class }}"{% if box_style %} style="{{ box_style }}"{% endif %}>
+        {% if title %}<h3 id="{{ id }}-title">{{ title }}</h3>{% endif %}
+        {{ caller() }}
+    </div>
+</div>
+{%- endmacro %}

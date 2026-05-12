@@ -78,6 +78,11 @@
 
     <script src="{{ url_for('static', filename='js/latex_autocomplete.js') }}?v={{ static_version }}"></script>
     <script src="{{ url_for('static', filename='js/subject_autocomplete.js') }}?v={{ static_version }}" defer></script>
+    {# UP-20: modal accessibility helper — auto-applies role=dialog,
+       aria-modal, focus trap, Escape close, click-outside close to every
+       existing overlay-style modal (modal-overlay / upload-modal /
+       extracted-modal / feedback-modal / edit-modal / [data-modal]). #}
+    <script src="{{ url_for('static', filename='js/modal.js') }}?v={{ static_version }}" defer></script>
 </head>
 <body>
 {% if current_teacher %}
@@ -144,7 +149,46 @@
 {% block body %}{% endblock %}
 <script src="{{ url_for('static', filename='common.js') }}?v={{ static_version }}"></script>
 {% if current_teacher %}
-<script src="{{ url_for('static', filename='js/screen_pet.js') }}?v={{ static_version }}" defer></script>
+{# UP-25: only load the 45 KB companion turtle when explicitly opted-in
+   via localStorage. The toggle bootstrap below mirrors current state and
+   loads the script lazily on first opt-in (no full-page reload needed). #}
+<script>
+(function () {
+    var KEY = 'screen_pet_enabled';
+    var SRC = "{{ url_for('static', filename='js/screen_pet.js') }}?v={{ static_version }}";
+    var loaded = false;
+    function load() {
+        if (loaded) return;
+        loaded = true;
+        var s = document.createElement('script');
+        s.src = SRC;
+        s.defer = true;
+        document.head.appendChild(s);
+    }
+    if (localStorage.getItem(KEY) === 'true') {
+        load();
+    } else {
+        // Bind the toggle ourselves so enabling lazily loads the script.
+        // Once loaded, screen_pet.js re-binds on its own init() and takes over.
+        var bind = function () {
+            var box = document.getElementById('screenPetToggle');
+            if (!box) return;
+            box.checked = false;
+            box.addEventListener('change', function () {
+                if (box.checked) {
+                    localStorage.setItem(KEY, 'true');
+                    load();
+                }
+            }, { once: true });
+        };
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', bind);
+        } else {
+            bind();
+        }
+    }
+})();
+</script>
 {% endif %}
 {% block scripts %}{% endblock %}
 </body>

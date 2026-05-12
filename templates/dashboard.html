@@ -102,7 +102,8 @@
     {% if all_teachers %}
     <div style="margin-bottom:20px;display:flex;align-items:center;gap:12px;">
         <label style="font-size:14px;font-weight:600;color:#555;">Filter by teacher:</label>
-        <select onchange="window.location.href=this.value?'/dashboard?teacher_id='+this.value:'/dashboard'" style="padding:8px 14px;border:2px solid #e0e0e0;border-radius:10px;font-size:14px;outline:none;min-width:200px;">
+        {# UP-26: inline onchange migrated to data-change-handler. #}
+        <select data-change-handler="filterByTeacher" style="padding:8px 14px;border:2px solid #e0e0e0;border-radius:10px;font-size:14px;outline:none;min-width:200px;">
             <option value="">All teachers</option>
             {% for t in all_teachers %}
             <option value="{{ t.id }}" {% if filter_teacher_id == t.id %}selected{% endif %}>{{ t.name }}{% if t.role != 'teacher' %} ({{ t.role | replace('_', ' ') | title }}){% endif %}</option>
@@ -120,11 +121,13 @@
                 <span class="student-count" id="count_{{ cls.id }}">{{ cls.student_count }} students</span>
             </h2>
             <div class="class-actions">
-                <button class="btn-sm secondary" onclick="toggleStudents('{{ cls.id }}')">View Students</button>
-                <a href="#" class="btn-sm secondary" onclick="downloadSampleCsv(); return false;" style="text-decoration:none;">Sample CSV</a>
+                {# UP-26: inline onclick/onchange migrated to data-handler /
+                   data-change-handler delegation via static/common.js. #}
+                <button class="btn-sm secondary" data-handler="toggleStudents" data-class-id="{{ cls.id }}">View Students</button>
+                <a href="#" class="btn-sm secondary" data-handler="downloadSampleCsv" style="text-decoration:none;">Sample CSV</a>
                 <label class="btn-sm primary" style="cursor:pointer;">
                     Upload Class List
-                    <input type="file" accept=".csv,.xlsx,.xls" style="display:none;" onchange="uploadClassList('{{ cls.id }}', this)">
+                    <input type="file" accept=".csv,.xlsx,.xls" style="display:none;" data-change-handler="uploadClassList" data-class-id="{{ cls.id }}">
                 </label>
             </div>
         </div>
@@ -173,13 +176,13 @@
              data-total="{{ total_pages }}">
             <button type="button" class="pager-btn" data-action="prev"
                     aria-label="Newer assignments" disabled
-                    onclick="pagerStep(this, -1)">&#9664; Newer</button>
+                    data-handler="pagerStep" data-delta="-1">&#9664; Newer</button>
             <span class="pager-status">
                 <span data-current-page>1</span> / <span data-total-pages>{{ total_pages }}</span>
             </span>
             <button type="button" class="pager-btn" data-action="next"
                     aria-label="Older assignments"
-                    onclick="pagerStep(this, 1)">Older &#9654;</button>
+                    data-handler="pagerStep" data-delta="1">Older &#9654;</button>
         </div>
         {% endif %}
         {% else %}
@@ -201,11 +204,21 @@
 
 {% block scripts %}
 <script>
+/* UP-26: filter dropdown handler — invoked via data-change-handler. */
+function filterByTeacher(sel) {
+    var tid = sel.value;
+    window.location.href = tid ? ('/dashboard?teacher_id=' + tid) : '/dashboard';
+}
+
 /* Pager step: shifts which page-of-6 is visible in the assignment grid.
    `delta` = -1 (newer page) or +1 (older page). The pager element holds
    the current page index and total page count in data-* attributes;
    cards have data-page-idx so we just toggle .asn-hidden per match. */
-function pagerStep(btn, delta) {
+/* UP-26: invoked via data-handler delegator. `delta` comes from the
+   button's data-delta attribute (-1 / 1). Second positional arg is the
+   click event, which we don't use. */
+function pagerStep(btn, _ev) {
+    var delta = parseInt(btn.dataset.delta, 10) || 0;
     var pager = btn.closest('.asn-pager');
     if (!pager) return;
     var current = parseInt(pager.dataset.current, 10) || 0;
@@ -229,7 +242,12 @@ function pagerStep(btn, delta) {
     if (nextBtn) nextBtn.disabled = (next === total - 1);
 }
 
-async function toggleStudents(classId) {
+/* UP-26: invoked via data-handler delegator. classId comes from the
+   button's data-class-id attribute. Also called directly from
+   editStudentFromBtn / deleteStudentFromBtn / uploadClassList with a
+   plain string — handle both shapes. */
+async function toggleStudents(elOrId) {
+    var classId = (elOrId && elOrId.dataset) ? elOrId.dataset.classId : elOrId;
     var section = document.getElementById('students_' + classId);
     if (section.classList.contains('visible')) {
         section.classList.remove('visible');
@@ -243,8 +261,12 @@ async function toggleStudents(classId) {
         tbody.innerHTML = '';
         data.students.forEach(function(s, i) {
             var tr = document.createElement('tr');
-            var editBtn = '<button class="student-action-btn" data-id="' + s.id + '" data-index="' + esc(s.index) + '" data-name="' + esc(s.name) + '" data-class="' + classId + '" onclick="editStudentFromBtn(this)" title="Edit">&#9998;</button>';
-            var delBtn = '<button class="student-action-btn danger" data-id="' + s.id + '" data-name="' + esc(s.name) + '" data-class="' + classId + '" onclick="deleteStudentFromBtn(this)" title="Delete">&times;</button>';
+            // UP-26: data-handler delegation. The student-row buttons are
+            // injected dynamically via innerHTML, but the document-level
+            // click delegator in common.js picks them up just like static
+            // ones — no per-row addEventListener needed.
+            var editBtn = '<button class="student-action-btn" data-id="' + s.id + '" data-index="' + esc(s.index) + '" data-name="' + esc(s.name) + '" data-class="' + classId + '" data-handler="editStudentFromBtn" title="Edit">&#9998;</button>';
+            var delBtn = '<button class="student-action-btn danger" data-id="' + s.id + '" data-name="' + esc(s.name) + '" data-class="' + classId + '" data-handler="deleteStudentFromBtn" title="Delete">&times;</button>';
             tr.innerHTML = '<td>' + (i + 1) + '</td><td>' + esc(s.index) + '</td><td>' + esc(s.name) + '</td><td style="text-align:right;white-space:nowrap;">' + editBtn + ' ' + delBtn + '</td>';
             tbody.appendChild(tr);
         });
@@ -317,7 +339,10 @@ function downloadSampleCsv() {
     a.click();
 }
 
-async function uploadClassList(classId, input) {
+/* UP-26: invoked via data-change-handler delegator. The first arg is
+   the <input type="file"> element; classId comes from its data-class-id. */
+async function uploadClassList(input, _ev) {
+    var classId = input.dataset.classId;
     if (!input.files.length) return;
     var fd = new FormData();
     fd.append('class_list', input.files[0]);

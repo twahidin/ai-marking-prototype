@@ -53,6 +53,37 @@
     .btn-sm.view:hover { background: #5a6fd6; }
     .btn-sm.delete { background: #fdecea; color: #dc3545; }
     .btn-sm.delete:hover { background: #f5c6cb; }
+
+    /* UP-22: phone-friendly assignment form + listing. Mirrors the pattern
+       already used by .upload-grid / .edit-form-row in shared CSS. */
+    @media (max-width: 600px) {
+        .container { padding: 12px; }
+        .header h1 { font-size: 22px; }
+        .header p { font-size: 13px; }
+        .card { padding: 18px 16px; border-radius: 12px; }
+
+        #createCard > div[style*="justify-content:space-between"] {
+            flex-direction: column; align-items: flex-start !important; gap: 8px;
+        }
+        #createCard > div[style*="justify-content:space-between"] .mark-btn {
+            width: 100% !important; padding: 10px !important;
+        }
+
+        .assignment-grid { grid-template-columns: 1fr; gap: 12px; }
+        .assignment-item { padding: 16px; }
+        .assignment-item-header {
+            flex-wrap: wrap; gap: 8px;
+        }
+        .assignment-code { font-size: 12px; padding: 3px 10px; }
+        .assignment-actions { flex-wrap: wrap; }
+        .assignment-actions .btn-sm { flex: 1 1 calc(50% - 4px); min-width: 0; }
+
+        /* Bank picker modal — tighten desktop-only inline padding. */
+        #bankPickerModal > div {
+            padding: 20px 16px !important; width: 94% !important;
+            max-height: 86vh !important;
+        }
+    }
 </style>
 {% endblock %}
 

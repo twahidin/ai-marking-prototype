@@ -81,3 +81,45 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 });
+
+/* UP-26: click + change event delegation for the data-handler pattern.
+ *
+ *   <button data-handler="toggleStudents" data-class-id="42">…</button>
+ *
+ * On click, looks up `window.toggleStudents` and invokes it with the
+ * element as the first argument (the click event is passed second).
+ * Handlers read any data-* attribute they need off the element — same
+ * pattern as the existing editStudentFromBtn(btn) / deleteStudentFromBtn(btn).
+ *
+ * For <a> elements with href="#" or data-prevent-default="true" we
+ * preventDefault() automatically (so the page doesn't jump to top).
+ *
+ * `data-change-handler` is the same wiring for <input>/<select> change
+ * events (e.g. file inputs that fire on selection).
+ *
+ * Existing inline onclick= handlers continue to work; this is purely
+ * additive — migrate one page at a time. See dashboard.html for the
+ * reference migration. */
+(function () {
+    function preventIfNeeded(el, ev) {
+        if (el.tagName === 'A' && (el.getAttribute('href') === '#' || el.dataset.preventDefault === 'true')) {
+            ev.preventDefault();
+        }
+    }
+
+    function dispatch(attr, ev) {
+        var el = ev.target.closest('[' + attr + ']');
+        if (!el) return;
+        var fname = el.getAttribute(attr);
+        var fn = window[fname];
+        if (typeof fn !== 'function') {
+            console.warn('[data-handler] no such function on window:', fname);
+            return;
+        }
+        if (attr === 'data-handler') preventIfNeeded(el, ev);
+        try { fn(el, ev); } catch (err) { console.error('[data-handler]', fname, err); }
+    }
+
+    document.addEventListener('click', function (ev) { dispatch('data-handler', ev); });
+    document.addEventListener('change', function (ev) { dispatch('data-change-handler', ev); });
+})();

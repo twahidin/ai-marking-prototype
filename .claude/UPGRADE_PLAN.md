@@ -272,7 +272,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 ---
 
 ### UP-20 — Modal accessibility helper + standardisation
-**Status:** TODO
+**Status:** DONE — Added `static/js/modal.js` loaded from `base.html` that auto-tags every existing overlay-style modal (`modal-overlay`, `upload-modal`, `extracted-modal`, `feedback-modal`, `edit-modal`, plus a new `[data-modal]` opt-in) with `role="dialog"`, `aria-modal`, `aria-labelledby` (auto-derived from the first `<h1..h4>` inside), focus trap on Tab/Shift+Tab, Escape to close, and click-outside-content to close. Existing onclick close handlers (`closeUploadModal()` etc.) continue to work; the helper piggybacks on the same `.active` class / `style.display` toggles the page already uses. Pages can opt out per-modal via `data-no-dismiss` — applied to `index.html`'s "AI is Marking" progress overlay so the user can't close it mid-mark. Also added `templates/_modal.html` Jinja macro for new modals.
 **Why:** ~20 modals across `teacher_detail.html`, `class.html`, `bank.html` have no `role="dialog"`, no `aria-modal`, no focus trap, no Escape on most of them. Teachers using keyboard or screen-magnifier have no idea they exist as dialogs.
 **Where:** Create `templates/_modal.html` macro + `static/js/modal.js`.
 **Fix:** Macro:
@@ -292,7 +292,7 @@ JS: focus trap, Escape to close, click-outside to close. Migrate existing modals
 ---
 
 ### UP-21 — `teacher_insights.html` mobile layout
-**Status:** TODO
+**Status:** DONE — Dropped the forced `width=1280, initial-scale=1.0` viewport override so phones use the standard device-width viewport. Added `@media (max-width: 600px)` rules that hide the GridStack (`#dashboardGrid`, `#emptyDashboard`, `#addWidgetPanel`) and the desktop edit controls, surfacing a new `.insights-mobile-fallback` card with a "Open Insights on a desktop" message and a link back to `/dashboard`. Toolbar tightens (smaller h1, full-width class picker) on narrow screens so the picker remains usable.
 **Why:** `width=1280` viewport forces 3.3× horizontal scroll on a 390 px phone. The "lock to desktop" was a workaround for gridstack having no mobile layout.
 **Where:** `templates/teacher_insights.html:8, 1288`.
 **Fix:** Either enable gridstack's `disableOneColumnMode: false` (default), or — simpler — hide the gridstack on `<=600px` and show a "Open on desktop for the full dashboard" card with the 2-3 most useful summary numbers.
@@ -301,7 +301,7 @@ JS: focus trap, Escape to close, click-outside to close. Migrate existing modals
 ---
 
 ### UP-22 — `class.html` mobile `@media` rules
-**Status:** TODO
+**Status:** DONE — Added a `@media (max-width: 600px)` block scoped to `class.html`-specific selectors: tightens `.container`/`.header`/`.card` padding, collapses the `Create Assignment` header row (title + "Choose from Bank" button) to a stacked layout, switches `.assignment-grid` to one column, wraps `.assignment-actions` so all three buttons fit, and tightens the `#bankPickerModal` inline padding. The shared `_assignment_form_fields.html` was already mobile-friendly (its `.edit-form-row` rule in `_assignment_form_styles.html:16` collapses to 1 col at `max-width: 600px`). `.upload-grid` in `static/styles.css` already collapses at the same breakpoint.
 **Why:** Zero `@media` rules. Creating an assignment on phone is a crowded mess.
 **Where:** `templates/class.html`, `templates/_assignment_form_fields.html`.
 **Fix:** Add 3-4 `@media (max-width: 600px)` rules to collapse multi-column form grids to single column. Copy the pattern from `templates/dashboard.html` which already has good responsive grids.
@@ -310,7 +310,7 @@ JS: focus trap, Escape to close, click-outside to close. Migrate existing modals
 ---
 
 ### UP-23 — Submissions table mobile-stack view
-**Status:** TODO
+**Status:** DONE — Added `@media (max-width: 600px)` rules to `teacher_detail.html` (now in `static/css/teacher_detail.css` per UP-24) that fold the submissions table into stacked cards on phones. `thead` is hidden; each `<tr>` becomes a card with the name + index up top, then labelled status/score/submitted/feedback rows (labels injected via `::before` content), then the action row at the bottom. DOM stays identical so the existing kebab/menu/JS handlers continue to operate without any change.
 **Why:** Table is ~700 px wide; 390 px phone forces constant horizontal swipe.
 **Where:** `templates/teacher_detail.html:58, 68-76`.
 **Fix:** `@media (max-width: 600px)`: hide the table, render each row as a stacked card (name | status badge | score | action button). Keep `overflow-x:auto` as fallback.
@@ -319,7 +319,7 @@ JS: focus trap, Escape to close, click-outside to close. Migrate existing modals
 ---
 
 ### UP-24 — Extract `teacher_detail.html` inline JS/CSS
-**Status:** TODO
+**Status:** PARTIAL — CSS extracted in full: ~400 inline lines moved to `static/css/teacher_detail.css` and the template now links it from the head block. Template dropped from 1909 → 1568 lines and the CSS is cacheable across assignment views. Also collapsed 3 of the 4 duplicate `ASSIGNMENT_ID` Jinja interpolations: `FB_ASSIGNMENT_ID`, `REMARK_ASSIGNMENT_ID`, and `ASSIGNMENT_ID_FOR_DRAFTS` are now `= ASSIGNMENT_ID` aliases so the template only emits the value once. **Deferred**: the full JS split into `bulk_marking.js` + `remark_polling.js` — the JS has ~30 sites of `{{ assignment.id }}`-style interpolation throughout (`/{{ assignment.id }}/submit/`, `{{ all_providers | tojson }}`, etc.) and a cross-cutting page-data block is needed first. Reasonable next-PR scope.
 **Why:** 1909-line template, 1090 lines of inline JS, 345 of inline CSS. Re-downloaded on every assignment view.
 **Where:** `templates/teacher_detail.html`.
 **Fix:** Extract:
@@ -332,7 +332,7 @@ Pass `ASSIGNMENT_ID` once via a `<meta>` tag or `data-` attr; collapse the 4 dup
 ---
 
 ### UP-25 — Gate `screen_pet.js` on localStorage
-**Status:** TODO
+**Status:** DONE — Replaced the eager `<script src="js/screen_pet.js" defer>` in `base.html` with an inline bootstrap that reads `localStorage.screen_pet_enabled` and only injects the script tag when truthy. For the off path, a tiny stub binds `#screenPetToggle` to write the localStorage key on first click and then lazy-loads the script — once loaded, `screen_pet.js`'s own `init()` re-binds the toggle and takes over. Net effect: ~45 KB drops from every authenticated page load until the teacher opts in.
 **Why:** 45 KB script loads on every authenticated page even when the turtle is opt-in. ~1.35 MB extra per teacher per day on a 30-page-load workday.
 **Where:** `templates/base.html:118-120`.
 **Fix:** Replace `<script defer src="...screen_pet.js"></script>` with an inline 3-liner:
@@ -348,7 +348,7 @@ Pass `ASSIGNMENT_ID` once via a `<meta>` tag or `data-` attr; collapse the 4 dup
 ---
 
 ### UP-26 — Replace inline `onclick=` with `data-action` delegation
-**Status:** TODO
+**Status:** PARTIAL — Built the delegator infrastructure and migrated `dashboard.html` (down from 6 → 0 inline handlers, including dynamically-injected ones inside `tbody` template literals). `static/common.js` now hosts a `data-handler` (click) + `data-change-handler` (change) delegator: `<button data-handler="toggleStudents" data-class-id="42">` calls `window.toggleStudents(btn, ev)`, handlers read other state off `el.dataset.*`. Anchors with `href="#"` or `data-prevent-default="true"` get an automatic `ev.preventDefault()`. Note: the dashboard pager already used `data-action="prev"`/`"next"` as a component-local CSS identifier; the new delegator uses `data-handler` to avoid colliding with that. **Remaining pages**: `teacher_detail.html` (33), `setup_wizard.html` (22), `index.html` (17), `submit.html` (15), `department_manage.html` (14), `class_insights.html` (12), `bank.html` (10), `class.html` (9), `feedback_view.html` (7), `settings.html` (4), `department_insights.html` (3), `print_all_reports.html` (2) — same migration recipe applies. The infrastructure is in place; each page is a self-contained ~30 min job.
 **Why:** 178 inline handlers across templates leak ~40 globals to `window`. Blocks CSP tightening; a name collision silently breaks a button.
 **Where:** `templates/teacher_detail.html` (37), `templates/index.html` (27), `templates/class.html` (23), `templates/setup_wizard.html` (22), others.
 **Fix:** Existing kebab handler at `teacher_detail.html:994` is the template — copy that pattern. One page at a time.

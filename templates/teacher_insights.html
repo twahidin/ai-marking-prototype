@@ -2,10 +2,10 @@
 
 {% block title %}My Class Insights - {{ app_title }}{% endblock %}
 
-{# Force desktop layout on phone/tablet — user pans left/right + up/down
-   instead of the page reflowing into 1-col tiles. Pairs with
-   disableOneColumnMode:true on the GridStack init below. #}
-{% block viewport %}width=1280, initial-scale=1.0{% endblock %}
+{# UP-21: drop the forced 1280px viewport so phones don't get a 3.3×
+   horizontal scroll. On <=600px the CSS below hides the gridstack and
+   shows a compact "Open on desktop" affordance instead — gridstack
+   stays in desktop-only mode because it has no real mobile layout. #}
 
 {% block head %}
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack.min.css">
@@ -65,6 +65,43 @@
     }
     .insights-empty-grid h3 { color: #333; margin-bottom: 6px; font-size: 16px; }
     .insights-empty-grid p { font-size: 13px; line-height: 1.6; margin: 0 auto; max-width: 460px; }
+
+    /* UP-21: phone/small-tablet fallback. Gridstack has no real mobile
+       layout, so on <=600px we hide it and surface a friendly card asking
+       the teacher to revisit on a desktop. */
+    .insights-mobile-fallback { display: none; }
+    @media (max-width: 600px) {
+        .insights-toolbar .icon-btn,
+        .insights-toolbar .insights-toggle a.disabled { display: none; }
+        .insights-toolbar { padding: 10px 12px; gap: 8px; }
+        .insights-toolbar h1 { font-size: 16px; }
+        .insights-toolbar .class-picker { min-width: 0; flex: 1; }
+        #dashboardGrid,
+        #emptyDashboard,
+        #addWidgetPanel { display: none !important; }
+        .insights-mobile-fallback {
+            display: block;
+            background: white; border-radius: 14px; padding: 28px 20px;
+            box-shadow: 0 1px 12px rgba(0,0,0,0.06);
+            border: 1px solid rgba(0,0,0,0.04);
+            text-align: center;
+        }
+        .insights-mobile-fallback h3 {
+            margin: 0 0 8px; font-size: 16px; color: #1a1a2e;
+        }
+        .insights-mobile-fallback p {
+            font-size: 13px; line-height: 1.55; color: #555;
+            margin: 0 auto; max-width: 360px;
+        }
+        .insights-mobile-fallback .icon {
+            font-size: 28px; margin-bottom: 6px; display: block;
+        }
+        .insights-mobile-fallback a {
+            display: inline-block; margin-top: 14px; padding: 9px 18px;
+            background: #667eea; color: white; border-radius: 8px;
+            font-size: 13px; font-weight: 600; text-decoration: none;
+        }
+    }
 
     /* GridStack overrides — match the rest of the app's card aesthetic */
     .grid-stack { background: transparent; }
@@ -397,6 +434,14 @@
     <div class="insights-empty-grid" id="emptyDashboard" style="display:none;">
         <h3>Your dashboard is empty</h3>
         <p>Click <strong>Edit</strong> above and pick a starter template, or add widgets one by one.</p>
+    </div>
+
+    {# UP-21: only visible on <=600px via CSS above. #}
+    <div class="insights-mobile-fallback" aria-hidden="false">
+        <span class="icon" aria-hidden="true">📊</span>
+        <h3>Open Insights on a desktop</h3>
+        <p>The Insights dashboard is built for a wider screen — drag-to-arrange widgets, side-by-side charts, and the class-overview grid don't yet have a phone layout.</p>
+        <a href="/dashboard">Back to My Classes</a>
     </div>
 
     {% endif %}

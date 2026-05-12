@@ -52,10 +52,13 @@
 {% set gate_title = app_title %}{% include '_gate.html' %}
 {% else %}
 
-<!-- Modal Overlay -->
-<div class="modal-overlay" id="modal">
+<!-- Modal Overlay. UP-20: data-no-dismiss tells modal.js not to close
+     this on Escape or backdrop-click; it's a progress dialog, not a
+     user-dismissable one. -->
+<div class="modal-overlay" id="modal" data-no-dismiss
+     role="alertdialog" aria-modal="true" aria-labelledby="modal-title-marking" aria-live="polite">
     <div class="modal-box">
-        <h3>AI is Marking</h3>
+        <h3 id="modal-title-marking">AI is Marking</h3>
         <p id="modalProvider">Analysing your script...</p>
         <div class="progress-bar-track">
             <div class="progress-bar-fill indeterminate" id="progressBar"></div>
