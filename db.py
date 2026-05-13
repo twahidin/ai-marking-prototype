@@ -1012,6 +1012,40 @@ class FeedbackEdit(db.Model):
     )
 
 
+class SubjectStandard(db.Model):
+    """Subject-wide marking standard, promoted from a teacher's FeedbackEdit
+    with the "Update subject standards" intent. Topic-scoped retrieval pulls
+    these into the marking prompt when the assignment's topics overlap.
+    See docs/superpowers/specs/2026-05-13-calibration-edit-intent-design.md.
+    """
+    __tablename__ = 'subject_standard'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    uuid = db.Column(
+        db.String(40),
+        unique=True,
+        nullable=False,
+        default=lambda: 'ss_' + str(__import__('uuid').uuid4()),
+    )
+    subject = db.Column(db.String(80), nullable=False, index=True)
+    text = db.Column(db.Text, nullable=False)
+    topic_keys = db.Column(db.Text, nullable=False, default='[]')
+    theme_key = db.Column(db.String(64), nullable=True)
+    reinforcement_count = db.Column(db.Integer, nullable=False, default=1)
+    status = db.Column(db.String(20), nullable=False, default='pending_review')
+    created_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    last_seen_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    reviewed_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=True)
+    reviewed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    source_feedback_edit_ids = db.Column(db.Text, nullable=False, default='[]')
+    metadata_json = db.Column(db.Text, nullable=False, default='{}')
+
+    __table_args__ = (
+        db.Index('ix_subject_standard_subject_status', 'subject', 'status'),
+    )
+
+
 class MarkingPrinciplesCache(db.Model):
     __tablename__ = 'marking_principles_cache'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
