@@ -1010,45 +1010,79 @@ def _get_dept_keys():
 
 
 def _build_calibration_block_for(asn, sub=None):
-    """UP-08: shared calibration resolver so the single, re-mark, and bulk
-    paths see the same behaviour. Best-effort — any failure yields '' and
-    rolls back the SQLAlchemy session so a later commit isn't poisoned.
+    """Build the marking-prompt 'calibration_block' string from:
+    - Teacher clarifications (active amend_answer_key FeedbackEdits at this
+      assignment's current rubric_version).
+    - Subject standards relevant to this assignment's per-question topic_keys.
 
-    `asn` must carry teacher_id, subject, provider, model.
-    `sub`, if provided, contributes theme_keys harvested from its prior
-    result_json — used for Tier-1 calibration retrieval on re-marks.
+    Returns '' if neither section has content (e.g. legacy assignment with
+    no post-deploy amendments and no matching standards) so the marking
+    prompt falls back to today's behaviour. Never raises — exceptions are
+    swallowed and a warning logged; marking is never blocked.
     """
     try:
-        from ai_marking import build_calibration_block
-        theme_keys = []
-        if sub is not None:
+        import json as _json
+        from subject_standards import build_effective_answer_key, retrieve_subject_standards
+        from ai_marking import _decode_answer_key_text
+        from subjects import resolve_subject_key as _resolve_subj
+
+        sections = []
+
+        # 1. Teacher clarifications (amendments)
+        original_ak_text = ''
+        try:
+            if asn.answer_key:
+                original_ak_text = _decode_answer_key_text(asn.answer_key) or ''
+        except Exception:
+            original_ak_text = ''
+        # Use an empty string base so build_effective_answer_key returns just
+        # the 'Teacher clarifications' section (prefixed with \n) or '' when no
+        # amendments exist.
+        merged = build_effective_answer_key(asn, '')
+        marker = '── Teacher clarifications'
+        if marker in merged:
+            idx = merged.find(marker)
+            amendments_text = merged[idx:].rstrip()
+            if amendments_text:
+                sections.append(amendments_text)
+
+        # 2. Subject standards retrieval (only on tagged + canonical-subject
+        # assignments; legacy and freeform skip silently).
+        if asn.topic_keys_status != 'legacy' and asn.subject:
+            subj_key = _resolve_subj(asn.subject) or (asn.subject or '').strip().lower()
             try:
-                prior = sub.get_result() or {}
-                theme_keys = list({
-                    q.get('theme_key')
-                    for q in (prior.get('questions') or [])
-                    if q.get('theme_key')
-                })
+                per_q_topic_keys = _json.loads(asn.topic_keys or '[]')
             except Exception:
-                theme_keys = []
-        block = build_calibration_block(
-            teacher_id=asn.teacher_id,
-            asn=asn,
-            subject=(asn.subject or ''),
-            theme_keys=theme_keys,
-            provider=asn.provider,
-            model=asn.model,
-            session_keys=_resolve_api_keys(asn),
+                per_q_topic_keys = []
+            if per_q_topic_keys:
+                standards = retrieve_subject_standards(
+                    subject=subj_key,
+                    per_question_topic_keys=per_q_topic_keys,
+                )
+                if standards:
+                    lines = ['── Subject standards relevant to this assignment ──', '']
+                    for s in standards:
+                        try:
+                            tk = _json.loads(s.topic_keys or '[]')
+                        except Exception:
+                            tk = []
+                        tk_label = ', '.join(tk) or '(general)'
+                        lines.append(f'For {tk_label}:')
+                        lines.append(f'  - {s.text}')
+                        lines.append('')
+                    sections.append('\n'.join(lines).rstrip())
+
+        if not sections:
+            return ''
+        block = '\n\n'.join(sections)
+        logger.info(
+            f"Calibration block (new style) resolved for asn={getattr(asn,'id',None)}: "
+            f"{len(block)} chars across {len(sections)} section(s)"
         )
-        if block:
-            logger.info(
-                f"Calibration block resolved for asn={getattr(asn,'id',None)}: "
-                f"{len(block)} chars"
-            )
-        return block or ''
+        return block
     except Exception as cal_err:
         logger.warning(
-            f"Calibration lookup failed for asn={getattr(asn,'id',None)}, "
+            f"Calibration block assembly failed for asn={getattr(asn,'id',None)}, "
             f"marking without it: {cal_err}"
         )
         try:

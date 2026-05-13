@@ -2903,33 +2903,26 @@ def get_marking_principles(provider, model, session_keys, subject):
     return new_md
 
 
-def build_calibration_block(teacher_id, asn, subject, theme_keys,
-                             provider, model, session_keys):
-    """Tiered calibration injection. `subject` is the canonical
-    Assignment.subject string from the dropdown (subjects.py).
-
-    < 8 active edits in the subject (across ALL teachers) → existing
-    teacher-scoped raw examples (format_calibration_block over
-    fetch_calibration_examples).
-
-    >= 8 → shared markdown principles file. On regeneration failure,
-    falls back to a smaller raw-example pull (limit=5).
+def _decode_answer_key_text(blob: bytes) -> str:
+    """Best-effort decode of an answer_key blob to text.
+    Returns '' for binary content (PDFs etc) — calls that need the textual
+    answer key for prompt injection can show the merged 'Teacher clarifications'
+    section even when the underlying answer key is a PDF the AI consumes
+    natively.
     """
-    THRESHOLD = 8
-    edit_count = count_active_calibration_edits(subject)
-    if edit_count < THRESHOLD:
-        return format_calibration_block(
-            fetch_calibration_examples(teacher_id, asn, theme_keys, limit=10)
-        )
+    if not blob:
+        return ''
+    try:
+        return blob.decode('utf-8')
+    except (UnicodeDecodeError, AttributeError):
+        return ''
 
-    principles = get_marking_principles(provider, model, session_keys, subject)
-    if not principles:
-        return format_calibration_block(
-            fetch_calibration_examples(teacher_id, asn, theme_keys, limit=5)
-        )
-    return (
-        "---\n"
-        "MARKING PRINCIPLES (this subject's established standard)\n\n"
-        f"{principles}\n"
-        "---\n\n"
-    )
+
+def build_calibration_block(teacher_id, asn, subject, theme_keys,
+                             provider=None, model=None, session_keys=None):
+    """[Deprecated 2026-05-13] Returns an empty string. The calibration
+    block is now assembled by `app._build_calibration_block_for` using
+    `subject_standards.build_effective_answer_key` (amendments) and
+    `subject_standards.retrieve_subject_standards` (topic-scoped standards).
+    Kept as a no-op for any caller that still imports it directly."""
+    return ''

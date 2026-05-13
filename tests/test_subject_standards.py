@@ -252,3 +252,77 @@ def test_retrieve_returns_empty_when_no_topics(app, db_session):
     from subject_standards import retrieve_subject_standards
     out = retrieve_subject_standards(subject='biology', per_question_topic_keys=[[]])
     assert out == []
+
+
+def test_calibration_block_assembly_includes_amendments_and_standards(app, db_session):
+    """Integration: a tagged assignment with active amendments + active
+    matching subject standards produces a calibration block containing
+    both sections."""
+    from db import Teacher, Assignment, FeedbackEdit, SubjectStandard
+    from ai_marking import _rubric_version_hash
+    from app import _build_calibration_block_for
+    import uuid as _uuid
+    import json
+
+    tid = 'tea-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='Joe', code='C' + _uuid.uuid4().hex[:6].upper(), role='owner')
+    db_session.add(t)
+    asn = Assignment(
+        id='asn-' + _uuid.uuid4().hex[:8],
+        classroom_code='C' + _uuid.uuid4().hex[:6].upper(),
+        subject='biology',
+        title='Bio',
+        rubrics=b'rubric-for-cal-block',
+        topic_keys=json.dumps([['enzymes', 'terminology_precision']]),
+        topic_keys_status='tagged',
+        teacher_id=t.id,
+    )
+    db_session.add(asn)
+    db_session.commit()
+    rv = _rubric_version_hash(asn)
+
+    db_session.add_all([
+        FeedbackEdit(
+            submission_id=1, criterion_id='3', field='feedback',
+            original_text='X', edited_text='Accept "powerhouse"',
+            edited_by=t.id, assignment_id=asn.id, rubric_version=rv,
+            scope='amendment', amend_answer_key=True, active=True,
+        ),
+        SubjectStandard(
+            subject='biology',
+            text="Reject 'heat'; say 'temperature'.",
+            topic_keys='["enzymes"]',
+            status='active', created_by=t.id, reinforcement_count=5,
+        ),
+    ])
+    db_session.commit()
+
+    block = _build_calibration_block_for(asn)
+    assert 'Teacher clarifications' in block
+    assert 'powerhouse' in block
+    assert 'Subject standards relevant to this assignment' in block
+    assert 'temperature' in block
+
+
+def test_calibration_block_empty_for_legacy_assignment_with_no_amendments(app, db_session):
+    """Legacy assignments with no post-deploy amendments and no matching
+    standards produce an empty string (today's behaviour preserved)."""
+    from db import Teacher, Assignment
+    from app import _build_calibration_block_for
+    import uuid as _uuid
+
+    tid = 'tea-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='Joe', code='C' + _uuid.uuid4().hex[:6].upper(), role='owner')
+    db_session.add(t)
+    asn = Assignment(
+        id='asn-' + _uuid.uuid4().hex[:8],
+        classroom_code='C' + _uuid.uuid4().hex[:6].upper(),
+        subject='biology',
+        title='Bio',
+        rubrics=b'rubric-legacy',
+        topic_keys_status='legacy',
+        teacher_id=t.id,
+    )
+    db_session.add(asn)
+    db_session.commit()
+    assert _build_calibration_block_for(asn) == ''
