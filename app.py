@@ -6323,6 +6323,63 @@ def teacher_assignment_answer_key_preview(assignment_id):
     })
 
 
+@app.route('/teacher/assignment/<assignment_id>/push-amendments-to-bank', methods=['POST'])
+def teacher_push_amendments_to_bank(assignment_id):
+    """Push the merged effective-answer-key text into the linked bank's answer_key blob.
+
+    Uses optimistic concurrency: the client sends the `last_known_bank_pushed_at`
+    timestamp it saw when loading the page. If the server's `bank_pushed_at` is
+    newer, return 409 so the client knows someone else pushed in the meantime.
+    """
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    bank_id = data.get('bank_id')
+    if not bank_id:
+        return jsonify({'success': False, 'error': 'bank_id required'}), 400
+    bank = AssignmentBank.query.get(bank_id)
+    if not bank:
+        return jsonify({'success': False, 'error': 'bank not found'}), 404
+
+    client_ts_raw = data.get('last_known_bank_pushed_at')
+    client_ts = None
+    if client_ts_raw:
+        try:
+            client_ts = datetime.fromisoformat(str(client_ts_raw).replace('Z', '+00:00'))
+        except ValueError:
+            return jsonify({'success': False, 'error': 'invalid timestamp'}), 400
+
+    server_ts = asn.bank_pushed_at
+    if server_ts is not None and server_ts.tzinfo is None:
+        server_ts = server_ts.replace(tzinfo=timezone.utc)
+
+    if server_ts and client_ts and server_ts > client_ts:
+        return jsonify({
+            'success': False,
+            'error': 'concurrent_write',
+            'server_bank_pushed_at': server_ts.isoformat(),
+        }), 409
+    if server_ts and not client_ts:
+        return jsonify({
+            'success': False,
+            'error': 'concurrent_write_no_client_ts',
+            'server_bank_pushed_at': server_ts.isoformat(),
+        }), 409
+
+    from subject_standards import build_effective_answer_key
+    from ai_marking import _decode_answer_key_text
+    original_ak = _decode_answer_key_text(asn.answer_key) if asn.answer_key else ''
+    merged = build_effective_answer_key(asn, original_ak)
+    bank.answer_key = merged.encode('utf-8') if isinstance(merged, str) else (merged or b'')
+
+    now = datetime.now(timezone.utc)
+    asn.bank_pushed_at = now
+    db.session.commit()
+    return jsonify({'success': True, 'bank_pushed_at': now.isoformat()})
+
+
 @app.route('/teacher/assignment/<assignment_id>')
 def teacher_assignment_detail(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)
@@ -6458,6 +6515,21 @@ def teacher_assignment_detail(assignment_id):
     from subjects import SUBJECT_DISPLAY_NAMES, resolve_subject_key as _resolve_subj
     rubric_bands_by_criterion = _bands_for_assignment(asn) if is_rubrics else {}
     assignment_has_canonical_subject = _resolve_subj(asn.subject or '') is not None
+
+    # Linked bank (if assignment was created from or pushed to a bank). Cheap
+    # lookup: bank items share the rubric/AK byte content with the assignment;
+    # we don't currently store an explicit asn→bank FK, so fall back to a
+    # title-based heuristic. If absent, the bank-push UI is hidden.
+    linked_bank_id = None
+    try:
+        linked_bank = AssignmentBank.query.filter_by(
+            title=asn.title or '', subject=asn.subject or ''
+        ).first()
+        if linked_bank:
+            linked_bank_id = linked_bank.id
+    except Exception:
+        linked_bank_id = None
+
     resp = make_response(render_template('teacher_detail.html',
                            assignment=asn,
                            students=student_data,
@@ -6467,7 +6539,9 @@ def teacher_assignment_detail(assignment_id):
                            is_rubrics=is_rubrics,
                            eligible_remark_count=eligible_remark_count,
                            rubric_bands_by_criterion=rubric_bands_by_criterion,
-                           assignment_has_canonical_subject=assignment_has_canonical_subject))
+                           assignment_has_canonical_subject=assignment_has_canonical_subject,
+                           linked_bank_id=linked_bank_id,
+                           bank_pushed_at_iso=(asn.bank_pushed_at.isoformat() if asn.bank_pushed_at else None)))
     # Prevent the browser/proxy from caching the score cells — a stale cache here
     # makes post-remark reloads show old marks even though the DB is fresh.
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'

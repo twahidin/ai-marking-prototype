@@ -137,6 +137,18 @@
     </div>
     {% endif %}
 
+    {% if linked_bank_id and assignment.topic_keys_status != 'legacy' %}
+    <div class="card" style="margin-top:16px;">
+        <h2>Push amendments to assignment bank</h2>
+        <p style="color:#666;font-size:12px;margin:4px 0 8px;">
+            Update the shared bank version of this assignment with your active amendments. The bank&rsquo;s answer key will be replaced with your effective answer key.
+        </p>
+        <button type="button" class="upload-btn" data-action="push-amendments-to-bank"
+                style="padding:6px 12px;font-size:13px;">Update bank version with my amendments</button>
+        <p id="bank-push-status" hidden style="color:#888;font-size:12px;margin-top:8px;"></p>
+    </div>
+    {% endif %}
+
     <!-- Summary Stats -->
     {% set total = students | length %}
     {% set submitted = students | selectattr('status', 'ne', 'not_submitted') | list | length %}
@@ -1756,6 +1768,46 @@ window.addEventListener('DOMContentLoaded', () => {
             }).catch(function () {
                 pre.textContent = 'Preview failed.';
             });
+    });
+})();
+
+// Push amendments to bank.
+(function () {
+    var btn = document.querySelector('[data-action="push-amendments-to-bank"]');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+        var lastKnownTs = {{ (bank_pushed_at_iso | default(none) | tojson) }};
+        var status = document.getElementById('bank-push-status');
+        status.hidden = false;
+        status.style.color = '#888';
+        status.textContent = 'Pushing…';
+        fetch('/teacher/assignment/{{ assignment.id }}/push-amendments-to-bank', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                bank_id: {{ linked_bank_id | tojson }},
+                last_known_bank_pushed_at: lastKnownTs,
+            }),
+        }).then(function (r) {
+            return r.json().then(function (data) {
+                return { status: r.status, data: data };
+            });
+        }).then(function (res) {
+            if (res.status === 200 && res.data.success) {
+                status.style.color = '#28a745';
+                status.textContent = '✓ Pushed. Bank updated.';
+                setTimeout(function () { location.reload(); }, 1200);
+            } else if (res.status === 409) {
+                status.style.color = '#c0392b';
+                status.textContent = 'Bank was updated by someone else after you loaded this page. Reload, then click again to overwrite.';
+            } else {
+                status.style.color = '#c0392b';
+                status.textContent = (res.data && res.data.error) || 'Push failed.';
+            }
+        }).catch(function () {
+            status.style.color = '#c0392b';
+            status.textContent = 'Network error.';
+        });
     });
 })();
 </script>
