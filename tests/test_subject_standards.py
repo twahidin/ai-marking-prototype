@@ -62,3 +62,22 @@ def test_extract_assignment_topic_keys_returns_empty_on_failure(app):
                 questions=[{'question_num': 1, 'text': 'x', 'answer_key': 'y'}],
             )
     assert result == [[]]
+
+
+def test_extract_standard_topic_keys_from_edit(app):
+    from ai_marking import extract_standard_topic_keys
+    import json
+    fake_response = {'topic_keys': ['enzymes', 'terminology_precision']}
+    with app.app_context():
+        with patch('ai_marking._simple_completion', return_value=json.dumps(fake_response)):
+            keys = extract_standard_topic_keys(
+                provider='anthropic',
+                model='claude-haiku-4-5',
+                session_keys={'anthropic': 'sk-fake'},
+                subject='biology',
+                question_text='State one factor affecting enzyme activity.',
+                original_feedback='Correct - heat affects enzyme rate.',
+                edited_feedback="Must say 'temperature', not 'heat'.",
+                theme_key='terminology_precision',
+            )
+    assert keys == ['enzymes', 'terminology_precision']

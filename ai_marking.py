@@ -2508,6 +2508,50 @@ def extract_assignment_topic_keys(provider, model, session_keys, subject, questi
     return [[] for _ in questions]
 
 
+def extract_standard_topic_keys(provider, model, session_keys, subject,
+                                 question_text, original_feedback, edited_feedback,
+                                 theme_key=None, max_retries=3):
+    """Tag a teacher edit (being promoted) with 1-3 topic keys from the
+    controlled vocabulary. Returns [] on failure."""
+    from config.subject_topics import get_topics_for_subject, is_known_topic_key
+
+    vocab = get_topics_for_subject(subject)
+    if not vocab:
+        return []
+    vocab_lines = '\n'.join(f'  - {k}: {label}' for k, label in vocab)
+
+    user_prompt = (
+        f'Subject: {subject}\n'
+        '\nControlled vocabulary (you MUST pick from this list):\n'
+        f'{vocab_lines}\n\n'
+        f'Question being marked: {question_text}\n'
+        f'Original AI feedback: {original_feedback}\n'
+        f"Teacher's correction: {edited_feedback}\n"
+        f'Theme of mistake: {theme_key or "(not categorised)"}\n\n'
+        'Tag this correction with 1-3 topic keys that describe the content domain '
+        'AND the type of skill the correction targets. Pick from the vocab only.\n\n'
+        'Return JSON only: {"topic_keys": ["..."]}'
+    )
+    system_prompt = 'You are a topic-tagger for teacher feedback edits. Output JSON only.'
+
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            raw = _simple_completion(
+                provider=provider, model=model, session_keys=session_keys,
+                system=system_prompt, user=user_prompt, max_tokens=200,
+            )
+            parsed = parse_ai_response(raw)
+            keys = parsed.get('topic_keys', []) or []
+            filtered = [k for k in keys if is_known_topic_key(subject, k)]
+            return filtered[:3]
+        except Exception as e:
+            last_err = e
+            logger.warning(f'extract_standard_topic_keys attempt {attempt + 1} failed: {e}')
+    logger.error(f'extract_standard_topic_keys gave up: {last_err}')
+    return []
+
+
 def _rubric_version_hash(asn):
     """MD5 hex over the assignment's raw rubric or answer_key bytes.
 
