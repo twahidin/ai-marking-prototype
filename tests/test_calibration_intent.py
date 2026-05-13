@@ -140,3 +140,106 @@ def test_legacy_assignment_drops_update_subject_standards(app, db_session, clien
     # On legacy, promotion was silently dropped → scope='amendment' (not 'both')
     assert fe.scope == 'amendment'
     assert fe.promoted_to_subject_standard_id is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Task 7.1 — build_effective_answer_key
+# ---------------------------------------------------------------------------
+
+def test_effective_answer_key_appends_amendments(app, db_session):
+    from subject_standards import build_effective_answer_key
+    from ai_marking import _rubric_version_hash
+    import uuid as _uuid
+
+    tid = 'tea-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='Joe', code='C' + _uuid.uuid4().hex[:6].upper(), role='owner')
+    db_session.add(t)
+    asn = Assignment(id='asn-' + _uuid.uuid4().hex[:8],
+                     classroom_code='C' + _uuid.uuid4().hex[:6].upper(),
+                     subject='biology', title='Bio',
+                     rubrics=b'shared-rubric-bytes')
+    db_session.add(asn)
+    db_session.commit()
+    rv = _rubric_version_hash(asn)
+
+    db_session.add_all([
+        FeedbackEdit(
+            submission_id=1, criterion_id='3', field='feedback',
+            original_text='X', edited_text='Accept "powerhouse of the cell"',
+            edited_by=t.id, assignment_id=asn.id, rubric_version=rv,
+            scope='amendment', amend_answer_key=True, active=True,
+        ),
+        FeedbackEdit(
+            submission_id=1, criterion_id='5', field='feedback',
+            original_text='X', edited_text='Diagram is a fish, not a bird',
+            edited_by=t.id, assignment_id=asn.id, rubric_version=rv,
+            scope='amendment', amend_answer_key=True, active=True,
+        ),
+    ])
+    db_session.commit()
+
+    merged = build_effective_answer_key(
+        assignment=asn,
+        original_answer_key_text='Q1: mitochondria\nQ2: ATP',
+    )
+    assert 'Teacher clarifications' in merged
+    assert 'Q3' in merged
+    assert 'Q5' in merged
+    assert 'powerhouse' in merged
+    assert 'mitochondria' in merged
+
+
+def test_effective_answer_key_no_amendments_returns_original(app, db_session):
+    from subject_standards import build_effective_answer_key
+    import uuid as _uuid
+    asn = Assignment(id='asn-' + _uuid.uuid4().hex[:8],
+                     classroom_code='C' + _uuid.uuid4().hex[:6].upper(),
+                     subject='biology', title='Bio',
+                     rubrics=b'other-rubric-bytes')
+    db_session.add(asn)
+    db_session.commit()
+    merged = build_effective_answer_key(assignment=asn, original_answer_key_text='Q1: x')
+    assert merged.strip() == 'Q1: x'
+
+
+def test_effective_answer_key_only_active_amend_edits_included(app, db_session):
+    """Edits with active=False or amend_answer_key=False (e.g. pure promotions)
+    must be ignored when building the effective answer key."""
+    from subject_standards import build_effective_answer_key
+    from ai_marking import _rubric_version_hash
+    import uuid as _uuid
+
+    tid = 'tea-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='Joe', code='C' + _uuid.uuid4().hex[:6].upper(), role='owner')
+    db_session.add(t)
+    asn = Assignment(id='asn-' + _uuid.uuid4().hex[:8],
+                     classroom_code='C' + _uuid.uuid4().hex[:6].upper(),
+                     subject='biology', title='Bio',
+                     rubrics=b'rubric-active-only')
+    db_session.add(asn)
+    db_session.commit()
+    rv = _rubric_version_hash(asn)
+
+    db_session.add_all([
+        # Active amend → included
+        FeedbackEdit(submission_id=1, criterion_id='1', field='feedback',
+                     original_text='X', edited_text='AMEND TEXT INCLUDED',
+                     edited_by=t.id, assignment_id=asn.id, rubric_version=rv,
+                     scope='amendment', amend_answer_key=True, active=True),
+        # Inactive → excluded
+        FeedbackEdit(submission_id=1, criterion_id='2', field='feedback',
+                     original_text='X', edited_text='INACTIVE TEXT EXCLUDED',
+                     edited_by=t.id, assignment_id=asn.id, rubric_version=rv,
+                     scope='amendment', amend_answer_key=True, active=False),
+        # Promotion-only (not an amendment) → excluded
+        FeedbackEdit(submission_id=1, criterion_id='3', field='feedback',
+                     original_text='X', edited_text='PROMOTION ONLY TEXT EXCLUDED',
+                     edited_by=t.id, assignment_id=asn.id, rubric_version=rv,
+                     scope='promoted', amend_answer_key=False, active=True),
+    ])
+    db_session.commit()
+
+    merged = build_effective_answer_key(assignment=asn, original_answer_key_text='ORIG')
+    assert 'AMEND TEXT INCLUDED' in merged
+    assert 'INACTIVE TEXT EXCLUDED' not in merged
+    assert 'PROMOTION ONLY TEXT EXCLUDED' not in merged
