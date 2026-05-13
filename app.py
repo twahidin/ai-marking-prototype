@@ -6614,6 +6614,54 @@ def api_subject_standards_related(standard_id):
     })
 
 
+@app.route('/api/subject_standards/export', methods=['GET'])
+def api_subject_standards_export():
+    from db import SubjectStandard, Teacher as _T
+    teacher = _current_teacher()
+    subject = (request.args.get('subject') or '').strip().lower()
+    if not subject:
+        return jsonify({'error': 'subject required'}), 400
+    if not _can_edit_subject_standards(teacher, subject=subject):
+        return jsonify({'error': 'forbidden'}), 403
+    updated_since_raw = request.args.get('updated_since')
+    updated_since = None
+    if updated_since_raw:
+        try:
+            # URL query strings decode '+' as space; restore it for timezone offsets.
+            normalised = updated_since_raw.replace('Z', '+00:00').replace(' ', '+')
+            updated_since = datetime.fromisoformat(normalised)
+        except ValueError:
+            return jsonify({'error': 'invalid updated_since'}), 400
+
+    def generate():
+        import json as _json
+        q = SubjectStandard.query.filter_by(subject=subject, status='active')
+        if updated_since:
+            q = q.filter(SubjectStandard.updated_at >= updated_since)
+        for r in q.yield_per(100):
+            creator = _T.query.get(r.created_by) if r.created_by else None
+            reviewer = _T.query.get(r.reviewed_by) if r.reviewed_by else None
+            row = {
+                'id': r.uuid,
+                'content': r.text,
+                'metadata': {
+                    'subject_key': r.subject,
+                    'subject_display': r.subject.title() if r.subject else '',
+                    'topic_keys': _json.loads(r.topic_keys or '[]'),
+                    'theme_key': r.theme_key,
+                    'reinforcement_count': r.reinforcement_count,
+                    'status': r.status,
+                    'created_at': r.created_at.isoformat() if r.created_at else None,
+                    'updated_at': r.updated_at.isoformat() if r.updated_at else None,
+                    'created_by': {'name': creator.name, 'role': creator.role} if creator else None,
+                    'reviewed_by': {'name': reviewer.name, 'role': reviewer.role} if reviewer else None,
+                },
+            }
+            yield _json.dumps(row) + '\n'
+
+    return Response(generate(), mimetype='application/x-ndjson')
+
+
 @app.route('/teacher/assignment/<assignment_id>')
 def teacher_assignment_detail(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)

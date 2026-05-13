@@ -568,3 +568,97 @@ def test_legacy_assignment_does_not_trigger_tagging(app, db_session, client):
     assert mock_extract.call_count == 0
     db_session.refresh(asn)
     assert asn.topic_keys_status == 'legacy'
+
+
+def test_export_jsonl_streams_active_standards(app, db_session, client):
+    from db import SubjectStandard, Teacher
+    import uuid as _uuid
+
+    tid = 't-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='HOD', code='C' + _uuid.uuid4().hex[:6].upper(), role='hod')
+    db_session.add(t)
+    subj = 'biology_export_' + _uuid.uuid4().hex[:6]
+    db_session.add(SubjectStandard(
+        subject=subj, text='Accept temperature', topic_keys='["enzymes"]',
+        theme_key='terminology_precision', status='active', created_by=t.id,
+        reinforcement_count=5,
+    ))
+    db_session.commit()
+    with client.session_transaction() as s:
+        s['teacher_id'] = t.id
+        s['authenticated'] = True
+
+    rv = client.get(f'/api/subject_standards/export?subject={subj}&format=jsonl')
+    assert rv.status_code == 200
+    assert rv.mimetype == 'application/x-ndjson'
+    lines = rv.data.decode().strip().split('\n')
+    assert len(lines) == 1
+    import json as _json
+    payload = _json.loads(lines[0])
+    assert payload['content'] == 'Accept temperature'
+    assert payload['metadata']['subject_key'] == subj
+    assert payload['metadata']['topic_keys'] == ['enzymes']
+
+
+def test_export_requires_edit_permission(app, db_session, client):
+    from db import Teacher
+    import uuid as _uuid
+    tid = 't-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='Bob', code='C' + _uuid.uuid4().hex[:6].upper(), role='teacher')
+    db_session.add(t)
+    db_session.commit()
+    with client.session_transaction() as s:
+        s['teacher_id'] = t.id
+        s['authenticated'] = True
+
+    rv = client.get('/api/subject_standards/export?subject=biology&format=jsonl')
+    assert rv.status_code == 403
+
+
+def test_export_400_on_missing_subject(app, db_session, client):
+    from db import Teacher
+    import uuid as _uuid
+    tid = 't-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='HOD', code='C' + _uuid.uuid4().hex[:6].upper(), role='hod')
+    db_session.add(t)
+    db_session.commit()
+    with client.session_transaction() as s:
+        s['teacher_id'] = t.id
+        s['authenticated'] = True
+    rv = client.get('/api/subject_standards/export?format=jsonl')
+    assert rv.status_code == 400
+
+
+def test_export_updated_since_filter(app, db_session, client):
+    """Only standards updated_at >= updated_since should be exported."""
+    from db import SubjectStandard, Teacher
+    from datetime import datetime, timezone, timedelta
+    import uuid as _uuid
+
+    tid = 't-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='HOD', code='C' + _uuid.uuid4().hex[:6].upper(), role='hod')
+    db_session.add(t)
+    subj = 'biology_since_' + _uuid.uuid4().hex[:6]
+    old = SubjectStandard(
+        subject=subj, text='Old standard', topic_keys='["enzymes"]',
+        status='active', created_by=t.id, reinforcement_count=1,
+        updated_at=datetime.now(timezone.utc) - timedelta(days=60),
+    )
+    new = SubjectStandard(
+        subject=subj, text='New standard', topic_keys='["enzymes"]',
+        status='active', created_by=t.id, reinforcement_count=1,
+        updated_at=datetime.now(timezone.utc) - timedelta(days=1),
+    )
+    db_session.add_all([old, new])
+    db_session.commit()
+    with client.session_transaction() as s:
+        s['teacher_id'] = t.id
+        s['authenticated'] = True
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    rv = client.get(f'/api/subject_standards/export?subject={subj}&format=jsonl&updated_since={cutoff}')
+    assert rv.status_code == 200
+    lines = rv.data.decode().strip().split('\n')
+    contents = [__import__('json').loads(l)['content'] for l in lines if l.strip()]
+    assert 'New standard' in contents
+    assert 'Old standard' not in contents
