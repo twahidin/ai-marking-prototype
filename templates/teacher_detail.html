@@ -10,6 +10,52 @@
    the edit-modal CSS via the include below. #}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/teacher_detail.css') }}?v={{ static_version }}">
 {% include '_assignment_form_styles.html' %}
+<style>
+  /* Skeleton shimmer for in-page async loads (AK preview, etc.). */
+  @keyframes td-shimmer {
+    0%   { background-position: -468px 0; }
+    100% { background-position: 468px 0; }
+  }
+  .td-skel-bar {
+    height: 12px;
+    border-radius: 3px;
+    background: linear-gradient(to right, #eee 8%, #f5f5f5 18%, #eee 33%);
+    background-size: 800px 100%;
+    animation: td-shimmer 1.2s linear infinite;
+    margin: 6px 0;
+  }
+  .td-skel-bar.short { width: 70%; }
+  .td-skel-bar.shorter { width: 45%; }
+  /* Save-acknowledgement chip for the topic-tags inputs. Floats next to
+     the input, fades in green on success, slides away. */
+  .tt-save-chip {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 6px;
+    font-size: 11px;
+    border-radius: 10px;
+    background: #e8f5ec;
+    color: #28a745;
+    opacity: 0;
+    transform: translateX(-4px);
+    transition: opacity 200ms ease, transform 200ms ease;
+    pointer-events: none;
+  }
+  .tt-save-chip.visible { opacity: 1; transform: translateX(0); }
+  .tt-save-chip.error { background: #fdecea; color: #c0392b; }
+  /* Tiny inline spinner for fetch-in-progress buttons. */
+  .td-spinner {
+    display: inline-block;
+    width: 10px; height: 10px;
+    margin-right: 6px;
+    border: 2px solid #ccc;
+    border-top-color: #555;
+    border-radius: 50%;
+    animation: td-spin 0.7s linear infinite;
+    vertical-align: -1px;
+  }
+  @keyframes td-spin { to { transform: rotate(360deg); } }
+</style>
 {% endblock %}
 
 {% block body %}
@@ -1725,25 +1771,62 @@ window.addEventListener('DOMContentLoaded', () => {
         return payload;
     }
 
+    function chipFor(input) {
+        // Attach (once) a save-acknowledgement chip next to the input.
+        var existing = input.nextElementSibling;
+        if (existing && existing.classList && existing.classList.contains('tt-save-chip')) {
+            return existing;
+        }
+        var chip = document.createElement('span');
+        chip.className = 'tt-save-chip';
+        chip.textContent = '✓ saved';
+        input.parentNode.insertBefore(chip, input.nextSibling);
+        return chip;
+    }
+    function flashChip(chip, ok) {
+        chip.textContent = ok ? '✓ saved' : '⚠ save failed';
+        chip.classList.toggle('error', !ok);
+        chip.classList.add('visible');
+        clearTimeout(chip._hideTimer);
+        chip._hideTimer = setTimeout(function () {
+            chip.classList.remove('visible');
+        }, 1400);
+    }
+
     document.querySelectorAll('.topic-tag-input').forEach(function (input) {
+        chipFor(input);
+        // Debounce blur so tab-through-fields fires one batched save, not five.
+        var blurTimer = null;
         input.addEventListener('blur', function () {
-            fetch('/teacher/assignment/{{ assignment.id }}/topic-tags', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ topic_keys: gatherPayload() }),
-            }).then(function (r) { return r.json(); }).then(function (data) {
-                if (data && data.success && data.topic_keys) {
-                    // Reflect server-side filtering: any unknown keys silently dropped.
-                    var rows = document.querySelectorAll('.topic-tag-input');
-                    rows.forEach(function (row, idx) {
-                        if (data.topic_keys[idx]) {
-                            row.value = data.topic_keys[idx].join(', ');
-                        }
-                    });
-                }
-            }).catch(function () { /* swallow — manual retry on next blur */ });
+            clearTimeout(blurTimer);
+            blurTimer = setTimeout(saveTopicTags.bind(null, input), 80);
         });
     });
+
+    function saveTopicTags(triggerInput) {
+        var chip = chipFor(triggerInput);
+        fetch('/teacher/assignment/{{ assignment.id }}/topic-tags', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ topic_keys: gatherPayload() }),
+        }).then(function (r) {
+            if (!r.ok) throw new Error('http ' + r.status);
+            return r.json();
+        }).then(function (data) {
+            if (data && data.success && data.topic_keys) {
+                // Reflect server-side filtering: any unknown keys silently dropped.
+                var rows = document.querySelectorAll('.topic-tag-input');
+                rows.forEach(function (row, idx) {
+                    if (data.topic_keys[idx]) {
+                        row.value = data.topic_keys[idx].join(', ');
+                    }
+                });
+                flashChip(chip, true);
+            } else {
+                flashChip(chip, false);
+            }
+        }).catch(function () { flashChip(chip, false); });
+    }
 })();
 
 // Effective answer key preview.
@@ -1753,9 +1836,19 @@ window.addEventListener('DOMContentLoaded', () => {
     btn.addEventListener('click', function () {
         var pre = document.getElementById('effective-ak-output');
         var note = document.getElementById('effective-ak-note');
-        pre.textContent = 'Loading…';
+        // Skeleton shimmer instead of "Loading…" — same vertical footprint
+        // as a real response, so the layout doesn't shift on swap-in.
+        pre.innerHTML =
+            '<div class="td-skel-bar"></div>' +
+            '<div class="td-skel-bar short"></div>' +
+            '<div class="td-skel-bar shorter"></div>';
         pre.hidden = false;
         if (note) note.hidden = true;
+        // Disable the button while in-flight so a frustrated double-click
+        // doesn't fire two requests.
+        btn.disabled = true;
+        var origLabel = btn.textContent;
+        btn.textContent = 'Loading…';
         fetch('/teacher/assignment/{{ assignment.id }}/answer-key-preview')
             .then(function (r) { return r.json(); })
             .then(function (data) {
@@ -1767,6 +1860,9 @@ window.addEventListener('DOMContentLoaded', () => {
                 }
             }).catch(function () {
                 pre.textContent = 'Preview failed.';
+            }).finally(function () {
+                btn.disabled = false;
+                btn.textContent = origLabel;
             });
     });
 })();
@@ -1780,7 +1876,10 @@ window.addEventListener('DOMContentLoaded', () => {
         var status = document.getElementById('bank-push-status');
         status.hidden = false;
         status.style.color = '#888';
-        status.textContent = 'Pushing…';
+        status.innerHTML = '<span class="td-spinner" aria-hidden="true"></span>Pushing…';
+        btn.disabled = true;
+        var origLabel = btn.textContent;
+        btn.textContent = 'Pushing…';
         fetch('/teacher/assignment/{{ assignment.id }}/push-amendments-to-bank', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1800,13 +1899,19 @@ window.addEventListener('DOMContentLoaded', () => {
             } else if (res.status === 409) {
                 status.style.color = '#c0392b';
                 status.textContent = 'Bank was updated by someone else after you loaded this page. Reload, then click again to overwrite.';
+                btn.disabled = false;
+                btn.textContent = origLabel;
             } else {
                 status.style.color = '#c0392b';
                 status.textContent = (res.data && res.data.error) || 'Push failed.';
+                btn.disabled = false;
+                btn.textContent = origLabel;
             }
         }).catch(function () {
             status.style.color = '#c0392b';
             status.textContent = 'Network error.';
+            btn.disabled = false;
+            btn.textContent = origLabel;
         });
     });
 })();

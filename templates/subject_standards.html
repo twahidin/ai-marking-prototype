@@ -2,6 +2,36 @@
 
 {% block title %}Subject standards{% endblock %}
 
+{% block head %}
+<style>
+  /* Shimmer skeleton for perceived-speed loading.
+     Renders the EXACT shape of a real row so the layout doesn't jump
+     when content swaps in. */
+  @keyframes ss-shimmer {
+    0%   { background-position: -468px 0; }
+    100% { background-position: 468px 0; }
+  }
+  .ss-skeleton {
+    border: 1px solid #eee;
+    border-radius: 6px;
+    padding: 10px;
+    margin: 8px 0;
+  }
+  .ss-skel-bar {
+    height: 12px;
+    border-radius: 3px;
+    background: linear-gradient(to right, #eee 8%, #f5f5f5 18%, #eee 33%);
+    background-size: 800px 100%;
+    animation: ss-shimmer 1.2s linear infinite;
+  }
+  .ss-skel-bar.tall  { height: 14px; }
+  .ss-skel-bar.short { width: 60%;  }
+  .ss-skel-bar.tiny  { width: 40%; height: 10px; }
+  .ss-row { transition: opacity 180ms ease, transform 180ms ease; }
+  .ss-row.removing { opacity: 0; transform: translateY(-4px); pointer-events: none; }
+</style>
+{% endblock %}
+
 {% block body %}
 <div class="container" style="max-width:900px;">
     <a href="/dashboard" class="back-link">&larr; Back</a>
@@ -9,7 +39,10 @@
 
     <div class="card" style="margin-top:16px;">
         <h2>Pending review</h2>
-        <div id="pending-list" style="font-size:13px;color:#555;">Loading&hellip;</div>
+        <div id="pending-list" style="font-size:13px;color:#555;">
+            <div class="ss-skeleton"><div class="ss-skel-bar tall"></div><div class="ss-skel-bar tiny" style="margin-top:8px"></div></div>
+            <div class="ss-skeleton"><div class="ss-skel-bar tall short"></div><div class="ss-skel-bar tiny" style="margin-top:8px"></div></div>
+        </div>
     </div>
 
     <div class="card" style="margin-top:16px;">
@@ -22,7 +55,11 @@
             <button type="button" id="filter-apply" class="upload-btn"
                     style="margin-left:8px;padding:4px 10px;font-size:12px;">Apply</button>
         </div>
-        <div id="active-list" style="font-size:13px;color:#555;">Loading&hellip;</div>
+        <div id="active-list" style="font-size:13px;color:#555;">
+            <div class="ss-skeleton"><div class="ss-skel-bar tall"></div><div class="ss-skel-bar tiny" style="margin-top:8px"></div></div>
+            <div class="ss-skeleton"><div class="ss-skel-bar tall short"></div><div class="ss-skel-bar tiny" style="margin-top:8px"></div></div>
+            <div class="ss-skeleton"><div class="ss-skel-bar tall"></div><div class="ss-skel-bar tiny" style="margin-top:8px"></div></div>
+        </div>
     </div>
 </div>
 {% endblock %}
@@ -87,34 +124,96 @@
             });
     }
 
+    // ── Optimistic row removal ────────────────────────────────────────────
+    // Make the click feel instant: fade the row out immediately, then fire
+    // the API call. On failure, restore the row and surface an error.
+    function optimisticRemoveRow(btn, url, method, opts) {
+        var row = btn.closest('.ss-row');
+        if (!row) return;
+        // Cache the row's HTML + parent so we can restore on failure.
+        var parent = row.parentNode;
+        var nextSibling = row.nextSibling;
+        var html = row.outerHTML;
+        row.classList.add('removing');
+        // Pull from DOM after the transition completes so screen readers
+        // don't read it twice.
+        setTimeout(function () { if (row.parentNode) row.parentNode.removeChild(row); }, 200);
+
+        fetch(url, opts || { method: method || 'POST' })
+            .then(function (r) {
+                if (!r.ok) throw new Error('http ' + r.status);
+                return r.json().catch(function () { return {}; });
+            })
+            .catch(function (err) {
+                // Restore: insert the saved HTML at the original spot.
+                var tmp = document.createElement('div');
+                tmp.innerHTML = html;
+                var restored = tmp.firstElementChild;
+                if (restored && parent) {
+                    if (nextSibling && nextSibling.parentNode === parent) {
+                        parent.insertBefore(restored, nextSibling);
+                    } else {
+                        parent.appendChild(restored);
+                    }
+                    // Re-bind handlers on the restored row.
+                    bindActions(restored.parentNode);
+                }
+                console.warn('Action failed, row restored:', err);
+                alert('Action failed. Try again.');
+            });
+    }
+
     function bindActions(scope) {
         scope.querySelectorAll('[data-action="approve"]').forEach(function (btn) {
+            if (btn.dataset.bound) return;
+            btn.dataset.bound = '1';
             btn.addEventListener('click', function () {
-                fetch('/api/subject_standards/' + btn.dataset.id + '/approve', { method: 'POST' })
-                    .then(function () { location.reload(); });
+                optimisticRemoveRow(btn,
+                    '/api/subject_standards/' + btn.dataset.id + '/approve');
+                // Refetch the active list in the background so the now-active
+                // row appears in its proper section without a full reload.
+                setTimeout(function () { fetchActive(currentSubjectFilter()); }, 250);
             });
         });
         scope.querySelectorAll('[data-action="reject"]').forEach(function (btn) {
+            if (btn.dataset.bound) return;
+            btn.dataset.bound = '1';
             btn.addEventListener('click', function () {
                 if (!confirm('Reject (archive) this standard?')) return;
-                fetch('/api/subject_standards/' + btn.dataset.id + '/reject', { method: 'POST' })
-                    .then(function () { location.reload(); });
+                optimisticRemoveRow(btn,
+                    '/api/subject_standards/' + btn.dataset.id + '/reject');
             });
         });
         scope.querySelectorAll('[data-action="edit"]').forEach(function (btn) {
+            if (btn.dataset.bound) return;
+            btn.dataset.bound = '1';
             btn.addEventListener('click', function () {
                 var row = btn.closest('.ss-row');
-                var currentText = (row && row.querySelector('.ss-text')) ? row.querySelector('.ss-text').textContent : '';
+                var textEl = row && row.querySelector('.ss-text');
+                var currentText = textEl ? textEl.textContent : '';
                 var next = prompt('Edit standard text:', currentText);
-                if (next && next.trim()) {
-                    fetch('/api/subject_standards/' + btn.dataset.id + '/edit', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ text: next.trim() }),
-                    }).then(function () { location.reload(); });
-                }
+                if (!next || !next.trim()) return;
+                var trimmed = next.trim();
+                // Optimistic text swap.
+                if (textEl) textEl.textContent = trimmed;
+                fetch('/api/subject_standards/' + btn.dataset.id + '/edit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: trimmed }),
+                }).then(function (r) {
+                    if (!r.ok) throw new Error('http ' + r.status);
+                }).catch(function () {
+                    // Revert on failure.
+                    if (textEl) textEl.textContent = currentText;
+                    alert('Edit failed. Try again.');
+                });
             });
         });
+    }
+
+    function currentSubjectFilter() {
+        var el = document.getElementById('filter-subject');
+        return el ? el.value.trim() : '';
     }
 
     function fetchPending() {
@@ -132,7 +231,11 @@
     }
 
     document.getElementById('filter-apply').addEventListener('click', function () {
-        fetchActive(document.getElementById('filter-subject').value.trim());
+        // Show skeletons while the filter re-fetches.
+        document.getElementById('active-list').innerHTML =
+            '<div class="ss-skeleton"><div class="ss-skel-bar tall"></div><div class="ss-skel-bar tiny" style="margin-top:8px"></div></div>' +
+            '<div class="ss-skeleton"><div class="ss-skel-bar tall short"></div><div class="ss-skel-bar tiny" style="margin-top:8px"></div></div>';
+        fetchActive(currentSubjectFilter());
     });
     fetchPending();
     fetchActive('');
