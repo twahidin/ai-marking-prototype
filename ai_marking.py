@@ -2443,10 +2443,20 @@ Rules for the JSON:
     return {'categorisation': cats_out, 'group_habits': habits_out}
 
 
+_TOPIC_KEYS_MAX = 6
+
+
 def extract_assignment_topic_keys(provider, model, session_keys, subject, questions, max_retries=3):
-    """For each question, return a list of topic_keys drawn from the subject's
-    controlled vocabulary. Returns [[], [], ...] (one empty list per question)
+    """Return up to `_TOPIC_KEYS_MAX` topic keys that describe the assignment
+    as a whole, drawn from the subject's controlled vocabulary. Returns `[]`
     if the AI call fails after `max_retries`.
+
+    Why assignment-level (not per-question): downstream retrieval
+    (`subject_standards.retrieve_subject_standards`) unions every question's
+    keys into a single set anyway, and no other consumer wires standards to
+    specific questions. Per-question structure adds UI noise (one input row
+    per question, padded with empty rows for questions the AI didn't
+    enumerate) without affecting marking output.
 
     `questions` is a list of {'question_num', 'text', 'answer_key'} dicts.
     """
@@ -2454,7 +2464,7 @@ def extract_assignment_topic_keys(provider, model, session_keys, subject, questi
 
     vocab = get_topics_for_subject(subject)
     if not vocab:
-        return [[] for _ in questions]
+        return []
     vocab_lines = '\n'.join(f'  - {k}: {label}' for k, label in vocab)
 
     lines = [
@@ -2463,7 +2473,10 @@ def extract_assignment_topic_keys(provider, model, session_keys, subject, questi
         'Controlled vocabulary (you MUST pick from this list):',
         vocab_lines,
         '',
-        'Tag each question with 1-3 topic keys from the vocab above. Pick keys that capture both content domain (e.g. enzymes) and cross-cutting skill (e.g. terminology_precision) where applicable.',
+        f'Tag the whole assignment with 3-{_TOPIC_KEYS_MAX} topic keys from the vocabulary '
+        'above that best summarise what content domains and cross-cutting skills it '
+        'covers (e.g. enzymes, terminology_precision). Prefer fewer-but-precise tags '
+        'over many. Do NOT tag per question.',
         '',
         'Questions:',
     ]
@@ -2472,7 +2485,7 @@ def extract_assignment_topic_keys(provider, model, session_keys, subject, questi
         if q.get('answer_key'):
             lines.append(f"  Answer key: {q['answer_key']}")
     lines.append('')
-    lines.append('Return JSON only: {"questions": [{"question_num": N, "topic_keys": ["..."]}, ...]}')
+    lines.append('Return JSON only: {"topic_keys": ["k1", "k2", ...]}')
     user_prompt = '\n'.join(lines)
     system_prompt = 'You are a topic-tagger for school assignments. Output JSON only, no commentary.'
 
@@ -2481,31 +2494,31 @@ def extract_assignment_topic_keys(provider, model, session_keys, subject, questi
         try:
             raw = _simple_completion(
                 provider=provider, model=model, session_keys=session_keys,
-                system=system_prompt, user=user_prompt, max_tokens=1200,
+                system=system_prompt, user=user_prompt, max_tokens=400,
             )
             parsed = parse_ai_response(raw)
+            keys = parsed.get('topic_keys') or []
+            seen = set()
             out = []
-            for q in questions:
-                qn = q['question_num']
-                match = next(
-                    (item for item in parsed.get('questions', []) if str(item.get('question_num')) == str(qn)),
-                    None,
-                )
-                keys = (match or {}).get('topic_keys') or []
-                filtered = []
-                for k in keys:
-                    if is_known_topic_key(subject, k):
-                        filtered.append(k)
-                    else:
-                        logger.info(f'extract_assignment_topic_keys: dropped unknown key {k!r} for subject {subject}')
-                out.append(filtered[:3])
+            for k in keys:
+                if not isinstance(k, str):
+                    continue
+                if not is_known_topic_key(subject, k):
+                    logger.info(f'extract_assignment_topic_keys: dropped unknown key {k!r} for subject {subject}')
+                    continue
+                if k in seen:
+                    continue
+                seen.add(k)
+                out.append(k)
+                if len(out) >= _TOPIC_KEYS_MAX:
+                    break
             return out
         except Exception as e:
             last_err = e
             logger.warning(f'extract_assignment_topic_keys attempt {attempt + 1} failed: {e}')
 
     logger.error(f'extract_assignment_topic_keys gave up after {max_retries} attempts: {last_err}')
-    return [[] for _ in questions]
+    return []
 
 
 def extract_assignment_topic_keys_from_pdf(provider, model, session_keys, subject,
@@ -2515,11 +2528,10 @@ def extract_assignment_topic_keys_from_pdf(provider, model, session_keys, subjec
     """Vision-based topic tagging when the question paper is a PDF/image so
     `extract_assignment_topic_keys` (text only) can't see the content.
 
-    The model enumerates questions from the attached document(s) and tags
-    each with 1-3 topic_keys from the controlled vocabulary. Returns a list
-    of per-question key lists indexed from Q1 (i.e. result[0] == keys for
-    Q1). Returns `[]` on failure so callers can leave
-    `topic_keys_status='pending'` for the next-open retry.
+    Returns up to `_TOPIC_KEYS_MAX` topic keys describing the whole
+    assignment, drawn from the subject's controlled vocabulary. Returns `[]`
+    on failure so the caller can leave `topic_keys_status='pending'` and
+    retry on the next open.
     """
     from config.subject_topics import get_topics_for_subject, is_known_topic_key
 
@@ -2536,13 +2548,11 @@ def extract_assignment_topic_keys_from_pdf(provider, model, session_keys, subjec
         f'{vocab_lines}\n\n'
         'The attached document(s) contain a question paper'
         + (' and an answer key' if answer_key_bytes else '') + '. '
-        'Identify every question (numbered Q1, Q2, Q3, ...) and tag each one '
-        'with 1-3 topic keys from the vocabulary above. Pick keys that '
-        'capture both content domain (e.g. enzymes) and cross-cutting skill '
-        '(e.g. terminology_precision) where applicable.\n\n'
-        'Return JSON only: {"questions": [{"question_num": N, "topic_keys": ["..."]}, ...]}\n'
-        'Include every question in the document. Do not invent questions '
-        'that are not present.'
+        f'Tag the whole assignment with 3-{_TOPIC_KEYS_MAX} topic keys from the '
+        'vocabulary above that best summarise the content domains and cross-cutting '
+        'skills the assignment covers (e.g. enzymes, terminology_precision). '
+        'Prefer fewer-but-precise tags over many. Do NOT tag per question.\n\n'
+        'Return JSON only: {"topic_keys": ["k1", "k2", ...]}'
     )
     system_prompt = 'You are a topic-tagger for school assignments. Output JSON only, no commentary.'
 
@@ -2576,39 +2586,34 @@ def extract_assignment_topic_keys_from_pdf(provider, model, session_keys, subjec
             raw = make_ai_api_call(
                 client=client, model_name=model, provider=provider,
                 system_prompt=system_prompt, messages_content=content_blocks,
-                max_tokens=2000,
+                max_tokens=400,
             )
             parsed = parse_ai_response(raw)
-            qs = parsed.get('questions') or []
-            if not qs:
-                last_err = 'empty questions list'
-                logger.warning('extract_assignment_topic_keys_from_pdf: empty list (attempt %d)', attempt + 1)
-                continue
-            by_num = {}
-            for item in qs:
-                qn = item.get('question_num')
-                try:
-                    qn_int = int(qn) if qn is not None else None
-                except (ValueError, TypeError):
-                    qn_int = None
-                if qn_int is None or qn_int < 1:
+            keys = parsed.get('topic_keys') or []
+            seen = set()
+            out = []
+            for k in keys:
+                if not isinstance(k, str):
                     continue
-                keys = item.get('topic_keys') or []
-                filtered = []
-                for k in keys:
-                    if isinstance(k, str) and is_known_topic_key(subject, k):
-                        filtered.append(k)
-                    elif isinstance(k, str):
-                        logger.info(
-                            'extract_assignment_topic_keys_from_pdf: dropped unknown key %r for subject %s',
-                            k, subject,
-                        )
-                by_num[qn_int] = filtered[:3]
-            if not by_num:
-                last_err = 'no valid question numbers'
-                continue
-            max_qn = max(by_num.keys())
-            return [by_num.get(i, []) for i in range(1, max_qn + 1)]
+                if not is_known_topic_key(subject, k):
+                    logger.info(
+                        'extract_assignment_topic_keys_from_pdf: dropped unknown key %r for subject %s',
+                        k, subject,
+                    )
+                    continue
+                if k in seen:
+                    continue
+                seen.add(k)
+                out.append(k)
+                if len(out) >= _TOPIC_KEYS_MAX:
+                    break
+            if out:
+                return out
+            last_err = 'no valid keys'
+            logger.warning(
+                'extract_assignment_topic_keys_from_pdf: no valid keys in response (attempt %d)',
+                attempt + 1,
+            )
         except Exception as e:
             last_err = e
             logger.warning(f'extract_assignment_topic_keys_from_pdf attempt {attempt + 1} failed: {e}')

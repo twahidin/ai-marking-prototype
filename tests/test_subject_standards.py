@@ -3,14 +3,13 @@
 from unittest.mock import patch
 
 
-def test_extract_assignment_topic_keys_returns_list_per_question(app):
+def test_extract_assignment_topic_keys_returns_flat_list(app):
+    """Tagger now returns a flat list of canonical keys for the whole
+    assignment (no per-question structure — retrieval just unioned anyway)."""
     from ai_marking import extract_assignment_topic_keys
     import json
     fake_response = {
-        'questions': [
-            {'question_num': 1, 'topic_keys': ['enzymes', 'terminology_precision']},
-            {'question_num': 2, 'topic_keys': ['cellular_respiration']},
-        ]
+        'topic_keys': ['enzymes', 'terminology_precision', 'cellular_respiration'],
     }
     with app.app_context():
         with patch('ai_marking._simple_completion', return_value=json.dumps(fake_response)):
@@ -24,20 +23,13 @@ def test_extract_assignment_topic_keys_returns_list_per_question(app):
                     {'question_num': 2, 'text': 'Explain ATP production.', 'answer_key': 'mitochondria, ATP synthase'},
                 ],
             )
-    assert result == [
-        ['enzymes', 'terminology_precision'],
-        ['cellular_respiration'],
-    ]
+    assert result == ['enzymes', 'terminology_precision', 'cellular_respiration']
 
 
 def test_extract_assignment_topic_keys_filters_unknown_keys(app):
     from ai_marking import extract_assignment_topic_keys
     import json
-    fake_response = {
-        'questions': [
-            {'question_num': 1, 'topic_keys': ['enzymes', 'flux_capacitor']},
-        ]
-    }
+    fake_response = {'topic_keys': ['enzymes', 'flux_capacitor', 'genetics']}
     with app.app_context():
         with patch('ai_marking._simple_completion', return_value=json.dumps(fake_response)):
             result = extract_assignment_topic_keys(
@@ -47,7 +39,7 @@ def test_extract_assignment_topic_keys_filters_unknown_keys(app):
                 subject='biology',
                 questions=[{'question_num': 1, 'text': 'x', 'answer_key': 'y'}],
             )
-    assert result == [['enzymes']]
+    assert result == ['enzymes', 'genetics']
 
 
 def test_extract_assignment_topic_keys_returns_empty_on_failure(app):
@@ -61,23 +53,16 @@ def test_extract_assignment_topic_keys_returns_empty_on_failure(app):
                 subject='biology',
                 questions=[{'question_num': 1, 'text': 'x', 'answer_key': 'y'}],
             )
-    assert result == [[]]
+    assert result == []
 
 
-def test_extract_assignment_topic_keys_from_pdf_returns_indexed_list(app):
-    """Vision-based tagging when the question paper is a PDF.
-
-    The model enumerates questions itself (no caller-supplied list), so the
-    result is indexed from Q1 (result[0] == Q1's keys). Gaps in question
-    numbering should be filled with empty lists.
-    """
+def test_extract_assignment_topic_keys_from_pdf_returns_flat_list(app):
+    """Vision-based tagging when the question paper is a PDF. Returns a flat
+    list of assignment-level tags from the controlled vocab."""
     from ai_marking import extract_assignment_topic_keys_from_pdf
     import json
     fake_response = json.dumps({
-        'questions': [
-            {'question_num': 1, 'topic_keys': ['enzymes']},
-            {'question_num': 3, 'topic_keys': ['cellular_respiration', 'terminology_precision']},
-        ],
+        'topic_keys': ['enzymes', 'cellular_respiration', 'terminology_precision'],
     })
     with app.app_context():
         with patch('ai_marking._resolve_api_key', return_value='sk-fake'), \
@@ -90,20 +75,14 @@ def test_extract_assignment_topic_keys_from_pdf_returns_indexed_list(app):
                 question_paper_bytes=b'%PDF-fake-bytes',
                 answer_key_bytes=None,
             )
-    assert result == [
-        ['enzymes'],
-        [],
-        ['cellular_respiration', 'terminology_precision'],
-    ]
+    assert result == ['enzymes', 'cellular_respiration', 'terminology_precision']
 
 
 def test_extract_assignment_topic_keys_from_pdf_filters_unknown(app):
     from ai_marking import extract_assignment_topic_keys_from_pdf
     import json
     fake_response = json.dumps({
-        'questions': [
-            {'question_num': 1, 'topic_keys': ['enzymes', 'flux_capacitor', 'genetics']},
-        ],
+        'topic_keys': ['enzymes', 'flux_capacitor', 'genetics'],
     })
     with app.app_context():
         with patch('ai_marking._resolve_api_key', return_value='sk-fake'), \
@@ -116,7 +95,7 @@ def test_extract_assignment_topic_keys_from_pdf_filters_unknown(app):
                 question_paper_bytes=b'%PDF-fake',
                 answer_key_bytes=b'%PDF-fake-ak',
             )
-    assert result == [['enzymes', 'genetics']]
+    assert result == ['enzymes', 'genetics']
 
 
 def test_extract_assignment_topic_keys_from_pdf_returns_empty_on_failure(app):
@@ -618,13 +597,13 @@ def test_first_open_of_pending_assignment_triggers_tagging(app, db_session, clie
         s['authenticated'] = True
 
     with patch('ai_marking.extract_assignment_topic_keys',
-              return_value=[['enzymes'], ['cellular_respiration']]) as mock_extract:
+              return_value=['enzymes', 'cellular_respiration']) as mock_extract:
         rv = client.get(f'/teacher/assignment/{asn.id}')
     assert mock_extract.call_count == 1
     db_session.refresh(asn)
     assert asn.topic_keys_status == 'tagged'
     import json as _json
-    assert _json.loads(asn.topic_keys) == [['enzymes'], ['cellular_respiration']]
+    assert _json.loads(asn.topic_keys) == ['enzymes', 'cellular_respiration']
 
 
 def test_legacy_assignment_does_not_trigger_tagging(app, db_session, client):

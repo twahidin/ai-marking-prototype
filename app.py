@@ -1030,6 +1030,49 @@ def _get_dept_keys():
     return keys
 
 
+def _normalize_topic_keys(raw):
+    """Coerce stored `asn.topic_keys` (any historical shape) into a flat
+    de-duplicated list of topic keys for the whole assignment. The original
+    per-question structure was never actually used downstream — retrieval
+    collapses everything into a set anyway — so we now persist a single
+    flat list of keys per assignment.
+
+    Accepts:
+    - `None` or empty → `[]`
+    - new flat list `["k1", "k2"]` → as-is, de-duped, order preserved
+    - legacy per-question flat list `[["k1"], ["k1", "k2"]]` → union
+    - sparse list `[{"q": N, "keys": [...]}]` → union
+    - dict `{"N": [...]}` → union
+    """
+    if not raw:
+        return []
+    seen = set()
+    out = []
+
+    def _add(k):
+        if isinstance(k, str) and k and k not in seen:
+            seen.add(k)
+            out.append(k)
+
+    if isinstance(raw, dict):
+        for v in raw.values():
+            for k in (v or []):
+                _add(k)
+        return out
+    if isinstance(raw, list):
+        for entry in raw:
+            if isinstance(entry, str):
+                _add(entry)
+            elif isinstance(entry, list):
+                for k in entry:
+                    _add(k)
+            elif isinstance(entry, dict):
+                for k in (entry.get('keys') or []):
+                    _add(k)
+        return out
+    return []
+
+
 def _split_into_questions(qp_text, ak_text):
     """Cheap regex split on Q1/Q2/... markers. Returns list of
     {'question_num', 'text', 'answer_key'} dicts. Returns [] if no markers
@@ -1106,9 +1149,8 @@ def _kick_off_topic_tagging(asn):
             session_keys=session_keys, subject=subject,
             questions=questions,
         )
-    # Text path empty, or AI returned per-question lists that are all empty —
-    # fall back to vision tagging on the original PDF bytes.
-    if (not keys or not any(keys)) and asn.question_paper:
+    # Text path empty — fall back to vision tagging on the original PDF bytes.
+    if not keys and asn.question_paper:
         logger.info('topic tagging: text path empty for %s, falling back to PDF', asn.id)
         keys = extract_assignment_topic_keys_from_pdf(
             provider=provider, model=helper_model,
@@ -1124,7 +1166,7 @@ def _kick_off_topic_tagging(asn):
         logger.warning('topic tagging produced no keys for assignment %s', asn.id)
         return
 
-    asn.topic_keys = _json.dumps(keys)
+    asn.topic_keys = _json.dumps(list(keys))
     asn.topic_keys_status = 'tagged'
     db.session.commit()
 
@@ -1171,13 +1213,19 @@ def _build_calibration_block_for(asn, sub=None):
         if asn.topic_keys_status != 'legacy' and asn.subject:
             subj_key = _resolve_subj(asn.subject) or (asn.subject or '').strip().lower()
             try:
-                per_q_topic_keys = _json.loads(asn.topic_keys or '[]')
+                raw_keys = _json.loads(asn.topic_keys or '[]')
             except Exception:
-                per_q_topic_keys = []
-            if per_q_topic_keys:
+                raw_keys = []
+            # Coerce any historical shape (flat list of lists, sparse
+            # list-of-dicts, dict) into a single flat list of topic keys.
+            flat_keys = _normalize_topic_keys(raw_keys)
+            if flat_keys:
+                # retrieve_subject_standards keeps its legacy per-question
+                # signature for back-compat; wrap as a single "question" so
+                # the union it builds includes our flat list.
                 standards = retrieve_subject_standards(
                     subject=subj_key,
-                    per_question_topic_keys=per_q_topic_keys,
+                    per_question_topic_keys=[flat_keys],
                 )
                 if standards:
                     lines = ['── Subject standards relevant to this assignment ──', '']
@@ -6426,44 +6474,70 @@ def _rubric_pills_for_questions(questions):
 
 @app.route('/teacher/assignment/<assignment_id>/topic-tags', methods=['PUT'])
 def teacher_assignment_topic_tags_update(assignment_id):
+    """Save assignment-level topic tags. Accepts a flat list of strings
+    (canonical) or legacy per-question shapes (list-of-lists, list-of-dicts).
+
+    Validates each tag against the subject's controlled vocabulary, drops
+    unknown / blank / duplicate tags, and caps at the same limit the tagger
+    uses. Returns the cleaned list AND a list of dropped keys so the UI can
+    show "⚠ dropped: foo, bar" instead of silently wiping the user's input.
+    """
     asn = Assignment.query.get_or_404(assignment_id)
     err = _check_assignment_ownership(asn)
     if err:
         return err
     data = request.get_json(silent=True) or {}
     raw = data.get('topic_keys')
-    if not isinstance(raw, list):
-        return jsonify({'success': False, 'error': 'topic_keys must be a list'}), 400
+    if raw is None:
+        return jsonify({'success': False, 'error': 'topic_keys required'}), 400
 
     from config.subject_topics import is_known_topic_key
     from subjects import resolve_subject_key as _resolve_subj
     subj_key = _resolve_subj(asn.subject or '') or (asn.subject or '').strip().lower()
 
+    # Coerce any incoming shape (flat list, legacy list-of-lists, list-of-dicts)
+    # into a single de-duplicated flat list of candidate strings.
+    candidates = []
+    if isinstance(raw, str):
+        candidates = [s.strip() for s in raw.split(',')]
+    elif isinstance(raw, list):
+        for entry in raw:
+            if isinstance(entry, str):
+                candidates.append(entry.strip())
+            elif isinstance(entry, list):
+                for k in entry:
+                    if isinstance(k, str):
+                        candidates.append(k.strip())
+            elif isinstance(entry, dict):
+                for k in (entry.get('keys') or []):
+                    if isinstance(k, str):
+                        candidates.append(k.strip())
+    else:
+        return jsonify({'success': False, 'error': 'topic_keys must be a list'}), 400
+
+    from ai_marking import _TOPIC_KEYS_MAX
     cleaned = []
-    for q_keys in raw:
-        if not isinstance(q_keys, list):
-            cleaned.append([])
+    dropped = []
+    seen = set()
+    for k in candidates:
+        if not k:
             continue
-        kept = [
-            k for k in q_keys
-            if isinstance(k, str) and k.strip() and is_known_topic_key(subj_key, k.strip())
-        ]
-        # Cap at 3 per question, dedup while preserving order
-        seen = set()
-        deduped = []
-        for k in kept:
-            if k not in seen:
-                seen.add(k)
-                deduped.append(k)
-            if len(deduped) >= 3:
-                break
-        cleaned.append(deduped)
+        if not is_known_topic_key(subj_key, k):
+            if k not in dropped:
+                dropped.append(k)
+            continue
+        if k in seen:
+            continue
+        seen.add(k)
+        cleaned.append(k)
+        if len(cleaned) >= _TOPIC_KEYS_MAX:
+            break
 
     import json as _json
     asn.topic_keys = _json.dumps(cleaned)
     asn.topic_keys_status = 'tagged'
     db.session.commit()
-    return jsonify({'success': True, 'topic_keys': cleaned})
+    return jsonify({'success': True, 'topic_keys': cleaned, 'dropped': dropped})
 
 
 @app.route('/teacher/assignment/<assignment_id>/answer-key-preview')
@@ -6878,6 +6952,14 @@ def teacher_assignment_detail(assignment_id):
     except Exception:
         linked_bank_id = None
 
+    # Normalize any historical topic_keys shape (per-question list, list of
+    # dicts, dict) to a single flat list so the template can render one
+    # input box with comma-separated tags.
+    try:
+        topic_keys_flat = _normalize_topic_keys(json.loads(asn.topic_keys or '[]'))
+    except Exception:
+        topic_keys_flat = []
+
     resp = make_response(render_template('teacher_detail.html',
                            assignment=asn,
                            students=student_data,
@@ -6889,7 +6971,8 @@ def teacher_assignment_detail(assignment_id):
                            rubric_bands_by_criterion=rubric_bands_by_criterion,
                            assignment_has_canonical_subject=assignment_has_canonical_subject,
                            linked_bank_id=linked_bank_id,
-                           bank_pushed_at_iso=(asn.bank_pushed_at.isoformat() if asn.bank_pushed_at else None)))
+                           bank_pushed_at_iso=(asn.bank_pushed_at.isoformat() if asn.bank_pushed_at else None),
+                           topic_keys_flat=topic_keys_flat))
     # Prevent the browser/proxy from caching the score cells — a stale cache here
     # makes post-remark reloads show old marks even though the DB is fresh.
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'

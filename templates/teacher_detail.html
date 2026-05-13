@@ -139,30 +139,18 @@
                 <span style="font-size:12px;font-weight:400;color:#e68a00;margin-left:8px;">tagging…</span>
             {% endif %}
         </h2>
-        {% set tk_per_q = assignment.topic_keys | safe_json_loads(default=[]) %}
-        {% if not tk_per_q %}
-            <p style="color:#666;font-size:13px;margin:8px 0;">
-                Topic tagging hasn't run yet. Marking will still work — subject standards
-                won't apply until tags are present.
-            </p>
-        {% else %}
-            <p style="color:#666;font-size:12px;margin:4px 0 12px;">
-                Comma-separated topic keys per question. Subject standards retrieval matches
-                on these tags when marking. Edit + blur a row to save.
-            </p>
-            <ol class="topic-tag-list" style="padding-left:24px;font-size:13px;">
-                {% for q_keys in tk_per_q %}
-                <li style="margin:4px 0;">
-                    <span style="color:#555;display:inline-block;min-width:36px;">Q{{ loop.index }}:</span>
-                    <input class="topic-tag-input"
-                           data-q="{{ loop.index }}"
-                           value="{{ q_keys | join(', ') }}"
-                           placeholder="comma-separated topic keys"
-                           style="width:60%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:13px;" />
-                </li>
-                {% endfor %}
-            </ol>
-        {% endif %}
+        <p style="color:#666;font-size:12px;margin:4px 0 12px;">
+            Comma-separated topic keys for the whole assignment. Subject standards retrieval matches
+            on these tags when marking. Edit and click away to save.
+        </p>
+        <div style="display:flex;align-items:center;gap:8px;">
+            <input id="topic-tag-input"
+                   class="topic-tag-input"
+                   value="{{ topic_keys_flat | join(', ') }}"
+                   placeholder="comma-separated topic keys (e.g. enzymes, terminology_precision)"
+                   style="flex:1;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px;" />
+        </div>
+        <p id="topic-tag-status" class="topic-tag-status" hidden style="margin:6px 0 0;font-size:12px;color:#888;"></p>
     </div>
     {% endif %}
 
@@ -1756,76 +1744,73 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 });
 
-// Topic tags — autosave per row on blur.
+// Topic tags — single assignment-level input, autosave on blur.
 (function () {
-    function gatherPayload() {
-        var inputs = document.querySelectorAll('.topic-tag-input');
-        var payload = [];
-        inputs.forEach(function (el) {
-            payload.push(
-                el.value.split(',')
-                    .map(function (s) { return s.trim(); })
-                    .filter(Boolean)
-            );
-        });
-        return payload;
+    var input = document.getElementById('topic-tag-input');
+    if (!input) return;
+    var status = document.getElementById('topic-tag-status');
+
+    function gatherKeys() {
+        return input.value
+            .split(',')
+            .map(function (s) { return s.trim(); })
+            .filter(Boolean);
     }
 
-    function chipFor(input) {
-        // Attach (once) a save-acknowledgement chip next to the input.
-        var existing = input.nextElementSibling;
-        if (existing && existing.classList && existing.classList.contains('tt-save-chip')) {
-            return existing;
+    function showStatus(kind, msg) {
+        if (!status) return;
+        status.hidden = false;
+        status.textContent = msg;
+        // Colors: success neutral grey, warning amber, error red.
+        status.style.color = kind === 'success' ? '#5b8c5a' :
+                              kind === 'warning' ? '#b07a13' :
+                              kind === 'error' ? '#b94a48' : '#888';
+        clearTimeout(status._hideTimer);
+        if (kind === 'success') {
+            status._hideTimer = setTimeout(function () { status.hidden = true; }, 2000);
         }
-        var chip = document.createElement('span');
-        chip.className = 'tt-save-chip';
-        chip.textContent = '✓ saved';
-        input.parentNode.insertBefore(chip, input.nextSibling);
-        return chip;
-    }
-    function flashChip(chip, ok) {
-        chip.textContent = ok ? '✓ saved' : '⚠ save failed';
-        chip.classList.toggle('error', !ok);
-        chip.classList.add('visible');
-        clearTimeout(chip._hideTimer);
-        chip._hideTimer = setTimeout(function () {
-            chip.classList.remove('visible');
-        }, 1400);
     }
 
-    document.querySelectorAll('.topic-tag-input').forEach(function (input) {
-        chipFor(input);
-        // Debounce blur so tab-through-fields fires one batched save, not five.
-        var blurTimer = null;
-        input.addEventListener('blur', function () {
-            clearTimeout(blurTimer);
-            blurTimer = setTimeout(saveTopicTags.bind(null, input), 80);
-        });
+    var blurTimer = null;
+    input.addEventListener('blur', function () {
+        clearTimeout(blurTimer);
+        blurTimer = setTimeout(save, 80);
     });
 
-    function saveTopicTags(triggerInput) {
-        var chip = chipFor(triggerInput);
+    function save() {
+        showStatus('info', 'Saving…');
         fetch('/teacher/assignment/{{ assignment.id }}/topic-tags', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ topic_keys: gatherPayload() }),
+            body: JSON.stringify({ topic_keys: gatherKeys() }),
         }).then(function (r) {
             if (!r.ok) throw new Error('http ' + r.status);
             return r.json();
         }).then(function (data) {
-            if (data && data.success && data.topic_keys) {
-                // Reflect server-side filtering: any unknown keys silently dropped.
-                var rows = document.querySelectorAll('.topic-tag-input');
-                rows.forEach(function (row, idx) {
-                    if (data.topic_keys[idx]) {
-                        row.value = data.topic_keys[idx].join(', ');
-                    }
-                });
-                flashChip(chip, true);
-            } else {
-                flashChip(chip, false);
+            if (!data || !data.success) {
+                showStatus('error', '⚠ ' + ((data && data.error) || 'Save failed'));
+                return;
             }
-        }).catch(function () { flashChip(chip, false); });
+            // Don't overwrite the user's typed text — they might want to fix
+            // a dropped key. Show the server-cleaned list as the canonical
+            // saved state, and surface any dropped keys explicitly.
+            var saved = (data.topic_keys || []);
+            var dropped = (data.dropped || []);
+            if (dropped.length) {
+                showStatus(
+                    'warning',
+                    '⚠ Saved ' + saved.length + ' tag' + (saved.length === 1 ? '' : 's') +
+                    '. Dropped (not in subject vocabulary): ' + dropped.join(', ')
+                );
+            } else {
+                showStatus('success', '✓ Saved ' + saved.length + ' tag' + (saved.length === 1 ? '' : 's'));
+                // When everything was accepted, normalize the display to the
+                // canonical comma-spaced form returned by the server.
+                input.value = saved.join(', ');
+            }
+        }).catch(function () {
+            showStatus('error', '⚠ Save failed');
+        });
     }
 })();
 
