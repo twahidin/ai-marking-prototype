@@ -389,3 +389,89 @@ def test_subject_standards_api_list_pending(app, db_session, client):
     texts = [r['text'] for r in data['standards']]
     assert 'Pending one' in texts
     assert 'Active one' not in texts
+
+
+# ---------------------------------------------------------------------------
+# Task 10.2: approve / edit / reject endpoints
+# ---------------------------------------------------------------------------
+
+def test_approve_moves_pending_to_active(app, db_session, client):
+    from db import SubjectStandard, Teacher
+    import uuid as _uuid
+    tid = 't-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='HOD', code='C' + _uuid.uuid4().hex[:6].upper(), role='hod')
+    db_session.add(t)
+    s = SubjectStandard(subject='biology', text='X-approve',
+                        topic_keys='["enzymes"]', status='pending_review',
+                        created_by=t.id)
+    db_session.add(s)
+    db_session.commit()
+    sid = s.id
+    with client.session_transaction() as sess:
+        sess['teacher_id'] = t.id
+        sess['authenticated'] = True
+    rv = client.post(f'/api/subject_standards/{sid}/approve')
+    assert rv.status_code == 200
+    db_session.refresh(s)
+    assert s.status == 'active'
+    assert s.reviewed_by == t.id
+
+
+def test_edit_updates_text_and_bumps_updated_at(app, db_session, client):
+    from db import SubjectStandard, Teacher
+    from datetime import datetime, timezone
+    import uuid as _uuid
+    import time as _time
+    tid = 't-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='HOD', code='C' + _uuid.uuid4().hex[:6].upper(), role='hod')
+    db_session.add(t)
+    s = SubjectStandard(subject='biology', text='Old', topic_keys='[]',
+                        status='active', created_by=t.id)
+    db_session.add(s)
+    db_session.commit()
+    old_updated = s.updated_at
+    _time.sleep(0.01)  # ensure timestamp strictly increases on platforms with coarse resolution
+    with client.session_transaction() as sess:
+        sess['teacher_id'] = t.id
+        sess['authenticated'] = True
+    rv = client.post(f'/api/subject_standards/{s.id}/edit', json={'text': 'New text'})
+    assert rv.status_code == 200
+    db_session.refresh(s)
+    assert s.text == 'New text'
+    assert s.updated_at > old_updated
+
+
+def test_reject_archives_standard(app, db_session, client):
+    from db import SubjectStandard, Teacher
+    import uuid as _uuid
+    tid = 't-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='HOD', code='C' + _uuid.uuid4().hex[:6].upper(), role='hod')
+    db_session.add(t)
+    s = SubjectStandard(subject='biology', text='X-reject', topic_keys='[]',
+                        status='pending_review', created_by=t.id)
+    db_session.add(s)
+    db_session.commit()
+    with client.session_transaction() as sess:
+        sess['teacher_id'] = t.id
+        sess['authenticated'] = True
+    rv = client.post(f'/api/subject_standards/{s.id}/reject')
+    assert rv.status_code == 200
+    db_session.refresh(s)
+    assert s.status == 'archived'
+
+
+def test_non_authorised_role_cannot_approve(app, db_session, client):
+    from db import SubjectStandard, Teacher
+    import uuid as _uuid
+    tid = 't-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='Bob', code='C' + _uuid.uuid4().hex[:6].upper(), role='teacher')
+    db_session.add(t)
+    s = SubjectStandard(subject='biology', text='X-perm', topic_keys='[]',
+                        status='pending_review', created_by=t.id)
+    db_session.add(s)
+    db_session.commit()
+    with client.session_transaction() as sess:
+        sess['teacher_id'] = t.id
+        sess['authenticated'] = True
+    rv = client.post(f'/api/subject_standards/{s.id}/approve')
+    assert rv.status_code == 403

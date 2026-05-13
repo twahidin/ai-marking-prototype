@@ -6434,6 +6434,66 @@ def api_subject_standards_list():
     })
 
 
+def _load_standard_or_404(standard_id):
+    from db import SubjectStandard
+    s = SubjectStandard.query.get(standard_id)
+    if s is None:
+        return None, (jsonify({'error': 'not_found'}), 404)
+    return s, None
+
+
+@app.route('/api/subject_standards/<int:standard_id>/approve', methods=['POST'])
+def api_subject_standards_approve(standard_id):
+    s, err = _load_standard_or_404(standard_id)
+    if err:
+        return err
+    teacher = _current_teacher()
+    if not _can_edit_subject_standards(teacher, subject=s.subject):
+        return jsonify({'error': 'forbidden'}), 403
+    s.status = 'active'
+    s.reviewed_by = teacher.id
+    s.reviewed_at = datetime.now(timezone.utc)
+    s.updated_at = datetime.now(timezone.utc)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/api/subject_standards/<int:standard_id>/edit', methods=['POST'])
+def api_subject_standards_edit(standard_id):
+    s, err = _load_standard_or_404(standard_id)
+    if err:
+        return err
+    teacher = _current_teacher()
+    if not _can_edit_subject_standards(teacher, subject=s.subject):
+        return jsonify({'error': 'forbidden'}), 403
+    data = request.get_json(silent=True) or {}
+    new_text = (data.get('text') or '').strip()
+    if not new_text:
+        return jsonify({'error': 'text required'}), 400
+    s.text = new_text
+    s.reviewed_by = teacher.id
+    s.reviewed_at = datetime.now(timezone.utc)
+    s.updated_at = datetime.now(timezone.utc)
+    db.session.commit()
+    return jsonify({'success': True, 'text': new_text})
+
+
+@app.route('/api/subject_standards/<int:standard_id>/reject', methods=['POST'])
+def api_subject_standards_reject(standard_id):
+    s, err = _load_standard_or_404(standard_id)
+    if err:
+        return err
+    teacher = _current_teacher()
+    if not _can_edit_subject_standards(teacher, subject=s.subject):
+        return jsonify({'error': 'forbidden'}), 403
+    s.status = 'archived'
+    s.reviewed_by = teacher.id
+    s.reviewed_at = datetime.now(timezone.utc)
+    s.updated_at = datetime.now(timezone.utc)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
 @app.route('/teacher/assignment/<assignment_id>')
 def teacher_assignment_detail(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)
