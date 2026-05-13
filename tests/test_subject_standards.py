@@ -326,3 +326,66 @@ def test_calibration_block_empty_for_legacy_assignment_with_no_amendments(app, d
     db_session.add(asn)
     db_session.commit()
     assert _build_calibration_block_for(asn) == ''
+
+
+def test_subject_standards_page_requires_hod_or_subject_lead(app, db_session, client):
+    from db import Teacher
+    import uuid as _uuid
+    t = Teacher(id='t-' + _uuid.uuid4().hex[:8], name='Bob',
+                code='C' + _uuid.uuid4().hex[:6].upper(), role='teacher')
+    db_session.add(t)
+    db_session.commit()
+
+    with client.session_transaction() as s:
+        s['teacher_id'] = t.id
+        s['authenticated'] = True
+
+    rv = client.get('/teacher/subject-standards')
+    assert rv.status_code == 403
+
+
+def test_subject_standards_page_accessible_by_hod(app, db_session, client):
+    from db import Teacher
+    import uuid as _uuid
+    t = Teacher(id='t-' + _uuid.uuid4().hex[:8], name='HOD',
+                code='C' + _uuid.uuid4().hex[:6].upper(), role='hod')
+    db_session.add(t)
+    db_session.commit()
+
+    with client.session_transaction() as s:
+        s['teacher_id'] = t.id
+        s['authenticated'] = True
+
+    rv = client.get('/teacher/subject-standards')
+    assert rv.status_code == 200
+
+
+def test_subject_standards_api_list_pending(app, db_session, client):
+    from db import Teacher, SubjectStandard
+    import uuid as _uuid
+    t = Teacher(id='t-' + _uuid.uuid4().hex[:8], name='HOD',
+                code='C' + _uuid.uuid4().hex[:6].upper(), role='hod')
+    db_session.add(t)
+    db_session.commit()
+
+    subj = 'biology_listpending_' + _uuid.uuid4().hex[:6]
+    db_session.add(SubjectStandard(
+        subject=subj, text='Pending one', topic_keys='["enzymes"]',
+        status='pending_review', created_by=t.id, reinforcement_count=2,
+    ))
+    db_session.add(SubjectStandard(
+        subject=subj, text='Active one', topic_keys='["enzymes"]',
+        status='active', created_by=t.id, reinforcement_count=5,
+    ))
+    db_session.commit()
+
+    with client.session_transaction() as s:
+        s['teacher_id'] = t.id
+        s['authenticated'] = True
+
+    rv = client.get(f'/api/subject_standards?status=pending_review&subject={subj}')
+    assert rv.status_code == 200
+    data = rv.get_json()
+    texts = [r['text'] for r in data['standards']]
+    assert 'Pending one' in texts
+    assert 'Active one' not in texts

@@ -798,6 +798,20 @@ def _can_edit_target(viewer, target):
     return False
 
 
+def _can_edit_subject_standards(teacher, subject=None):
+    """ACL for the Subject Standards page and CRUD endpoints.
+
+    Per the calibration-intent design (2026-05-13): edit rights granted to
+    teachers with role in {'hod', 'subject_head', 'lead', 'owner'}. The
+    `subject` kwarg is reserved for forward-compatibility with per-subject
+    scoping; currently ignored — all four roles can edit any subject's
+    standards.
+    """
+    if teacher is None:
+        return False
+    return (teacher.role or '').lower() in ('hod', 'subject_head', 'lead', 'owner')
+
+
 def _check_assignment_ownership(asn):
     """Return error response if current user doesn't own this assignment, or None if OK."""
     if not _is_authenticated():
@@ -6378,6 +6392,46 @@ def teacher_push_amendments_to_bank(assignment_id):
     asn.bank_pushed_at = now
     db.session.commit()
     return jsonify({'success': True, 'bank_pushed_at': now.isoformat()})
+
+
+@app.route('/teacher/subject-standards')
+def teacher_subject_standards_page():
+    teacher = _current_teacher()
+    if not _can_edit_subject_standards(teacher):
+        return jsonify({'error': 'forbidden'}), 403
+    return render_template('subject_standards.html', teacher=teacher)
+
+
+@app.route('/api/subject_standards', methods=['GET'])
+def api_subject_standards_list():
+    from db import SubjectStandard
+    teacher = _current_teacher()
+    if not _can_edit_subject_standards(teacher):
+        return jsonify({'error': 'forbidden'}), 403
+    status = request.args.get('status', 'active')
+    subject_filter = request.args.get('subject')
+    q = SubjectStandard.query.filter_by(status=status)
+    if subject_filter:
+        q = q.filter_by(subject=subject_filter)
+    rows = q.order_by(SubjectStandard.reinforcement_count.desc()).all()
+    import json as _json
+    return jsonify({
+        'standards': [
+            {
+                'id': r.id,
+                'uuid': r.uuid,
+                'subject': r.subject,
+                'text': r.text,
+                'topic_keys': _json.loads(r.topic_keys or '[]'),
+                'theme_key': r.theme_key,
+                'reinforcement_count': r.reinforcement_count,
+                'status': r.status,
+                'created_at': r.created_at.isoformat() if r.created_at else None,
+                'updated_at': r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ],
+    })
 
 
 @app.route('/teacher/assignment/<assignment_id>')

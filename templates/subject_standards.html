@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block title %}Subject standards{% endblock %}
+
+{% block body %}
+<div class="container" style="max-width:900px;">
+    <a href="/dashboard" class="back-link">&larr; Back</a>
+    <div class="header"><h1>Subject standards</h1></div>
+
+    <div class="card" style="margin-top:16px;">
+        <h2>Pending review</h2>
+        <div id="pending-list" style="font-size:13px;color:#555;">Loading&hellip;</div>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+        <h2>Active standards</h2>
+        <div style="margin:8px 0;">
+            <label style="font-size:12px;color:#666;">Subject:
+                <input id="filter-subject" placeholder="biology"
+                       style="margin-left:6px;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:13px;" />
+            </label>
+            <button type="button" id="filter-apply" class="upload-btn"
+                    style="margin-left:8px;padding:4px 10px;font-size:12px;">Apply</button>
+        </div>
+        <div id="active-list" style="font-size:13px;color:#555;">Loading&hellip;</div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    function escapeHtml(s) {
+        return (s || '').replace(/[&<>]/g, function (c) {
+            return ({'&':'&amp;','<':'&lt;','>':'&gt;'})[c];
+        });
+    }
+
+    function renderList(targetId, rows) {
+        var target = document.getElementById(targetId);
+        if (!rows.length) {
+            target.textContent = '(none)';
+            return;
+        }
+        var html = rows.map(function (r) {
+            return '<div class="ss-row" style="border:1px solid #eee;border-radius:6px;padding:10px;margin:8px 0;">' +
+                '<p style="margin:0 0 6px;">' + escapeHtml(r.text) + '</p>' +
+                '<p style="margin:0;color:#888;font-size:11px;">' +
+                escapeHtml(r.subject) + ' • ' + (r.topic_keys || []).map(escapeHtml).join(', ') +
+                ' • reinforced ' + (r.reinforcement_count || 0) + '× • ' + r.status +
+                '</p>' +
+                '</div>';
+        }).join('');
+        target.innerHTML = html;
+    }
+
+    function fetchPending() {
+        fetch('/api/subject_standards?status=pending_review')
+            .then(function (r) { return r.json(); })
+            .then(function (data) { renderList('pending-list', data.standards || []); });
+    }
+
+    function fetchActive(subject) {
+        var url = '/api/subject_standards?status=active';
+        if (subject) url += '&subject=' + encodeURIComponent(subject);
+        fetch(url).then(function (r) { return r.json(); }).then(function (data) {
+            renderList('active-list', data.standards || []);
+        });
+    }
+
+    document.getElementById('filter-apply').addEventListener('click', function () {
+        fetchActive(document.getElementById('filter-subject').value.trim());
+    });
+    fetchPending();
+    fetchActive('');
+})();
+</script>
+{% endblock %}
