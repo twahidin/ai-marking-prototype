@@ -81,3 +81,113 @@ def test_extract_standard_topic_keys_from_edit(app):
                 theme_key='terminology_precision',
             )
     assert keys == ['enzymes', 'terminology_precision']
+
+
+# ---------------------------------------------------------------------------
+# Task 4.1: promote_to_subject_standard helpers
+# ---------------------------------------------------------------------------
+
+def _seed_chain(db_session, *, subject='biology'):
+    """Helper to set up Teacher → Assignment → Student → Submission chain.
+    Returns (teacher, assignment, student, submission)."""
+    from db import Teacher, Assignment, Student, Submission
+    import uuid as _uuid
+    t = Teacher(id='t-' + _uuid.uuid4().hex[:8], name='Joe',
+                code='C' + _uuid.uuid4().hex[:6].upper(), role='teacher')
+    db_session.add(t)
+    asn = Assignment(id='a-' + _uuid.uuid4().hex[:8],
+                     classroom_code='C' + _uuid.uuid4().hex[:6].upper(),
+                     subject=subject, title='Test')
+    db_session.add(asn)
+    db_session.commit()
+    stu = Student(assignment_id=asn.id, index_number='1', name='Stu')
+    db_session.add(stu)
+    db_session.commit()
+    sub = Submission(assignment_id=asn.id, student_id=stu.id, result_json='{}')
+    db_session.add(sub)
+    db_session.commit()
+    return t, asn, stu, sub
+
+
+def test_promote_creates_new_standard_when_no_similar_exists(app, db_session):
+    from db import SubjectStandard, FeedbackEdit
+    from subject_standards import promote_to_subject_standard
+    from unittest.mock import patch
+    import json, uuid as _uuid
+
+    # Use a unique subject so this test is isolated from any leftover DB rows.
+    unique_subject = 'biology_' + _uuid.uuid4().hex[:8]
+    t, asn, _stu, sub = _seed_chain(db_session, subject=unique_subject)
+    fe = FeedbackEdit(
+        submission_id=sub.id, criterion_id='1', field='feedback',
+        original_text='Correct - heat affects enzyme rate.',
+        edited_text="Must say 'temperature', not 'heat'.",
+        edited_by=t.id, theme_key='terminology_precision',
+        assignment_id=asn.id, rubric_version='v1', scope='promoted', active=True,
+    )
+    db_session.add(fe)
+    db_session.commit()
+
+    with patch('subject_standards.extract_standard_topic_keys',
+              return_value=['enzymes', 'terminology_precision']):
+        ss_id = promote_to_subject_standard(
+            feedback_edit_id=fe.id,
+            provider='anthropic', model='claude-haiku-4-5',
+            session_keys={'anthropic': 'sk-fake'},
+        )
+
+    ss = SubjectStandard.query.get(ss_id)
+    assert ss is not None
+    assert ss.subject == unique_subject
+    assert ss.status == 'pending_review'
+    assert ss.reinforcement_count == 1
+    assert json.loads(ss.topic_keys) == ['enzymes', 'terminology_precision']
+
+
+def test_promote_reinforces_existing_similar_standard(app, db_session):
+    from db import SubjectStandard, FeedbackEdit
+    from subject_standards import promote_to_subject_standard
+    from unittest.mock import patch
+    import uuid as _uuid
+
+    # Use a unique subject so this test is isolated from any leftover DB rows.
+    unique_subject = 'biology_' + _uuid.uuid4().hex[:8]
+    t, asn, _stu, sub = _seed_chain(db_session, subject=unique_subject)
+    pre = SubjectStandard(
+        subject=unique_subject,
+        text="Must say 'temperature', not 'heat'.",
+        topic_keys='["enzymes", "terminology_precision"]',
+        theme_key='terminology_precision',
+        status='active', created_by=t.id, reinforcement_count=3,
+    )
+    db_session.add(pre)
+    db_session.commit()
+    pre_reinforcement_count = pre.reinforcement_count  # capture before promote
+
+    fe = FeedbackEdit(
+        submission_id=sub.id, criterion_id='1', field='feedback',
+        original_text='Heat is fine.',
+        edited_text="Must say temperature, not heat.",
+        edited_by=t.id, theme_key='terminology_precision',
+        assignment_id=asn.id, rubric_version='v1', scope='promoted', active=True,
+    )
+    db_session.add(fe)
+    db_session.commit()
+
+    with patch('subject_standards.extract_standard_topic_keys',
+              return_value=['enzymes', 'terminology_precision']):
+        ss_id = promote_to_subject_standard(
+            feedback_edit_id=fe.id,
+            provider='anthropic', model='claude-haiku-4-5',
+            session_keys={'anthropic': 'sk-fake'},
+        )
+
+    # Only one standard should exist for this unique subject (no new row created).
+    assert SubjectStandard.query.filter_by(subject=unique_subject).count() == 1
+    # The returned standard must be the pre-seeded one (by text match).
+    returned = SubjectStandard.query.get(ss_id)
+    assert returned is not None
+    assert returned.text == pre.text
+    # Reinforcement count must have incremented by 1.
+    db_session.refresh(returned)
+    assert returned.reinforcement_count == pre_reinforcement_count + 1
