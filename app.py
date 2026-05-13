@@ -6127,6 +6127,31 @@ def teacher_edit(assignment_id):
         logger.exception("Failed to save edits for assignment %s", assignment_id)
         return jsonify({'success': False, 'error': 'Failed to save changes. Please try again.'}), 500
 
+    # ── Calibration-intent design 2026-05-13 §4.8 ──
+    # If rubric or answer_key changed, re-pin active amend_answer_key edits
+    # from the old rubric_version to the new one. This keeps amendments
+    # "alive" through a typo-fix style re-upload without requiring the
+    # teacher to re-create them on the new version.
+    carried_amendments = 0
+    try:
+        if rub_changed or ak_changed:
+            from ai_marking import _rubric_version_hash
+            from db import FeedbackEdit as _FE
+            new_rv = _rubric_version_hash(asn)
+            edits = _FE.query.filter_by(
+                assignment_id=asn.id, active=True, amend_answer_key=True,
+            ).all()
+            for fe in edits:
+                if fe.rubric_version != new_rv:
+                    fe.rubric_version = new_rv
+                    carried_amendments += 1
+            if carried_amendments:
+                db.session.commit()
+    except Exception as carry_err:
+        logger.warning(
+            f'amendment carry-over failed for {asn.id}: {carry_err}'
+        )
+
     # If pinyin_mode flipped (off→on, on→off, or between vocab/full), re-derive
     # the *_html siblings on every existing submission's result_json so the
     # change shows up immediately on the feedback view + PDF, without forcing
@@ -6186,6 +6211,7 @@ def teacher_edit(assignment_id):
         'needs_remark': asn.needs_remark,
         'last_edited_at': asn.last_edited_at.isoformat(),
         'pinyin_resweep': pinyin_changed,
+        'carried_amendments': carried_amendments,
     })
 
 
