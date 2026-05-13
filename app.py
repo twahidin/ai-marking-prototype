@@ -1092,6 +1092,19 @@ def _build_calibration_block_for(asn, sub=None):
         return ''
 
 
+@app.template_filter('safe_json_loads')
+def _safe_json_loads(s, default=None):
+    """Jinja filter: parse a JSON string safely.
+    Returns `default` (or [] if default is None) on any parse error.
+    Use as `{{ value | safe_json_loads(default=[]) }}`.
+    """
+    try:
+        import json as _json
+        return _json.loads(s) if s else (default if default is not None else [])
+    except (TypeError, ValueError):
+        return default if default is not None else []
+
+
 def _resolve_api_keys(assignment) -> dict[str, str] | None:
     """Resolve API keys: assignment-stored → department config → env vars (None).
 
@@ -6244,6 +6257,48 @@ def _rubric_pills_for_questions(questions):
             'marks_total': marks_total,
         })
     return pills
+
+
+@app.route('/teacher/assignment/<assignment_id>/topic-tags', methods=['PUT'])
+def teacher_assignment_topic_tags_update(assignment_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    raw = data.get('topic_keys')
+    if not isinstance(raw, list):
+        return jsonify({'success': False, 'error': 'topic_keys must be a list'}), 400
+
+    from config.subject_topics import is_known_topic_key
+    from subjects import resolve_subject_key as _resolve_subj
+    subj_key = _resolve_subj(asn.subject or '') or (asn.subject or '').strip().lower()
+
+    cleaned = []
+    for q_keys in raw:
+        if not isinstance(q_keys, list):
+            cleaned.append([])
+            continue
+        kept = [
+            k for k in q_keys
+            if isinstance(k, str) and k.strip() and is_known_topic_key(subj_key, k.strip())
+        ]
+        # Cap at 3 per question, dedup while preserving order
+        seen = set()
+        deduped = []
+        for k in kept:
+            if k not in seen:
+                seen.add(k)
+                deduped.append(k)
+            if len(deduped) >= 3:
+                break
+        cleaned.append(deduped)
+
+    import json as _json
+    asn.topic_keys = _json.dumps(cleaned)
+    asn.topic_keys_status = 'tagged'
+    db.session.commit()
+    return jsonify({'success': True, 'topic_keys': cleaned})
 
 
 @app.route('/teacher/assignment/<assignment_id>')

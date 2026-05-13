@@ -86,6 +86,40 @@
         </div>
     </div>
 
+    {% if assignment.topic_keys_status != 'legacy' %}
+    <div class="card" style="margin-top:16px;">
+        <h2>Topic tags
+            {% if assignment.topic_keys_status == 'pending' %}
+                <span style="font-size:12px;font-weight:400;color:#e68a00;margin-left:8px;">tagging…</span>
+            {% endif %}
+        </h2>
+        {% set tk_per_q = assignment.topic_keys | safe_json_loads(default=[]) %}
+        {% if not tk_per_q %}
+            <p style="color:#666;font-size:13px;margin:8px 0;">
+                Topic tagging hasn't run yet. Marking will still work — subject standards
+                won't apply until tags are present.
+            </p>
+        {% else %}
+            <p style="color:#666;font-size:12px;margin:4px 0 12px;">
+                Comma-separated topic keys per question. Subject standards retrieval matches
+                on these tags when marking. Edit + blur a row to save.
+            </p>
+            <ol class="topic-tag-list" style="padding-left:24px;font-size:13px;">
+                {% for q_keys in tk_per_q %}
+                <li style="margin:4px 0;">
+                    <span style="color:#555;display:inline-block;min-width:36px;">Q{{ loop.index }}:</span>
+                    <input class="topic-tag-input"
+                           data-q="{{ loop.index }}"
+                           value="{{ q_keys | join(', ') }}"
+                           placeholder="comma-separated topic keys"
+                           style="width:60%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:13px;" />
+                </li>
+                {% endfor %}
+            </ol>
+        {% endif %}
+    </div>
+    {% endif %}
+
     <!-- Summary Stats -->
     {% set total = students | length %}
     {% set submitted = students | selectattr('status', 'ne', 'not_submitted') | list | length %}
@@ -1646,5 +1680,41 @@ window.addEventListener('DOMContentLoaded', () => {
         openEditModal();
     }
 });
+
+// Topic tags — autosave per row on blur.
+(function () {
+    function gatherPayload() {
+        var inputs = document.querySelectorAll('.topic-tag-input');
+        var payload = [];
+        inputs.forEach(function (el) {
+            payload.push(
+                el.value.split(',')
+                    .map(function (s) { return s.trim(); })
+                    .filter(Boolean)
+            );
+        });
+        return payload;
+    }
+
+    document.querySelectorAll('.topic-tag-input').forEach(function (input) {
+        input.addEventListener('blur', function () {
+            fetch('/teacher/assignment/{{ assignment.id }}/topic-tags', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ topic_keys: gatherPayload() }),
+            }).then(function (r) { return r.json(); }).then(function (data) {
+                if (data && data.success && data.topic_keys) {
+                    // Reflect server-side filtering: any unknown keys silently dropped.
+                    var rows = document.querySelectorAll('.topic-tag-input');
+                    rows.forEach(function (row, idx) {
+                        if (data.topic_keys[idx]) {
+                            row.value = data.topic_keys[idx].join(', ');
+                        }
+                    });
+                }
+            }).catch(function () { /* swallow — manual retry on next blur */ });
+        });
+    });
+})();
 </script>
 {% endblock %}
