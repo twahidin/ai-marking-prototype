@@ -4675,6 +4675,25 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                                     except Exception:
                                         pass
                                 db.session.commit()
+                                # Parity with single-marking: kick categorisation
+                                # so theme_key lands on result_json. Without this,
+                                # bulk-marked submissions stay categorisation_status='pending'
+                                # until the teacher first opens each one — and any
+                                # FeedbackEdit / SubjectStandard promoted before that
+                                # inherits theme_key=None.
+                                if sub.status == 'done':
+                                    try:
+                                        if _count_lost_criteria((result or {}).get('questions')) >= 2:
+                                            _kick_categorisation_worker(sub.id)
+                                        else:
+                                            sub.categorisation_status = 'done'
+                                            db.session.commit()
+                                    except Exception as cat_err:
+                                        db.session.rollback()
+                                        logger.warning(
+                                            f"Bulk job {job_id}: categorisation kick "
+                                            f"failed for sub {sub.id}: {cat_err}"
+                                        )
                         else:
                             # Legacy path retained for safety; currently unreachable
                             # Legacy fallback (no pre-created row) — create a new Submission

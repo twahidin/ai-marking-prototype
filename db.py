@@ -552,11 +552,29 @@ def _migrate_calibration_runtime(_app, force=False):
     - MarkingPrinciplesCache rows → is_stale=True
 
     Idempotent via MigrationFlag row. force=True bypasses idempotency (tests only).
+
+    Lifecycle:
+      • Initial deploy (no marker row) → runs the classification, writes the marker.
+      • Subsequent redeploys (marker present) → returns immediately, no work done.
+      • Fresh DB / dropped migration_flag table → marker absent again, re-runs as
+        if it were the initial deploy. This is the intended behaviour for a
+        clean-slate environment.
     """
     with _app.app_context():
         marker = MigrationFlag.query.filter_by(name=_CALIBRATION_RUNTIME_MIGRATION_NAME).first()
         if marker is not None and not force:
+            logger.debug(
+                'Calibration runtime migration already applied at %s — skipping',
+                marker.applied_at,
+            )
             return
+        if force:
+            logger.info('Calibration runtime migration: forced re-run (tests only)')
+        else:
+            logger.info(
+                'Calibration runtime migration: first run on this DB — '
+                'classifying assignments by 5-day cutoff'
+            )
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=5)
 
