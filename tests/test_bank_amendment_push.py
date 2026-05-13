@@ -61,9 +61,13 @@ def test_push_writes_merged_answer_key_to_bank(app, db_session, client):
     db_session.refresh(asn)
     db_session.refresh(bank)
     assert asn.bank_pushed_at is not None
-    # Bank's answer_key now contains the merged text including the amendment.
-    assert bank.answer_key is not None
-    assert b'powerhouse' in bank.answer_key
+    # New contract: bank.answer_key is overwritten with the assignment's
+    # original answer-key bytes (PDF/text preserved as-is), and the merged
+    # "Teacher clarifications" text lives in bank.answer_key_amendments. This
+    # preserves the original PDF so bank_preview can render it natively while
+    # surfacing amendments via the right-pane dropdown.
+    assert bank.answer_key == asn.answer_key
+    assert 'powerhouse' in (bank.answer_key_amendments or '')
 
 
 def test_push_returns_409_on_concurrent_write(app, db_session, client):

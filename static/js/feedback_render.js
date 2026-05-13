@@ -1244,8 +1244,10 @@
                     'data-specific-label="' + esc(q.specific_label || '') + '">' +
                     displayInner +
                 '</div></div>';
-        } else if (q.theme_key) {
+        } else if (q.theme_key && window.TEACHER_THEME_UI_ENABLED === true) {
             // Read-only with a category set: show the label inline.
+            // §4.9: also gated by TEACHER_THEME_UI_ENABLED so the entire
+            // theme/category surface disappears when the flag is off.
             catBlock = '<div class="fb-q-field"><div class="fb-q-field-label">Mistake Category</div>' +
                 '<div class="fb-q-field-value mistake-category">' +
                     '<span class="fb-cat-display-label">' + esc(currentLabel) + '</span>' +

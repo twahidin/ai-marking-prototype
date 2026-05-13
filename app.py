@@ -6498,10 +6498,14 @@ def teacher_push_amendments_to_bank(assignment_id):
         }), 409
 
     from subject_standards import build_effective_answer_key
-    from ai_marking import _decode_answer_key_text
-    original_ak = _decode_answer_key_text(asn.answer_key) if asn.answer_key else ''
-    merged = build_effective_answer_key(asn, original_ak)
-    bank.answer_key = merged.encode('utf-8') if isinstance(merged, str) else (merged or b'')
+    # Preserve the original file in `bank.answer_key` (so the bank preview
+    # still renders the PDF/image natively) and persist the amendments-only
+    # text into the dedicated `bank.answer_key_amendments` column for the
+    # right-pane dropdown. Pass '' as the original so the helper returns just
+    # the "Teacher clarifications" appendix.
+    bank.answer_key = asn.answer_key
+    amendments_text = build_effective_answer_key(asn, '') or ''
+    bank.answer_key_amendments = amendments_text.lstrip('\n')
 
     now = datetime.now(timezone.utc)
     asn.bank_pushed_at = now
@@ -7581,13 +7585,18 @@ def _build_text_edit_meta(submission_id, teacher_id=None):
         active_by_key = {(e.criterion_id, e.field): e for e in active_edits}
 
         for row in log_rows:
+            ed = active_by_key.get((row.criterion_id, row.field))
             entry = {
                 'version': int(row.latest_version),
-                'calibrated': (row.criterion_id, row.field) in active_by_key,
+                'calibrated': ed is not None,
             }
-            ed = active_by_key.get((row.criterion_id, row.field))
             if ed:
                 entry['edit_id'] = ed.id
+                # §4.1 two-checkbox intent: surface flags so the edit modal
+                # can restore both checkboxes correctly on reopen. scope
+                # values: 'individual'|'amendment'|'promoted'|'both'.
+                entry['amend_answer_key'] = bool(ed.amend_answer_key)
+                entry['update_subject_standards'] = ed.scope in ('promoted', 'both')
             out.setdefault(row.criterion_id, {})[row.field] = entry
 
         # Calibration rows without a corresponding FeedbackLog (e.g. legacy
@@ -7600,6 +7609,8 @@ def _build_text_edit_meta(submission_id, teacher_id=None):
                 'version': 0,
                 'calibrated': True,
                 'edit_id': ed.id,
+                'amend_answer_key': bool(ed.amend_answer_key),
+                'update_subject_standards': ed.scope in ('promoted', 'both'),
             }
     except Exception as _meta_err:
         logger.warning(f"text_edit_meta lookup failed for sub {submission_id}: {_meta_err}")
@@ -10112,7 +10123,21 @@ def bank_preview(bank_id):
         has_question_paper=bool(item.question_paper),
         has_answer_key=bool(item.answer_key),
         has_rubrics=bool(item.rubrics),
+        has_amendments=bool((item.answer_key_amendments or '').strip()),
     )
+
+
+@app.route('/bank/<bank_id>/answer-key-amendments')
+def bank_answer_key_amendments(bank_id):
+    """Return the textual "Teacher clarifications" appended to a bank item's
+    answer key. Surfaced via the right-pane dropdown in bank_preview.html."""
+    if not _is_authenticated():
+        return jsonify({'success': False, 'error': 'unauthenticated'}), 401
+    item = AssignmentBank.query.get_or_404(bank_id)
+    return jsonify({
+        'success': True,
+        'amendments': item.answer_key_amendments or '',
+    })
 
 
 # ---------------------------------------------------------------------------

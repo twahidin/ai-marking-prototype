@@ -260,6 +260,7 @@ def _migrate_add_columns(app):
                 ('show_results', 'BOOLEAN DEFAULT TRUE'),
                 ('allow_drafts', 'BOOLEAN DEFAULT FALSE NOT NULL'),
                 ('max_drafts', 'INTEGER DEFAULT 3 NOT NULL'),
+                ('answer_key_amendments', 'TEXT'),
             ]
             for col, ddl in ensure_ab:
                 if col not in ab_cols:
@@ -294,6 +295,53 @@ def _migrate_add_columns(app):
             except Exception as _e:
                 db.session.rollback()
                 logger.warning(f'assignment_bank backfill skipped: {_e}')
+
+            # One-shot heal: the older push-amendments-to-bank flow wrote
+            # plain UTF-8 text bytes over the existing PDF in `answer_key`,
+            # making the bank preview's PDF viewer error with "Unsupported
+            # document format". Detect those corrupted rows (non-PDF non-image
+            # bytes in `answer_key` AND empty `answer_key_amendments`), move
+            # the text into `answer_key_amendments`, and clear `answer_key`.
+            # Idempotent: re-running on already-healed rows is a no-op since
+            # cleared answer_keys are NULL and amendments is non-empty.
+            try:
+                corrupted_q = db.session.execute(text(
+                    "SELECT id, answer_key, answer_key_amendments FROM assignment_bank "
+                    "WHERE answer_key IS NOT NULL "
+                    "AND (answer_key_amendments IS NULL OR answer_key_amendments = '')"
+                )).fetchall()
+                heal_count = 0
+                for row in corrupted_q:
+                    blob = row.answer_key
+                    if not blob:
+                        continue
+                    head = bytes(blob[:16])
+                    is_pdf = head.startswith(b'%PDF')
+                    is_jpg = head.startswith(b'\xff\xd8\xff')
+                    is_png = head.startswith(b'\x89PNG\r\n\x1a\n')
+                    is_gif = head[:6] in (b'GIF87a', b'GIF89a')
+                    is_webp = head.startswith(b'RIFF') and head[8:12] == b'WEBP'
+                    is_heic = len(head) >= 12 and head[4:8] == b'ftyp'
+                    if is_pdf or is_jpg or is_png or is_gif or is_webp or is_heic:
+                        continue
+                    try:
+                        text_val = bytes(blob).decode('utf-8')
+                    except UnicodeDecodeError:
+                        continue
+                    db.session.execute(
+                        text("UPDATE assignment_bank SET answer_key = NULL, "
+                             "answer_key_amendments = :amendments WHERE id = :id"),
+                        {'amendments': text_val, 'id': row.id},
+                    )
+                    heal_count += 1
+                if heal_count:
+                    db.session.commit()
+                    logger.info(
+                        'assignment_bank heal: moved text-only answer_key bytes to '
+                        'answer_key_amendments on %d row(s)', heal_count)
+            except Exception as _heal_err:
+                db.session.rollback()
+                logger.warning(f'assignment_bank heal skipped: {_heal_err}')
 
         # feedback_edit ensure-list. The table may exist on prod from
         # an older deploy with a partial column set; SELECTs blow up with
@@ -887,6 +935,12 @@ class AssignmentBank(db.Model):
     answer_key = db.Column(db.LargeBinary)
     rubrics = db.Column(db.LargeBinary)
     reference = db.Column(db.LargeBinary)
+
+    # Text-only "Teacher clarifications" appended to the answer key. Stored
+    # separately from `answer_key` so a PDF answer key is preserved as-is and
+    # bank_preview.html can offer a right-pane dropdown to switch between the
+    # PDF and these textual amendments.
+    answer_key_amendments = db.Column(db.Text, default='')
 
     created_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))

@@ -37,11 +37,22 @@
     }
     .review-subtoolbar button:hover { background: #f0f0f0; }
     .review-subtoolbar .pane-label { font-size: 12px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.3px; margin-right: auto; }
+    .review-subtoolbar select.pane-source {
+        font-size: 12px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.3px;
+        margin-right: auto; padding: 4px 8px; border: 1px solid #d0d0d0; border-radius: 6px; background: white; cursor: pointer;
+    }
 
     .review-scroll { flex: 1; overflow: auto; padding: 16px; background: #f0f0f3; min-width: 0; min-height: 0; }
     .dv-scale-wrap { transform-origin: top center; transition: none; }
 
     .pane-empty { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px; color: #888; font-size: 14px; text-align: center; background: #f0f0f3; }
+    .amendments-pane { flex: 1; overflow: auto; padding: 20px; background: white; min-width: 0; min-height: 0; }
+    .amendments-pane pre {
+        white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px; color: #2D2D2D; background: #fafafa; border: 1px solid #eee; border-radius: 6px;
+        padding: 14px 16px; margin: 0;
+    }
+    .amendments-pane .amendments-empty { color: #888; font-style: italic; padding: 12px 0; }
 </style>
 {% endblock %}
 
@@ -71,27 +82,31 @@
         </div>
         <div class="review-resizer" id="reviewResizer"></div>
         <div class="review-pane review-pane-right">
-            {% if has_answer_key %}
+            {% if has_answer_key or has_rubrics or has_amendments %}
             <div class="review-subtoolbar">
-                <span class="pane-label">Answer Key</span>
+                {% if (has_answer_key and has_amendments) or (has_rubrics and has_amendments) or (has_answer_key and has_rubrics) %}
+                <select class="pane-source" id="rightSource" aria-label="Right pane source">
+                    {% if has_answer_key %}<option value="answer_key">Answer Key</option>{% endif %}
+                    {% if has_rubrics %}<option value="rubrics">Rubrics</option>{% endif %}
+                    {% if has_amendments %}<option value="amendments">Amendments</option>{% endif %}
+                </select>
+                {% else %}
+                <span class="pane-label">
+                    {% if has_answer_key %}Answer Key{% elif has_rubrics %}Rubrics{% else %}Amendments{% endif %}
+                </span>
+                {% endif %}
                 <button type="button" id="rightZoomOut">−</button>
                 <button type="button" id="rightZoomIn">+</button>
                 <button type="button" id="rightReset">Reset</button>
                 <button type="button" id="rightRotate">⟳ Rotate</button>
             </div>
             <div class="review-scroll" id="rightScroll"></div>
-            {% elif has_rubrics %}
-            <div class="review-subtoolbar">
-                <span class="pane-label">Rubrics</span>
-                <button type="button" id="rightZoomOut">−</button>
-                <button type="button" id="rightZoomIn">+</button>
-                <button type="button" id="rightReset">Reset</button>
-                <button type="button" id="rightRotate">⟳ Rotate</button>
+            <div class="amendments-pane" id="rightAmendments" hidden>
+                <pre id="rightAmendmentsText"><span class="amendments-empty">Loading amendments…</span></pre>
             </div>
-            <div class="review-scroll" id="rightScroll"></div>
             {% else %}
             <div class="review-subtoolbar"><span class="pane-label">Answer Key</span></div>
-            <div class="pane-empty">No answer key (or rubrics) attached to this bank item.</div>
+            <div class="pane-empty">No answer key, rubrics, or amendments attached to this bank item.</div>
             {% endif %}
         </div>
     </div>
@@ -114,6 +129,7 @@ var BANK_ID = {{ item.id|tojson }};
 var HAS_QP = {{ 'true' if has_question_paper else 'false' }};
 var HAS_AK = {{ 'true' if has_answer_key else 'false' }};
 var HAS_RUBRICS = {{ 'true' if has_rubrics else 'false' }};
+var HAS_AMENDMENTS = {{ 'true' if has_amendments else 'false' }};
 
 // --- Resizer (mirrors review.html, but stores under its own key) ---
 (function initResizer() {
@@ -166,10 +182,63 @@ function initLeftViewer() {
 }
 
 function initRightViewer() {
-    var rightFile = HAS_AK ? 'answer_key' : (HAS_RUBRICS ? 'rubrics' : null);
-    if (!rightFile) return;
-    var rightViewer = DocumentViewer.create(document.getElementById('rightScroll'));
-    rightViewer.loadFromUrl('/bank/' + encodeURIComponent(BANK_ID) + '/file-inline/' + rightFile);
+    var scrollEl = document.getElementById('rightScroll');
+    var amendEl = document.getElementById('rightAmendments');
+    var amendTextEl = document.getElementById('rightAmendmentsText');
+    if (!scrollEl) return;
+
+    // Default source: answer key if available, else rubrics, else amendments.
+    var defaultSrc = HAS_AK ? 'answer_key' : (HAS_RUBRICS ? 'rubrics' : (HAS_AMENDMENTS ? 'amendments' : null));
+    if (!defaultSrc) return;
+
+    var rightViewer = DocumentViewer.create(scrollEl);
+
+    // Lazy-load amendments once on first switch and cache the text.
+    var amendmentsCache = null;
+    function loadAmendments() {
+        if (amendmentsCache !== null) {
+            renderAmendments(amendmentsCache);
+            return;
+        }
+        amendTextEl.innerHTML = '<span class="amendments-empty">Loading amendments…</span>';
+        fetch('/bank/' + encodeURIComponent(BANK_ID) + '/answer-key-amendments')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                amendmentsCache = (data && data.amendments) || '';
+                renderAmendments(amendmentsCache);
+            })
+            .catch(function () {
+                amendTextEl.innerHTML = '<span class="amendments-empty">Could not load amendments.</span>';
+            });
+    }
+    function renderAmendments(text) {
+        if (!text) {
+            amendTextEl.innerHTML = '<span class="amendments-empty">No amendments recorded for this bank item.</span>';
+        } else {
+            amendTextEl.textContent = text;
+        }
+    }
+
+    function showSource(src) {
+        if (src === 'amendments') {
+            scrollEl.hidden = true;
+            if (amendEl) amendEl.hidden = false;
+            loadAmendments();
+        } else {
+            if (amendEl) amendEl.hidden = true;
+            scrollEl.hidden = false;
+            rightViewer.loadFromUrl('/bank/' + encodeURIComponent(BANK_ID) + '/file-inline/' + src);
+        }
+    }
+
+    showSource(defaultSrc);
+
+    var srcSelect = document.getElementById('rightSource');
+    if (srcSelect) {
+        srcSelect.value = defaultSrc;
+        srcSelect.addEventListener('change', function () { showSource(srcSelect.value); });
+    }
+
     document.getElementById('rightZoomIn').addEventListener('click', function () { rightViewer.zoomIn(); });
     document.getElementById('rightZoomOut').addEventListener('click', function () { rightViewer.zoomOut(); });
     document.getElementById('rightReset').addEventListener('click', function () { rightViewer.reset(); });
