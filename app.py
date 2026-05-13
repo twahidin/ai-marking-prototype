@@ -117,6 +117,12 @@ _ENV_APP_TITLE = os.getenv('APP_TITLE', 'AI Feedback Systems')
 # to "TRUE" to re-enable the student grouping view.
 _ENV_STUDENT_GROUPING_UI_ENABLED = os.getenv('STUDENT_GROUPING_UI_ENABLED', 'FALSE').upper() == 'TRUE'
 
+# Calibration intent design (2026-05-13) §4.9: teacher-facing inline theme/category
+# dropdown. The categorisation pipeline (theme_key on result_json, FeedbackEdit
+# inheritance, calibration retrieval) runs regardless — this flag only controls
+# the teacher correction UI surface. Set to "TRUE" to re-enable.
+_ENV_TEACHER_THEME_UI_ENABLED = os.getenv('TEACHER_THEME_UI_ENABLED', 'FALSE').upper() == 'TRUE'
+
 # Demo mode: restricted to 3 budget models only
 DEMO_MODELS = {
     'anthropic': {
@@ -327,6 +333,7 @@ def inject_dept_context():
         'current_teacher': teacher,
         'static_version': _STATIC_VERSION,
         'canonical_subjects': SUBJECT_DISPLAY_NAMES,
+        'TEACHER_THEME_UI_ENABLED': _ENV_TEACHER_THEME_UI_ENABLED,
     }
 
 

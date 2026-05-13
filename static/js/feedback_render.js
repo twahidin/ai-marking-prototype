@@ -1224,11 +1224,12 @@
             ? '<span class="fb-cat-corrected" style="color:#8a8db2;margin-left:8px;font-style:normal;" title="Teacher-corrected">✎</span>'
             : '';
 
-        if (state.editable && hasLostMarks) {
+        if (state.editable && hasLostMarks && window.TEACHER_THEME_UI_ENABLED === true) {
             // Editable: full clickable field block. Visible label is the
             // human theme label (or "Click to set" placeholder); raw key
             // and specific_label are kept on data-* attrs so saves preserve
             // the AI's original specific_label across category changes.
+            // §4.9: only rendered when TEACHER_THEME_UI_ENABLED is explicitly true.
             var displayInner;
             if (q.theme_key) {
                 displayInner = '<span class="fb-cat-display-label">' + esc(currentLabel) + '</span>' +
@@ -1517,6 +1518,12 @@
     }
 
     function attachCategoryLineHandler(state, card) {
+        // Spec 2026-05-13 §4.9: hide the teacher-facing theme/category
+        // dropdown by default. Categorisation pipeline keeps running on the
+        // server — only the click-to-edit surface is suppressed.
+        if (window.TEACHER_THEME_UI_ENABLED !== true) {
+            return;
+        }
         var trigger = card.querySelector('.fb-cat-trigger');
         if (!trigger || trigger.dataset.bound === '1') return;
         trigger.dataset.bound = '1';

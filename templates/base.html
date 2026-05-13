@@ -59,6 +59,8 @@
        existing overlay-style modal (modal-overlay / upload-modal /
        extracted-modal / feedback-modal / edit-modal / [data-modal]). #}
     <script src="{{ url_for('static', filename='js/modal.js') }}?v={{ static_version }}" defer></script>
+    {# §4.9 Calibration intent: expose env-flag to JS before feedback_render.js loads. #}
+    <script>window.TEACHER_THEME_UI_ENABLED = {{ TEACHER_THEME_UI_ENABLED|tojson }};</script>
 </head>
 <body>
 {% if current_teacher %}
