@@ -2443,6 +2443,71 @@ Rules for the JSON:
     return {'categorisation': cats_out, 'group_habits': habits_out}
 
 
+def extract_assignment_topic_keys(provider, model, session_keys, subject, questions, max_retries=3):
+    """For each question, return a list of topic_keys drawn from the subject's
+    controlled vocabulary. Returns [[], [], ...] (one empty list per question)
+    if the AI call fails after `max_retries`.
+
+    `questions` is a list of {'question_num', 'text', 'answer_key'} dicts.
+    """
+    from config.subject_topics import get_topics_for_subject, is_known_topic_key
+
+    vocab = get_topics_for_subject(subject)
+    if not vocab:
+        return [[] for _ in questions]
+    vocab_lines = '\n'.join(f'  - {k}: {label}' for k, label in vocab)
+
+    lines = [
+        f'Subject: {subject}',
+        '',
+        'Controlled vocabulary (you MUST pick from this list):',
+        vocab_lines,
+        '',
+        'Tag each question with 1-3 topic keys from the vocab above. Pick keys that capture both content domain (e.g. enzymes) and cross-cutting skill (e.g. terminology_precision) where applicable.',
+        '',
+        'Questions:',
+    ]
+    for q in questions:
+        lines.append(f"Q{q['question_num']}: {q.get('text', '')}")
+        if q.get('answer_key'):
+            lines.append(f"  Answer key: {q['answer_key']}")
+    lines.append('')
+    lines.append('Return JSON only: {"questions": [{"question_num": N, "topic_keys": ["..."]}, ...]}')
+    user_prompt = '\n'.join(lines)
+    system_prompt = 'You are a topic-tagger for school assignments. Output JSON only, no commentary.'
+
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            raw = _simple_completion(
+                provider=provider, model=model, session_keys=session_keys,
+                system=system_prompt, user=user_prompt, max_tokens=1200,
+            )
+            parsed = parse_ai_response(raw)
+            out = []
+            for q in questions:
+                qn = q['question_num']
+                match = next(
+                    (item for item in parsed.get('questions', []) if str(item.get('question_num')) == str(qn)),
+                    None,
+                )
+                keys = (match or {}).get('topic_keys') or []
+                filtered = []
+                for k in keys:
+                    if is_known_topic_key(subject, k):
+                        filtered.append(k)
+                    else:
+                        logger.info(f'extract_assignment_topic_keys: dropped unknown key {k!r} for subject {subject}')
+                out.append(filtered[:3])
+            return out
+        except Exception as e:
+            last_err = e
+            logger.warning(f'extract_assignment_topic_keys attempt {attempt + 1} failed: {e}')
+
+    logger.error(f'extract_assignment_topic_keys gave up after {max_retries} attempts: {last_err}')
+    return [[] for _ in questions]
+
+
 def _rubric_version_hash(asn):
     """MD5 hex over the assignment's raw rubric or answer_key bytes.
 
