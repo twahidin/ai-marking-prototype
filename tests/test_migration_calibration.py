@@ -79,3 +79,70 @@ def test_subject_topic_vocabulary_round_trip(app, db_session):
     assert got is not None
     assert got.display_name == 'Test Topic'
     assert got.active is True
+
+
+def test_legacy_assignments_get_legacy_status(app, db_session):
+    from datetime import datetime, timezone, timedelta
+    from db import Assignment, _migrate_calibration_runtime
+    import uuid as _uuid
+
+    old_id = 'old-' + _uuid.uuid4().hex[:8]
+    new_id = 'new-' + _uuid.uuid4().hex[:8]
+    old = Assignment(id=old_id, classroom_code='OLD' + _uuid.uuid4().hex[:4].upper(),
+                     subject='biology', title='Old',
+                     created_at=datetime.now(timezone.utc) - timedelta(days=30))
+    new = Assignment(id=new_id, classroom_code='NEW' + _uuid.uuid4().hex[:4].upper(),
+                     subject='biology', title='New',
+                     created_at=datetime.now(timezone.utc) - timedelta(days=2))
+    db_session.add_all([old, new])
+    db_session.commit()
+
+    _migrate_calibration_runtime(__import__('app').app, force=True)
+
+    db_session.refresh(old)
+    db_session.refresh(new)
+    assert old.topic_keys_status == 'legacy'
+    assert new.topic_keys_status == 'pending'
+
+
+def test_legacy_feedback_edits_deactivated(app, db_session):
+    from datetime import datetime, timezone, timedelta
+    from db import Teacher, Assignment, FeedbackEdit, _migrate_calibration_runtime
+    import uuid as _uuid
+
+    tid = 't-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='Joe', code='C' + _uuid.uuid4().hex[:6].upper(), role='teacher')
+    db_session.add(t)
+    old_asn = Assignment(id='old-' + _uuid.uuid4().hex[:8],
+                         classroom_code='OL' + _uuid.uuid4().hex[:4].upper(),
+                         subject='biology', title='Old',
+                         created_at=datetime.now(timezone.utc) - timedelta(days=30))
+    new_asn = Assignment(id='new-' + _uuid.uuid4().hex[:8],
+                         classroom_code='NE' + _uuid.uuid4().hex[:4].upper(),
+                         subject='biology', title='New',
+                         created_at=datetime.now(timezone.utc) - timedelta(days=2))
+    db_session.add_all([old_asn, new_asn])
+    db_session.commit()
+    placeholder_sid_a = 9_100_000 + (int(_uuid.uuid4().int) % 100_000)
+    placeholder_sid_b = 9_200_000 + (int(_uuid.uuid4().int) % 100_000)
+    old_fe = FeedbackEdit(submission_id=placeholder_sid_a, criterion_id='1', field='feedback',
+                          original_text='x', edited_text='y',
+                          edited_by=t.id, assignment_id=old_asn.id,
+                          rubric_version='v1', scope='individual', active=True)
+    new_fe = FeedbackEdit(submission_id=placeholder_sid_b, criterion_id='1', field='feedback',
+                          original_text='x', edited_text='y',
+                          edited_by=t.id, assignment_id=new_asn.id,
+                          rubric_version='v1', scope='individual', active=True)
+    db_session.add_all([old_fe, new_fe])
+    db_session.commit()
+    old_fe_id = old_fe.id
+    new_fe_id = new_fe.id
+
+    _migrate_calibration_runtime(__import__('app').app, force=True)
+
+    db_session.refresh(old_fe)
+    db_session.refresh(new_fe)
+    assert old_fe.active is False
+    assert new_fe.active is True
+    assert new_fe.amend_answer_key is True
+    assert new_fe.scope == 'amendment'

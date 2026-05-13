@@ -538,6 +538,65 @@ def _migrate_add_columns(app):
                 logger.info('Added bank_pushed_at column to assignments table')
 
 
+_CALIBRATION_RUNTIME_MIGRATION_NAME = 'calibration_runtime_2026_05_13'
+
+
+def _migrate_calibration_runtime(_app, force=False):
+    """One-shot migration applying the 5-day cutoff classification rules.
+    Spec: docs/superpowers/specs/2026-05-13-calibration-edit-intent-design.md §7
+
+    - Assignments older than 5 days → topic_keys_status='legacy'
+    - Assignments newer than 5 days → topic_keys_status='pending'
+    - FeedbackEdits on legacy assignments → active=False
+    - FeedbackEdits on pending/newer assignments → amend_answer_key=True, scope='amendment'
+    - MarkingPrinciplesCache rows → is_stale=True
+
+    Idempotent via MigrationFlag row. force=True bypasses idempotency (tests only).
+    """
+    with _app.app_context():
+        marker = MigrationFlag.query.filter_by(name=_CALIBRATION_RUNTIME_MIGRATION_NAME).first()
+        if marker is not None and not force:
+            return
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=5)
+
+        # Classify assignments
+        for asn in Assignment.query.all():
+            if asn.topic_keys_status == 'tagged':
+                continue  # already onboarded post-deploy
+            asn_created = asn.created_at
+            if asn_created is None:
+                asn.topic_keys_status = 'legacy'
+                continue
+            if asn_created.tzinfo is None:
+                asn_created = asn_created.replace(tzinfo=timezone.utc)
+            asn.topic_keys_status = 'pending' if asn_created >= cutoff else 'legacy'
+
+        db.session.commit()
+
+        # Classify FeedbackEdits
+        for fe in FeedbackEdit.query.filter_by(active=True).all():
+            parent = Assignment.query.get(fe.assignment_id)
+            if parent is None:
+                fe.active = False
+                continue
+            if parent.topic_keys_status == 'legacy':
+                fe.active = False
+            else:
+                fe.amend_answer_key = True
+                fe.scope = 'amendment'
+
+        # Deactivate MarkingPrinciplesCache — mark all stale so the old
+        # principles file stops being applied.
+        db.session.query(MarkingPrinciplesCache).update({'is_stale': True})
+
+        db.session.commit()
+
+        if marker is None:
+            db.session.add(MigrationFlag(name=_CALIBRATION_RUNTIME_MIGRATION_NAME))
+            db.session.commit()
+
+
 def _sweep_stuck_submissions(app):
     """UP-06: flip submissions stuck in an in-flight status older than 10
     minutes to 'error'. The job system (`jobs = {}`) is in-memory, so a
@@ -646,6 +705,7 @@ def init_db(app):
             _migrate_add_columns(app)
             from subject_standards import seed_subject_topic_vocabulary
             seed_subject_topic_vocabulary()
+            _migrate_calibration_runtime(app)
             _sweep_stuck_submissions(app)
             _sweep_stuck_bulk_jobs(app)
         finally:
@@ -1056,6 +1116,16 @@ class SubjectTopicVocabulary(db.Model):
     topic_key = db.Column(db.String(64), primary_key=True)
     display_name = db.Column(db.String(200), nullable=False, default='')
     active = db.Column(db.Boolean, nullable=False, default=True)
+
+
+class MigrationFlag(db.Model):
+    """One-shot migration marker. Each named migration writes a single row
+    here on completion to prevent re-running."""
+    __tablename__ = 'migration_flag'
+    name = db.Column(db.String(80), primary_key=True)
+    applied_at = db.Column(db.DateTime(timezone=True),
+                           default=lambda: datetime.now(timezone.utc),
+                           nullable=False)
 
 
 class MarkingPrinciplesCache(db.Model):
