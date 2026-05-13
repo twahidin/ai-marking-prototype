@@ -1023,6 +1023,69 @@ def _get_dept_keys():
     return keys
 
 
+def _split_into_questions(qp_text, ak_text):
+    """Cheap regex split on Q1/Q2/... markers. Returns list of
+    {'question_num', 'text', 'answer_key'} dicts. Returns [] if no markers
+    found — caller should gracefully skip tagging."""
+    import re
+    if not qp_text and not ak_text:
+        return []
+    qp_blocks = re.split(r'(?im)^\s*Q\s*(\d+)\b[:.)\s]', qp_text or '')
+    ak_blocks = re.split(r'(?im)^\s*Q\s*(\d+)\b[:.)\s]', ak_text or '')
+
+    def _to_dict(blocks):
+        # re.split returns [leading, num1, body1, num2, body2, ...]
+        out = {}
+        for i in range(1, len(blocks), 2):
+            try:
+                num = int(blocks[i])
+            except (ValueError, TypeError):
+                continue
+            out[num] = (blocks[i + 1] if i + 1 < len(blocks) else '').strip()
+        return out
+
+    qp_map = _to_dict(qp_blocks)
+    ak_map = _to_dict(ak_blocks)
+    all_qs = sorted(set(qp_map) | set(ak_map))
+    return [
+        {'question_num': qn, 'text': qp_map.get(qn, ''), 'answer_key': ak_map.get(qn, '')}
+        for qn in all_qs
+    ]
+
+
+def _kick_off_topic_tagging(asn):
+    """Synchronous topic tagging using a Haiku-tier model. Exceptions are
+    propagated to the caller, which swallows them so marking is never
+    blocked by tagging (spec §2 Additive, not gating)."""
+    import json as _json
+    from ai_marking import extract_assignment_topic_keys, _helper_model_for, _decode_answer_key_text
+
+    qp_text = ''
+    ak_text = ''
+    try:
+        if asn.question_paper:
+            qp_text = _decode_answer_key_text(asn.question_paper) or ''
+        if asn.answer_key:
+            ak_text = _decode_answer_key_text(asn.answer_key) or ''
+    except Exception:
+        pass
+
+    questions = _split_into_questions(qp_text, ak_text)
+    if not questions:
+        return
+    provider = asn.provider or 'anthropic'
+    helper_model = _helper_model_for(provider, fallback=asn.model)
+    keys = extract_assignment_topic_keys(
+        provider=provider, model=helper_model,
+        session_keys=asn.get_api_keys() or {},
+        subject=(asn.subject or '').strip().lower(),
+        questions=questions,
+    )
+    asn.topic_keys = _json.dumps(keys)
+    asn.topic_keys_status = 'tagged'
+    db.session.commit()
+
+
 def _build_calibration_block_for(asn, sub=None):
     """Build the marking-prompt 'calibration_block' string from:
     - Teacher clarifications (active amend_answer_key FeedbackEdits at this
@@ -6524,6 +6587,13 @@ def teacher_assignment_detail(assignment_id):
     err = _check_assignment_ownership(asn)
     if err:
         return err
+    # Lazy topic tagging on first open. Wrapped in broad try because marking
+    # must NEVER be blocked by tagging (spec §2 Additive, not gating).
+    if asn.topic_keys_status == 'pending':
+        try:
+            _kick_off_topic_tagging(asn)
+        except Exception as tag_err:
+            logger.warning(f'lazy topic tagging failed for {asn.id}: {tag_err}')
     students = _sort_by_index(Student.query.filter_by(class_id=asn.class_id).all()) if asn.class_id else _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
     is_rubrics = (getattr(asn, 'assign_type', 'short_answer') == 'rubrics')
     eligible_remark_count = 0

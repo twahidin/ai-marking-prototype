@@ -509,3 +509,62 @@ def test_related_endpoint_returns_overlapping_active_standards(app, db_session, 
     assert active.id in ids
     assert other.id not in ids
     assert pending.id not in ids  # excludes self
+
+
+def test_first_open_of_pending_assignment_triggers_tagging(app, db_session, client):
+    from db import Teacher, Assignment
+    from unittest.mock import patch
+    import uuid as _uuid
+
+    tid = 't-' + _uuid.uuid4().hex[:8]
+    aid = 'lazy-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='Joe', code='C' + _uuid.uuid4().hex[:6].upper(), role='owner')
+    asn = Assignment(id=aid, classroom_code='LZ' + _uuid.uuid4().hex[:4].upper(),
+                     subject='biology', title='Bio Test',
+                     topic_keys_status='pending',
+                     teacher_id=t.id, provider='anthropic', model='claude-sonnet-4-6',
+                     # Real-looking question paper text so _split_into_questions
+                     # finds Q markers and the helper proceeds to call the tagger.
+                     question_paper=b'Q1: State one factor affecting enzyme activity.\nQ2: Explain ATP production.',
+                     answer_key=b'Q1: temperature, pH\nQ2: mitochondria, ATP synthase')
+    db_session.add_all([t, asn])
+    db_session.commit()
+    with client.session_transaction() as s:
+        s['teacher_id'] = t.id
+        s['authenticated'] = True
+
+    with patch('ai_marking.extract_assignment_topic_keys',
+              return_value=[['enzymes'], ['cellular_respiration']]) as mock_extract:
+        rv = client.get(f'/teacher/assignment/{asn.id}')
+    assert mock_extract.call_count == 1
+    db_session.refresh(asn)
+    assert asn.topic_keys_status == 'tagged'
+    import json as _json
+    assert _json.loads(asn.topic_keys) == [['enzymes'], ['cellular_respiration']]
+
+
+def test_legacy_assignment_does_not_trigger_tagging(app, db_session, client):
+    """Legacy assignments must NOT trigger lazy tagging."""
+    from db import Teacher, Assignment
+    from unittest.mock import patch
+    import uuid as _uuid
+
+    tid = 't-' + _uuid.uuid4().hex[:8]
+    aid = 'legacy-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='Joe', code='C' + _uuid.uuid4().hex[:6].upper(), role='owner')
+    asn = Assignment(id=aid, classroom_code='LG' + _uuid.uuid4().hex[:4].upper(),
+                     subject='biology', title='Old',
+                     topic_keys_status='legacy',
+                     teacher_id=t.id, provider='anthropic', model='claude-sonnet-4-6',
+                     question_paper=b'Q1: something')
+    db_session.add_all([t, asn])
+    db_session.commit()
+    with client.session_transaction() as s:
+        s['teacher_id'] = t.id
+        s['authenticated'] = True
+
+    with patch('ai_marking.extract_assignment_topic_keys') as mock_extract:
+        client.get(f'/teacher/assignment/{asn.id}')
+    assert mock_extract.call_count == 0
+    db_session.refresh(asn)
+    assert asn.topic_keys_status == 'legacy'
