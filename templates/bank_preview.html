@@ -84,17 +84,19 @@
         <div class="review-pane review-pane-right">
             {% if has_answer_key or has_rubrics or has_amendments %}
             <div class="review-subtoolbar">
-                {% if (has_answer_key and has_amendments) or (has_rubrics and has_amendments) or (has_answer_key and has_rubrics) %}
+                {# Always render the dropdown so the affordance is visible
+                   even when only one source is present. Missing sources are
+                   surfaced as disabled options with "(not in bank)" so the
+                   teacher knows what's available and what to push. #}
                 <select class="pane-source" id="rightSource" aria-label="Right pane source">
-                    {% if has_answer_key %}<option value="answer_key">Answer Key</option>{% endif %}
+                    <option value="answer_key"{% if not has_answer_key %} disabled{% endif %}>
+                        Answer Key{% if not has_answer_key %} (not in bank){% endif %}
+                    </option>
                     {% if has_rubrics %}<option value="rubrics">Rubrics</option>{% endif %}
-                    {% if has_amendments %}<option value="amendments">Amendments</option>{% endif %}
+                    <option value="amendments"{% if not has_amendments %} disabled{% endif %}>
+                        Amendments{% if not has_amendments %} (none){% endif %}
+                    </option>
                 </select>
-                {% else %}
-                <span class="pane-label">
-                    {% if has_answer_key %}Answer Key{% elif has_rubrics %}Rubrics{% else %}Amendments{% endif %}
-                </span>
-                {% endif %}
                 <button type="button" id="rightZoomOut">−</button>
                 <button type="button" id="rightZoomIn">+</button>
                 <button type="button" id="rightReset">Reset</button>
@@ -103,6 +105,12 @@
             <div class="review-scroll" id="rightScroll"></div>
             <div class="amendments-pane" id="rightAmendments" hidden>
                 <pre id="rightAmendmentsText"><span class="amendments-empty">Loading amendments…</span></pre>
+            </div>
+            <div class="pane-empty" id="rightMissing" hidden>
+                <div>
+                    <p style="margin:0 0 6px;">This bank item doesn&rsquo;t have an answer-key file.</p>
+                    <p style="margin:0;color:#aaa;font-size:12px;">Re-push from the source assignment to restore the PDF.</p>
+                </div>
             </div>
             {% else %}
             <div class="review-subtoolbar"><span class="pane-label">Answer Key</span></div>
@@ -185,11 +193,13 @@ function initRightViewer() {
     var scrollEl = document.getElementById('rightScroll');
     var amendEl = document.getElementById('rightAmendments');
     var amendTextEl = document.getElementById('rightAmendmentsText');
+    var missingEl = document.getElementById('rightMissing');
     if (!scrollEl) return;
 
     // Default source: answer key if available, else rubrics, else amendments.
-    var defaultSrc = HAS_AK ? 'answer_key' : (HAS_RUBRICS ? 'rubrics' : (HAS_AMENDMENTS ? 'amendments' : null));
-    if (!defaultSrc) return;
+    // When nothing is in the bank, still show the dropdown so the teacher sees
+    // the options — they just land on the empty state with a re-push hint.
+    var defaultSrc = HAS_AK ? 'answer_key' : (HAS_RUBRICS ? 'rubrics' : (HAS_AMENDMENTS ? 'amendments' : 'answer_key'));
 
     var rightViewer = DocumentViewer.create(scrollEl);
 
@@ -219,16 +229,44 @@ function initRightViewer() {
         }
     }
 
+    function hideAll() {
+        scrollEl.hidden = true;
+        if (amendEl) amendEl.hidden = true;
+        if (missingEl) missingEl.hidden = true;
+    }
+
     function showSource(src) {
+        hideAll();
         if (src === 'amendments') {
-            scrollEl.hidden = true;
+            if (!HAS_AMENDMENTS) {
+                if (missingEl) {
+                    missingEl.innerHTML = '<div><p style="margin:0 0 6px;">No amendments recorded for this bank item.</p>' +
+                        '<p style="margin:0;color:#aaa;font-size:12px;">Save an edit with "Amend answer key" on the source assignment, then re-push.</p></div>';
+                    missingEl.hidden = false;
+                }
+                return;
+            }
             if (amendEl) amendEl.hidden = false;
             loadAmendments();
-        } else {
-            if (amendEl) amendEl.hidden = true;
-            scrollEl.hidden = false;
-            rightViewer.loadFromUrl('/bank/' + encodeURIComponent(BANK_ID) + '/file-inline/' + src);
+            return;
         }
+        if (src === 'answer_key' && !HAS_AK) {
+            if (missingEl) {
+                missingEl.innerHTML = '<div><p style="margin:0 0 6px;">This bank item doesn\'t have an answer-key file.</p>' +
+                    '<p style="margin:0;color:#aaa;font-size:12px;">Re-push from the source assignment to restore the PDF.</p></div>';
+                missingEl.hidden = false;
+            }
+            return;
+        }
+        if (src === 'rubrics' && !HAS_RUBRICS) {
+            if (missingEl) {
+                missingEl.innerHTML = '<div><p style="margin:0;">No rubrics attached to this bank item.</p></div>';
+                missingEl.hidden = false;
+            }
+            return;
+        }
+        scrollEl.hidden = false;
+        rightViewer.loadFromUrl('/bank/' + encodeURIComponent(BANK_ID) + '/file-inline/' + src);
     }
 
     showSource(defaultSrc);

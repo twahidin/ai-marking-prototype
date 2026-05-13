@@ -64,6 +64,90 @@ def test_extract_assignment_topic_keys_returns_empty_on_failure(app):
     assert result == [[]]
 
 
+def test_extract_assignment_topic_keys_from_pdf_returns_indexed_list(app):
+    """Vision-based tagging when the question paper is a PDF.
+
+    The model enumerates questions itself (no caller-supplied list), so the
+    result is indexed from Q1 (result[0] == Q1's keys). Gaps in question
+    numbering should be filled with empty lists.
+    """
+    from ai_marking import extract_assignment_topic_keys_from_pdf
+    import json
+    fake_response = json.dumps({
+        'questions': [
+            {'question_num': 1, 'topic_keys': ['enzymes']},
+            {'question_num': 3, 'topic_keys': ['cellular_respiration', 'terminology_precision']},
+        ],
+    })
+    with app.app_context():
+        with patch('ai_marking._resolve_api_key', return_value='sk-fake'), \
+             patch('ai_marking.make_ai_api_call', return_value=fake_response):
+            result = extract_assignment_topic_keys_from_pdf(
+                provider='anthropic',
+                model='claude-haiku-4-5',
+                session_keys={'anthropic': 'sk-fake'},
+                subject='biology',
+                question_paper_bytes=b'%PDF-fake-bytes',
+                answer_key_bytes=None,
+            )
+    assert result == [
+        ['enzymes'],
+        [],
+        ['cellular_respiration', 'terminology_precision'],
+    ]
+
+
+def test_extract_assignment_topic_keys_from_pdf_filters_unknown(app):
+    from ai_marking import extract_assignment_topic_keys_from_pdf
+    import json
+    fake_response = json.dumps({
+        'questions': [
+            {'question_num': 1, 'topic_keys': ['enzymes', 'flux_capacitor', 'genetics']},
+        ],
+    })
+    with app.app_context():
+        with patch('ai_marking._resolve_api_key', return_value='sk-fake'), \
+             patch('ai_marking.make_ai_api_call', return_value=fake_response):
+            result = extract_assignment_topic_keys_from_pdf(
+                provider='anthropic',
+                model='claude-haiku-4-5',
+                session_keys={'anthropic': 'sk-fake'},
+                subject='biology',
+                question_paper_bytes=b'%PDF-fake',
+                answer_key_bytes=b'%PDF-fake-ak',
+            )
+    assert result == [['enzymes', 'genetics']]
+
+
+def test_extract_assignment_topic_keys_from_pdf_returns_empty_on_failure(app):
+    from ai_marking import extract_assignment_topic_keys_from_pdf
+    with app.app_context():
+        with patch('ai_marking._resolve_api_key', return_value='sk-fake'), \
+             patch('ai_marking.make_ai_api_call', side_effect=Exception('network')):
+            result = extract_assignment_topic_keys_from_pdf(
+                provider='anthropic',
+                model='claude-haiku-4-5',
+                session_keys={'anthropic': 'sk-fake'},
+                subject='biology',
+                question_paper_bytes=b'%PDF-fake',
+            )
+    assert result == []
+
+
+def test_extract_assignment_topic_keys_from_pdf_no_bytes_returns_empty(app):
+    """No question_paper bytes → no vision call possible. Caller stays pending."""
+    from ai_marking import extract_assignment_topic_keys_from_pdf
+    with app.app_context():
+        result = extract_assignment_topic_keys_from_pdf(
+            provider='anthropic',
+            model='claude-haiku-4-5',
+            session_keys={'anthropic': 'sk-fake'},
+            subject='biology',
+            question_paper_bytes=None,
+        )
+    assert result == []
+
+
 def test_extract_standard_topic_keys_from_edit(app):
     from ai_marking import extract_standard_topic_keys
     import json

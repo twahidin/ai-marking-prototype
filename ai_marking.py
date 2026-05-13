@@ -2508,6 +2508,115 @@ def extract_assignment_topic_keys(provider, model, session_keys, subject, questi
     return [[] for _ in questions]
 
 
+def extract_assignment_topic_keys_from_pdf(provider, model, session_keys, subject,
+                                            question_paper_bytes,
+                                            answer_key_bytes=None,
+                                            max_retries=3):
+    """Vision-based topic tagging when the question paper is a PDF/image so
+    `extract_assignment_topic_keys` (text only) can't see the content.
+
+    The model enumerates questions from the attached document(s) and tags
+    each with 1-3 topic_keys from the controlled vocabulary. Returns a list
+    of per-question key lists indexed from Q1 (i.e. result[0] == keys for
+    Q1). Returns `[]` on failure so callers can leave
+    `topic_keys_status='pending'` for the next-open retry.
+    """
+    from config.subject_topics import get_topics_for_subject, is_known_topic_key
+
+    if not question_paper_bytes:
+        return []
+    vocab = get_topics_for_subject(subject)
+    if not vocab:
+        return []
+    vocab_lines = '\n'.join(f'  - {k}: {label}' for k, label in vocab)
+
+    user_prompt = (
+        f'Subject: {subject}\n'
+        '\nControlled vocabulary (you MUST pick from this list):\n'
+        f'{vocab_lines}\n\n'
+        'The attached document(s) contain a question paper'
+        + (' and an answer key' if answer_key_bytes else '') + '. '
+        'Identify every question (numbered Q1, Q2, Q3, ...) and tag each one '
+        'with 1-3 topic keys from the vocabulary above. Pick keys that '
+        'capture both content domain (e.g. enzymes) and cross-cutting skill '
+        '(e.g. terminology_precision) where applicable.\n\n'
+        'Return JSON only: {"questions": [{"question_num": N, "topic_keys": ["..."]}, ...]}\n'
+        'Include every question in the document. Do not invent questions '
+        'that are not present.'
+    )
+    system_prompt = 'You are a topic-tagger for school assignments. Output JSON only, no commentary.'
+
+    api_key = _resolve_api_key(provider, session_keys)
+    if not api_key:
+        logger.warning(f'extract_assignment_topic_keys_from_pdf: no API key for {provider}')
+        return []
+    if provider == 'anthropic':
+        client = Anthropic(api_key=api_key)
+    elif provider == 'qwen':
+        if not OPENAI_AVAILABLE:
+            return []
+        client = OpenAI(api_key=api_key,
+                        base_url='https://dashscope-intl.aliyuncs.com/compatible-mode/v1')
+    elif provider == 'openai':
+        if not OPENAI_AVAILABLE:
+            return []
+        client = OpenAI(api_key=api_key)
+    else:
+        logger.warning(f'extract_assignment_topic_keys_from_pdf: unknown provider {provider}')
+        return []
+
+    content_blocks = [build_content_block(question_paper_bytes)]
+    if answer_key_bytes:
+        content_blocks.append(build_content_block(answer_key_bytes))
+    content_blocks.append({'type': 'text', 'text': user_prompt})
+
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            raw = make_ai_api_call(
+                client=client, model_name=model, provider=provider,
+                system_prompt=system_prompt, messages_content=content_blocks,
+                max_tokens=2000,
+            )
+            parsed = parse_ai_response(raw)
+            qs = parsed.get('questions') or []
+            if not qs:
+                last_err = 'empty questions list'
+                logger.warning('extract_assignment_topic_keys_from_pdf: empty list (attempt %d)', attempt + 1)
+                continue
+            by_num = {}
+            for item in qs:
+                qn = item.get('question_num')
+                try:
+                    qn_int = int(qn) if qn is not None else None
+                except (ValueError, TypeError):
+                    qn_int = None
+                if qn_int is None or qn_int < 1:
+                    continue
+                keys = item.get('topic_keys') or []
+                filtered = []
+                for k in keys:
+                    if isinstance(k, str) and is_known_topic_key(subject, k):
+                        filtered.append(k)
+                    elif isinstance(k, str):
+                        logger.info(
+                            'extract_assignment_topic_keys_from_pdf: dropped unknown key %r for subject %s',
+                            k, subject,
+                        )
+                by_num[qn_int] = filtered[:3]
+            if not by_num:
+                last_err = 'no valid question numbers'
+                continue
+            max_qn = max(by_num.keys())
+            return [by_num.get(i, []) for i in range(1, max_qn + 1)]
+        except Exception as e:
+            last_err = e
+            logger.warning(f'extract_assignment_topic_keys_from_pdf attempt {attempt + 1} failed: {e}')
+
+    logger.error(f'extract_assignment_topic_keys_from_pdf gave up after {max_retries} attempts: {last_err}')
+    return []
+
+
 def extract_standard_topic_keys(provider, model, session_keys, subject,
                                  question_text, original_feedback, edited_feedback,
                                  theme_key=None, max_retries=3):

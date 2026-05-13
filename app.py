@@ -1063,9 +1063,25 @@ def _split_into_questions(qp_text, ak_text):
 def _kick_off_topic_tagging(asn):
     """Synchronous topic tagging using a Haiku-tier model. Exceptions are
     propagated to the caller, which swallows them so marking is never
-    blocked by tagging (spec §2 Additive, not gating)."""
+    blocked by tagging (spec §2 Additive, not gating).
+
+    Strategy:
+    1. Try the cheap text path first via `_split_into_questions`. Works on
+       text-typed assignments and any answer key that was uploaded as text.
+    2. If text decoding yields zero questions (the common case — most real
+       assignments are PDF-only), fall back to vision-based tagging via
+       `extract_assignment_topic_keys_from_pdf`, which sends the actual PDF
+       bytes to the helper model. The model enumerates questions from the
+       document and tags each one.
+    3. Only flip `topic_keys_status='tagged'` when at least one path
+       produces a non-empty per-question list. Failure leaves the status at
+       'pending' so the next open auto-retries.
+    """
     import json as _json
-    from ai_marking import extract_assignment_topic_keys, _helper_model_for, _decode_answer_key_text
+    from ai_marking import (
+        extract_assignment_topic_keys, extract_assignment_topic_keys_from_pdf,
+        _helper_model_for, _decode_answer_key_text,
+    )
 
     qp_text = ''
     ak_text = ''
@@ -1077,17 +1093,37 @@ def _kick_off_topic_tagging(asn):
     except Exception:
         pass
 
-    questions = _split_into_questions(qp_text, ak_text)
-    if not questions:
-        return
     provider = asn.provider or 'anthropic'
     helper_model = _helper_model_for(provider, fallback=asn.model)
-    keys = extract_assignment_topic_keys(
-        provider=provider, model=helper_model,
-        session_keys=asn.get_api_keys() or {},
-        subject=(asn.subject or '').strip().lower(),
-        questions=questions,
-    )
+    subject = (asn.subject or '').strip().lower()
+    session_keys = asn.get_api_keys() or {}
+
+    keys = []
+    questions = _split_into_questions(qp_text, ak_text)
+    if questions:
+        keys = extract_assignment_topic_keys(
+            provider=provider, model=helper_model,
+            session_keys=session_keys, subject=subject,
+            questions=questions,
+        )
+    # Text path empty, or AI returned per-question lists that are all empty —
+    # fall back to vision tagging on the original PDF bytes.
+    if (not keys or not any(keys)) and asn.question_paper:
+        logger.info('topic tagging: text path empty for %s, falling back to PDF', asn.id)
+        keys = extract_assignment_topic_keys_from_pdf(
+            provider=provider, model=helper_model,
+            session_keys=session_keys, subject=subject,
+            question_paper_bytes=asn.question_paper,
+            answer_key_bytes=asn.answer_key,
+        )
+
+    if not keys:
+        # Both paths returned nothing. Leave status pending so the next
+        # teacher_assignment_detail open auto-retries (e.g. transient API
+        # error, key not configured yet). The UI keeps showing "tagging…".
+        logger.warning('topic tagging produced no keys for assignment %s', asn.id)
+        return
+
     asn.topic_keys = _json.dumps(keys)
     asn.topic_keys_status = 'tagged'
     db.session.commit()
