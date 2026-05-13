@@ -7280,6 +7280,7 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     edit_meta = {}            # per-criterion summary returned to the client
     fresh_calibration_edits = []  # FeedbackEdit rows written this request
     calibration_write_errors = []  # surfaced to client so the toast can warn
+    promotion_pending = []   # list of (FeedbackEdit row, qn_str, field_str) for post-commit promotion
 
     incoming_qs = payload.get('questions')
     if incoming_qs is not None:
@@ -7428,12 +7429,26 @@ def teacher_submission_result_patch(assignment_id, submission_id):
             # Calibration bank + audit log. Combined behavior from both
             # branches:
             #   • Always log text changes to FeedbackLog (audit trail).
-            #   • calibrate=true + new text → write a FeedbackEdit row.
-            #   • calibrate=true + text unchanged + prior matches → idempotent
-            #     re-affirm (no row, but emit edit_meta so the indicator shows).
-            #   • calibrate=false → deactivate any prior FeedbackEdit row so
-            #     unchecking the box actually removes it from the bank.
-            cal_flag = bool(edit.get('calibrate'))
+            #   • amend_answer_key or update_subject_standards + new text →
+            #     write a FeedbackEdit row with scope/amend_answer_key set.
+            #   • idempotent re-affirm: text unchanged + prior matches →
+            #     no new row, but emit edit_meta so the indicator shows.
+            #   • neither box ticked → deactivate any prior FeedbackEdit row
+            #     so unchecking actually removes it from the bank.
+
+            # Two-checkbox intent (spec 2026-05-13 §4.1).
+            amend_flag = bool(edit.get('amend_answer_key'))
+            promote_flag = bool(edit.get('update_subject_standards'))
+            # Server-side suppression: legacy assignments hide 'Update subject
+            # standards'; freeform subjects can't promote; demo mode disables.
+            if promote_flag:
+                from subjects import resolve_subject_key as _resolve_subj
+                if (asn.topic_keys_status == 'legacy'
+                        or _resolve_subj(asn.subject or '') is None
+                        or os.environ.get('DEMO_MODE', 'FALSE').upper() == 'TRUE'):
+                    promote_flag = False
+            cal_flag = amend_flag or promote_flag
+
             if editor_id and ('feedback' in edit or 'improvement' in edit):
                 rubric_hash = _rubric_version_hash(asn)
                 for _field in ('feedback', 'improvement'):
@@ -7454,7 +7469,7 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                                  .first())
 
                         # Always log to FeedbackLog when the text actually
-                        # changed, regardless of calibrate flag — audit trail.
+                        # changed, regardless of intent flags — audit trail.
                         log_meta = None
                         if new_text != old_text:
                             log_meta = _process_text_edit(
@@ -7473,7 +7488,9 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                             if prior:
                                 prior.active = False
                                 db.session.flush()
-                            entry = {'calibrated': False}
+                            entry = {'amend_answer_key': False,
+                                     'update_subject_standards': False,
+                                     'calibrated': False}
                             if log_meta and log_meta.get('version'):
                                 entry['version'] = log_meta['version']
                             edit_meta.setdefault(str(qn), {})[_field] = entry
@@ -7482,7 +7499,15 @@ def teacher_submission_result_patch(assignment_id, submission_id):
 
                         # Idempotent re-affirm.
                         if new_text == old_text and prior and (prior.edited_text or '') == new_text:
-                            entry = {'edit_id': prior.id, 'calibrated': True}
+                            entry = {
+                                'edit_id': prior.id,
+                                'amend_answer_key': prior.amend_answer_key,
+                                'update_subject_standards': (
+                                    prior.scope in ('promoted', 'both')
+                                ),
+                                'promoted_standard_id': None,
+                                'calibrated': True,  # back-compat
+                            }
                             edit_meta.setdefault(str(qn), {})[_field] = entry
                             sp.rollback()
                             continue
@@ -7493,6 +7518,9 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                         original_text = (prior.original_text if prior else old_text) or old_text
                         if prior:
                             prior.active = False
+                        _scope = ('both' if (amend_flag and promote_flag)
+                                  else 'promoted' if promote_flag
+                                  else 'amendment')
                         new_edit = FeedbackEdit(
                             submission_id=sub.id,
                             criterion_id=str(qn),
@@ -7503,7 +7531,8 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                             assignment_id=asn.id,
                             rubric_version=rubric_hash,
                             theme_key=target.get('theme_key'),
-                            scope='individual',
+                            scope=_scope,
+                            amend_answer_key=amend_flag,
                             active=True,
                             propagation_status='none',
                         )
@@ -7511,7 +7540,15 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                         db.session.flush()
                         sp.commit()
                         fresh_calibration_edits.append(new_edit)
-                        entry = {'edit_id': new_edit.id, 'calibrated': True}
+                        if promote_flag:
+                            promotion_pending.append((new_edit, str(qn), _field))
+                        entry = {
+                            'edit_id': new_edit.id,
+                            'amend_answer_key': amend_flag,
+                            'update_subject_standards': promote_flag,
+                            'promoted_standard_id': None,  # filled in post-loop
+                            'calibrated': True,  # back-compat with old JS
+                        }
                         if log_meta and log_meta.get('version'):
                             entry['version'] = log_meta['version']
                         edit_meta.setdefault(str(qn), {})[_field] = entry
@@ -7522,7 +7559,7 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                             sub.id, qn, _field,
                         )
                         calibration_write_errors.append(
-                            f"{type(_log_err).__name__}: {_log_err}"
+                            f"feedback_edit write failed for {_field}"
                         )
                         target[_field] = new_text  # ensure in-memory change survives the rollback
 
@@ -7556,6 +7593,28 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     sub.set_result(result)
     db.session.commit()
     logger.info(f"Teacher edited feedback for submission {submission_id} on assignment {assignment_id}")
+
+    # Promote flagged edits AFTER the main commit so FeedbackEdit.id exists durably.
+    if promotion_pending:
+        try:
+            from subject_standards import promote_to_subject_standard
+            session_keys_for_promote = asn.get_api_keys() or {}
+            for fe_row, qn_str, field_str in promotion_pending:
+                try:
+                    ss_id = promote_to_subject_standard(
+                        feedback_edit_id=fe_row.id,
+                        provider=asn.provider,
+                        model=asn.model,
+                        session_keys=session_keys_for_promote,
+                    )
+                    em = edit_meta.setdefault(qn_str, {}).setdefault(field_str, {})
+                    em['promoted_standard_id'] = ss_id
+                except Exception as promote_err:
+                    logger.warning(
+                        f'promote_to_subject_standard failed for edit {fe_row.id}: {promote_err}'
+                    )
+        except Exception as outer_promote_err:
+            logger.exception(f'promotion batch failed: {outer_promote_err}')
 
     # Calibration follow-ups for fresh FeedbackEdit rows written this request:
     #   1) Mark subject's marking-principles cache stale so the next render
