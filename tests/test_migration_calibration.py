@@ -54,3 +54,20 @@ def test_subject_standard_insert_round_trip(app, db_session):
     assert fetched.uuid  # auto-generated
     assert fetched.uuid.startswith('ss_')
     assert fetched.reinforcement_count == 1
+
+
+def test_subject_topic_vocabulary_table_exists(app):
+    with app.app_context():
+        names = inspect(db.engine).get_table_names()
+        assert 'subject_topic_vocabulary' in names
+
+
+def test_subject_topic_vocabulary_round_trip(app, db_session):
+    from db import SubjectTopicVocabulary
+    v = SubjectTopicVocabulary(subject='biology', topic_key='enzymes', display_name='Enzymes')
+    db_session.add(v)
+    db_session.commit()
+    got = SubjectTopicVocabulary.query.filter_by(subject='biology', topic_key='enzymes').first()
+    assert got is not None
+    assert got.display_name == 'Enzymes'
+    assert got.active is True

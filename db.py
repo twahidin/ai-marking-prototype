@@ -1046,6 +1046,16 @@ class SubjectStandard(db.Model):
     )
 
 
+class SubjectTopicVocabulary(db.Model):
+    """Allowed topic keys per subject. Seeded from config/subject_topics/<subject>.py
+    on first boot, mutable thereafter by HOD/subject leads via the UI."""
+    __tablename__ = 'subject_topic_vocabulary'
+    subject = db.Column(db.String(80), primary_key=True)
+    topic_key = db.Column(db.String(64), primary_key=True)
+    display_name = db.Column(db.String(200), nullable=False, default='')
+    active = db.Column(db.Boolean, nullable=False, default=True)
+
+
 class MarkingPrinciplesCache(db.Model):
     __tablename__ = 'marking_principles_cache'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
