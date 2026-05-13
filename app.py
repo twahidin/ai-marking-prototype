@@ -6494,6 +6494,30 @@ def api_subject_standards_reject(standard_id):
     return jsonify({'success': True})
 
 
+@app.route('/api/subject_standards/<int:standard_id>/related', methods=['GET'])
+def api_subject_standards_related(standard_id):
+    s, err = _load_standard_or_404(standard_id)
+    if err:
+        return err
+    teacher = _current_teacher()
+    if not _can_edit_subject_standards(teacher, subject=s.subject):
+        return jsonify({'error': 'forbidden'}), 403
+    from subject_standards import find_related_standards
+    import json as _json
+    related = find_related_standards(s)
+    return jsonify({
+        'related': [
+            {
+                'id': r.id, 'text': r.text,
+                'topic_keys': _json.loads(r.topic_keys or '[]'),
+                'reinforcement_count': r.reinforcement_count,
+                'status': r.status,
+            }
+            for r in related
+        ],
+    })
+
+
 @app.route('/teacher/assignment/<assignment_id>')
 def teacher_assignment_detail(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)

@@ -43,6 +43,9 @@
             return;
         }
         var html = rows.map(function (r) {
+            var relatedContainer = showActions
+                ? '<div class="ss-related" id="related-' + r.id + '"></div>'
+                : '';
             var actions = showActions
                 ? '<div style="margin-top:6px;">' +
                   '<button type="button" data-action="approve" data-id="' + r.id + '" class="upload-btn" style="padding:4px 10px;font-size:12px;margin-right:6px;">Approve</button>' +
@@ -58,11 +61,30 @@
                 escapeHtml(r.subject) + ' • ' + (r.topic_keys || []).map(escapeHtml).join(', ') +
                 ' • reinforced ' + (r.reinforcement_count || 0) + '× • ' + r.status +
                 '</p>' +
+                relatedContainer +
                 actions +
                 '</div>';
         }).join('');
         target.innerHTML = html;
         bindActions(target);
+        if (showActions) {
+            rows.forEach(function (r) { fetchRelated(r.id); });
+        }
+    }
+
+    function fetchRelated(standardId) {
+        fetch('/api/subject_standards/' + standardId + '/related')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                var el = document.getElementById('related-' + standardId);
+                if (!el || !data.related || !data.related.length) return;
+                var html = '<p style="margin:8px 0 4px;color:#666;font-size:12px;">Related existing standards:</p><ul style="margin:0;padding-left:18px;font-size:12px;color:#555;">';
+                data.related.forEach(function (rs) {
+                    html += '<li>' + escapeHtml(rs.text) + ' (reinforced ' + (rs.reinforcement_count || 0) + '\xd7)</li>';
+                });
+                html += '</ul>';
+                el.innerHTML = html;
+            });
     }
 
     function bindActions(scope) {

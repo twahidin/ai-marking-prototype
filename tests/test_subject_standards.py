@@ -475,3 +475,37 @@ def test_non_authorised_role_cannot_approve(app, db_session, client):
         sess['authenticated'] = True
     rv = client.post(f'/api/subject_standards/{s.id}/approve')
     assert rv.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Task 10.3: "Related existing standards" panel
+# ---------------------------------------------------------------------------
+
+def test_related_endpoint_returns_overlapping_active_standards(app, db_session, client):
+    from db import SubjectStandard, Teacher
+    import uuid as _uuid
+    tid = 't-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='r', code='C' + _uuid.uuid4().hex[:6].upper(), role='hod')
+    db_session.add(t)
+    subj = 'biology_related_' + _uuid.uuid4().hex[:6]
+    pending = SubjectStandard(subject=subj, text='Reject heat',
+                              topic_keys='["enzymes", "terminology_precision"]',
+                              status='pending_review', created_by=t.id)
+    active = SubjectStandard(subject=subj, text='Accept temperature',
+                             topic_keys='["enzymes"]',
+                             status='active', created_by=t.id, reinforcement_count=4)
+    other = SubjectStandard(subject=subj, text='Genetics rule',
+                            topic_keys='["genetics"]',
+                            status='active', created_by=t.id)
+    db_session.add_all([pending, active, other])
+    db_session.commit()
+    with client.session_transaction() as sess:
+        sess['teacher_id'] = t.id
+        sess['authenticated'] = True
+    rv = client.get(f'/api/subject_standards/{pending.id}/related')
+    assert rv.status_code == 200
+    payload = rv.get_json()
+    ids = [s['id'] for s in payload['related']]
+    assert active.id in ids
+    assert other.id not in ids
+    assert pending.id not in ids  # excludes self

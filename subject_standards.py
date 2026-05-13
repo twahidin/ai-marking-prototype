@@ -225,3 +225,27 @@ def build_effective_answer_key(assignment, original_answer_key_text: str) -> str
         lines.append('')
 
     return (original_answer_key_text or '') + '\n' + '\n'.join(lines)
+
+
+def find_related_standards(standard, limit=5):
+    """Active standards on the same subject with overlapping topic_keys.
+    Excludes the input row itself. Ordered by reinforcement_count desc."""
+    candidates = (
+        SubjectStandard.query
+        .filter(SubjectStandard.subject == standard.subject,
+                SubjectStandard.status == 'active',
+                SubjectStandard.id != standard.id)
+        .order_by(SubjectStandard.reinforcement_count.desc())
+        .all()
+    )
+    own_keys = set(json.loads(standard.topic_keys or '[]'))
+    if not own_keys:
+        return []
+    out = []
+    for c in candidates:
+        c_keys = set(json.loads(c.topic_keys or '[]'))
+        if c_keys & own_keys:
+            out.append(c)
+            if len(out) >= limit:
+                break
+    return out
