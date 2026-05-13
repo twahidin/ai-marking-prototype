@@ -120,3 +120,69 @@ def promote_to_subject_standard(feedback_edit_id, provider, model, session_keys)
     fe.promoted_to_subject_standard_id = ss.id
     db.session.commit()
     return ss.id
+
+
+def retrieve_subject_standards(subject: str, per_question_topic_keys: list):
+    """Pull active SubjectStandards for the assignment.
+
+    Algorithm (see spec §4.5):
+      1. For each question's topic_keys, query active standards whose
+         topic_keys overlap.
+      2. Per matched topic, take top `PER_TOPIC_QUOTA` by reinforcement_count.
+      3. Dedup across questions/topics.
+      4. Apply hard `ABSOLUTE_CAP`.
+
+    Returns ordered list of SubjectStandard rows.
+    """
+    if not per_question_topic_keys:
+        return []
+    all_topic_keys = set()
+    for tk_list in per_question_topic_keys:
+        for k in (tk_list or []):
+            all_topic_keys.add(k)
+    if not all_topic_keys:
+        return []
+
+    candidates = (
+        SubjectStandard.query
+        .filter_by(subject=subject, status='active')
+        .all()
+    )
+
+    seen_ids = set()
+    selected = []
+    # Track topics that still have quota room (fewer than PER_TOPIC_QUOTA matched).
+    topics_with_room = set()
+    for topic in all_topic_keys:
+        topic_candidates = []
+        for c in candidates:
+            if c.id in seen_ids:
+                continue
+            ck = json.loads(c.topic_keys or '[]')
+            if topic in ck:
+                topic_candidates.append(c)
+        topic_candidates.sort(key=lambda r: (-(r.reinforcement_count or 0), -(r.id or 0)))
+        taken = topic_candidates[:PER_TOPIC_QUOTA]
+        for c in taken:
+            seen_ids.add(c.id)
+            selected.append(c)
+        if len(topic_candidates) < PER_TOPIC_QUOTA:
+            topics_with_room.add(topic)
+
+    # Second pass: add candidates that match only topics that didn't exhaust quota,
+    # so we don't double-count overflow from topics already at their limit.
+    remaining = []
+    for c in candidates:
+        if c.id in seen_ids:
+            continue
+        ck = json.loads(c.topic_keys or '[]')
+        # Only include if it matches a topic that had room (wasn't quota-exhausted).
+        if any(k in topics_with_room for k in ck):
+            remaining.append(c)
+    remaining.sort(key=lambda r: (-(r.reinforcement_count or 0), -(r.id or 0)))
+    for c in remaining:
+        if len(selected) >= ABSOLUTE_CAP:
+            break
+        selected.append(c)
+
+    return selected[:ABSOLUTE_CAP]

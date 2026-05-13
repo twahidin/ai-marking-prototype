@@ -191,3 +191,64 @@ def test_promote_reinforces_existing_similar_standard(app, db_session):
     # Reinforcement count must have incremented by 1.
     db_session.refresh(returned)
     assert returned.reinforcement_count == pre_reinforcement_count + 1
+
+
+# ---------------------------------------------------------------------------
+# Task 4.2: retrieve_subject_standards
+# ---------------------------------------------------------------------------
+
+def test_retrieve_subject_standards_returns_topic_matched_active(app, db_session):
+    from db import SubjectStandard
+    from subject_standards import retrieve_subject_standards
+    import uuid as _uuid
+
+    subj = f'biology_retrieve_match_{_uuid.uuid4().hex[:6]}'
+
+    db_session.add_all([
+        SubjectStandard(subject=subj, text='A', topic_keys='["enzymes"]',
+                        status='active', created_by='t-fake-1', reinforcement_count=5),
+        SubjectStandard(subject=subj, text='B', topic_keys='["genetics"]',
+                        status='active', created_by='t-fake-1', reinforcement_count=10),
+        SubjectStandard(subject=subj, text='C', topic_keys='["enzymes"]',
+                        status='pending_review', created_by='t-fake-1', reinforcement_count=20),
+    ])
+    db_session.commit()
+
+    out = retrieve_subject_standards(
+        subject=subj,
+        per_question_topic_keys=[['enzymes', 'terminology_precision']],
+    )
+    texts = [s.text for s in out]
+    assert 'A' in texts
+    assert 'B' not in texts
+    assert 'C' not in texts
+
+
+def test_retrieve_subject_standards_respects_per_topic_quota_and_cap(app, db_session):
+    from db import SubjectStandard
+    from subject_standards import retrieve_subject_standards
+    import uuid as _uuid
+
+    subj = f'biology_quota_{_uuid.uuid4().hex[:6]}'
+
+    for i in range(5):
+        db_session.add(SubjectStandard(
+            subject=subj, text=f'enzymes-{i}',
+            topic_keys='["enzymes"]', status='active',
+            created_by='t-fake-2', reinforcement_count=i,
+        ))
+    db_session.commit()
+
+    out = retrieve_subject_standards(
+        subject=subj,
+        per_question_topic_keys=[['enzymes']],
+    )
+    assert len(out) == 3
+    assert out[0].text == 'enzymes-4'
+    assert out[2].text == 'enzymes-2'
+
+
+def test_retrieve_returns_empty_when_no_topics(app, db_session):
+    from subject_standards import retrieve_subject_standards
+    out = retrieve_subject_standards(subject='biology', per_question_topic_keys=[[]])
+    assert out == []
