@@ -246,3 +246,82 @@ def test_effective_answer_key_only_active_amend_edits_included(app, db_session):
     assert 'AMEND TEXT INCLUDED' in merged
     assert 'INACTIVE TEXT EXCLUDED' not in merged
     assert 'PROMOTION ONLY TEXT EXCLUDED' not in merged
+
+
+# ---------------------------------------------------------------------------
+# Phase 16 Task 16.1 — end-to-end happy path integration test
+# ---------------------------------------------------------------------------
+
+def test_full_happy_path_amend_then_promote_then_retrieve(app, db_session, client):
+    """End-to-end: tagged assignment → teacher edits with both intents →
+    promotion (mocked tagger) → approved → retrieval pulls it on next marking.
+
+    Uses canonical subject='biology' so server-side promote-suppression
+    doesn't fire. Asserts on SubjectStandard.created_by=t.id to stay isolated
+    from other tests' biology rows.
+    """
+    from unittest.mock import patch
+    from db import Teacher, Assignment, Student, Submission, SubjectStandard
+    from subject_standards import retrieve_subject_standards
+    import json
+    import uuid as _uuid
+
+    tid = 't-' + _uuid.uuid4().hex[:8]
+    aid = 'e2e-' + _uuid.uuid4().hex[:8]
+    t = Teacher(id=tid, name='Joe', code='C' + _uuid.uuid4().hex[:6].upper(), role='hod')
+    asn = Assignment(id=aid, classroom_code='C' + _uuid.uuid4().hex[:6].upper(),
+                     subject='biology', title='Bio E2E',
+                     teacher_id=t.id,
+                     topic_keys=json.dumps([['enzymes', 'terminology_precision']]),
+                     topic_keys_status='tagged',
+                     provider='anthropic',
+                     model='claude-sonnet-4-6')
+    db_session.add_all([t, asn])
+    db_session.commit()
+    stu = Student(assignment_id=asn.id, index_number='1', name='Stu')
+    db_session.add(stu)
+    db_session.commit()
+    sub = Submission(assignment_id=asn.id, student_id=stu.id,
+                     result_json=json.dumps({'questions': [
+                         {'question_num': 1, 'feedback': 'Correct - heat affects enzyme rate.',
+                          'theme_key': 'terminology_precision'},
+                     ]}))
+    db_session.add(sub)
+    db_session.commit()
+
+    with client.session_transaction() as s:
+        s['teacher_id'] = t.id
+        s['authenticated'] = True
+
+    # 1. Teacher saves edit with BOTH intents.
+    unique_text = "Must say 'temperature', not 'heat'. (e2e marker " + _uuid.uuid4().hex[:6] + ')'
+    with patch('subject_standards.extract_standard_topic_keys',
+               return_value=['enzymes', 'terminology_precision']):
+        rv = client.patch(
+            f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
+            json={'questions': [{'question_num': 1,
+                                  'feedback': unique_text,
+                                  'amend_answer_key': True,
+                                  'update_subject_standards': True}]},
+        )
+    assert rv.status_code == 200
+
+    # 2. SubjectStandard inserted as pending_review under this teacher.
+    ss = SubjectStandard.query.filter_by(subject='biology', created_by=t.id).first()
+    assert ss is not None
+    assert ss.status == 'pending_review'
+
+    # 3. HOD approves it.
+    rv = client.post(f'/api/subject_standards/{ss.id}/approve')
+    assert rv.status_code == 200
+    db_session.refresh(ss)
+    assert ss.status == 'active'
+
+    # 4. Retrieval pulls the now-active standard on the next marking.
+    out = retrieve_subject_standards(
+        subject='biology',
+        per_question_topic_keys=[['enzymes']],
+    )
+    # The standard with our unique marker must be in the retrieved set.
+    assert any(unique_text in s.text for s in out), \
+        f'Expected promoted standard with marker in retrieval; got texts: {[s.text for s in out]}'
