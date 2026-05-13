@@ -6301,6 +6301,28 @@ def teacher_assignment_topic_tags_update(assignment_id):
     return jsonify({'success': True, 'topic_keys': cleaned})
 
 
+@app.route('/teacher/assignment/<assignment_id>/answer-key-preview')
+def teacher_assignment_answer_key_preview(assignment_id):
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    original_ak_text = ''
+    try:
+        if asn.answer_key:
+            from ai_marking import _decode_answer_key_text
+            original_ak_text = _decode_answer_key_text(asn.answer_key) or ''
+    except Exception as e:
+        logger.warning(f'answer-key preview: decode failed: {e}')
+    from subject_standards import build_effective_answer_key
+    merged = build_effective_answer_key(asn, original_ak_text)
+    return jsonify({
+        'success': True,
+        'effective_answer_key': merged,
+        'has_original_text': bool(original_ak_text),
+    })
+
+
 @app.route('/teacher/assignment/<assignment_id>')
 def teacher_assignment_detail(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)

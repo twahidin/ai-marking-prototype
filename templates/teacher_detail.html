@@ -120,6 +120,23 @@
     </div>
     {% endif %}
 
+    {% if assignment.topic_keys_status != 'legacy' %}
+    <div class="card" style="margin-top:16px;">
+        <h2>Effective answer key</h2>
+        <p style="color:#666;font-size:12px;margin:4px 0 8px;">
+            The answer key the AI sees during marking: the uploaded original (if it&rsquo;s text)
+            plus your active amendments appended.
+        </p>
+        <button type="button" class="upload-btn" data-action="preview-effective-answer-key"
+                style="padding:6px 12px;font-size:13px;">Preview effective answer key</button>
+        <pre id="effective-ak-output" hidden
+             style="white-space:pre-wrap;background:#f7f7f8;padding:12px;border-radius:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#333;margin-top:12px;max-height:400px;overflow:auto;"></pre>
+        <p id="effective-ak-note" hidden style="color:#888;font-size:11px;margin-top:6px;font-style:italic;">
+            Note: the original answer key is a PDF/binary file and is not shown here &mdash; only your text amendments appear above. The AI consumes the PDF natively at marking time.
+        </p>
+    </div>
+    {% endif %}
+
     <!-- Summary Stats -->
     {% set total = students | length %}
     {% set submitted = students | selectattr('status', 'ne', 'not_submitted') | list | length %}
@@ -1714,6 +1731,31 @@ window.addEventListener('DOMContentLoaded', () => {
                 }
             }).catch(function () { /* swallow — manual retry on next blur */ });
         });
+    });
+})();
+
+// Effective answer key preview.
+(function () {
+    var btn = document.querySelector('[data-action="preview-effective-answer-key"]');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+        var pre = document.getElementById('effective-ak-output');
+        var note = document.getElementById('effective-ak-note');
+        pre.textContent = 'Loading…';
+        pre.hidden = false;
+        if (note) note.hidden = true;
+        fetch('/teacher/assignment/{{ assignment.id }}/answer-key-preview')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data && data.success) {
+                    pre.textContent = data.effective_answer_key || '(no amendments yet)';
+                    if (note) note.hidden = !!data.has_original_text;
+                } else {
+                    pre.textContent = (data && data.error) || 'Preview failed.';
+                }
+            }).catch(function () {
+                pre.textContent = 'Preview failed.';
+            });
     });
 })();
 </script>
