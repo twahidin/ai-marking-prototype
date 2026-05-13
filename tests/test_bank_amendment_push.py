@@ -38,8 +38,13 @@ def test_push_writes_merged_answer_key_to_bank(app, db_session, client):
 
     t, bank, asn = _setup(db_session)
     rv = _rubric_version_hash(asn)
+    # High submission_id avoids cross-test contamination: other tests may
+    # autoincrement Submission ids starting from 1 and then run
+    # `FeedbackEdit.query.filter_by(submission_id=sub.id).count() == 0`,
+    # which would otherwise pick up this placeholder row.
+    placeholder_sid = 9_000_000 + (int(_uuid.uuid4().int) % 100_000)
     db_session.add(FeedbackEdit(
-        submission_id=1, criterion_id='1', field='feedback',
+        submission_id=placeholder_sid, criterion_id='1', field='feedback',
         original_text='X', edited_text='Accept "powerhouse of the cell"',
         edited_by=t.id, assignment_id=asn.id, rubric_version=rv,
         scope='amendment', amend_answer_key=True, active=True,

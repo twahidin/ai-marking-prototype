@@ -64,7 +64,10 @@ def test_neither_box_ticked_writes_no_feedback_edit(app, db_session, client):
                               'amend_answer_key': False, 'update_subject_standards': False}]},
     )
     assert rv.status_code == 200
-    assert FeedbackEdit.query.filter_by(submission_id=sub.id).count() == 0
+    # Scope by assignment_id too — other tests insert placeholder FeedbackEdit
+    # rows with `submission_id=1` (FKs are off in SQLite), and a fresh Submission's
+    # autoincrement id can collide with those placeholders.
+    assert FeedbackEdit.query.filter_by(submission_id=sub.id, assignment_id=asn.id).count() == 0
 
 
 def test_amend_answer_key_only_writes_feedback_edit_with_flag(app, db_session, client):
