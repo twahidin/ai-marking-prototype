@@ -511,6 +511,32 @@ def _migrate_add_columns(app):
                 db.session.rollback()
                 logger.warning(f'exemplar_analysis_log backfill skipped: {_e}')
 
+        if 'feedback_edit' in inspector.get_table_names():
+            columns = [c['name'] for c in inspector.get_columns('feedback_edit')]
+            if 'amend_answer_key' not in columns:
+                db.session.execute(text('ALTER TABLE feedback_edit ADD COLUMN amend_answer_key BOOLEAN DEFAULT FALSE NOT NULL'))
+                db.session.commit()
+                logger.info('Added amend_answer_key column to feedback_edit table')
+            if 'promoted_to_subject_standard_id' not in columns:
+                db.session.execute(text('ALTER TABLE feedback_edit ADD COLUMN promoted_to_subject_standard_id INTEGER'))
+                db.session.commit()
+                logger.info('Added promoted_to_subject_standard_id column to feedback_edit table')
+
+        if 'assignments' in inspector.get_table_names():
+            columns = [c['name'] for c in inspector.get_columns('assignments')]
+            if 'topic_keys' not in columns:
+                db.session.execute(text("ALTER TABLE assignments ADD COLUMN topic_keys TEXT DEFAULT '[]' NOT NULL"))
+                db.session.commit()
+                logger.info('Added topic_keys column to assignments table')
+            if 'topic_keys_status' not in columns:
+                db.session.execute(text("ALTER TABLE assignments ADD COLUMN topic_keys_status VARCHAR(20) DEFAULT 'pending' NOT NULL"))
+                db.session.commit()
+                logger.info('Added topic_keys_status column to assignments table')
+            if 'bank_pushed_at' not in columns:
+                db.session.execute(text("ALTER TABLE assignments ADD COLUMN bank_pushed_at TIMESTAMP"))
+                db.session.commit()
+                logger.info('Added bank_pushed_at column to assignments table')
+
 
 def _sweep_stuck_submissions(app):
     """UP-06: flip submissions stuck in an in-flight status older than 10
@@ -723,6 +749,10 @@ class Assignment(db.Model):
     #   'vocab' — annotate HSK 4+ words only
     #   'full'  — annotate every CJK character
     pinyin_mode = db.Column(db.String(10), default='off', nullable=False)
+    # New (calibration intent design 2026-05-13)
+    topic_keys = db.Column(db.Text, default='[]', nullable=False)
+    topic_keys_status = db.Column(db.String(20), default='pending', nullable=False)
+    bank_pushed_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     students = db.relationship('Student', backref='assignment', lazy=True, cascade='all, delete-orphan')
 
@@ -972,6 +1002,9 @@ class FeedbackEdit(db.Model):
     mistake_pattern = db.Column(db.String(80), nullable=True)
     correction_principle = db.Column(db.String(300), nullable=True)
     transferability = db.Column(db.String(10), nullable=True)
+    # New (calibration intent design 2026-05-13)
+    amend_answer_key = db.Column(db.Boolean, nullable=False, default=False)
+    promoted_to_subject_standard_id = db.Column(db.Integer, nullable=True, index=True)
 
     __table_args__ = (
         db.Index('ix_feedback_edit_lookup', 'edited_by', 'active', 'theme_key'),
