@@ -328,7 +328,16 @@ async function loadAssignments() {
     if (!classId) return;
 
     const res = await fetch('/api/class/' + encodeURIComponent(classId) + '/assignments');
+    if (!res.ok) {
+        // 401 (session expired) or other server error — leave dropdown empty.
+        asnSel.disabled = false;
+        return;
+    }
     const assignments = await res.json();
+    if (!Array.isArray(assignments)) {
+        asnSel.disabled = false;
+        return;
+    }
     assignments.forEach(a => {
         asnSel.innerHTML += `<option value="${esc(a.id)}">${esc(a.title)}${a.subject ? ' (' + esc(a.subject) + ')' : ''}</option>`;
     });

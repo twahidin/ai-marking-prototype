@@ -9475,7 +9475,7 @@ def student_confirm(assignment_id, submission_id):
 @app.route('/api/class/<class_id>/assignments')
 def api_class_assignments(class_id):
     if not _is_authenticated():
-        return jsonify([])
+        return jsonify({'success': False, 'error': 'unauthenticated'}), 401
     # UP-02: ownership check. In dept mode a teacher with no roster entry
     # for this class can otherwise enumerate any class's assignment list.
     # Senior roles (hod/subject_head/lead/owner) keep cross-class access.
