@@ -6344,8 +6344,9 @@ def teacher_assignment_detail(assignment_id):
                 edit_api_keys[prov] = env_val
     available_providers = sorted(edit_api_keys.keys())
 
-    from subjects import SUBJECT_DISPLAY_NAMES
+    from subjects import SUBJECT_DISPLAY_NAMES, resolve_subject_key as _resolve_subj
     rubric_bands_by_criterion = _bands_for_assignment(asn) if is_rubrics else {}
+    assignment_has_canonical_subject = _resolve_subj(asn.subject or '') is not None
     resp = make_response(render_template('teacher_detail.html',
                            assignment=asn,
                            students=student_data,
@@ -6354,7 +6355,8 @@ def teacher_assignment_detail(assignment_id):
                            canonical_subjects=SUBJECT_DISPLAY_NAMES,
                            is_rubrics=is_rubrics,
                            eligible_remark_count=eligible_remark_count,
-                           rubric_bands_by_criterion=rubric_bands_by_criterion))
+                           rubric_bands_by_criterion=rubric_bands_by_criterion,
+                           assignment_has_canonical_subject=assignment_has_canonical_subject))
     # Prevent the browser/proxy from caching the score cells — a stale cache here
     # makes post-remark reloads show old marks even though the DB is fresh.
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
@@ -7999,6 +8001,8 @@ def teacher_submission_review(assignment_id, submission_id):
         for (s, st) in other_subs
     ]
 
+    from subjects import resolve_subject_key as _resolve_subj_r
+    assignment_has_canonical_subject = _resolve_subj_r(asn.subject or '') is not None
     return render_template(
         'review.html',
         assignment=asn,
@@ -8007,6 +8011,7 @@ def teacher_submission_review(assignment_id, submission_id):
         manifest=manifest,
         other_students=other_students,
         has_answer_key=bool(asn.answer_key),
+        assignment_has_canonical_subject=assignment_has_canonical_subject,
     )
 
 

@@ -1149,6 +1149,8 @@ var REMARK_ASSIGNMENT_ID = ASSIGNMENT_ID;
 // Per-criterion band lists for the rubrics modal's editable band dropdown.
 // Empty {} for short_answer assignments — feedback_render.js falls back to
 // a free-text input in that case (no canonical band list to populate).
+window.ASSIGNMENT_HAS_CANONICAL_SUBJECT = {{ (assignment_has_canonical_subject|default(false))|tojson }};
+window.ASSIGNMENT_TOPIC_KEYS_STATUS = {{ (assignment.topic_keys_status|default('pending'))|tojson }};
 window.__rubricBandsByCriterion = {{ rubric_bands_by_criterion | default({}) | tojson }};
 var remarkPollTimers = {};
 
