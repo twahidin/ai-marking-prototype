@@ -64,10 +64,18 @@ def test_subject_topic_vocabulary_table_exists(app):
 
 def test_subject_topic_vocabulary_round_trip(app, db_session):
     from db import SubjectTopicVocabulary
-    v = SubjectTopicVocabulary(subject='biology', topic_key='enzymes', display_name='Enzymes')
+    # Use a synthetic key that the boot seed will never insert so the test
+    # remains independent of which subject files are present.
+    v = SubjectTopicVocabulary(
+        subject='test_subject_vocab',
+        topic_key='test_topic_key',
+        display_name='Test Topic',
+    )
     db_session.add(v)
     db_session.commit()
-    got = SubjectTopicVocabulary.query.filter_by(subject='biology', topic_key='enzymes').first()
+    got = SubjectTopicVocabulary.query.filter_by(
+        subject='test_subject_vocab', topic_key='test_topic_key'
+    ).first()
     assert got is not None
-    assert got.display_name == 'Enzymes'
+    assert got.display_name == 'Test Topic'
     assert got.active is True

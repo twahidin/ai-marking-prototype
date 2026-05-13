@@ -644,6 +644,8 @@ def init_db(app):
         try:
             db.create_all()
             _migrate_add_columns(app)
+            from subject_standards import seed_subject_topic_vocabulary
+            seed_subject_topic_vocabulary()
             _sweep_stuck_submissions(app)
             _sweep_stuck_bulk_jobs(app)
         finally:
