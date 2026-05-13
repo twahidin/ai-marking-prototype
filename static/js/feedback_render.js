@@ -1760,10 +1760,12 @@
             submitted = true;            // block blur-driven re-commit
             textarea.removeEventListener('blur', commit);
             var newVal = textarea.value;
-            var calibrate = !!(cb && cb.checked);
+            var amend = !!(amendCb && amendCb.checked);
+            var promote = !!(promoteCb && promoteCb.checked);
+            var changed = (amend !== initialAmend) || (promote !== initialPromote);
             try {
-                if (newVal !== currentValue || calibrate !== initialCalibrate) {
-                    await saveTextField(state, field, newVal, calibrate);
+                if (newVal !== currentValue || changed) {
+                    await saveTextField(state, field, newVal, amend, promote);
                 } else {
                     if (field === 'overall') renderShell(state); else renderQuestion(state);
                 }
@@ -1784,42 +1786,58 @@
             });
         });
 
-        // Calibration-bank checkbox — only on feedback / improvement text fields.
-        // Pre-checked when this field already has an active calibration row,
-        // so re-opening the editor reflects the saved state.
-        var cb = null;
-        var initialCalibrate = false;
+        // Two-checkbox intent (spec 2026-05-13 §4.1) — only on feedback / improvement.
+        // First box: "Amend answer key for this assignment" (always visible).
+        // Second box: "Update subject standards" (hidden on legacy assignments or
+        // freeform subjects since server-side enforcement drops it anyway).
+        var amendCb = null;
+        var promoteCb = null;
+        var initialAmend = false;
+        var initialPromote = false;
         if (field === 'feedback' || field === 'improvement') {
-            var wrap = document.createElement('div');
-            wrap.className = 'fb-cal-wrap';
-            wrap.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:#666;cursor:pointer;user-select:none;';
-            cb = document.createElement('input');
-            cb.type = 'checkbox';
-            cb.className = 'fb-cal-cb';
-            // pointer-events:none so the input never receives its own click —
-            // every click lands on the wrap, which is the single toggle path.
-            // Without this, native checkbox toggle + wrap manual toggle
-            // cancelled each other out and the box appeared stuck.
-            cb.style.cssText = 'margin:0;pointer-events:none;';
-            // Pre-check from textEditMeta so the box reflects the saved state.
-            var qNow = state.questions[state.currentQ];
-            var qKey = qNow ? String(qNow.question_num != null ? qNow.question_num : (state.currentQ + 1)) : null;
-            var existingMeta = (qKey && state.textEditMeta && state.textEditMeta[qKey] && state.textEditMeta[qKey][field]) || null;
-            if (existingMeta && existingMeta.calibrated) {
-                cb.checked = true;
-                initialCalibrate = true;
+            var subjectStandardsEnabled = (
+                global.ASSIGNMENT_HAS_CANONICAL_SUBJECT === true &&
+                global.ASSIGNMENT_TOPIC_KEYS_STATUS !== 'legacy'
+            );
+
+            var qNow2 = state.questions[state.currentQ];
+            var qKey2 = qNow2 ? String(qNow2.question_num != null ? qNow2.question_num : (state.currentQ + 1)) : null;
+            var existingMeta2 = (qKey2 && state.textEditMeta && state.textEditMeta[qKey2] && state.textEditMeta[qKey2][field]) || null;
+            if (existingMeta2) {
+                initialAmend = !!existingMeta2.amend_answer_key;
+                initialPromote = !!existingMeta2.update_subject_standards;
+                // Legacy single-toggle back-compat: if only old shape present, treat as amend.
+                if (!('amend_answer_key' in existingMeta2) && existingMeta2.calibrated) {
+                    initialAmend = true;
+                }
             }
-            wrap.appendChild(cb);
-            wrap.appendChild(document.createTextNode('Save to calibration bank'));
-            el.appendChild(wrap);
-            // preventDefault on mousedown keeps focus on the textarea so the
-            // blur→commit handler doesn't fire mid-click with stale state.
-            wrap.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
-            wrap.addEventListener('click', function (ev) {
-                ev.preventDefault();
-                ev.stopPropagation();
-                cb.checked = !cb.checked;
-            });
+
+            function makeIntentRow(labelText, preChecked) {
+                var wrap = document.createElement('div');
+                wrap.className = 'fb-cal-wrap';
+                wrap.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:#666;cursor:pointer;user-select:none;';
+                var cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.style.cssText = 'margin:0;pointer-events:none;';
+                cb.checked = !!preChecked;
+                wrap.appendChild(cb);
+                wrap.appendChild(document.createTextNode(labelText));
+                wrap.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+                wrap.addEventListener('click', function (ev) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    cb.checked = !cb.checked;
+                });
+                el.appendChild(wrap);
+                return cb;
+            }
+
+            amendCb = makeIntentRow('Amend answer key for this assignment', initialAmend);
+            amendCb.className = 'fb-cal-cb fv-amend-answer-key';
+            if (subjectStandardsEnabled) {
+                promoteCb = makeIntentRow('Update subject standards', initialPromote);
+                promoteCb.className = 'fb-cal-cb fv-update-subject-standards';
+            }
         }
 
         textarea.focus();
@@ -1837,17 +1855,19 @@
             if (submitted) return;
             submitted = true;
             var newVal = textarea.value;
-            var calibrate = !!(cb && cb.checked);
+            var amend = !!(amendCb && amendCb.checked);
+            var promote = !!(promoteCb && promoteCb.checked);
+            var changed = (amend !== initialAmend) || (promote !== initialPromote);
             // Skip the round-trip only when nothing changed: same text AND
-            // same calibration state. If the teacher unchecked the box (or
-            // checked it without editing), we need to round-trip so the
-            // server can write/deactivate the bank row.
-            if (newVal === currentValue && calibrate === initialCalibrate) {
+            // same intent state. If the teacher changed either checkbox (or
+            // changed the text), we need to round-trip so the server can
+            // write/deactivate the bank row.
+            if (newVal === currentValue && !changed) {
                 if (field === 'overall') renderShell(state);
                 else renderQuestion(state);
                 return;
             }
-            saveTextField(state, field, newVal, calibrate);
+            saveTextField(state, field, newVal, amend, promote);
         }
         function cancel() {
             if (submitted) return;
@@ -1968,8 +1988,9 @@
         state.recommended = newResult.recommended_actions || [];
     }
 
-    async function saveTextField(state, field, newValue, calibrate) {
-        if (calibrate === undefined) calibrate = false;
+    async function saveTextField(state, field, newValue, amendAnswerKey, updateSubjectStandards) {
+        if (amendAnswerKey === undefined) amendAnswerKey = false;
+        if (updateSubjectStandards === undefined) updateSubjectStandards = false;
         var payload;
         var savedQNum = null;
         if (field === 'overall') {
@@ -1980,7 +2001,8 @@
             var qEdit = { question_num: savedQNum };
             qEdit[field] = newValue;
             if (field === 'feedback' || field === 'improvement') {
-                qEdit.calibrate = !!calibrate;
+                qEdit.amend_answer_key = !!amendAnswerKey;
+                qEdit.update_subject_standards = !!updateSubjectStandards;
             }
             payload = { questions: [qEdit] };
         }
@@ -1998,7 +2020,13 @@
                 var qKey = String(savedQNum);
                 var fieldMeta = (data.edit_meta[qKey] || {})[field];
                 if (fieldMeta) {
-                    if (fieldMeta.calibrated === false) {
+                    var isActive = !!(fieldMeta.amend_answer_key || fieldMeta.update_subject_standards);
+                    // Back-compat: if the server didn't return the new flags but the old `calibrated`,
+                    // fall back to that.
+                    if (!('amend_answer_key' in fieldMeta) && fieldMeta.calibrated) {
+                        isActive = true;
+                    }
+                    if (!isActive) {
                         if (state.textEditMeta && state.textEditMeta[qKey]) {
                             delete state.textEditMeta[qKey][field];
                         }
@@ -2122,7 +2150,8 @@
     function renderEditTag(state, idx, field, meta) {
         // Only render for active calibration rows. Anything else (uncheck,
         // retire, no meta) routes through removeEditTag.
-        if (!meta || !meta.calibrated) {
+        var isActive = !!(meta && (meta.amend_answer_key || meta.update_subject_standards || meta.calibrated));
+        if (!isActive) {
             removeEditTag(state, idx, field);
             return;
         }
@@ -2140,7 +2169,18 @@
         row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:2px;font-size:11px;color:#7a7f8c;letter-spacing:0.2px;';
         var tag = document.createElement('span');
         tag.className = 'fb-edit-tag fb-tag-cal';
-        tag.textContent = '✓ Saved to calibration bank — your edit will help calibrate similar answers';
+        var amend = !!(meta && meta.amend_answer_key);
+        var promote = !!(meta && meta.update_subject_standards);
+        if (amend && promote) {
+            tag.textContent = '✓ Amended answer key and promoted to subject standards';
+        } else if (promote) {
+            tag.textContent = '✓ Promoted to subject standards';
+        } else if (amend) {
+            tag.textContent = '✓ Amended answer key for this assignment';
+        } else {
+            // Old-shape back-compat
+            tag.textContent = '✓ Saved to calibration bank — your edit will help calibrate similar answers';
+        }
         row.appendChild(tag);
         if (meta.edit_id) {
             var retire = document.createElement('a');
