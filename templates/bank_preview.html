@@ -46,6 +46,10 @@
     .dv-scale-wrap { transform-origin: top center; transition: none; }
 
     .pane-empty { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px; color: #888; font-size: 14px; text-align: center; background: #f0f0f3; }
+    /* `display: flex` above wins specificity against the UA `[hidden] { display: none }`,
+       so toggling the `hidden` attribute on `.pane-empty` would otherwise leave the
+       empty-state pane stacked on top of the PDF viewer. Force it off here. */
+    .pane-empty[hidden] { display: none; }
     .amendments-pane { flex: 1; overflow: auto; padding: 20px; background: white; min-width: 0; min-height: 0; }
     .amendments-pane pre {
         white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

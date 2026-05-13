@@ -8039,14 +8039,23 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                             sp.commit()
                             continue
 
-                        # Idempotent re-affirm.
-                        if new_text == old_text and prior and (prior.edited_text or '') == new_text:
+                        # Idempotent re-affirm: text unchanged AND prior text
+                        # matches AND the intent flags also match the prior
+                        # row. If the teacher unchecked a box but kept the
+                        # text the same, that's a flag change — not an
+                        # idempotent re-affirm — so we must fall through to
+                        # the "write new row" path below, which deactivates
+                        # the prior row and persists the new flag state.
+                        prior_amend = bool(prior.amend_answer_key) if prior else False
+                        prior_promote = (prior.scope in ('promoted', 'both')) if prior else False
+                        flags_match = (prior_amend == amend_flag and prior_promote == promote_flag)
+                        if (new_text == old_text and prior
+                                and (prior.edited_text or '') == new_text
+                                and flags_match):
                             entry = {
                                 'edit_id': prior.id,
-                                'amend_answer_key': prior.amend_answer_key,
-                                'update_subject_standards': (
-                                    prior.scope in ('promoted', 'both')
-                                ),
+                                'amend_answer_key': prior_amend,
+                                'update_subject_standards': prior_promote,
                                 'promoted_standard_id': None,
                                 'calibrated': True,  # back-compat
                             }

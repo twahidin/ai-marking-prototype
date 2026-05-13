@@ -125,6 +125,97 @@ def test_both_boxes_ticked_writes_scope_both(app, db_session, client):
     assert fe.promoted_to_subject_standard_id is not None
 
 
+def test_uncheck_both_without_text_edit_deactivates_prior(app, db_session, client):
+    """Teacher saves with both boxes ticked, then re-opens and unchecks both
+    without editing the text. The prior FeedbackEdit must be deactivated so
+    the calibration is fully removed."""
+    t, asn, _stu, sub = _make_chain(db_session)
+    _login(client, t.id)
+
+    with patch('subject_standards.extract_standard_topic_keys',
+              return_value=['enzymes']):
+        client.patch(
+            f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
+            json={'questions': [{'question_num': 1, 'feedback': 'Calibrated text',
+                                  'amend_answer_key': True, 'update_subject_standards': True}]},
+        )
+    active_before = FeedbackEdit.query.filter_by(
+        submission_id=sub.id, assignment_id=asn.id, active=True).count()
+    assert active_before == 1
+
+    rv = client.patch(
+        f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
+        json={'questions': [{'question_num': 1, 'feedback': 'Calibrated text',
+                              'amend_answer_key': False, 'update_subject_standards': False}]},
+    )
+    assert rv.status_code == 200
+    assert FeedbackEdit.query.filter_by(
+        submission_id=sub.id, assignment_id=asn.id, active=True).count() == 0
+
+
+def test_uncheck_one_without_text_edit_updates_prior_flags(app, db_session, client):
+    """Teacher saves with both boxes ticked, then re-opens and unchecks only
+    'Update subject standards' (keeps Amend). The previous re-affirm
+    short-circuit ignored flag changes when text was unchanged — this guards
+    that regression: prior is deactivated and a new row reflects the new
+    flag state."""
+    t, asn, _stu, sub = _make_chain(db_session)
+    _login(client, t.id)
+
+    with patch('subject_standards.extract_standard_topic_keys',
+              return_value=['enzymes']):
+        client.patch(
+            f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
+            json={'questions': [{'question_num': 1, 'feedback': 'Same text',
+                                  'amend_answer_key': True, 'update_subject_standards': True}]},
+        )
+    initial = FeedbackEdit.query.filter_by(
+        submission_id=sub.id, assignment_id=asn.id, active=True).first()
+    assert initial.scope == 'both'
+
+    rv = client.patch(
+        f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
+        json={'questions': [{'question_num': 1, 'feedback': 'Same text',
+                              'amend_answer_key': True, 'update_subject_standards': False}]},
+    )
+    assert rv.status_code == 200
+    actives = FeedbackEdit.query.filter_by(
+        submission_id=sub.id, assignment_id=asn.id, active=True).all()
+    assert len(actives) == 1
+    assert actives[0].amend_answer_key is True
+    assert actives[0].scope == 'amendment'
+
+
+def test_toggle_promote_on_without_text_edit_creates_new_row(app, db_session, client):
+    """Symmetric to the uncheck case: teacher saves with only Amend, then
+    re-opens and adds Update subject standards on the same text. The new
+    flag state must replace the prior row."""
+    t, asn, _stu, sub = _make_chain(db_session)
+    _login(client, t.id)
+
+    client.patch(
+        f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
+        json={'questions': [{'question_num': 1, 'feedback': 'Same text',
+                              'amend_answer_key': True, 'update_subject_standards': False}]},
+    )
+    initial = FeedbackEdit.query.filter_by(
+        submission_id=sub.id, assignment_id=asn.id, active=True).first()
+    assert initial.scope == 'amendment'
+
+    with patch('subject_standards.extract_standard_topic_keys',
+              return_value=['enzymes']):
+        rv = client.patch(
+            f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
+            json={'questions': [{'question_num': 1, 'feedback': 'Same text',
+                                  'amend_answer_key': True, 'update_subject_standards': True}]},
+        )
+    assert rv.status_code == 200
+    actives = FeedbackEdit.query.filter_by(
+        submission_id=sub.id, assignment_id=asn.id, active=True).all()
+    assert len(actives) == 1
+    assert actives[0].scope == 'both'
+
+
 def test_legacy_assignment_drops_update_subject_standards(app, db_session, client):
     """Per spec §4.1: on legacy assignments, the 'Update subject standards'
     intent is hidden and must not promote. 'Amend answer key' still works."""
