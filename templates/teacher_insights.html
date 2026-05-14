@@ -1128,7 +1128,7 @@ async function renderSubmissionRateTrend(body, ctx) {
                 },
                 scales: {
                     y: { min: 0, max: 100, ticks: { callback: function (v) { return v + '%'; } } },
-                    x: { ticks: { autoSkip: false, maxRotation: 0, minRotation: 0 } }
+                    x: { ticks: { display: false } }
                 }
             }
         });
@@ -1234,7 +1234,7 @@ async function renderPerformanceTrend(body, ctx) {
                 },
                 scales: {
                     y: { min: 0, max: 100, ticks: { callback: function (v) { return v + '%'; } } },
-                    x: { ticks: { autoSkip: false, maxRotation: 0, minRotation: 0 } }
+                    x: { ticks: { display: false } }
                 }
             }
         });
