@@ -205,10 +205,13 @@
 
 {% block scripts %}
 <script>
-/* UP-26: filter dropdown handler — invoked via data-change-handler. */
+/* UP-26: filter dropdown handler — invoked via data-change-handler.
+   Always send the param (even empty) so the server can distinguish
+   "user picked All teachers" (?teacher_id=) from "first visit" (no
+   param at all, which defaults seniors to themselves). */
 function filterByTeacher(sel) {
     var tid = sel.value;
-    window.location.href = tid ? ('/dashboard?teacher_id=' + tid) : '/dashboard';
+    window.location.href = '/dashboard?teacher_id=' + encodeURIComponent(tid);
 }
 
 /* Pager step: shifts which page-of-6 is visible in the assignment grid.

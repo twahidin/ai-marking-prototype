@@ -4447,7 +4447,16 @@ def teacher_dashboard():
     # Senior roles see all classes; teachers see only their assigned classes
     is_senior = teacher.role in ('hod', 'subject_head', 'lead')
     all_teachers = []
-    filter_teacher_id = request.args.get('teacher_id', '').strip()
+    # Distinguish "param missing" (first visit) from "param present but
+    # empty" (user explicitly chose 'All teachers' in the dropdown). For
+    # seniors, first visit defaults to filtering by themselves so they
+    # see only their own classes at a glance; they can pick another
+    # teacher — or 'All teachers' — to widen the view.
+    raw_teacher_id = request.args.get('teacher_id')
+    if raw_teacher_id is None:
+        filter_teacher_id = teacher.id if is_senior else ''
+    else:
+        filter_teacher_id = raw_teacher_id.strip()
 
     if is_senior:
         all_teachers = Teacher.query.order_by(Teacher.name).all()
