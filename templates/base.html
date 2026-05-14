@@ -121,18 +121,6 @@
     document.addEventListener('keydown', function (ev) {
         if (ev.key === 'Escape') close();
     });
-    // Make the cog menu's "button" items look like the <a> menu items.
-    // (Browsers default <button>s to inline-block + a chrome we don't want.)
-    var menuButtons = menu.querySelectorAll('button[role="menuitem"]');
-    menuButtons.forEach(function (b) {
-        b.style.background = 'none';
-        b.style.border = 'none';
-        b.style.padding = '';
-        b.style.font = 'inherit';
-        b.style.cursor = 'pointer';
-        b.style.textAlign = 'left';
-        b.style.width = '100%';
-    });
 })();
 </script>
 

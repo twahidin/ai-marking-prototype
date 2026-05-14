@@ -353,12 +353,17 @@ body {
     min-width: 160px; padding: 4px 0; z-index: 1001;
 }
 .dept-nav-cog.open .dept-nav-cog-menu { display: block; }
-.dept-nav-cog-menu a {
-    display: block; padding: 9px 14px; color: #2d2d2d;
-    font-size: 14px; font-weight: 500; text-decoration: none;
+.dept-nav-cog-menu a,
+.dept-nav-cog-menu button[role="menuitem"] {
+    display: block; width: 100%; box-sizing: border-box;
+    padding: 9px 14px; color: #2d2d2d;
+    font-size: 14px; font-weight: 500; font-family: inherit;
+    text-align: left; text-decoration: none;
+    background: none; border: none; cursor: pointer;
     opacity: 1;
 }
-.dept-nav-cog-menu a:hover { background: #eef1ff; color: #667eea; }
+.dept-nav-cog-menu a:hover,
+.dept-nav-cog-menu button[role="menuitem"]:hover { background: #eef1ff; color: #667eea; }
 @media (max-width: 600px) {
     .dept-nav-inner { gap: 12px; flex-wrap: wrap; height: auto; padding: 10px 0; }
     .dept-nav-links { gap: 2px; }
