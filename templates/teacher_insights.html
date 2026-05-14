@@ -216,11 +216,6 @@
         text-transform: uppercase; letter-spacing: 0.5px;
         margin-bottom: 6px;
     }
-    .ms-group-header .ms-tip {
-        display: inline-flex; width: 14px; height: 14px; border-radius: 50%;
-        background: #eef0fb; color: #667eea; font-size: 10px; font-weight: 700;
-        align-items: center; justify-content: center; cursor: help;
-    }
     .ms-row {
         display: flex; align-items: center; justify-content: space-between;
         padding: 6px 0; border-bottom: 1px solid #f5f5f5; font-size: 13px;
@@ -1279,7 +1274,6 @@ async function renderMissedSubmissions(body, ctx) {
             html += '<div class="ms-group">';
             html += '<div class="ms-group-header">' +
                 escHtml(g.label) +
-                ' <span class="ms-tip" title="Each dot is one of the last ' + data.assignments.length + ' assignments. A filled dot ● means the student hasn’t submitted it (or their submission errored and needs resubmission). Empty dot ○ means submitted.">?</span>' +
                 '</div>';
             g.students.forEach(function (st) {
                 html += '<div class="ms-row">';
