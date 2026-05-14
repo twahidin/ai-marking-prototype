@@ -84,7 +84,7 @@
     {% endif %}
 
     <!-- Info Card -->
-    <div class="card">
+    <div class="card" id="detailsCard">
         <h2>Assignment Details</h2>
         <div class="info-grid">
             <div class="info-item">
@@ -122,66 +122,66 @@
                 <span class="info-value">{{ assignment.created_at.strftime('%d %b %Y, %H:%M') if assignment.created_at else 'N/A' }}</span>
             </div>
         </div>
-        <div style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;display:flex;gap:10px;flex-wrap:wrap;">
-            <button class="upload-btn" onclick="openEditModal()" style="padding:8px 20px;font-size:13px;">Edit Assignment</button>
-            <button class="upload-btn" onclick="openShareModal()" style="padding:8px 20px;font-size:13px;">Share to Assignment Bank</button>
-            <button class="upload-btn" type="button" onclick="deleteAssignment()" style="padding:8px 20px;font-size:13px;background:#fff;color:#c0392b;border-color:#c0392b;margin-left:auto;">Delete Assignment</button>
-            {% if not assignment.show_results %}
-            <button class="upload-btn" type="button" onclick="issueAiFeedback()" style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border-color:#28a745;">Issue AI Feedback</button>
-            {% endif %}
-        </div>
-    </div>
 
-    {% if assignment.topic_keys_status != 'legacy' %}
-    <div class="card" style="margin-top:16px;">
-        <h2>Topic tags
-            {% if assignment.topic_keys_status == 'pending' %}
-                <span style="font-size:12px;font-weight:400;color:#e68a00;margin-left:8px;">tagging…</span>
-            {% endif %}
-        </h2>
-        <p style="color:#666;font-size:12px;margin:4px 0 12px;">
-            Comma-separated topic keys for the whole assignment. Subject standards retrieval matches
-            on these tags when marking. Edit and click away to save.
-        </p>
-        <div style="display:flex;align-items:center;gap:8px;">
+        {% if assignment.topic_keys_status != 'legacy' %}
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                <span class="info-label" style="margin-bottom:0;">Topic tags</span>
+                {% if assignment.topic_keys_status == 'pending' %}
+                    <span style="font-size:12px;font-weight:400;color:#e68a00;">tagging…</span>
+                {% endif %}
+            </div>
             <input id="topic-tag-input"
                    class="topic-tag-input"
                    value="{{ topic_keys_flat | join(', ') }}"
                    placeholder="comma-separated topic keys (e.g. enzymes, terminology_precision)"
-                   style="flex:1;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px;" />
+                   style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px;box-sizing:border-box;" />
+            <p style="color:#888;font-size:11px;margin:4px 0 0;">Subject standards retrieval matches on these tags when marking. Click away to save.</p>
+            <p id="topic-tag-status" class="topic-tag-status" hidden style="margin:6px 0 0;font-size:12px;color:#888;"></p>
         </div>
-        <p id="topic-tag-status" class="topic-tag-status" hidden style="margin:6px 0 0;font-size:12px;color:#888;"></p>
-    </div>
-    {% endif %}
+        {% endif %}
 
-    {% if assignment.topic_keys_status != 'legacy' %}
-    <div class="card" style="margin-top:16px;">
-        <h2>Effective answer key</h2>
-        <p style="color:#666;font-size:12px;margin:4px 0 8px;">
-            The answer key the AI sees during marking: the uploaded original (if it&rsquo;s text)
-            plus your active amendments appended.
-        </p>
-        <button type="button" class="upload-btn" data-action="preview-effective-answer-key"
-                style="padding:6px 12px;font-size:13px;">Preview effective answer key</button>
-        <pre id="effective-ak-output" hidden
-             style="white-space:pre-wrap;background:#f7f7f8;padding:12px;border-radius:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#333;margin-top:12px;max-height:400px;overflow:auto;"></pre>
-        <p id="effective-ak-note" hidden style="color:#888;font-size:11px;margin-top:6px;font-style:italic;">
-            Note: the original answer key is a PDF/binary file and is not shown here &mdash; only your text amendments appear above. The AI consumes the PDF natively at marking time.
-        </p>
-    </div>
-    {% endif %}
+        <div class="details-actions" style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;display:flex;gap:12px 16px;flex-wrap:wrap;align-items:flex-start;">
+            <div style="display:flex;flex-direction:column;gap:8px;">
+                <button class="upload-btn" onclick="openEditModal()" style="padding:8px 20px;font-size:13px;">Edit Assignment</button>
+                {% if assignment.topic_keys_status != 'legacy' %}
+                <button type="button" class="upload-btn" data-action="toggle-answer-key-amendments"
+                        aria-expanded="false" aria-controls="answer-key-amendments-panel"
+                        style="padding:8px 20px;font-size:13px;">Answer key amendments</button>
+                {% endif %}
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px;">
+                <button class="upload-btn" onclick="openShareModal()" style="padding:8px 20px;font-size:13px;">Share to Assignment Bank</button>
+                {% if linked_bank_id and assignment.topic_keys_status != 'legacy' %}
+                <button type="button" class="upload-btn" data-action="push-amendments-to-bank"
+                        style="padding:8px 20px;font-size:13px;">Update bank version with my amendments</button>
+                <p id="bank-push-status" hidden style="color:#888;font-size:12px;margin:0;"></p>
+                {% endif %}
+            </div>
+            {% if not assignment.show_results %}
+            <div style="display:flex;flex-direction:column;gap:8px;">
+                <button class="upload-btn" type="button" onclick="issueAiFeedback()" style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border-color:#28a745;">Issue AI Feedback</button>
+            </div>
+            {% endif %}
+            <div style="display:flex;flex-direction:column;gap:8px;margin-left:auto;">
+                <button class="upload-btn" type="button" onclick="deleteAssignment()" style="padding:8px 20px;font-size:13px;background:#fff;color:#c0392b;border-color:#c0392b;">Delete Assignment</button>
+            </div>
+        </div>
 
-    {% if linked_bank_id and assignment.topic_keys_status != 'legacy' %}
-    <div class="card" style="margin-top:16px;">
-        <h2>Push amendments to assignment bank</h2>
-        <p style="color:#666;font-size:12px;margin:4px 0 8px;">
-            Update the shared bank version of this assignment with your active amendments. The bank&rsquo;s answer key will be replaced with your effective answer key.
-        </p>
-        <button type="button" class="upload-btn" data-action="push-amendments-to-bank"
-                style="padding:6px 12px;font-size:13px;">Update bank version with my amendments</button>
-        <p id="bank-push-status" hidden style="color:#888;font-size:12px;margin-top:8px;"></p>
+        {% if assignment.topic_keys_status != 'legacy' %}
+        <div id="answer-key-amendments-panel" hidden style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;">
+            <p style="color:#666;font-size:12px;margin:0 0 10px;">
+                The answer key the AI sees during marking: the uploaded original (if it&rsquo;s text)
+                plus your active amendments appended.
+            </p>
+            <pre id="effective-ak-output"
+                 style="white-space:pre-wrap;background:#f7f7f8;padding:12px;border-radius:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#333;margin:0;max-height:400px;overflow:auto;"></pre>
+            <p id="effective-ak-note" hidden style="color:#888;font-size:11px;margin-top:6px;font-style:italic;">
+                Note: the original answer key is a PDF/binary file and is not shown here &mdash; only your text amendments appear above. The AI consumes the PDF natively at marking time.
+            </p>
+        </div>
+        {% endif %}
     </div>
-    {% endif %}
 
     <!-- Summary Stats -->
     {% set total = students | length %}
@@ -570,7 +570,8 @@
                    entity_id=assignment.id,
                    entity_assign_type=assignment.assign_type,
                    inline_url_prefix='/teacher/assignment/' ~ assignment.id ~ '/file-inline',
-                   canonical_subjects=canonical_subjects %}
+                   canonical_subjects=canonical_subjects,
+                   topic_keys_flat=topic_keys_flat %}
                 {% include '_assignment_form_fields.html' %}
             {% endwith %}
         </div>
@@ -1720,6 +1721,22 @@ async function submitEdit() {
             btn.textContent = 'Save Changes';
             return;
         }
+        // Topic tags — saved through the dedicated endpoint after the main edit
+        // succeeds so subject changes (which can shift the vocabulary) apply
+        // before validation. Best-effort; the reload below shows final state
+        // including any dropped keys.
+        const topicEl = document.getElementById('editTopicTags');
+        if (topicEl) {
+            const keys = topicEl.value
+                .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+            try {
+                await fetch('/teacher/assignment/{{ assignment.id }}/topic-tags', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ topic_keys: keys }),
+                });
+            } catch (e) { /* non-fatal */ }
+        }
         // Strip ?edit=1 (if present) before reload so the modal doesn't auto-reopen
         const url = new URL(window.location);
         if (url.searchParams.has('edit')) {
@@ -1814,26 +1831,32 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 })();
 
-// Effective answer key preview.
+// Answer key amendments — inline expandable panel inside the details card.
+// Click button to open/close. Click outside the details card to close.
+// Always refetch on open so amendments saved elsewhere stay current.
 (function () {
-    var btn = document.querySelector('[data-action="preview-effective-answer-key"]');
-    if (!btn) return;
-    btn.addEventListener('click', function () {
+    var btn = document.querySelector('[data-action="toggle-answer-key-amendments"]');
+    var panel = document.getElementById('answer-key-amendments-panel');
+    var card = document.getElementById('detailsCard');
+    if (!btn || !panel || !card) return;
+
+    var inFlight = false;
+
+    function setExpanded(open) {
+        panel.hidden = !open;
+        btn.setAttribute('aria-expanded', String(!!open));
+    }
+
+    function load() {
+        if (inFlight) return;
+        inFlight = true;
         var pre = document.getElementById('effective-ak-output');
         var note = document.getElementById('effective-ak-note');
-        // Skeleton shimmer instead of "Loading…" — same vertical footprint
-        // as a real response, so the layout doesn't shift on swap-in.
         pre.innerHTML =
             '<div class="td-skel-bar"></div>' +
             '<div class="td-skel-bar short"></div>' +
             '<div class="td-skel-bar shorter"></div>';
-        pre.hidden = false;
         if (note) note.hidden = true;
-        // Disable the button while in-flight so a frustrated double-click
-        // doesn't fire two requests.
-        btn.disabled = true;
-        var origLabel = btn.textContent;
-        btn.textContent = 'Loading…';
         fetch('/teacher/assignment/{{ assignment.id }}/answer-key-preview')
             .then(function (r) { return r.json(); })
             .then(function (data) {
@@ -1846,9 +1869,22 @@ window.addEventListener('DOMContentLoaded', () => {
             }).catch(function () {
                 pre.textContent = 'Preview failed.';
             }).finally(function () {
-                btn.disabled = false;
-                btn.textContent = origLabel;
+                inFlight = false;
             });
+    }
+
+    btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var willOpen = panel.hidden;
+        setExpanded(willOpen);
+        if (willOpen) load();
+    });
+
+    // Outside-click collapses. Use mousedown so it fires before focus changes
+    // and consistently with how dropdown-style components dismiss.
+    document.addEventListener('mousedown', function (e) {
+        if (panel.hidden) return;
+        if (!card.contains(e.target)) setExpanded(false);
     });
 })();
 
