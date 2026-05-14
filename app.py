@@ -753,7 +753,11 @@ def _current_teacher():
 # ---------------------------------------------------------------------------
 ROLE_HIERARCHY = {'hod': 5, 'subject_head': 4, 'lead': 3, 'manager': 2, 'teacher': 1, 'owner': 5}
 ROLES_CAN_MANAGE = {'hod', 'subject_head', 'manager'}
-ROLES_CAN_VIEW_INSIGHTS = {'hod', 'subject_head', 'lead', 'owner'}
+ROLES_CAN_VIEW_INSIGHTS = {'hod', 'subject_head', 'lead', 'owner', 'manager'}
+# Overview lives inside Insights as its own tab; visibility matches the
+# existing management gate (HOD / Subject Head / Manager). Lead/Owner still
+# see Department + My Class but no Overview tab.
+ROLES_CAN_VIEW_OVERVIEW = {'hod', 'subject_head', 'manager'}
 ALL_DEPT_ROLES = ['teacher', 'lead', 'manager', 'subject_head', 'hod']
 
 
@@ -1883,6 +1887,8 @@ def department_page():
     total_assignments = Assignment.query.filter(Assignment.class_id.isnot(None)).count()
     total_subs = Submission.query.count()
 
+    can_view_dept = teacher.role in ROLES_CAN_VIEW_INSIGHTS
+
     return render_template('department.html',
                            teacher=teacher,
                            classes=class_data,
@@ -1890,6 +1896,7 @@ def department_page():
                            total_classes=len(classes),
                            total_assignments=total_assignments,
                            total_submissions=total_subs,
+                           can_view_dept=can_view_dept,
                            dept_mode=is_dept_mode(),
                            demo_mode=is_demo_mode())
 
@@ -2396,26 +2403,15 @@ def dept_save_keys():
     return jsonify({'success': True})
 
 
-# Roles that default to the Department insights tab. Everyone else (teacher,
-# manager, owner) lands on My Class insights first, but can toggle either way
-# if they have the underlying access.
-ROLES_DEFAULT_DEPT_INSIGHTS = {'hod', 'subject_head', 'lead'}
-
-
 @app.route('/insights')
 def insights_entrypoint():
-    """Smart redirect: HOD/SH/Lead -> Department; everyone else -> My Class.
-
-    A class teacher accidentally hitting an HOD-shared link still ends up on
-    a page they have access to, and HODs preserve their muscle memory.
-    """
+    """Every authenticated user lands on My Class first. They can toggle to
+    Department / Overview from the tab bar if their role grants access."""
     if not _is_authenticated():
         return redirect(url_for('hub'))
     teacher = _current_teacher()
     if not teacher:
         return redirect(url_for('hub'))
-    if teacher.role in ROLES_DEFAULT_DEPT_INSIGHTS:
-        return redirect(url_for('department_insights'))
     return redirect(url_for('teacher_insights'))
 
 
@@ -2444,6 +2440,7 @@ def teacher_insights():
         selected_class = classes[0]
 
     can_view_dept = teacher.role in ROLES_CAN_VIEW_INSIGHTS
+    can_view_overview = teacher.role in ROLES_CAN_VIEW_OVERVIEW
 
     return render_template(
         'teacher_insights.html',
@@ -2451,6 +2448,7 @@ def teacher_insights():
         classes=classes,
         selected_class=selected_class,
         can_view_dept=can_view_dept,
+        can_view_overview=can_view_overview,
         demo_mode=is_demo_mode(),
         dept_mode=is_dept_mode(),
     )
@@ -3299,11 +3297,14 @@ def department_insights():
     if not ai_providers:
         ai_providers = PROVIDERS
 
+    can_view_overview = teacher.role in ROLES_CAN_VIEW_OVERVIEW
+
     return render_template('department_insights.html',
                            teacher=teacher,
                            classes=classes,
                            assignments=assignments,
                            ai_providers=ai_providers,
+                           can_view_overview=can_view_overview,
                            demo_mode=is_demo_mode(),
                            dept_mode=is_dept_mode())
 

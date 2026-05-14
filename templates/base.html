@@ -72,9 +72,6 @@
             <a href="/insights">Insights</a>
             <a href="/class">Make Assignment</a>
             <a href="/bank">Bank</a>
-            {% if dept_mode and current_teacher.role in ('hod', 'subject_head', 'manager') %}
-            <a href="/department">Overview</a>
-            {% endif %}
             <a href="/teacher/marking-patterns">Department Standards</a>
             {% if not dept_mode or demo_mode %}
             <a href="/mark">Mark</a>

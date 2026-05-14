@@ -424,10 +424,11 @@
         {% endif %}
         <span class="toolbar-spacer"></span>
         <div class="insights-toggle" role="tablist">
+            {% if can_view_overview %}
+            <a href="/department" role="tab">Overview</a>
+            {% endif %}
             {% if can_view_dept %}
             <a href="/department/insights" role="tab">Department</a>
-            {% else %}
-            <a class="disabled" aria-disabled="true" title="Department insights are restricted to HOD / Subject Head / Lead.">Department</a>
             {% endif %}
             <a class="active" aria-current="page" role="tab" aria-selected="true">My Class</a>
         </div>
