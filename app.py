@@ -1999,6 +1999,54 @@ def department_manage():
                            demo_mode=is_demo_mode())
 
 
+def _load_term_schedule_for_settings():
+    """Return (rows, source) for the Manage Department term-schedule UI.
+
+    rows is always a list of four {num, start, end} dicts with ISO date
+    strings, pre-populated from (in priority order): the HOD override,
+    MOE's hardcoded schedule for today's year, or empty strings.
+    source is one of 'override', 'moe', 'unset' so the template can
+    display where the dates came from."""
+    from datetime import datetime as _dt, timezone as _tz
+    from moe_terms import MOE_TERMS
+
+    today = _dt.now(_tz.utc).date()
+    year = today.year
+
+    override_cfg = DepartmentConfig.query.filter_by(key='term_schedule_override').first()
+    if override_cfg and override_cfg.value:
+        try:
+            data = json.loads(override_cfg.value)
+            year = int(data.get('year') or year)
+            terms = data.get('terms') or []
+            rows = []
+            for i in range(1, 5):
+                match = next((t for t in terms if int(t.get('num', 0)) == i), None)
+                rows.append({
+                    'num': i,
+                    'start': (match or {}).get('start', ''),
+                    'end': (match or {}).get('end', ''),
+                })
+            return rows, 'override'
+        except (ValueError, KeyError, TypeError):
+            pass  # Fall through to MOE defaults
+
+    moe = MOE_TERMS.get(year) or MOE_TERMS.get(max(MOE_TERMS) if MOE_TERMS else None)
+    if moe:
+        moe_by_num = {num: (start, end) for num, start, end in moe}
+        rows = []
+        for i in range(1, 5):
+            pair = moe_by_num.get(i)
+            rows.append({
+                'num': i,
+                'start': pair[0].isoformat() if pair else '',
+                'end': pair[1].isoformat() if pair else '',
+            })
+        return rows, 'moe'
+
+    return [{'num': i, 'start': '', 'end': ''} for i in range(1, 5)], 'unset'
+
+
 def _generate_teacher_code():
     """Generate a unique 8-char teacher code."""
     chars = string.ascii_uppercase + string.digits
@@ -2443,6 +2491,80 @@ def dept_save_keys():
         elif cfg:
             db.session.delete(cfg)
     db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/department/term-schedule', methods=['GET'])
+def dept_get_term_schedule():
+    """Return the current term schedule (override > MOE > unset) for
+    the cog-menu modal."""
+    err = _require_hod()
+    if err:
+        return err
+    rows, source = _load_term_schedule_for_settings()
+    return jsonify({'rows': rows, 'source': source})
+
+
+@app.route('/department/term-schedule', methods=['POST'])
+def dept_save_term_schedule():
+    """Save the HOD's term schedule override. Body shape:
+        {"year": 2026, "terms": [
+            {"num": 1, "start": "2026-01-02", "end": "2026-03-13"}, ...
+        ]}
+    """
+    err = _require_hod()
+    if err:
+        return err
+
+    from datetime import date as _date
+
+    data = request.get_json(silent=True) or {}
+    try:
+        year = int(data.get('year'))
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'Invalid year'}), 400
+
+    raw_terms = data.get('terms') or []
+    cleaned = []
+    for t in raw_terms:
+        try:
+            num = int(t.get('num'))
+            start = _date.fromisoformat(t.get('start'))
+            end = _date.fromisoformat(t.get('end'))
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': f'Invalid dates for term {t.get("num")}'}), 400
+        if start > end:
+            return jsonify({'success': False, 'error': f'Term {num}: start must be on or before end'}), 400
+        cleaned.append({'num': num, 'start': start.isoformat(), 'end': end.isoformat()})
+
+    cleaned.sort(key=lambda x: x['start'])
+    for i in range(len(cleaned) - 1):
+        if cleaned[i]['end'] >= cleaned[i + 1]['start']:
+            return jsonify({
+                'success': False,
+                'error': f'Term {cleaned[i]["num"]} ends on/after Term {cleaned[i + 1]["num"]} starts',
+            }), 400
+
+    cfg = DepartmentConfig.query.filter_by(key='term_schedule_override').first()
+    payload = json.dumps({'year': year, 'terms': cleaned}, ensure_ascii=False)
+    if cfg:
+        cfg.value = payload
+    else:
+        db.session.add(DepartmentConfig(key='term_schedule_override', value=payload))
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/department/term-schedule/reset', methods=['POST'])
+def dept_reset_term_schedule():
+    """Delete the HOD override so MOE defaults apply again."""
+    err = _require_hod()
+    if err:
+        return err
+    cfg = DepartmentConfig.query.filter_by(key='term_schedule_override').first()
+    if cfg:
+        db.session.delete(cfg)
+        db.session.commit()
     return jsonify({'success': True})
 
 

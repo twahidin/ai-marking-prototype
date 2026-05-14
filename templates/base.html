@@ -90,6 +90,9 @@
                     {% if dept_mode and current_teacher.role in ('hod', 'subject_head', 'manager') %}
                     <a href="/department/classes" role="menuitem">Manage</a>
                     {% endif %}
+                    {% if dept_mode and current_teacher.role == 'hod' %}
+                    <button type="button" role="menuitem" data-open-term-dates>Set term dates</button>
+                    {% endif %}
                 </div>
             </div>
             {% endif %}
@@ -118,8 +121,262 @@
     document.addEventListener('keydown', function (ev) {
         if (ev.key === 'Escape') close();
     });
+    // Make the cog menu's "button" items look like the <a> menu items.
+    // (Browsers default <button>s to inline-block + a chrome we don't want.)
+    var menuButtons = menu.querySelectorAll('button[role="menuitem"]');
+    menuButtons.forEach(function (b) {
+        b.style.background = 'none';
+        b.style.border = 'none';
+        b.style.padding = '';
+        b.style.font = 'inherit';
+        b.style.cursor = 'pointer';
+        b.style.textAlign = 'left';
+        b.style.width = '100%';
+    });
 })();
 </script>
+
+{% if dept_mode and current_teacher.role == 'hod' %}
+<!-- Term dates modal — invoked from the cog menu, used dept-wide so other
+     features can reference the same canonical term boundaries. -->
+<div class="term-dates-modal-backdrop" data-term-dates-modal hidden>
+    <div class="term-dates-modal" role="dialog" aria-modal="true" aria-labelledby="termDatesTitle">
+        <div class="term-dates-modal-head">
+            <h2 id="termDatesTitle">Set term dates</h2>
+            <button type="button" class="term-dates-close" aria-label="Close" data-term-dates-close>&times;</button>
+        </div>
+        <p class="term-dates-note">
+            Used by Department Insights and any other feature that references "this term".
+            <span data-term-dates-source></span>
+        </p>
+        <div class="term-dates-year-row">
+            <label for="termDatesYear">Year</label>
+            <input type="number" id="termDatesYear" min="2020" max="2099" step="1">
+        </div>
+        <div class="term-dates-grid">
+            <div class="term-dates-head">
+                <span>Term</span><span>Start</span><span>End</span>
+            </div>
+            <div class="term-dates-row">
+                <span>Term 1</span>
+                <input type="date" data-term-start="1">
+                <input type="date" data-term-end="1">
+            </div>
+            <div class="term-dates-row">
+                <span>Term 2</span>
+                <input type="date" data-term-start="2">
+                <input type="date" data-term-end="2">
+            </div>
+            <div class="term-dates-row">
+                <span>Term 3</span>
+                <input type="date" data-term-start="3">
+                <input type="date" data-term-end="3">
+            </div>
+            <div class="term-dates-row">
+                <span>Term 4</span>
+                <input type="date" data-term-start="4">
+                <input type="date" data-term-end="4">
+            </div>
+        </div>
+        <div class="term-dates-error" data-term-dates-error hidden></div>
+        <div class="term-dates-actions">
+            <button type="button" class="term-dates-btn-reset" data-term-dates-reset hidden>Reset to MOE defaults</button>
+            <span style="flex:1;"></span>
+            <button type="button" class="term-dates-btn-cancel" data-term-dates-close>Cancel</button>
+            <button type="button" class="term-dates-btn-save" data-term-dates-save>Save</button>
+        </div>
+    </div>
+</div>
+<style>
+.term-dates-modal-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 18, 40, 0.55);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 9000; padding: 24px;
+}
+.term-dates-modal-backdrop[hidden] { display: none; }
+.term-dates-modal {
+    background: #fff; border-radius: 12px; width: min(540px, 100%);
+    max-height: 90vh; overflow-y: auto;
+    box-shadow: 0 18px 48px rgba(0,0,0,0.18);
+    padding: 22px 26px 20px;
+    font-family: inherit;
+}
+.term-dates-modal-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 6px;
+}
+.term-dates-modal h2 { font-size: 18px; margin: 0; color: #1a1a2e; }
+.term-dates-close {
+    background: none; border: none; font-size: 24px; line-height: 1;
+    cursor: pointer; color: #888; padding: 4px 8px;
+}
+.term-dates-close:hover { color: #1a1a2e; }
+.term-dates-note { font-size: 12px; color: #666; margin: 0 0 14px; }
+.term-dates-note [data-term-dates-source] { font-weight: 600; }
+.term-dates-year-row {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+}
+.term-dates-year-row label {
+    font-size: 12px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.term-dates-year-row input {
+    width: 100px; padding: 6px 10px; border: 1px solid #d0d4e2;
+    border-radius: 6px; font-size: 13px;
+}
+.term-dates-grid {
+    display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px;
+}
+.term-dates-head, .term-dates-row {
+    display: grid; grid-template-columns: 80px 1fr 1fr; gap: 12px; align-items: center;
+}
+.term-dates-head {
+    font-size: 11px; font-weight: 700; color: #888;
+    text-transform: uppercase; letter-spacing: 0.5px; padding-bottom: 4px;
+    border-bottom: 1px solid #eef0f6;
+}
+.term-dates-row > span { font-weight: 600; color: #1a1a2e; font-size: 14px; }
+.term-dates-row input[type="date"] {
+    padding: 6px 10px; border: 1px solid #d0d4e2;
+    border-radius: 6px; font-size: 13px;
+}
+.term-dates-error {
+    margin: 10px 0 0; padding: 8px 12px;
+    background: #fdecea; color: #c0392b; border-radius: 6px;
+    font-size: 12px;
+}
+.term-dates-actions {
+    display: flex; align-items: center; gap: 8px; margin-top: 16px;
+}
+.term-dates-actions button {
+    padding: 7px 14px; border-radius: 6px; font-size: 13px;
+    font-weight: 600; cursor: pointer; border: none;
+}
+.term-dates-btn-save { background: #667eea; color: #fff; }
+.term-dates-btn-save:hover { background: #5567d0; }
+.term-dates-btn-cancel { background: #f0f0f5; color: #555; }
+.term-dates-btn-cancel:hover { background: #e0e0ea; }
+.term-dates-btn-reset { background: none; color: #888; text-decoration: underline; padding: 7px 0; }
+.term-dates-btn-reset:hover { color: #1a1a2e; }
+</style>
+<script>
+(function () {
+    var modal = document.querySelector('[data-term-dates-modal]');
+    if (!modal) return;
+    var openBtn = document.querySelector('[data-open-term-dates]');
+    var yearInput = modal.querySelector('#termDatesYear');
+    var sourceLabel = modal.querySelector('[data-term-dates-source]');
+    var errorBox = modal.querySelector('[data-term-dates-error]');
+    var resetBtn = modal.querySelector('[data-term-dates-reset]');
+
+    function showError(msg) {
+        if (!msg) { errorBox.hidden = true; errorBox.textContent = ''; return; }
+        errorBox.hidden = false;
+        errorBox.textContent = msg;
+    }
+    function setSourceLabel(source) {
+        var map = {
+            'override': { text: 'Custom override active', color: '#28a745' },
+            'moe': { text: 'Using MOE defaults', color: '#667eea' },
+            'unset': { text: 'Not set', color: '#dc3545' },
+        };
+        var info = map[source] || map.unset;
+        sourceLabel.textContent = info.text;
+        sourceLabel.style.color = info.color;
+        resetBtn.hidden = source !== 'override';
+    }
+    function populate(rows, source) {
+        showError('');
+        setSourceLabel(source);
+        // Pull year from the first row with a start date, else default to today.
+        var year = (new Date()).getFullYear();
+        for (var i = 0; i < rows.length; i++) {
+            if (rows[i].start) { year = parseInt(rows[i].start.slice(0, 4), 10) || year; break; }
+        }
+        yearInput.value = year;
+        rows.forEach(function (r) {
+            var s = modal.querySelector('[data-term-start="' + r.num + '"]');
+            var e = modal.querySelector('[data-term-end="' + r.num + '"]');
+            if (s) s.value = r.start || '';
+            if (e) e.value = r.end || '';
+        });
+    }
+    async function load() {
+        try {
+            var res = await fetch('/department/term-schedule');
+            if (!res.ok) { showError('Could not load current term schedule.'); return; }
+            var data = await res.json();
+            populate(data.rows || [], data.source || 'unset');
+        } catch (err) {
+            showError('Could not load current term schedule.');
+        }
+    }
+    function open() {
+        modal.hidden = false;
+        load();
+    }
+    function close() { modal.hidden = true; showError(''); }
+
+    if (openBtn) openBtn.addEventListener('click', function () {
+        // Close the cog menu since it's a separate stateful dropdown.
+        var cog = document.querySelector('[data-cog-menu]');
+        if (cog) cog.classList.remove('open');
+        open();
+    });
+    modal.querySelectorAll('[data-term-dates-close]').forEach(function (b) {
+        b.addEventListener('click', close);
+    });
+    modal.addEventListener('click', function (ev) {
+        if (ev.target === modal) close();
+    });
+    document.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape' && !modal.hidden) close();
+    });
+    modal.querySelector('[data-term-dates-save]').addEventListener('click', async function () {
+        showError('');
+        var year = parseInt(yearInput.value, 10);
+        if (!year || year < 2020 || year > 2099) {
+            showError('Year must be between 2020 and 2099.');
+            return;
+        }
+        var terms = [];
+        for (var i = 1; i <= 4; i++) {
+            var s = modal.querySelector('[data-term-start="' + i + '"]').value;
+            var e = modal.querySelector('[data-term-end="' + i + '"]').value;
+            if (!s || !e) {
+                showError('Term ' + i + ' is missing a start or end date.');
+                return;
+            }
+            terms.push({ num: i, start: s, end: e });
+        }
+        try {
+            var res = await fetch('/department/term-schedule', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ year: year, terms: terms }),
+            });
+            var data = await res.json();
+            if (!data.success) { showError(data.error || 'Save failed.'); return; }
+            close();
+            // Reload so any open insights page picks up the new term window.
+            window.location.reload();
+        } catch (err) {
+            showError('Save failed.');
+        }
+    });
+    resetBtn.addEventListener('click', async function () {
+        if (!confirm('Reset to MOE defaults? Your custom term dates will be discarded.')) return;
+        try {
+            var res = await fetch('/department/term-schedule/reset', { method: 'POST' });
+            var data = await res.json();
+            if (!data.success) { showError(data.error || 'Reset failed.'); return; }
+            load();
+        } catch (err) {
+            showError('Reset failed.');
+        }
+    });
+})();
+</script>
+{% endif %}
 {% endif %}
 {% block body %}{% endblock %}
 <script src="{{ url_for('static', filename='common.js') }}?v={{ static_version }}"></script>

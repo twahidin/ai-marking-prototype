@@ -12,22 +12,25 @@ docs/superpowers/specs/2026-05-14-department-insights-widgets-design.md.
 
 from __future__ import annotations
 
+import json
 import statistics
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from db import (
-    Assignment, Class, DepartmentGoal, FeedbackEdit, Student, Submission,
-    TeacherClass,
+    Assignment, Class, DepartmentConfig, DepartmentGoal, FeedbackEdit, Student,
+    Submission, TeacherClass,
 )
 from bands import (
     BAND_ALL, BAND_UNBANDED, ORDERED_BAND_KEYS, classes_in_band, resolve_band,
 )
+from moe_terms import current_term as moe_current_term, most_recent_term as moe_most_recent_term
 
 # How many days back counts as "the current term" when no explicit term
 # start is configured. Rolling — not aligned to calendar terms — so the
 # dashboard is useful even before the school sets term boundaries.
-DEFAULT_TERM_DAYS = 91  # ~ 13 weeks
+# Sized to match a Singapore MOE secondary school term (10 weeks).
+DEFAULT_TERM_DAYS = 70  # 10 weeks
 
 # Trend / "vs last term" delta windows.
 TREND_RECENT_DAYS = 30
@@ -37,10 +40,6 @@ TREND_PRIOR_DAYS = 30
 # them without re-deriving). These are intentionally conservative — fewer
 # false positives is more important than maximising widget coverage.
 MIN_SUBMISSIONS_FOR_DIST = 10
-MIN_QUESTIONS_FOR_HOTSPOT = 10
-MIN_SUBMISSIONS_FOR_AMENDED = 5
-MIN_TEACHERS_FOR_ALIGNMENT = 2
-MIN_EDITS_PER_TEACHER_FOR_ALIGNMENT = 3
 MARKING_PIPELINE_RECENT_DAYS = 14
 MARKING_PIPELINE_BASELINE_DAYS = 90
 
@@ -77,6 +76,107 @@ def _submission_pct(sub, result=None):
     return (correct / len(questions)) * 100.0
 
 
+def _load_term_override():
+    """Read the HOD-configured term schedule from DepartmentConfig.
+
+    Expected JSON shape:
+        {"year": 2026, "terms": [
+            {"num": 1, "start": "2026-01-02", "end": "2026-03-13"}, ...
+        ]}
+
+    Returns a list of (num, start_date, end_date) tuples or None if no
+    override is set / parse fails. Errors are swallowed deliberately —
+    a malformed override should never crash the dashboard."""
+    try:
+        cfg = DepartmentConfig.query.filter_by(key='term_schedule_override').first()
+    except Exception:
+        return None
+    if not cfg or not cfg.value:
+        return None
+    try:
+        data = json.loads(cfg.value)
+        terms = []
+        for t in data.get('terms') or []:
+            num = int(t['num'])
+            start = date.fromisoformat(t['start'])
+            end = date.fromisoformat(t['end'])
+            if start <= end:
+                terms.append((num, start, end))
+        return terms or None
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _pick_term_from_list(today, terms):
+    """Given today's date and a list of (num, start, end) tuples, return
+    (term, is_current). `term` is the term containing today, or the most
+    recently ended term, or None if no term qualifies. `is_current` is
+    True iff today falls inside the returned term's bounds."""
+    for term in terms:
+        _, start, end = term
+        if start <= today <= end:
+            return term, True
+    ended = [t for t in terms if t[2] <= today]
+    if ended:
+        return max(ended, key=lambda t: t[2]), False
+    return None, False
+
+
+def _resolve_term_window(now):
+    """Decide the (term_start, term_end, label, source) window for `now`.
+
+    Resolution order:
+      1. HOD-configured override (DepartmentConfig.term_schedule_override).
+      2. MOE published term that contains today → that term's bounds.
+      3. MOE most-recently-ended term → its bounds (handles holiday
+         windows so "current term" reflects the just-ended term).
+      4. Rolling 70-day fallback (DEFAULT_TERM_DAYS) ending at `now`.
+
+    Returns a 4-tuple: (term_start, term_end, label, source) where
+    term_start/term_end are timezone-aware datetimes at UTC midnight.
+    `source` is one of 'override', 'override_recent', 'moe',
+    'moe_recent', 'rolling'."""
+    today = now.date()
+
+    override_terms = _load_term_override()
+    if override_terms:
+        term, is_current = _pick_term_from_list(today, override_terms)
+        if term is not None:
+            num, start, end = term
+            suffix = '' if is_current else ' (just ended)'
+            return (
+                datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc),
+                datetime.combine(end, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1),
+                f'Term {num} {start.year}{suffix}',
+                'override' if is_current else 'override_recent',
+            )
+
+    term = moe_current_term(today)
+    if term is not None:
+        num, start, end = term
+        return (
+            datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc),
+            datetime.combine(end, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1),
+            f'Term {num} {start.year}',
+            'moe',
+        )
+    recent = moe_most_recent_term(today)
+    if recent is not None:
+        num, start, end = recent
+        return (
+            datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc),
+            datetime.combine(end, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1),
+            f'Term {num} {start.year} (just ended)',
+            'moe_recent',
+        )
+    return (
+        now - timedelta(days=DEFAULT_TERM_DAYS),
+        now,
+        f'Last {DEFAULT_TERM_DAYS} days',
+        'rolling',
+    )
+
+
 # ---------------------------------------------------------------------------
 # Band slice — the shared data load used by every widget on one request
 # ---------------------------------------------------------------------------
@@ -90,8 +190,13 @@ class BandSlice:
     def __init__(self, band):
         self.band = band
         self.now = datetime.now(timezone.utc)
-        self.term_start = self.now - timedelta(days=DEFAULT_TERM_DAYS)
-        self.prior_term_start = self.now - timedelta(days=DEFAULT_TERM_DAYS * 2)
+        self.term_start, self.term_end, self.term_label, self.term_source = (
+            _resolve_term_window(self.now)
+        )
+        # Prior-term window mirrors the current term's length so trend
+        # comparisons are like-for-like.
+        term_length = self.term_end - self.term_start
+        self.prior_term_start = self.term_start - term_length
 
         all_classes = Class.query.all()
         self.classes = classes_in_band(all_classes, band)
@@ -337,187 +442,6 @@ def compute_dept_goals(slice_, viewer_role=None, viewer_subjects=None):
     return rows
 
 
-def compute_frequently_amended(slice_):
-    """Per (assignment_id, criterion_id), edit_count / submission_count.
-
-    Names neither teacher nor student. Top 8 by rate; assignments with
-    fewer than `MIN_SUBMISSIONS_FOR_AMENDED` submissions are excluded."""
-    submissions_by_asn = defaultdict(list)
-    for s in slice_.final_done_term:
-        submissions_by_asn[s.assignment_id].append(s)
-
-    sub_ids_in_band = {s.id for s in slice_.final_done_term}
-    if not sub_ids_in_band:
-        return []
-
-    edits = (
-        FeedbackEdit.query
-        .filter(FeedbackEdit.submission_id.in_(sub_ids_in_band))
-        .filter(FeedbackEdit.active.is_(True))
-        .all()
-    )
-    edit_counts = Counter()
-    for e in edits:
-        edit_counts[(e.assignment_id, e.criterion_id)] += 1
-
-    rows = []
-    for (asn_id, crit_id), n_edits in edit_counts.items():
-        n_subs = len(submissions_by_asn.get(asn_id, []))
-        if n_subs < MIN_SUBMISSIONS_FOR_AMENDED:
-            continue
-        asn = slice_.asn_by_id.get(asn_id)
-        if not asn:
-            continue
-        rows.append({
-            'assignment_title': asn.title or asn.subject or 'Untitled',
-            'criterion_id': crit_id,
-            'edit_count': n_edits,
-            'submission_count': n_subs,
-            'rate': round(n_edits / n_subs * 100, 1),
-        })
-    rows.sort(key=lambda r: -r['rate'])
-    return rows[:8]
-
-
-def compute_calibration_alignment(slice_):
-    """For each (assignment, criterion) in band with ≥2 contributing
-    teachers, score teacher agreement on the modal `theme_key`.
-
-    Per-band aggregate (no per-teacher rows). Limited to criteria where
-    each contributing teacher has at least
-    `MIN_EDITS_PER_TEACHER_FOR_ALIGNMENT` edits."""
-    sub_ids = {s.id for s in slice_.final_done_term}
-    if not sub_ids:
-        return []
-    edits = (
-        FeedbackEdit.query
-        .filter(FeedbackEdit.submission_id.in_(sub_ids))
-        .filter(FeedbackEdit.active.is_(True))
-        .filter(FeedbackEdit.theme_key.isnot(None))
-        .all()
-    )
-    grouped = defaultdict(lambda: defaultdict(Counter))
-    for e in edits:
-        grouped[(e.assignment_id, e.criterion_id)][e.edited_by][e.theme_key] += 1
-
-    rows = []
-    for (asn_id, crit_id), per_teacher in grouped.items():
-        top_themes = []
-        for tid, themes in per_teacher.items():
-            if sum(themes.values()) < MIN_EDITS_PER_TEACHER_FOR_ALIGNMENT:
-                continue
-            top_themes.append(themes.most_common(1)[0][0])
-        if len(top_themes) < MIN_TEACHERS_FOR_ALIGNMENT:
-            continue
-        modal_counter = Counter(top_themes)
-        top_two_keys = [k for k, _ in modal_counter.most_common(2)]
-        agreed = sum(1 for t in top_themes if t in top_two_keys)
-        alignment = agreed / len(top_themes) * 100.0
-        if alignment >= 75:
-            bucket = 'high'
-        elif alignment >= 50:
-            bucket = 'mid'
-        else:
-            bucket = 'low'
-        asn = slice_.asn_by_id.get(asn_id)
-        rows.append({
-            'assignment_title': (asn.title or asn.subject or 'Untitled') if asn else 'Unknown',
-            'criterion_id': crit_id,
-            'teachers_contributing': len(top_themes),
-            'alignment_pct': round(alignment, 0),
-            'bucket': bucket,
-        })
-
-    rows.sort(key=lambda r: (r['alignment_pct'], -r['teachers_contributing']))
-    return rows[:10]
-
-
-def compute_partial_credit_hotspots(slice_):
-    """Per (assignment, question_number), partial_rate.
-
-    A question is "partial" if its status is 'partial' OR (when marks are
-    awarded) marks_awarded sits in the 10-90% band of marks_total."""
-    counts = defaultdict(lambda: {'partial': 0, 'total': 0, 'title': ''})
-
-    for sub in slice_.final_done_term:
-        result = sub.get_result()
-        questions = result.get('questions') or []
-        if not questions:
-            continue
-        asn = slice_.asn_by_id.get(sub.assignment_id)
-        asn_label = (asn.title or asn.subject or 'Untitled') if asn else 'Unknown'
-        for i, q in enumerate(questions):
-            qnum = str(q.get('question_number', i + 1))
-            key = (sub.assignment_id, qnum)
-            counts[key]['total'] += 1
-            counts[key]['title'] = asn_label
-            status = (q.get('status') or '').lower()
-            if status == 'partial':
-                counts[key]['partial'] += 1
-                continue
-            awarded = q.get('marks_awarded')
-            total_m = q.get('marks_total')
-            if awarded is None or not total_m:
-                continue
-            try:
-                ratio = float(awarded) / float(total_m)
-            except (TypeError, ValueError, ZeroDivisionError):
-                continue
-            if 0.1 <= ratio <= 0.9:
-                counts[key]['partial'] += 1
-
-    rows = []
-    for (asn_id, qnum), c in counts.items():
-        if c['total'] < MIN_QUESTIONS_FOR_HOTSPOT:
-            continue
-        rows.append({
-            'assignment_title': c['title'],
-            'question_number': qnum,
-            'partial_rate': round(c['partial'] / c['total'] * 100, 1),
-            'total': c['total'],
-        })
-    rows.sort(key=lambda r: -r['partial_rate'])
-    return rows[:8]
-
-
-def compute_persistent_gap(slice_):
-    """% of band students with ≥4 final submissions who scored <40% on
-    ≥3 of their last 4 assessments. Single big-number widget."""
-    n_band = len(slice_.students)
-    if not n_band:
-        return {'pct': None, 'n_qualified': 0, 'n_band_total': 0, 'low_sample': True}
-
-    by_student = defaultdict(list)
-    for s in slice_.final_done_term:
-        by_student[s.student_id].append(s)
-
-    qualified = 0
-    flagged = 0
-    for st in slice_.students:
-        subs = by_student.get(st.id, [])
-        if len(subs) < 4:
-            continue
-        subs_sorted = sorted(
-            subs, key=lambda s: _aware(s.submitted_at) or slice_.term_start,
-            reverse=True
-        )[:4]
-        pcts = [slice_.percent(s) for s in subs_sorted]
-        pcts = [p for p in pcts if p is not None]
-        if len(pcts) < 4:
-            continue
-        qualified += 1
-        if sum(1 for p in pcts if p < 40) >= 3:
-            flagged += 1
-
-    low_sample = qualified < (n_band * 0.5)
-    return {
-        'pct': round(flagged / qualified * 100, 1) if qualified else None,
-        'n_qualified': qualified,
-        'n_band_total': n_band,
-        'low_sample': low_sample,
-    }
-
-
 def compute_marking_pipeline(slice_):
     """Submitted vs marked vs pending in last 14 days, against the prior
     90-day baseline ratio. Band-aggregate, never per teacher."""
@@ -553,16 +477,20 @@ def compute_marking_pipeline(slice_):
 
 
 def compute_assessment_rhythm(slice_):
-    """Assignments per fortnight bin from term start to now, plus the
-    median fortnightly rate across all bands for context."""
+    """Assignments per weekly bin from term start to term end, plus the
+    median weekly rate across all bands for context.
+
+    Bins cover the full term (10 weeks for an MOE term). Weeks that fall
+    after `slice_.now` are kept in the chart with count=0 so the planned
+    term cadence is visible mid-term."""
     term_asns = [
         a for a in slice_.assignments
         if _aware(a.created_at) and _aware(a.created_at) >= slice_.term_start
     ]
     bins = []
     cursor = slice_.term_start
-    while cursor < slice_.now:
-        end = min(cursor + timedelta(days=14), slice_.now)
+    while cursor < slice_.term_end:
+        end = min(cursor + timedelta(days=7), slice_.term_end)
         n = sum(1 for a in term_asns
                 if _aware(a.created_at)
                 and cursor <= _aware(a.created_at) < end)
@@ -570,12 +498,20 @@ def compute_assessment_rhythm(slice_):
             'start': cursor.date().isoformat(),
             'end': end.date().isoformat(),
             'count': n,
+            'future': cursor > slice_.now,
         })
         cursor = end
 
-    band_rate = sum(b['count'] for b in bins) / len(bins) if bins else 0
+    # Rate is computed over elapsed bins only — future weeks shouldn't
+    # drag the band's average down.
+    elapsed_bins = [b for b in bins if not b['future']]
+    band_rate = (
+        sum(b['count'] for b in elapsed_bins) / len(elapsed_bins)
+        if elapsed_bins else 0
+    )
 
     other_rates = []
+    n_elapsed = max(1, len(elapsed_bins))
     for other_band in ORDERED_BAND_KEYS:
         if other_band == slice_.band:
             other_rates.append(band_rate)
@@ -588,16 +524,18 @@ def compute_assessment_rhythm(slice_):
             Assignment.query
             .filter(Assignment.class_id.in_(other_class_ids))
             .filter(Assignment.created_at >= slice_.term_start)
+            .filter(Assignment.created_at < slice_.now)
             .all()
         )
-        n_bins = max(1, len(bins))
-        other_rates.append(len(other_asns) / n_bins)
+        other_rates.append(len(other_asns) / n_elapsed)
     median_across = round(statistics.median(other_rates), 2) if other_rates else 0
 
     return {
         'bins': bins,
         'band_rate': round(band_rate, 2),
         'median_across_bands': median_across,
+        'term_label': slice_.term_label,
+        'term_source': slice_.term_source,
     }
 
 
@@ -668,8 +606,7 @@ def build_low_sample_list(payload):
     whose `low_sample` flag fired. The AI prompt's caveats banner reads
     this so the HOD sees what was excluded."""
     flagged = []
-    for key in ('band_health', 'score_distribution', 'persistent_gap',
-                'marking_pipeline'):
+    for key in ('band_health', 'score_distribution', 'marking_pipeline'):
         if isinstance(payload.get(key), dict) and payload[key].get('low_sample'):
             flagged.append(key)
     return flagged
@@ -690,15 +627,14 @@ def compute_widgets(band, viewer_role=None, viewer_subjects=None):
         'as_of': slice_.now.isoformat(),
         'term_window': {
             'start': slice_.term_start.date().isoformat(),
-            'days': DEFAULT_TERM_DAYS,
+            'end': slice_.term_end.date().isoformat(),
+            'days': int((slice_.term_end - slice_.term_start).total_seconds() // 86400),
+            'label': slice_.term_label,
+            'source': slice_.term_source,
         },
         'band_health': compute_band_health(slice_),
         'dept_goals': compute_dept_goals(slice_, viewer_role, viewer_subjects),
         'score_distribution': compute_score_distribution(slice_),
-        'frequently_amended': compute_frequently_amended(slice_),
-        'calibration_alignment': compute_calibration_alignment(slice_),
-        'partial_credit_hotspots': compute_partial_credit_hotspots(slice_),
-        'persistent_gap': compute_persistent_gap(slice_),
         'marking_pipeline': compute_marking_pipeline(slice_),
         'assessment_rhythm': compute_assessment_rhythm(slice_),
         'wins_to_share': compute_wins_to_share(slice_),

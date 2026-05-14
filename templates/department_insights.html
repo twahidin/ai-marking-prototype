@@ -578,35 +578,11 @@ var WIDGET_CATALOG = {
         defaults: { w: 12, h: 7, minW: 6, minH: 6 },
         render: renderAIAnalysis,
     },
-    frequently_amended: {
-        title: 'Items to Re-review',
-        desc: 'Questions teachers most often amend after AI marking.',
-        defaults: { w: 6, h: 5, minW: 4, minH: 4 },
-        render: renderFrequentlyAmended,
-    },
-    calibration_alignment: {
-        title: 'Calibration Alignment',
-        desc: 'How aligned teachers are on mistake themes per question.',
-        defaults: { w: 6, h: 5, minW: 4, minH: 4 },
-        render: renderCalibrationAlignment,
-    },
-    partial_credit_hotspots: {
-        title: 'Partial-credit Hotspots',
-        desc: 'Questions that land in the messy middle.',
-        defaults: { w: 6, h: 5, minW: 4, minH: 4 },
-        render: renderPartialCreditHotspots,
-    },
     wins_to_share: {
         title: 'Wins Worth Sharing',
         desc: 'Recent improvements worth celebrating.',
         defaults: { w: 6, h: 5, minW: 4, minH: 4 },
         render: renderWinsToShare,
-    },
-    persistent_gap: {
-        title: 'Persistent Gap',
-        desc: 'Students consistently below 40% across their last 4 assessments.',
-        defaults: { w: 4, h: 5, minW: 3, minH: 4 },
-        render: renderPersistentGap,
     },
     marking_pipeline: {
         title: 'Marking Pipeline',
@@ -615,8 +591,8 @@ var WIDGET_CATALOG = {
         render: renderMarkingPipeline,
     },
     assessment_rhythm: {
-        title: 'Assessment Rhythm',
-        desc: 'Assignments per fortnight, with the cross-band median.',
+        title: 'Assessments issued this term',
+        desc: 'Assignments per week across the 10-week term, with the cross-band median.',
         defaults: { w: 6, h: 4, minW: 4, minH: 3 },
         render: renderAssessmentRhythm,
     },
@@ -639,20 +615,16 @@ var STARTER_TEMPLATES = [
         key: 'calibration', label: 'Calibration', icon: '🎯',
         desc: 'For subject leads — how aligned the team is on marking.',
         layout: [
-            { key: 'band_health',             x: 0, y: 0,  w: 12, h: 3 },
-            { key: 'calibration_alignment',   x: 0, y: 3,  w: 6,  h: 5 },
-            { key: 'frequently_amended',      x: 6, y: 3,  w: 6,  h: 5 },
-            { key: 'partial_credit_hotspots', x: 0, y: 8,  w: 6,  h: 5 },
-            { key: 'ai_analysis',             x: 0, y: 13, w: 12, h: 7 },
+            { key: 'band_health', x: 0, y: 0, w: 12, h: 3 },
+            { key: 'ai_analysis', x: 0, y: 3, w: 12, h: 7 },
         ]
     },
     {
         key: 'capacity', label: 'Support & Capacity', icon: '🤝',
-        desc: 'For HODs doing pastoral review — gap, pipeline, rhythm.',
+        desc: 'For HODs doing pastoral review — pipeline, rhythm, wins.',
         layout: [
             { key: 'band_health',       x: 0, y: 0,  w: 12, h: 3 },
-            { key: 'persistent_gap',    x: 0, y: 3,  w: 4,  h: 5 },
-            { key: 'marking_pipeline',  x: 4, y: 3,  w: 8,  h: 5 },
+            { key: 'marking_pipeline',  x: 0, y: 3,  w: 12, h: 5 },
             { key: 'assessment_rhythm', x: 0, y: 8,  w: 6,  h: 4 },
             { key: 'wins_to_share',     x: 6, y: 8,  w: 6,  h: 4 },
             { key: 'ai_analysis',       x: 0, y: 12, w: 12, h: 7 },
@@ -1205,80 +1177,6 @@ function renderDeptGoals(body, payload) {
     body.innerHTML = html;
 }
 
-function renderFrequentlyAmended(body, payload) {
-    var rows = payload.frequently_amended || [];
-    if (!rows.length) {
-        body.innerHTML = '<div class="widget-empty">No items above the re-review threshold.</div>';
-        return;
-    }
-    var max = Math.max.apply(null, rows.map(function (r) { return r.rate; })) || 1;
-    var html = '<div class="row-list">';
-    rows.forEach(function (r) {
-        var width = (r.rate / max) * 100;
-        html +=
-            '<div class="row-item">' +
-                '<div class="row-head">' +
-                    '<span class="row-title">' + escHtml(r.assignment_title) + ' · ' + escHtml(r.criterion_id) + '</span>' +
-                    '<span class="row-value">' + r.rate + '%</span>' +
-                '</div>' +
-                '<div class="row-bar-wrap"><div class="row-bar" style="width:' + width + '%;"></div></div>' +
-                '<div class="row-sub">' + r.edit_count + ' edits across ' + r.submission_count + ' submissions</div>' +
-            '</div>';
-    });
-    html += '</div>';
-    html += '<div class="rhythm-footer" style="margin-top:6px;">No teacher is named. The list shows where teacher amendments concentrate.</div>';
-    body.innerHTML = html;
-}
-
-function renderCalibrationAlignment(body, payload) {
-    var rows = payload.calibration_alignment || [];
-    if (!rows.length) {
-        body.innerHTML = '<div class="widget-empty">Not enough calibration data across teachers yet.</div>';
-        return;
-    }
-    var html = '<div class="row-list">';
-    rows.forEach(function (r) {
-        html +=
-            '<div class="row-item">' +
-                '<div class="row-head">' +
-                    '<span class="row-title">' + escHtml(r.assignment_title) + ' · ' + escHtml(r.criterion_id) + '</span>' +
-                    '<span class="row-chip ' + r.bucket + '">' + r.bucket + '</span>' +
-                '</div>' +
-                '<div class="row-bar-wrap"><div class="row-bar ' + r.bucket + '" style="width:' + r.alignment_pct + '%;"></div></div>' +
-                '<div class="row-sub">' + r.alignment_pct + '% alignment across ' + r.teachers_contributing + ' teachers' +
-                    (r.bucket === 'low' ? ' · suggest joint mark' : '') +
-                '</div>' +
-            '</div>';
-    });
-    html += '</div>';
-    body.innerHTML = html;
-}
-
-function renderPartialCreditHotspots(body, payload) {
-    var rows = payload.partial_credit_hotspots || [];
-    if (!rows.length) {
-        body.innerHTML = '<div class="widget-empty">No question with enough data passes the threshold yet.</div>';
-        return;
-    }
-    var max = Math.max.apply(null, rows.map(function (r) { return r.partial_rate; })) || 1;
-    var html = '<div class="row-list">';
-    rows.forEach(function (r) {
-        var width = (r.partial_rate / max) * 100;
-        html +=
-            '<div class="row-item">' +
-                '<div class="row-head">' +
-                    '<span class="row-title">' + escHtml(r.assignment_title) + ' · Q' + escHtml(r.question_number) + '</span>' +
-                    '<span class="row-value">' + r.partial_rate + '%</span>' +
-                '</div>' +
-                '<div class="row-bar-wrap"><div class="row-bar mid" style="width:' + width + '%;"></div></div>' +
-                '<div class="row-sub">' + r.total + ' attempts</div>' +
-            '</div>';
-    });
-    html += '</div>';
-    html += '<div class="rhythm-footer" style="margin-top:6px;">These questions often land in the messy middle — worth reviewing the rubric or model answer.</div>';
-    body.innerHTML = html;
-}
-
 function renderWinsToShare(body, payload) {
     var wins = payload.wins_to_share || [];
     if (!wins.length) {
@@ -1293,24 +1191,6 @@ function renderWinsToShare(body, payload) {
                 '<span>' + escHtml(w.text) + '</span>' +
             '</div>';
     });
-    body.innerHTML = html;
-}
-
-function renderPersistentGap(body, payload) {
-    var g = payload.persistent_gap || {};
-    if (g.pct == null) {
-        body.innerHTML = '<div class="widget-empty">Not enough assessment history yet (need 4+ submissions per student).</div>';
-        return;
-    }
-    var bandLabel = BAND_LABEL_LOOKUP[currentBand] || 'this band';
-    var html =
-        '<div class="big-pct ' + (g.pct > 25 ? 'flagged' : '') + '">' + g.pct + '%</div>' +
-        '<div class="big-pct-caption">of ' + g.n_qualified + ' ' + escHtml(bandLabel) +
-            ' students with at least 4 assessments</div>' +
-        '<div class="big-pct-suggest">Suggested supports: after-school clinic · peer tutoring</div>';
-    if (g.low_sample) {
-        html += '<div class="widget-empty" style="margin-top:8px;font-size:11px;">Low sample (qualifying students &lt; 50% of band).</div>';
-    }
     body.innerHTML = html;
 }
 
@@ -1347,18 +1227,22 @@ function renderAssessmentRhythm(body, payload) {
         body.innerHTML = '<div class="widget-empty">No assignments in the current term window.</div>';
         return;
     }
+    var termLabel = r.term_label ? escHtml(r.term_label) + ' · ' : '';
     body.innerHTML = '<div class="rhythm-wrap"><canvas></canvas></div>' +
-        '<div class="rhythm-footer">Median across bands: ' + (r.median_across_bands || 0) +
-        '/fortnight · This band: ' + (r.band_rate || 0) +
+        '<div class="rhythm-footer">' + termLabel +
+        'Median across bands: ' + (r.median_across_bands || 0) +
+        '/week · This band: ' + (r.band_rate || 0) +
         (r.band_rate >= r.median_across_bands ? ' ✓' : '') + '</div>';
     var canvas = body.querySelector('canvas');
     new Chart(canvas, {
         type: 'bar',
         data: {
-            labels: bins.map(function (b, i) { return 'F' + (i + 1); }),
+            labels: bins.map(function (b, i) { return 'W' + (i + 1); }),
             datasets: [{
                 data: bins.map(function (b) { return b.count; }),
-                backgroundColor: '#667eea',
+                backgroundColor: bins.map(function (b) {
+                    return b.future ? 'rgba(102, 126, 234, 0.25)' : '#667eea';
+                }),
                 borderRadius: 4,
             }]
         },
@@ -1368,7 +1252,7 @@ function renderAssessmentRhythm(body, payload) {
                 legend: { display: false },
                 tooltip: { callbacks: { title: function (items) {
                     var b = bins[items[0].dataIndex];
-                    return b.start + ' → ' + b.end;
+                    return b.start + ' → ' + b.end + (b.future ? ' (upcoming)' : '');
                 } } },
             },
             scales: {
