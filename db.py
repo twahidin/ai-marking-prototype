@@ -835,6 +835,55 @@ class DepartmentConfig(db.Model):
     value = db.Column(db.Text, default='')
 
 
+class Department(db.Model):
+    """A school department, owning a set of subjects and a set of teachers.
+
+    Hard scopes HOD permissions: a teacher with role='hod' and
+    is_lead=True in TeacherDepartment for dept X may only act on
+    teachers / assignments / classes scoped to dept X.
+
+    Spec: docs/superpowers/specs/2026-05-14-teacher-department-tags-design.md
+    """
+    __tablename__ = 'departments'
+    id          = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name        = db.Column(db.String(100), unique=True, nullable=False)
+    short_name  = db.Column(db.String(24), nullable=False, default='')
+    sort_order  = db.Column(db.Integer, default=0, nullable=False)
+    is_active   = db.Column(db.Boolean, default=True, nullable=False)
+    created_at  = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class DepartmentSubject(db.Model):
+    """M2M between Department and subjects.py:SUBJECT_KEYS.
+
+    `subject_key` is a string FK-by-convention to subjects.py (we don't
+    have a subjects table). A unit test enforces every row matches a
+    current canonical key.
+    """
+    __tablename__ = 'department_subjects'
+    department_id = db.Column(db.Integer,
+                              db.ForeignKey('departments.id', ondelete='CASCADE'),
+                              primary_key=True)
+    subject_key   = db.Column(db.String(80), primary_key=True)
+
+
+class TeacherDepartment(db.Model):
+    """M2M between Teacher and Department.
+
+    `is_lead=True` makes the teacher HOD of the dept. A teacher may
+    lead multiple depts; a dept may have multiple lead teachers.
+    """
+    __tablename__ = 'teacher_departments'
+    teacher_id    = db.Column(db.String(36),
+                              db.ForeignKey('teachers.id', ondelete='CASCADE'),
+                              primary_key=True)
+    department_id = db.Column(db.Integer,
+                              db.ForeignKey('departments.id', ondelete='CASCADE'),
+                              primary_key=True)
+    is_lead       = db.Column(db.Boolean, default=False, nullable=False)
+    added_at      = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class Assignment(db.Model):
     __tablename__ = 'assignments'
 
