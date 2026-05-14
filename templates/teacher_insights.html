@@ -245,6 +245,44 @@
     .ms-no-data { color: #888; font-size: 13px; padding: 8px 0; text-align: center; }
     .ms-grace-note { font-size: 11px; color: #888; margin-top: 8px; line-height: 1.4; }
 
+    /* Inline picker: lets the teacher narrow the widget to 1-3 of the
+       latest 5 aged-past-grace assignments. Selection is in-memory only —
+       resets to default on page refresh. */
+    .ms-edit-wrap { position: relative; display: flex; justify-content: flex-end; margin: -4px 0 4px; }
+    .ms-edit-btn {
+        width: 22px; height: 22px; border-radius: 50%;
+        border: 1px solid transparent; background: transparent; color: #888;
+        font-size: 12px; line-height: 1; cursor: pointer; padding: 0;
+        display: inline-flex; align-items: center; justify-content: center;
+        transition: all 0.15s;
+    }
+    .ms-edit-btn:hover { background: #f0f2ff; color: #667eea; border-color: #d0d4e2; }
+    .ms-edit-btn.active { background: #eef0fb; color: #667eea; border-color: #c9cdd9; }
+    .ms-picker {
+        display: none; position: absolute; top: 26px; right: 0;
+        background: white; border: 1px solid #e0e0e0; border-radius: 10px;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+        padding: 10px; min-width: 240px; max-width: 320px; z-index: 50;
+    }
+    .ms-picker.open { display: block; }
+    .ms-picker-title {
+        font-size: 11px; font-weight: 700; color: #888;
+        text-transform: uppercase; letter-spacing: 0.5px;
+        margin-bottom: 6px;
+    }
+    .ms-picker-row {
+        display: flex; align-items: flex-start; gap: 8px;
+        padding: 6px 4px; border-radius: 6px; cursor: pointer;
+        font-size: 13px; color: #1a1a2e; line-height: 1.3;
+    }
+    .ms-picker-row:hover { background: #f7f8fc; }
+    .ms-picker-row input[type="checkbox"] { margin-top: 2px; flex-shrink: 0; }
+    .ms-picker-row.disabled { color: #aaa; cursor: not-allowed; }
+    .ms-picker-row.disabled:hover { background: transparent; }
+    .ms-picker-hint { font-size: 11px; color: #888; margin: 6px 4px 8px; }
+    .ms-picker-actions { display: flex; gap: 6px; justify-content: flex-end; }
+    .ms-picker-actions .ms-btn { flex: 0 0 auto; padding: 6px 12px; }
+
     /* Chart-bearing widgets need their canvas to fill the body. The chart
        wrap is position:relative so the canvas (absolute) can pin to its
        four edges — that gives Chart.js a definite height when the parent
@@ -1244,32 +1282,52 @@ async function renderPerformanceTrend(body, ctx) {
    ===================================================================== */
 async function renderMissedSubmissions(body, ctx) {
     body.innerHTML = '<div class="ms-no-data">Loading…</div>';
+    /* Selection lives on the DOM body element so it survives re-renders
+       inside this widget but resets on full page reload (matches the spec:
+       "on refresh it would revert back to the default"). */
+    var selected = Array.isArray(body._msSelectedIds) ? body._msSelectedIds.slice() : null;
     try {
-        var res = await fetch('/teacher/insights/widget/missed-submissions?class_id=' + encodeURIComponent(ctx.classId));
+        var url = '/teacher/insights/widget/missed-submissions?class_id=' + encodeURIComponent(ctx.classId);
+        if (selected && selected.length) {
+            url += '&selected_ids=' + encodeURIComponent(selected.join(','));
+        }
+        var res = await fetch(url);
         var data = await res.json();
         if (!data || !data.success) {
             body.innerHTML = '<div class="ms-no-data" style="color:#dc3545;">Could not load.</div>';
             return;
         }
-        if (!data.assignments || !data.assignments.length) {
+        if (!data.candidates || !data.candidates.length) {
             body.innerHTML = '<div class="ms-no-data">No assignments older than 7 days yet — they’re still inside the grace window. Once one ages past 7 days, missed-submission tracking kicks in.</div>';
             return;
         }
-        var n = data.assignments.length;
+        var displayed = data.assignments || [];
+        var displayedIds = displayed.map(function (a) { return a.id; });
+        /* Reflect the server's clamping back into per-body state so the
+           picker UI matches what's actually shown. */
+        body._msSelectedIds = selected ? displayedIds.slice() : null;
+
+        var n = displayed.length;
         var assignmentCount = (n === 1) ? 'last assignment' : ('last ' + n + ' assignments');
-        var graceNote = (n < 3)
-            ? '<div class="ms-grace-note">Showing the ' + n + ' assignment' + (n === 1 ? '' : 's') + ' aged past the 7-day grace window. Newer assignments will join the list when they cross that threshold.</div>'
+        var graceNote = (data.candidates.length < 3)
+            ? '<div class="ms-grace-note">Showing ' + data.candidates.length + ' assignment' + (data.candidates.length === 1 ? '' : 's') + ' aged past the 7-day grace window. Newer assignments will join the list when they cross that threshold.</div>'
             : '';
+
+        var pickerHtml = buildMissedPicker(data.candidates, displayedIds, data.default_selection || []);
+
+        var html = pickerHtml;
         if (data.all_caught_up) {
-            body.innerHTML =
+            html +=
                 '<div class="ms-celebrate">' +
                     '<span class="icon">&#127881;</span>' +
                     'Everyone’s caught up on the ' + assignmentCount +
-                '</div>' + graceNote;
+                '</div>';
+            if (graceNote) html += graceNote;
+            body.innerHTML = html;
+            wireMissedPicker(body, ctx, data.candidates);
             return;
         }
 
-        var html = '';
         data.groups.forEach(function (g) {
             html += '<div class="ms-group">';
             html += '<div class="ms-group-header">' +
@@ -1293,6 +1351,8 @@ async function renderMissedSubmissions(body, ctx) {
         if (graceNote) html += graceNote;
         body.innerHTML = html;
 
+        wireMissedPicker(body, ctx, data.candidates);
+
         var copyBtn = body.querySelector('[data-ms-copy]');
         if (copyBtn) {
             copyBtn.addEventListener('click', function () {
@@ -1301,7 +1361,7 @@ async function renderMissedSubmissions(body, ctx) {
                     g.students.forEach(function (st) {
                         var titles = [];
                         st.dots.forEach(function (missed, i) {
-                            if (missed) titles.push(data.assignments[i].title);
+                            if (missed) titles.push(displayed[i].title);
                         });
                         lines.push('• ' + st.name + ' — ' + titles.join(', '));
                     });
@@ -1319,6 +1379,105 @@ async function renderMissedSubmissions(body, ctx) {
     } catch (err) {
         console.error(err);
         body.innerHTML = '<div class="ms-no-data" style="color:#dc3545;">Could not load.</div>';
+    }
+}
+
+/* Build the pencil-edit affordance + picker popover. Only show the
+   pencil when there are at least 2 candidates (otherwise the default
+   IS the only option). */
+function buildMissedPicker(candidates, displayedIds, defaultSelection) {
+    if (!candidates || candidates.length < 2) return '';
+    var displayedSet = {};
+    displayedIds.forEach(function (id) { displayedSet[id] = true; });
+    var rowsHtml = candidates.map(function (a) {
+        var checked = displayedSet[a.id] ? ' checked' : '';
+        return (
+            '<label class="ms-picker-row">' +
+                '<input type="checkbox" data-ms-pick value="' + escHtml(String(a.id)) + '"' + checked + '>' +
+                '<span>' + escHtml(a.title) + '</span>' +
+            '</label>'
+        );
+    }).join('');
+    return (
+        '<div class="ms-edit-wrap">' +
+            '<button type="button" class="ms-edit-btn" data-ms-edit title="Choose assignments" aria-label="Choose assignments">&#9998;</button>' +
+            '<div class="ms-picker" data-ms-picker role="dialog" aria-label="Choose 1–3 assignments">' +
+                '<div class="ms-picker-title">Show in widget</div>' +
+                rowsHtml +
+                '<div class="ms-picker-hint">Pick 1–3 of the latest ' + candidates.length + ' assignments. Resets on refresh.</div>' +
+                '<div class="ms-picker-actions">' +
+                    '<button type="button" class="ms-btn" data-ms-reset>Default</button>' +
+                    '<button type="button" class="ms-btn primary" data-ms-apply>Apply</button>' +
+                '</div>' +
+            '</div>' +
+        '</div>'
+    );
+}
+
+function wireMissedPicker(body, ctx, candidates) {
+    var editBtn = body.querySelector('[data-ms-edit]');
+    var picker = body.querySelector('[data-ms-picker]');
+    if (!editBtn || !picker) return;
+
+    var checkboxes = picker.querySelectorAll('input[data-ms-pick]');
+
+    function refreshDisabledState() {
+        var checkedCount = 0;
+        checkboxes.forEach(function (cb) { if (cb.checked) checkedCount++; });
+        checkboxes.forEach(function (cb) {
+            var row = cb.closest('.ms-picker-row');
+            if (!cb.checked && checkedCount >= 3) {
+                cb.disabled = true;
+                if (row) row.classList.add('disabled');
+            } else {
+                cb.disabled = false;
+                if (row) row.classList.remove('disabled');
+            }
+        });
+    }
+    refreshDisabledState();
+    checkboxes.forEach(function (cb) {
+        cb.addEventListener('change', refreshDisabledState);
+    });
+
+    function closePicker() {
+        picker.classList.remove('open');
+        editBtn.classList.remove('active');
+        document.removeEventListener('mousedown', onDocClick, true);
+    }
+    function openPicker() {
+        picker.classList.add('open');
+        editBtn.classList.add('active');
+        document.addEventListener('mousedown', onDocClick, true);
+    }
+    function onDocClick(e) {
+        if (!picker.contains(e.target) && e.target !== editBtn) {
+            closePicker();
+        }
+    }
+    editBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (picker.classList.contains('open')) closePicker(); else openPicker();
+    });
+
+    var applyBtn = picker.querySelector('[data-ms-apply]');
+    if (applyBtn) {
+        applyBtn.addEventListener('click', function () {
+            var picked = [];
+            checkboxes.forEach(function (cb) { if (cb.checked) picked.push(cb.value); });
+            if (!picked.length) return;
+            body._msSelectedIds = picked;
+            closePicker();
+            renderMissedSubmissions(body, ctx);
+        });
+    }
+    var resetBtn = picker.querySelector('[data-ms-reset]');
+    if (resetBtn) {
+        resetBtn.addEventListener('click', function () {
+            body._msSelectedIds = null;
+            closePicker();
+            renderMissedSubmissions(body, ctx);
+        });
     }
 }
 

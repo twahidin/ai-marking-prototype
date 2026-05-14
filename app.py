@@ -2489,29 +2489,51 @@ def _check_class_access_for_teacher(class_id):
 MISSED_GRACE_DAYS = 7
 
 
-def _missed_submissions_payload(class_id):
+def _missed_submissions_payload(class_id, selected_ids=None):
     """Compute the missed-submissions widget data for a class.
 
-    Returns a dict with keys: assignments (newest first), groups (one per
-    missed-count bucket, descending), all_caught_up. Empty `assignments`
-    means there's nothing aged past the grace window yet.
+    Always surfaces up to 5 candidate assignments (newest aged past the
+    grace window) so the widget can offer a 1-of-5 / 2-of-5 / 3-of-5
+    picker. `selected_ids`, when provided, narrows the displayed subset
+    to those candidate IDs (preserving newest-first order). Selection
+    is clamped to 1-3; bad/unknown IDs are ignored. When `selected_ids`
+    is None or empty after validation, the default is the newest 3.
+
+    Returns a dict with: candidates (always, up to 5, for the picker),
+    assignments (displayed subset), groups, all_caught_up,
+    default_selection (IDs that make up the default view).
     """
     cls = Class.query.get(class_id)
     if not cls:
-        return {'assignments': [], 'groups': [], 'all_caught_up': True}
+        return {'candidates': [], 'assignments': [], 'groups': [],
+                'all_caught_up': True, 'default_selection': []}
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=MISSED_GRACE_DAYS)
-    # Assignments older than the grace window, newest first, max 3.
-    asns = (
+    # Pull up to 5 candidates (newest first) so the picker has something
+    # to offer beyond the default 3.
+    candidate_asns = (
         Assignment.query
         .filter(Assignment.class_id == class_id)
         .filter(Assignment.created_at <= cutoff)
         .order_by(Assignment.created_at.desc())
-        .limit(3)
+        .limit(5)
         .all()
     )
-    if not asns:
-        return {'assignments': [], 'groups': [], 'all_caught_up': True}
+    if not candidate_asns:
+        return {'candidates': [], 'assignments': [], 'groups': [],
+                'all_caught_up': True, 'default_selection': []}
+
+    candidate_ids = [a.id for a in candidate_asns]
+    default_ids = candidate_ids[:3]
+
+    if selected_ids:
+        # Validate against the candidate set, preserve newest-first order,
+        # cap at 3.
+        valid = {sid for sid in selected_ids if sid in set(candidate_ids)}
+        picked = [a for a in candidate_asns if a.id in valid][:3]
+        asns = picked if picked else candidate_asns[:3]
+    else:
+        asns = candidate_asns[:3]
 
     # Iterate in display order (newest first). Each student gets a parallel
     # `dots` list of bools where True = missed that assignment.
@@ -2575,7 +2597,15 @@ def _missed_submissions_payload(class_id):
         })
 
     return {
-        'assignments': [{'id': a.id, 'title': a.title or a.subject or 'Untitled', 'classroom_code': a.classroom_code} for a in asns],
+        'candidates': [
+            {'id': a.id, 'title': a.title or a.subject or 'Untitled', 'classroom_code': a.classroom_code}
+            for a in candidate_asns
+        ],
+        'assignments': [
+            {'id': a.id, 'title': a.title or a.subject or 'Untitled', 'classroom_code': a.classroom_code}
+            for a in asns
+        ],
+        'default_selection': default_ids,
         'groups': group_list,
         'all_caught_up': len(rows) == 0,
     }
@@ -2589,7 +2619,9 @@ def teacher_widget_missed_submissions():
     teacher, err = _check_class_access_for_teacher(class_id)
     if err:
         return err
-    payload = _missed_submissions_payload(class_id)
+    raw = (request.args.get('selected_ids') or '').strip()
+    selected_ids = [s for s in (raw.split(',') if raw else []) if s]
+    payload = _missed_submissions_payload(class_id, selected_ids=selected_ids or None)
     payload['success'] = True
     return jsonify(payload)
 
