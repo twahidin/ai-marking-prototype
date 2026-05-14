@@ -669,6 +669,14 @@ var saveTimer = null;
 
 function escHtml(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
 
+// Defense-in-depth CSRF: base.html's fetch shim auto-injects X-CSRFToken,
+// but if a CDN script later in the page redefines window.fetch we'd lose
+// it. Reading + setting the token explicitly belt-and-braces the call.
+function getCsrfToken() {
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    return meta ? meta.getAttribute('content') : '';
+}
+
 function widgetTileHtml(key) {
     var w = WIDGET_CATALOG[key];
     var removeBtn = w.non_removable ? '' :
@@ -944,7 +952,7 @@ async function saveLayout() {
     try {
         await fetch('/department/insights/layout', {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
             body: JSON.stringify({ layout: currentLayout(), last_band: currentBand }),
         });
     } catch (e) { console.error('Save layout failed', e); }
@@ -1452,7 +1460,7 @@ async function runAIAnalysis(body) {
     try {
         var res = await fetch('/department/insights/analyze-band', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
             body: JSON.stringify({ provider: provider, model: model, band: currentBand }),
         });
         var data = await res.json();
@@ -1567,7 +1575,7 @@ async function saveGoal() {
     try {
         var res = await fetch(url, {
             method: method,
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
             body: JSON.stringify(payload),
         });
         var data = await res.json();
@@ -1585,7 +1593,10 @@ async function deleteGoal() {
     if (!editingGoalId) return;
     if (!confirm('Delete this goal? It will be removed from the dashboard.')) return;
     try {
-        var res = await fetch('/department/insights/goals/' + editingGoalId, { method: 'DELETE' });
+        var res = await fetch('/department/insights/goals/' + editingGoalId, {
+            method: 'DELETE',
+            headers: { 'X-CSRFToken': getCsrfToken() },
+        });
         var data = await res.json();
         if (!data.success) return alert(data.error || 'Delete failed.');
         closeGoalModal();
