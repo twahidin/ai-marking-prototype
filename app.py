@@ -4445,14 +4445,16 @@ def teacher_dashboard():
     if not teacher:
         return redirect(url_for('hub'))
 
-    # Senior roles see all classes; teachers see only their assigned classes
-    is_senior = teacher.role in ('hod', 'subject_head', 'lead')
+    # Cross-class roles (HOD / SH / Lead / Manager / Owner) get the
+    # teacher-filter dropdown and can pick any teacher's roster. Everyone
+    # else just sees their own assigned classes.
+    is_senior = teacher.role in ROLES_CAN_VIEW_INSIGHTS
     all_teachers = []
     # Distinguish "param missing" (first visit) from "param present but
     # empty" (user explicitly chose 'All teachers' in the dropdown). For
-    # seniors, first visit defaults to filtering by themselves so they
-    # see only their own classes at a glance; they can pick another
-    # teacher — or 'All teachers' — to widen the view.
+    # any role that has the dropdown, first visit defaults to filtering
+    # by themselves so they see only their own classes at a glance; they
+    # can pick another teacher — or 'All teachers' — to widen the view.
     raw_teacher_id = request.args.get('teacher_id')
     if raw_teacher_id is None:
         filter_teacher_id = teacher.id if is_senior else ''
