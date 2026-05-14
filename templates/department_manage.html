@@ -202,8 +202,10 @@
                     <option value="teacher">Teacher</option>
                     <option value="lead">Lead</option>
                     <option value="manager">Manager</option>
-                    {% if teacher and teacher.role == 'hod' %}
+                    {% if teacher and teacher.role in ('hod', 'subject_head', 'manager') %}
                     <option value="subject_head">Subject Head</option>
+                    {% endif %}
+                    {% if teacher and teacher.role == 'hod' %}
                     <option value="hod">HOD</option>
                     {% endif %}
                 </select>
@@ -217,18 +219,19 @@
                             <span class="item-name" id="name-{{ t.id }}">{{ t.name }}</span>
                             <span class="manage-badge manage-badge-{{ t.role }}" id="role-badge-{{ t.id }}" style="margin-left:8px;">{{ t.role | replace('_', ' ') | upper }}</span>
                             {% if not t.is_active %}<span class="badge-inactive">INACTIVE</span>{% endif %}
+                            {% if t.can_edit %}
                             <button class="edit-btn" onclick="toggleEdit('{{ t.id }}')" title="Edit">&#9998;</button>
+                            {% endif %}
                         </div>
-                        {% if t.id != teacher.id %}
-                        <button class="delete-btn" onclick="deleteTeacher('{{ t.id }}')" title="Delete teacher">&times;</button>
-                        {% endif %}
                     </div>
                     <div class="item-meta" style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                         Code: <span class="code-display" id="code-{{ t.id }}" onclick="navigator.clipboard.writeText(this.textContent);showToast('Code copied','success')" title="Click to copy">{{ t.code }}</span>
+                        {% if t.can_reset %}
                         <button class="assign-btn" onclick="resetCode('{{ t.id }}')" style="font-size:11px;padding:4px 8px;">Reset</button>
-                        {% if t.id != teacher.id %}
+                        {% endif %}
+                        {% if t.id != teacher.id and t.can_edit %}
                         <button class="revoke-btn {{ 'revoke-btn-reactivate' if not t.is_active else 'revoke-btn-revoke' }}" id="revoke-btn-{{ t.id }}" onclick="revokeTeacher('{{ t.id }}')">{{ 'Reactivate' if not t.is_active else 'Revoke' }}</button>
-                        <button class="purge-btn" onclick="purgeTeacher('{{ t.id }}')">Purge</button>
+                        <button class="purge-btn" onclick="purgeTeacher('{{ t.id }}')">Remove</button>
                         {% endif %}
                     </div>
                     <!-- Inline edit form -->
@@ -243,11 +246,11 @@
                                 <option value="teacher" {{ 'selected' if t.role == 'teacher' }}>Teacher</option>
                                 <option value="lead" {{ 'selected' if t.role == 'lead' }}>Lead</option>
                                 <option value="manager" {{ 'selected' if t.role == 'manager' }}>Manager</option>
+                                {% if teacher and teacher.role in ('hod', 'subject_head', 'manager') %}
+                                <option value="subject_head" {{ 'selected' if t.role == 'subject_head' }}>Subject Head</option>
+                                {% endif %}
                                 {% if teacher and teacher.role == 'hod' %}
-                                <option value="subject_head" {{ 'selected' if t.role == 'subject_head' }}>Subject Head</option>
                                 <option value="hod" {{ 'selected' if t.role == 'hod' }}>HOD</option>
-                                {% elif teacher and teacher.role == 'subject_head' %}
-                                <option value="subject_head" {{ 'selected' if t.role == 'subject_head' }}>Subject Head</option>
                                 {% endif %}
                             </select>
                         </div>
@@ -374,15 +377,6 @@ function resetCode(teacherId) {
     });
 }
 
-async function deleteTeacher(id) {
-    if (!await uiConfirm('Delete this teacher?', {okLabel: 'Delete', danger: true})) return;
-    fetch('/department/teacher/' + id + '/delete', { method: 'POST' })
-    .then(r => r.json()).then(data => {
-        if (data.success) { document.getElementById('teacher-' + id).remove(); showToast('Teacher deleted', 'success'); }
-        else { showToast(data.error || 'Error', 'error'); }
-    });
-}
-
 function revokeTeacher(id) {
     fetch('/department/teacher/' + id + '/revoke', { method: 'POST' })
     .then(r => r.json()).then(data => {
@@ -414,14 +408,14 @@ function revokeTeacher(id) {
 }
 
 async function purgeTeacher(id) {
-    var choice = await uiConfirm('PURGE this teacher?\n\nThis will permanently delete the teacher account.', {okLabel: 'Purge', danger: true});
+    var choice = await uiConfirm('Remove this teacher?\n\nTheir account will be removed from the department.', {okLabel: 'Remove', danger: true});
     if (!choice) return;
-    var keepData = await uiConfirm('Keep the teacher\'s assignments and marking data?\n\nOK = keep data (only remove teacher account).\nCancel = delete everything.', {okLabel: 'Keep data', cancelLabel: 'Delete everything'});
+    var keepData = await uiConfirm('Keep their assignments and marking data?\n\nOK — keep the data (only the account is removed).\nCancel — delete all their assignments and submissions.', {okLabel: 'Keep data', cancelLabel: 'Delete everything'});
     fetch('/department/teacher/' + id + '/purge', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({keep_data: keepData})
     }).then(r => r.json()).then(data => {
-        if (data.success) { document.getElementById('teacher-' + id).remove(); showToast('Teacher purged', 'success'); }
+        if (data.success) { document.getElementById('teacher-' + id).remove(); showToast('Teacher removed', 'success'); }
         else { showToast(data.error || 'Error', 'error'); }
     });
 }

@@ -784,7 +784,11 @@ def _visible_teachers(viewer):
     elif viewer.role == 'subject_head':
         return Teacher.query.filter(Teacher.role != 'hod')  # sees all except HOD
     elif viewer.role == 'manager':
-        return Teacher.query.filter(Teacher.role.in_(['teacher', 'lead', 'manager']))
+        # Managers see everyone so they can help with password resets across
+        # the department. Destructive actions on senior staff are still
+        # blocked by `_can_edit_target`; only reset-code is allowed, via
+        # `_can_reset_code`.
+        return Teacher.query
     return Teacher.query.filter(False)  # teachers/leads see nothing
 
 
@@ -801,7 +805,30 @@ def _can_edit_target(viewer, target):
     if viewer.role == 'subject_head':
         return target.role != 'hod'
     if viewer.role == 'manager':
-        return target.role in ('teacher', 'lead', 'manager')
+        # Managers can edit names/roles of everyone except HODs. They cannot
+        # demote or remove HODs. The HOD-role assignment guard below
+        # (`dept_update_teacher`) prevents managers from creating new HODs.
+        return target.role != 'hod'
+    return False
+
+
+def _can_reset_code(viewer, target):
+    """Check if viewer can reset (rotate) the target teacher's access code.
+
+    Wider than `_can_edit_target`: managers are allowed to reset codes for
+    senior staff (HOD, subject_head, lead) as a password-help capability,
+    even though they cannot rename, demote, revoke, or delete those accounts.
+    """
+    if not viewer or not target:
+        return False
+    if viewer.id == target.id:
+        return True
+    if viewer.role == 'hod':
+        return True
+    if viewer.role == 'subject_head':
+        return target.role != 'hod'
+    if viewer.role == 'manager':
+        return True  # managers can help anyone reset their code
     return False
 
 
@@ -1881,6 +1908,11 @@ def department_manage():
     classes = Class.query.order_by(Class.name).all()
     # Filter teachers visible to this user based on their role
     teachers = _visible_teachers(teacher).order_by(Teacher.role.desc(), Teacher.name).all()
+    # Per-row permission flags so the template can hide buttons a manager
+    # is not allowed to use on senior staff. (Backend still enforces.)
+    for t in teachers:
+        t.can_edit = _can_edit_target(teacher, t)
+        t.can_reset = _can_reset_code(teacher, t)
     # All teachers for class assignment dropdown (including HOD)
     assignable_teachers = Teacher.query.order_by(Teacher.name).all()
 
@@ -1984,9 +2016,13 @@ def dept_update_teacher(teacher_id):
     if new_name:
         t.name = new_name
     if new_role and new_role in ALL_DEPT_ROLES:
-        # Can't promote beyond own rank (except HOD can do anything)
-        if viewer.role != 'hod' and ROLE_HIERARCHY.get(new_role, 0) >= ROLE_HIERARCHY.get(viewer.role, 0):
-            return jsonify({'success': False, 'error': 'Cannot assign this role'}), 403
+        # Non-HODs may assign any role except HOD itself, but cannot
+        # promote themselves above their current rank.
+        if viewer.role != 'hod':
+            if new_role == 'hod':
+                return jsonify({'success': False, 'error': 'Only HOD can assign HOD role'}), 403
+            if viewer.id == t.id and ROLE_HIERARCHY.get(new_role, 0) > ROLE_HIERARCHY.get(viewer.role, 0):
+                return jsonify({'success': False, 'error': 'Cannot promote yourself'}), 403
         t.role = new_role
     db.session.commit()
     return jsonify({'success': True, 'teacher': {
@@ -1994,28 +2030,16 @@ def dept_update_teacher(teacher_id):
     }})
 
 
-@app.route('/department/teacher/<teacher_id>/delete', methods=['POST'])
-def dept_delete_teacher(teacher_id):
+@app.route('/department/teacher/<teacher_id>/reset-code', methods=['POST'])
+def dept_reset_code(teacher_id):
     err = _require_management()
     if err:
         return err
 
     t = Teacher.query.get_or_404(teacher_id)
     viewer = _current_teacher()
-    if not _can_edit_target(viewer, t) or t.id == viewer.id:
-        return jsonify({'success': False, 'error': 'Cannot delete this account'}), 400
-    db.session.delete(t)
-    db.session.commit()
-    return jsonify({'success': True})
-
-
-@app.route('/department/teacher/<teacher_id>/reset-code', methods=['POST'])
-def dept_reset_code(teacher_id):
-    err = _require_hod()
-    if err:
-        return err
-
-    t = Teacher.query.get_or_404(teacher_id)
+    if not _can_reset_code(viewer, t):
+        return jsonify({'success': False, 'error': 'Cannot reset code for this account'}), 403
     data = request.get_json()
     new_code = (data.get('code') or '').strip()
 
@@ -2049,7 +2073,11 @@ def dept_revoke_teacher(teacher_id):
 
 @app.route('/department/teacher/<teacher_id>/purge', methods=['POST'])
 def dept_purge_teacher(teacher_id):
-    err = _require_hod()
+    # Purge is the sole removal path now (Delete was retired — its behaviour
+    # is equivalent to Purge with keep_data=false on an account with no
+    # data). Per-target authority is still gated by `_can_edit_target`, so
+    # managers can only purge non-HOD accounts.
+    err = _require_management()
     if err:
         return err
     t = Teacher.query.get_or_404(teacher_id)
