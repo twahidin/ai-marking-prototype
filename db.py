@@ -772,6 +772,9 @@ def init_db(app):
             from subject_standards import seed_subject_topic_vocabulary
             seed_subject_topic_vocabulary()
             _migrate_calibration_runtime(app)
+            if os.getenv('DEPT_MODE', 'FALSE').upper() == 'TRUE':
+                seed_departments()
+                backfill_teacher_departments()
             _sweep_stuck_submissions(app)
             _sweep_stuck_bulk_jobs(app)
         finally:
@@ -882,6 +885,101 @@ class TeacherDepartment(db.Model):
                               primary_key=True)
     is_lead       = db.Column(db.Boolean, default=False, nullable=False)
     added_at      = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+# ---------------------------------------------------------------------------
+# Department seed + backfill (2026-05-14 multi-dept design)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_DEPARTMENTS = [
+    # (sort_order, name, short_name, subject_keys)
+    (10, 'Aesthetics and Craft and Technology', 'Aesthetics',
+     ['art', 'music', 'design_and_technology', 'nutrition_and_food_science']),
+    (20, 'English Language and Literature', 'English',
+     ['english', 'literature_in_english']),
+    (30, 'Humanities', 'Humanities',
+     ['geography', 'social_studies', 'history']),
+    (40, 'Mathematics and Principles of Accounts', 'Maths',
+     ['mathematics', 'principles_of_accounts']),
+    (50, 'Mother Tongue Language', 'MTL',
+     ['chinese', 'malay', 'tamil']),
+    (60, 'Science', 'Science',
+     ['chemistry', 'biology', 'computing', 'physics',
+      'lower_secondary_science', 'science']),
+]
+
+
+def seed_departments():
+    """Seed the 6 default depts + subject mapping. Idempotent."""
+    if Department.query.first() is not None:
+        return
+    for sort_order, name, short_name, subject_keys in _DEFAULT_DEPARTMENTS:
+        dept = Department(name=name, short_name=short_name, sort_order=sort_order)
+        db.session.add(dept)
+        db.session.flush()
+        for sk in subject_keys:
+            db.session.add(DepartmentSubject(department_id=dept.id, subject_key=sk))
+    db.session.commit()
+    logger.info('Seeded %d departments', len(_DEFAULT_DEPARTMENTS))
+
+
+_TEACHER_DEPT_BACKFILL_MIGRATION_NAME = 'teacher_dept_tags_backfill_v1'
+
+
+def backfill_teacher_departments(force=False):
+    """One-shot backfill of TeacherDepartment from assignment history.
+
+    For each teacher: pull DISTINCT assignment subjects, resolve to
+    canonical keys, look up the owning Department, insert membership.
+    Promote role='hod' teachers to is_lead on every dept they touched.
+
+    Idempotent via MigrationFlag. force=True bypasses (tests only).
+    """
+    from subjects import resolve_subject_key
+
+    if not force:
+        marker = MigrationFlag.query.filter_by(
+            name=_TEACHER_DEPT_BACKFILL_MIGRATION_NAME).first()
+        if marker is not None:
+            return
+
+    subject_to_dept_id = {ds.subject_key: ds.department_id
+                          for ds in DepartmentSubject.query.all()}
+    if not subject_to_dept_id:
+        logger.warning('backfill_teacher_departments: no DepartmentSubject '
+                       'rows; seed_departments must run first')
+        return
+
+    inserted = 0
+    promoted = 0
+    for teacher in Teacher.query.all():
+        subjects = {a.subject for a in Assignment.query
+                    .filter_by(teacher_id=teacher.id).all() if a.subject}
+        dept_ids = set()
+        for subj in subjects:
+            key = resolve_subject_key(subj)
+            if key is None:
+                continue
+            did = subject_to_dept_id.get(key)
+            if did is not None:
+                dept_ids.add(did)
+        for did in dept_ids:
+            existing = TeacherDepartment.query.filter_by(
+                teacher_id=teacher.id, department_id=did).first()
+            if existing is not None:
+                continue
+            is_lead = (teacher.role == 'hod')
+            db.session.add(TeacherDepartment(
+                teacher_id=teacher.id, department_id=did, is_lead=is_lead))
+            inserted += 1
+            if is_lead:
+                promoted += 1
+
+    if not force:
+        db.session.add(MigrationFlag(name=_TEACHER_DEPT_BACKFILL_MIGRATION_NAME))
+    db.session.commit()
+    logger.info('backfill_teacher_departments: inserted %d rows (%d as lead)',
+                inserted, promoted)
 
 
 class Assignment(db.Model):
