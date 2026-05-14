@@ -258,11 +258,14 @@
     }
     .ms-edit-btn:hover { background: #f0f2ff; color: #667eea; border-color: #d0d4e2; }
     .ms-edit-btn.active { background: #eef0fb; color: #667eea; border-color: #c9cdd9; }
+    /* Position fixed (anchored via JS) so the popover escapes the
+       gridstack tile's `overflow: hidden` and isn't clipped by the
+       widget card. JS positions it under the pencil on open. */
     .ms-picker {
-        display: none; position: absolute; top: 26px; right: 0;
+        display: none; position: fixed; top: 0; left: 0;
         background: white; border: 1px solid #e0e0e0; border-radius: 10px;
         box-shadow: 0 6px 20px rgba(0,0,0,0.12);
-        padding: 10px; min-width: 240px; max-width: 320px; z-index: 50;
+        padding: 10px; min-width: 240px; max-width: 320px; z-index: 1000;
     }
     .ms-picker.open { display: block; }
     .ms-picker-title {
@@ -1445,11 +1448,29 @@ function wireMissedPicker(body, ctx, candidates) {
         picker.classList.remove('open');
         editBtn.classList.remove('active');
         document.removeEventListener('mousedown', onDocClick, true);
+        window.removeEventListener('scroll', closePicker, true);
+        window.removeEventListener('resize', closePicker);
     }
     function openPicker() {
+        /* Show first so we can measure the rendered width, then anchor
+           the right edge of the popover to the right edge of the pencil
+           button. Clamp into the viewport so long assignment titles
+           can't push it off-screen on narrow windows. */
         picker.classList.add('open');
         editBtn.classList.add('active');
+        var rect = editBtn.getBoundingClientRect();
+        var pw = picker.offsetWidth || 240;
+        var left = rect.right - pw;
+        if (left < 8) left = 8;
+        if (left + pw > window.innerWidth - 8) left = window.innerWidth - 8 - pw;
+        picker.style.left = left + 'px';
+        picker.style.top = (rect.bottom + 6) + 'px';
         document.addEventListener('mousedown', onDocClick, true);
+        /* Capture-phase scroll listener so inner scrollables (grid,
+           tiles) also close the picker — otherwise the anchor would
+           drift away from the pencil. */
+        window.addEventListener('scroll', closePicker, true);
+        window.addEventListener('resize', closePicker);
     }
     function onDocClick(e) {
         if (!picker.contains(e.target) && e.target !== editBtn) {
