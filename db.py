@@ -1354,3 +1354,46 @@ class ExemplarAnalysisLog(db.Model):
     # route stamps this on existing rows for the same assignment before
     # inserting the new latest one.
     superseded_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+
+
+class DepartmentDashboardLayout(db.Model):
+    """One layout per viewer for the department insights dashboard.
+
+    The same layout is reused across every band tab (Sec 1 / Sec 2 / Sec 3 /
+    Sec 4-5 / All) — only the data swaps when the tab changes. `last_band`
+    is the band the viewer was last looking at; restored on next visit so
+    they don't have to re-click."""
+    __tablename__ = 'department_dashboard_layout'
+    teacher_id = db.Column(db.String(36), db.ForeignKey('teachers.id'),
+                           primary_key=True)
+    layout_json = db.Column(db.Text, nullable=False, default='[]')
+    last_band = db.Column(db.String(20), default='sec1')
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class DepartmentGoal(db.Model):
+    """HOD / Subject Head / Lead-set goals shown in the dept_goals widget.
+
+    Soft-deleted via `deleted_at`. `target_band` and `target_subject` are
+    both nullable: NULL means "all bands" / "all subjects". Subject Heads
+    can only create goals whose `target_subject` is one of their teaching
+    subjects (enforced at the route layer)."""
+    __tablename__ = 'department_goal'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    title = db.Column(db.String(200), nullable=False)
+    # one of: pass_rate, avg_score, submission_rate
+    metric_type = db.Column(db.String(40), nullable=False)
+    target_value = db.Column(db.Float, nullable=False)
+    target_band = db.Column(db.String(20), nullable=True)
+    target_subject = db.Column(db.String(200), nullable=True)
+    created_by_id = db.Column(db.String(36), db.ForeignKey('teachers.id'),
+                              nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+    deleted_at = db.Column(db.DateTime(timezone=True), nullable=True)

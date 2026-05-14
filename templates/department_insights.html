@@ -1,114 +1,28 @@
 {% extends "base.html" %}
-{% block animate_css %}{% include "_animate_css.html" %}{% endblock %}
-{% block math_libs %}{% include "_math_libs.html" %}{% endblock %}
 
 {% block title %}Department Insights - {{ app_title }}{% endblock %}
 
+{# Force desktop layout on phone/tablet — GridStack has no real mobile
+   layout, so on <=600px CSS below hides the grid and shows a friendly
+   "Open on desktop" card. #}
+{% block viewport %}width=1280, initial-scale=1.0{% endblock %}
+
 {% block head %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack.min.css">
 <style>
-    .filter-bar {
-        background: white; border-radius: 14px; padding: 20px;
-        box-shadow: 0 1px 12px rgba(0,0,0,0.06); margin-bottom: 24px;
-        display: flex; gap: 12px; align-items: end; flex-wrap: wrap;
-        border: 1px solid rgba(0,0,0,0.04);
-    }
-    .filter-group { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 180px; }
-    .filter-group label { font-size: 12px; font-weight: 600; color: #888; }
-    .filter-group select {
-        padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px;
-        font-size: 14px; outline: none;
-    }
-    .filter-group select:focus { border-color: #667eea; }
-    .filter-btn {
-        padding: 10px 20px; border: none; border-radius: 8px;
-        background: #667eea; color: white; font-weight: 600; font-size: 14px;
-        cursor: pointer; transition: background 0.2s;
-    }
-    .filter-btn:hover { background: #5a6fd6; }
-
-    .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
-    @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } }
-
-    .chart-card {
-        background: white; border-radius: 14px; padding: 24px;
-        box-shadow: 0 1px 12px rgba(0,0,0,0.06);
-        border: 1px solid rgba(0,0,0,0.04);
-    }
-    .chart-card h3 { font-size: 16px; font-weight: 700; color: #1a1a2e; margin-bottom: 16px; }
-
-    .bar-chart { display: flex; flex-direction: column; gap: 10px; }
-    .bar-row { display: flex; align-items: center; gap: 10px; }
-    .bar-label { width: 60px; font-size: 12px; font-weight: 600; color: #555; text-align: right; flex-shrink: 0; }
-    .bar-track { flex: 1; background: #f0f0f0; border-radius: 8px; height: 24px; position: relative; overflow: hidden; }
-    .bar-fill { background: #667eea; border-radius: 8px; height: 100%; transition: width 0.5s; min-width: 2px; }
-    .bar-value { width: 50px; font-size: 12px; color: #666; text-align: left; flex-shrink: 0; }
-
-    .v-bar-chart { display: flex; align-items: flex-end; gap: 8px; height: 180px; padding-top: 10px; }
-    .v-bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
-    .v-bar { width: 100%; background: #667eea; border-radius: 6px 6px 0 0; transition: height 0.5s; min-height: 2px; }
-    .v-bar-label { font-size: 11px; color: #888; margin-top: 6px; text-align: center; }
-    .v-bar-value { font-size: 11px; font-weight: 600; color: #333; margin-bottom: 4px; }
-
-    .export-bar { display: flex; gap: 12px; flex-wrap: wrap; }
-    .export-btn {
-        padding: 10px 20px; border: none; border-radius: 8px;
-        font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none;
-        display: inline-block; transition: all 0.2s;
-    }
-    .export-btn.csv { background: #e8f5e9; color: #28a745; }
-    .export-btn.csv:hover { background: #28a745; color: white; }
-
-    .no-data { text-align: center; padding: 40px; color: #888; font-size: 14px; }
-
-    .ai-card { margin-bottom: 24px; }
-    .ai-controls { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-bottom: 16px; }
-    .ai-controls .filter-group { min-width: 140px; }
-    .ai-result { display: none; }
-    .ai-result.visible { display: block; }
-    .ai-summary {
-        background: #f8f9ff; border-left: 4px solid #667eea; padding: 16px 20px;
-        border-radius: 0 12px 12px 0; margin-bottom: 16px; font-size: 14px;
-        line-height: 1.7; color: #333;
-    }
-    .ai-actions { list-style: none; padding: 0; }
-    .ai-actions li {
-        padding: 12px 16px; border: 1px solid #e8e8e8; border-radius: 10px;
-        margin-bottom: 8px; font-size: 13px; line-height: 1.6; color: #333;
-        display: flex; align-items: flex-start; gap: 10px;
-    }
-    .ai-actions li::before { content: '\27A1'; flex-shrink: 0; margin-top: 2px; }
-    .ai-meta { font-size: 11px; color: #aaa; margin-top: 8px; }
-    .ai-loading { display: none; padding: 20px; text-align: center; color: #888; font-size: 14px; }
-    .ai-loading.visible { display: block; }
-
-    .item-card { margin-bottom: 24px; }
-    .asn-checklist { max-height: 300px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; padding: 12px; }
-    .asn-check-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; }
-    .asn-check-item input { margin: 0; }
-    .item-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 16px; }
-    .item-table th { padding: 10px 12px; background: #f8f8f8; font-size: 12px; color: #888; text-align: center; border-bottom: 2px solid #eee; }
-    .item-table th:first-child { text-align: left; }
-    .item-table td { padding: 8px 12px; text-align: center; border-bottom: 1px solid #f0f0f0; }
-    .item-table td:first-child { text-align: left; font-weight: 600; }
-    .pct-good { background: #e8f5e9; color: #28a745; font-weight: 600; border-radius: 6px; }
-    .pct-mid { background: #fff3cd; color: #856404; font-weight: 600; border-radius: 6px; }
-    .pct-low { background: #fde8e8; color: #dc3545; font-weight: 600; border-radius: 6px; }
-
-    /* Compact insights toolbar — single-row title + toggle (mirrors
-       teacher_insights.html so users see the same chrome on both views). */
     .insights-toolbar {
         background: white; border-radius: 14px; padding: 12px 16px;
         box-shadow: 0 1px 12px rgba(0,0,0,0.06);
         border: 1px solid rgba(0,0,0,0.04);
         display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-        margin-bottom: 20px;
+        margin-bottom: 16px;
     }
     .insights-toolbar h1 {
         font-size: 18px; font-weight: 700; color: #1a1a2e;
         margin: 0; line-height: 1.2; flex-shrink: 0;
     }
-    .insights-toolbar .toolbar-subtitle { font-size: 12px; color: #888; }
     .insights-toolbar .toolbar-spacer { flex: 1; }
+
     .insights-toggle {
         display: inline-flex; background: #f0f2ff; border-radius: 999px;
         padding: 3px; border: 1px solid rgba(0,0,0,0.05);
@@ -120,6 +34,394 @@
     .insights-toggle a:hover { color: #333; }
     .insights-toggle a.active { background: #667eea; color: white; }
     .insights-toggle a.disabled { opacity: 0.45; pointer-events: none; }
+
+    .band-tabs {
+        background: white; border-radius: 14px; padding: 8px 12px;
+        box-shadow: 0 1px 12px rgba(0,0,0,0.06);
+        border: 1px solid rgba(0,0,0,0.04);
+        display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px;
+        align-items: center;
+    }
+    .band-tab {
+        padding: 6px 16px; border-radius: 999px;
+        font-size: 13px; font-weight: 600; color: #666;
+        cursor: pointer; transition: all 0.15s;
+        background: #f7f8fc; border: 1px solid transparent;
+    }
+    .band-tab:hover { color: #333; border-color: #d0d4e2; }
+    .band-tab.active { background: #667eea; color: white; border-color: #667eea; }
+    .band-tab.no-data { opacity: 0.45; }
+
+    .icon-btn {
+        height: 34px; padding: 0 12px; border-radius: 999px;
+        border: 1px solid #e0e0e0; background: white; cursor: pointer;
+        display: inline-flex; align-items: center; gap: 6px;
+        font-size: 13px; font-weight: 600; color: #555; transition: all 0.15s;
+    }
+    .icon-btn:hover { border-color: #667eea; color: #667eea; }
+    .icon-btn.active { background: #667eea; color: white; border-color: #667eea; }
+    .icon-btn .icon { font-size: 15px; }
+
+    .insights-empty-grid {
+        background: white; border-radius: 14px; padding: 80px 24px;
+        box-shadow: 0 1px 12px rgba(0,0,0,0.06);
+        border: 1px dashed rgba(0,0,0,0.12);
+        text-align: center; color: #888;
+    }
+    .insights-empty-grid h3 { color: #333; margin-bottom: 6px; font-size: 16px; }
+    .insights-empty-grid p { font-size: 13px; line-height: 1.6; margin: 0 auto; max-width: 460px; }
+
+    .grid-stack { background: transparent; }
+    .grid-stack-item-content {
+        background: white; border-radius: 14px; padding: 18px 20px;
+        box-shadow: 0 1px 12px rgba(0,0,0,0.06);
+        border: 1px solid rgba(0,0,0,0.04);
+        overflow: auto; display: flex; flex-direction: column;
+    }
+    body.edit-mode .grid-stack-item-content {
+        outline: 2px dashed #b6bdf0; outline-offset: -2px; cursor: move;
+    }
+    body.edit-mode .widget-color-btn,
+    body.edit-mode .widget-remove,
+    body.edit-mode .swatch { cursor: pointer; }
+    .widget-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+    .widget-title { font-size: 14px; font-weight: 700; color: #1a1a2e; }
+    .widget-controls { position: relative; display: inline-flex; gap: 4px; align-items: center; }
+    .widget-color-btn,
+    .widget-remove {
+        display: none; width: 24px; height: 24px; border-radius: 50%;
+        border: none; font-size: 14px; cursor: pointer;
+        align-items: center; justify-content: center; padding: 0;
+    }
+    body.edit-mode .widget-color-btn,
+    body.edit-mode .widget-remove { display: inline-flex; }
+    .widget-remove { background: #fdecea; color: #dc3545; }
+    .widget-remove:hover { background: #f5b7b1; }
+    .widget-color-btn { background: #f0f0f0; color: #555; font-size: 13px; }
+    .widget-color-btn:hover { background: #e0e0e0; }
+
+    .grid-stack-item-content { transition: background 0.2s; }
+    .grid-stack-item[data-color="red"]    > .grid-stack-item-content { background: #FFD9F5; }
+    .grid-stack-item[data-color="yellow"] > .grid-stack-item-content { background: #FFFFD9; }
+    .grid-stack-item[data-color="blue"]   > .grid-stack-item-content { background: #D9EBFF; }
+    .grid-stack-item[data-color="green"]  > .grid-stack-item-content { background: #D9FFD9; }
+    .grid-stack-item[data-color="purple"] > .grid-stack-item-content { background: #EBD9FF; }
+    .grid-stack-item[data-color="teal"]   > .grid-stack-item-content { background: #D9FFFF; }
+    .grid-stack-item[data-color="orange"] > .grid-stack-item-content { background: #FFEBD9; }
+
+    .widget-color-pop {
+        display: none; position: absolute; top: 30px; right: 0;
+        background: white; border: 1px solid #e0e0e0; border-radius: 10px;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.10); padding: 6px;
+        gap: 6px; z-index: 100; align-items: center;
+    }
+    .widget-color-pop.open { display: inline-flex; }
+    .swatch {
+        width: 22px; height: 22px; border: 2px solid #ddd; border-radius: 50%;
+        cursor: pointer; padding: 0; position: relative; transition: transform 0.1s;
+    }
+    .swatch:hover { transform: scale(1.12); }
+    .swatch[data-color=""]       { background: white; border-color: #ccc; }
+    .swatch[data-color=""]::after {
+        content: '∅'; position: absolute; inset: 0;
+        display: flex; align-items: center; justify-content: center;
+        color: #888; font-size: 13px; line-height: 1;
+    }
+    .swatch[data-color="red"]    { background: #FFD9F5; border-color: #E8B5D6; }
+    .swatch[data-color="yellow"] { background: #FFFFD9; border-color: #E8E599; }
+    .swatch[data-color="blue"]   { background: #D9EBFF; border-color: #B5C9E8; }
+    .swatch[data-color="green"]  { background: #D9FFD9; border-color: #99E899; }
+    .swatch[data-color="purple"] { background: #EBD9FF; border-color: #C9B5E8; }
+    .swatch[data-color="teal"]   { background: #D9FFFF; border-color: #99E8E8; }
+    .swatch[data-color="orange"] { background: #FFEBD9; border-color: #E8C999; }
+    .swatch.active { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #667eea; }
+
+    .widget-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .widget-placeholder { color: #aaa; font-size: 13px; line-height: 1.5; padding: 8px 0; }
+    .widget-empty { color: #888; font-size: 13px; text-align: center; padding: 18px 8px; }
+
+    .insights-mobile-fallback { display: none; }
+    @media (max-width: 600px) {
+        .insights-toolbar .icon-btn,
+        .band-tabs,
+        .insights-toolbar .insights-toggle a.disabled { display: none; }
+        .insights-toolbar { padding: 10px 12px; gap: 8px; }
+        .insights-toolbar h1 { font-size: 16px; }
+        #dashboardGrid, #emptyDashboard, #addWidgetPanel { display: none !important; }
+        .insights-mobile-fallback {
+            display: block;
+            background: white; border-radius: 14px; padding: 28px 20px;
+            box-shadow: 0 1px 12px rgba(0,0,0,0.06);
+            border: 1px solid rgba(0,0,0,0.04);
+            text-align: center;
+        }
+        .insights-mobile-fallback h3 { margin: 0 0 8px; font-size: 16px; color: #1a1a2e; }
+        .insights-mobile-fallback p {
+            font-size: 13px; line-height: 1.55; color: #555;
+            margin: 0 auto; max-width: 360px;
+        }
+        .insights-mobile-fallback .icon { font-size: 28px; margin-bottom: 6px; display: block; }
+        .insights-mobile-fallback a {
+            display: inline-block; margin-top: 14px; padding: 9px 18px;
+            background: #667eea; color: white; border-radius: 8px;
+            font-size: 13px; font-weight: 600; text-decoration: none;
+        }
+    }
+
+    .add-widget-panel {
+        display: none;
+        background: white; border-radius: 14px; padding: 20px;
+        box-shadow: 0 1px 12px rgba(0,0,0,0.06);
+        border: 1px solid rgba(0,0,0,0.04);
+        margin-bottom: 20px;
+    }
+    body.edit-mode .add-widget-panel { display: block; }
+    .add-widget-panel h3 { font-size: 14px; font-weight: 700; color: #1a1a2e; margin-bottom: 12px; }
+    .panel-section { margin-bottom: 20px; }
+    .panel-section:last-child { margin-bottom: 0; }
+    .template-options {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 10px;
+    }
+    .template-option {
+        display: flex; flex-direction: column; gap: 4px;
+        padding: 14px 16px; border: 1px solid #d6dcf5; border-radius: 12px;
+        background: linear-gradient(135deg, #fafbff 0%, #eef0fc 100%);
+        cursor: pointer; transition: all 0.15s; text-align: left; font-family: inherit;
+    }
+    .template-option:hover { border-color: #667eea; transform: translateY(-1px); box-shadow: 0 2px 8px rgba(102,126,234,0.15); }
+    .template-option .opt-title { font-size: 14px; font-weight: 700; color: #1a1a2e; display: flex; align-items: center; gap: 6px; }
+    .template-option .opt-icon { font-size: 16px; }
+    .template-option .opt-desc { font-size: 11px; color: #666; line-height: 1.4; }
+    .widget-options {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+        gap: 10px;
+    }
+    .widget-option {
+        position: relative;
+        display: flex; flex-direction: column; gap: 4px;
+        padding: 12px 14px; border: 1px solid #e8e8f0; border-radius: 10px;
+        background: #fafbff; cursor: pointer; transition: all 0.15s;
+        text-align: left; font-family: inherit;
+    }
+    .widget-option:hover { border-color: #667eea; background: #f0f2ff; }
+    .widget-option .opt-title { font-size: 13px; font-weight: 700; color: #1a1a2e; }
+    .widget-option .opt-desc { font-size: 11px; color: #888; line-height: 1.4; }
+    .widget-option.selected {
+        border-color: #667eea;
+        background: linear-gradient(135deg, #667eea 0%, #5a6fd6 100%);
+    }
+    .widget-option.selected .opt-title,
+    .widget-option.selected .opt-desc { color: white; }
+    .widget-option.selected::after {
+        content: '✓'; position: absolute; top: 8px; right: 12px;
+        font-size: 14px; font-weight: 700; color: white;
+    }
+    .widget-option.selected:hover { background: linear-gradient(135deg, #5a6fd6 0%, #4f5cc7 100%); }
+    .widget-option.selected:hover::after { content: '×'; font-size: 18px; line-height: 1; }
+    .widget-option.locked { background: #f0f0f5; border-color: #d0d4e2; cursor: not-allowed; opacity: 0.7; }
+
+    .bh-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+    .bh-stat { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 110px; }
+    .bh-stat .num { font-size: 22px; font-weight: 700; color: #1a1a2e; line-height: 1.1; }
+    .bh-stat .label { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+    .bh-stat .delta { font-size: 11px; color: #666; margin-top: 2px; }
+    .bh-stat .delta.up { color: #28a745; }
+    .bh-stat .delta.down { color: #dc3545; }
+    .bh-spark-wrap { flex: 0 0 200px; height: 60px; position: relative; }
+
+    .goal-row {
+        display: flex; flex-direction: column; gap: 4px;
+        padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,0.6);
+        margin-bottom: 8px;
+    }
+    .goal-row:last-child { margin-bottom: 0; }
+    .goal-row.out-of-band { opacity: 0.5; }
+    .goal-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+    .goal-title { font-size: 13px; font-weight: 700; color: #1a1a2e; }
+    .goal-chip {
+        font-size: 10px; padding: 2px 8px; border-radius: 999px;
+        background: #eef0fb; color: #4a54c4; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .goal-status {
+        font-size: 10px; padding: 2px 8px; border-radius: 999px;
+        font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .goal-status.done { background: #e0f6e9; color: #1f7a3e; }
+    .goal-status.on_track { background: #e8eaff; color: #4a54c4; }
+    .goal-status.behind { background: #fff3cd; color: #856404; }
+    .goal-status.off_track { background: #fde8e8; color: #b03035; }
+    .goal-status.no_data { background: #f0f0f0; color: #888; }
+    .goal-bar-wrap { background: #f0f0f5; border-radius: 6px; height: 8px; overflow: hidden; }
+    .goal-bar { height: 100%; background: #667eea; border-radius: 6px; transition: width 0.4s; }
+    .goal-bar.done { background: #28a745; }
+    .goal-bar.behind { background: #ffc107; }
+    .goal-bar.off_track { background: #dc3545; }
+    .goal-meta { display: flex; justify-content: space-between; font-size: 11px; color: #666; margin-top: 2px; }
+    .goal-actions { display: flex; gap: 4px; margin-left: auto; }
+    .goal-action-btn {
+        background: none; border: none; cursor: pointer; padding: 2px 4px;
+        font-size: 12px; color: #888; border-radius: 4px;
+    }
+    .goal-action-btn:hover { background: #f0f2ff; color: #667eea; }
+    .add-goal-btn {
+        width: 100%; padding: 8px; border: 1px dashed #c0c4d8; border-radius: 8px;
+        background: transparent; color: #667eea; font-size: 12px; font-weight: 600;
+        cursor: pointer; transition: all 0.15s;
+    }
+    .add-goal-btn:hover { background: #f0f2ff; border-color: #667eea; }
+
+    .modal-backdrop {
+        display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+        z-index: 1000; align-items: center; justify-content: center;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal-card {
+        background: white; border-radius: 14px; padding: 24px;
+        width: 90%; max-width: 480px; max-height: 90vh; overflow-y: auto;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.16);
+    }
+    .modal-card h3 { font-size: 18px; font-weight: 700; color: #1a1a2e; margin-bottom: 12px; }
+    .modal-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+    .modal-field label { font-size: 12px; font-weight: 600; color: #555; }
+    .modal-field input, .modal-field select {
+        padding: 8px 12px; border: 1px solid #d0d4e2; border-radius: 8px;
+        font-size: 14px; outline: none; font-family: inherit;
+    }
+    .modal-field input:focus, .modal-field select:focus { border-color: #667eea; }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+    .modal-btn {
+        padding: 8px 18px; border: none; border-radius: 8px;
+        font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+    }
+    .modal-btn.primary { background: #667eea; color: white; }
+    .modal-btn.primary:hover { background: #5a6fd6; }
+    .modal-btn.danger { background: #fdecea; color: #dc3545; }
+    .modal-btn.danger:hover { background: #f5b7b1; }
+    .modal-btn.ghost { background: #f0f0f5; color: #555; }
+    .modal-btn.ghost:hover { background: #e0e0e8; }
+
+    .v-bar-chart { display: flex; align-items: flex-end; gap: 8px; height: 100%; min-height: 160px; padding-top: 10px; }
+    .v-bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+    .v-bar { width: 100%; background: #667eea; border-radius: 6px 6px 0 0; transition: height 0.4s; min-height: 2px; }
+    .v-bar-label { font-size: 11px; color: #888; margin-top: 6px; text-align: center; }
+    .v-bar-value { font-size: 11px; font-weight: 600; color: #333; margin-bottom: 4px; }
+
+    .ai-controls { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; margin-bottom: 12px; }
+    .ai-controls .ai-select {
+        padding: 7px 10px; border: 1px solid #d0d4e2; border-radius: 8px;
+        font-size: 12px; outline: none; min-width: 120px; font-family: inherit;
+    }
+    .ai-controls .ai-select:focus { border-color: #667eea; }
+    .ai-controls label { font-size: 11px; font-weight: 600; color: #888; display: block; margin-bottom: 2px; }
+    .ai-btn {
+        padding: 8px 18px; border: none; border-radius: 8px;
+        background: #667eea; color: white; font-weight: 600; font-size: 13px;
+        cursor: pointer; transition: background 0.15s; font-family: inherit;
+    }
+    .ai-btn:hover { background: #5a6fd6; }
+    .ai-btn:disabled { background: #c0c4d8; cursor: not-allowed; }
+    .ai-loading { display: none; padding: 14px; text-align: center; color: #888; font-size: 13px; }
+    .ai-loading.visible { display: block; }
+    .ai-caveats {
+        background: #fff8e1; border-left: 4px solid #ffc107; padding: 10px 14px;
+        border-radius: 0 8px 8px 0; margin-bottom: 12px; font-size: 12px;
+        line-height: 1.5; color: #604300;
+    }
+    .ai-caveats h4 { font-size: 12px; margin: 0 0 4px; font-weight: 700; }
+    .ai-caveats ul { margin: 4px 0 0 18px; padding: 0; }
+    .ai-summary {
+        background: #f8f9ff; border-left: 4px solid #667eea; padding: 12px 14px;
+        border-radius: 0 8px 8px 0; margin-bottom: 12px; font-size: 13px;
+        line-height: 1.55; color: #333;
+    }
+    .ai-actions { list-style: none; padding: 0; margin: 0 0 12px; }
+    .ai-actions li {
+        padding: 10px 14px; border: 1px solid #e8e8f0; border-radius: 10px;
+        margin-bottom: 6px; font-size: 13px; line-height: 1.5;
+        display: flex; align-items: flex-start; gap: 8px;
+    }
+    .ai-tag {
+        flex-shrink: 0; font-size: 10px; padding: 2px 8px; border-radius: 999px;
+        font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .ai-tag.Curriculum { background: #e8eaff; color: #4a54c4; }
+    .ai-tag.Resource   { background: #fff3cd; color: #856404; }
+    .ai-tag.PD         { background: #e0f6e9; color: #1f7a3e; }
+    .ai-tag.Scheduling { background: #fde8e8; color: #b03035; }
+    .ai-closing { font-size: 11px; color: #888; font-style: italic; margin-top: 8px; }
+    .ai-meta { font-size: 10px; color: #aaa; margin-top: 4px; }
+    .ai-warn-banner {
+        background: #fde8e8; border: 1px solid #f5b7b1; color: #b03035;
+        padding: 8px 12px; border-radius: 8px; font-size: 12px; margin-bottom: 10px;
+    }
+
+    .row-list { display: flex; flex-direction: column; gap: 6px; }
+    .row-item {
+        display: flex; flex-direction: column; gap: 4px;
+        padding: 8px 12px; border-radius: 8px; background: rgba(255,255,255,0.6);
+    }
+    .row-head { display: flex; justify-content: space-between; gap: 6px; }
+    .row-title { font-size: 12px; font-weight: 700; color: #1a1a2e; }
+    .row-sub { font-size: 11px; color: #888; }
+    .row-bar-wrap { background: #f0f0f5; border-radius: 6px; height: 6px; overflow: hidden; }
+    .row-bar { height: 100%; background: #667eea; border-radius: 6px; transition: width 0.3s; }
+    .row-bar.high { background: #28a745; }
+    .row-bar.mid { background: #ffc107; }
+    .row-bar.low { background: #dc3545; }
+    .row-value { font-size: 11px; font-weight: 700; color: #333; }
+    .row-chip {
+        font-size: 9px; padding: 1px 6px; border-radius: 999px; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .row-chip.high { background: #e0f6e9; color: #1f7a3e; }
+    .row-chip.mid { background: #fff3cd; color: #856404; }
+    .row-chip.low { background: #fde8e8; color: #b03035; }
+
+    .big-pct {
+        font-size: 42px; font-weight: 700; color: #1a1a2e;
+        text-align: center; line-height: 1.1; margin: 8px 0;
+    }
+    .big-pct.flagged { color: #dc3545; }
+    .big-pct-caption { text-align: center; font-size: 12px; color: #666; line-height: 1.45; }
+    .big-pct-suggest {
+        font-size: 11px; color: #888; text-align: center; margin-top: 10px;
+        padding-top: 10px; border-top: 1px dashed #e0e0e0;
+    }
+
+    .pipeline-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .pipeline-label { width: 80px; font-size: 12px; font-weight: 600; color: #555; }
+    .pipeline-bar-wrap { flex: 1; background: #f0f0f5; border-radius: 6px; height: 12px; overflow: hidden; }
+    .pipeline-bar { height: 100%; border-radius: 6px; transition: width 0.4s; }
+    .pipeline-bar.submitted { background: #667eea; }
+    .pipeline-bar.marked { background: #28a745; }
+    .pipeline-bar.pending { background: #dc3545; }
+    .pipeline-value { width: 40px; font-size: 12px; font-weight: 700; color: #333; text-align: right; }
+    .pipeline-caption { font-size: 11px; color: #888; margin-top: 8px; line-height: 1.45; }
+
+    .rhythm-wrap { flex: 1 1 auto; min-height: 140px; position: relative; }
+    .rhythm-footer { font-size: 11px; color: #666; margin-top: 8px; }
+
+    .win-row {
+        display: flex; align-items: flex-start; gap: 8px;
+        padding: 8px 12px; border-radius: 8px; background: rgba(40,167,69,0.06);
+        margin-bottom: 6px; font-size: 13px; color: #1a4520; line-height: 1.45;
+    }
+    .win-row .win-glyph { color: #1f7a3e; font-weight: 700; flex-shrink: 0; }
+
+    .chart-wrap {
+        position: relative; flex: 1 1 auto; min-height: 0;
+        width: 100%; background: white; border-radius: 8px; padding: 4px;
+    }
+    .chart-wrap canvas {
+        position: absolute !important;
+        top: 4px; left: 4px; right: 4px; bottom: 4px;
+        width: calc(100% - 8px) !important;
+        height: calc(100% - 8px) !important;
+    }
 </style>
 {% endblock %}
 
@@ -127,7 +429,6 @@
 <div class="dept-page">
     <div class="insights-toolbar animate__animated animate__fadeIn" style="animation-duration:0.4s;">
         <h1>Department Insights</h1>
-        <span class="toolbar-subtitle">Performance analytics and reports</span>
         <span class="toolbar-spacer"></span>
         <div class="insights-toggle" role="tablist">
             {% if can_view_overview %}
@@ -136,116 +437,98 @@
             <a class="active" aria-current="page" role="tab" aria-selected="true">Department</a>
             <a href="/teacher/insights" role="tab">My Class</a>
         </div>
+        <button type="button" class="icon-btn" id="editModeBtn" title="Toggle edit mode">
+            <span class="icon">&#9881;</span>
+            <span id="editModeLabel">Edit</span>
+        </button>
     </div>
 
     {% if demo_mode and not dept_mode %}
     <div class="demo-banner animate__animated animate__fadeIn">
-        Insights are not available in demo mode. Deploy with your own API keys to unlock analytics.
+        Department insights are not available in demo mode. Deploy with your own API keys to unlock analytics.
     </div>
     {% else %}
 
-    <div class="filter-bar animate__animated animate__fadeIn" style="animation-delay:0.1s;animation-duration:0.5s;">
-        <div class="filter-group">
-            <label>Assignment</label>
-            <select id="filterAssignment">
-                <option value="">All assignments</option>
-                {% for asn in assignments %}
-                <option value="{{ asn.id }}">{{ asn.title or asn.subject or 'Untitled' }}</option>
-                {% endfor %}
-            </select>
-        </div>
-        <div class="filter-group">
-            <label>Class</label>
-            <select id="filterClass">
-                <option value="">All classes</option>
-                {% for cls in classes %}
-                <option value="{{ cls.id }}">{{ cls.name }}</option>
-                {% endfor %}
-            </select>
-        </div>
-        <button class="filter-btn" onclick="loadInsights()">Apply</button>
-        <a class="filter-btn" id="classInsightsLink" href="#" style="display:none;background:#28a745;text-decoration:none;color:white;">View Class Insights &rarr;</a>
+    <div class="band-tabs animate__animated animate__fadeIn" style="animation-delay:0.05s;animation-duration:0.4s;" id="bandTabs">
+        {% for band in visible_bands %}
+        <button type="button"
+                class="band-tab {% if not band.has_data %}no-data{% endif %}"
+                data-band="{{ band.key }}">{{ band.label }}</button>
+        {% endfor %}
     </div>
 
-    <div class="dept-summary-grid" style="grid-template-columns: repeat(3, 1fr);">
-        <div class="dept-stat-card animate__animated animate__fadeInUp" style="animation-delay:0.1s;animation-duration:0.5s;">
-            <div class="num" id="totalStudents">—</div>
-            <div class="label">Students Marked</div>
+    <div class="add-widget-panel" id="addWidgetPanel">
+        <div class="panel-section">
+            <h3>Start from a template</h3>
+            <div class="template-options" id="templateOptions"></div>
         </div>
-        <div class="dept-stat-card animate__animated animate__fadeInUp" style="animation-delay:0.15s;animation-duration:0.5s;">
-            <div class="num" id="overallAvg">—</div>
-            <div class="label">Average Score</div>
+        <div class="panel-section">
+            <h3>Or add a widget</h3>
+            <div class="widget-options" id="widgetOptions"></div>
         </div>
-        <div class="dept-stat-card animate__animated animate__fadeInUp" style="animation-delay:0.2s;animation-duration:0.5s;">
-            <div class="num" id="passRate">—</div>
-            <div class="label">Pass Rate</div>
-        </div>
+        <p style="margin-top:12px;font-size:11px;color:#aaa;">
+            Click a widget chip to add it; click again to remove. Drag tiles to rearrange. Drag any edge to resize. The Band Health strip is always shown.
+        </p>
     </div>
 
-    <div class="charts-grid animate__animated animate__fadeIn" style="animation-delay:0.25s;animation-duration:0.5s;">
-        <div class="chart-card">
-            <h3>Class Comparison</h3>
-            <div class="bar-chart" id="classChart">
-                <div class="no-data">Select filters and click Apply</div>
+    <div class="grid-stack" id="dashboardGrid"></div>
+
+    <div class="insights-empty-grid" id="emptyDashboard" style="display:none;">
+        <h3>Your dashboard is empty</h3>
+        <p>Click <strong>Edit</strong> above and pick a starter template, or add widgets one by one.</p>
+    </div>
+
+    <div class="insights-mobile-fallback" aria-hidden="false">
+        <span class="icon" aria-hidden="true">📊</span>
+        <h3>Open Insights on a desktop</h3>
+        <p>The Department Insights dashboard is built for a wider screen — drag-to-arrange widgets, side-by-side charts, and the band tabs don't yet have a phone layout.</p>
+        <a href="/dashboard">Back to My Classes</a>
+    </div>
+
+    <div class="modal-backdrop" id="goalModal" role="dialog" aria-modal="true">
+        <div class="modal-card">
+            <h3 id="goalModalTitle">Add a department goal</h3>
+            <div class="modal-field">
+                <label for="goalTitle">Goal title</label>
+                <input type="text" id="goalTitle" placeholder="e.g. Lift pass rate to 80% in Sec 3 Chemistry">
+            </div>
+            <div class="modal-field">
+                <label for="goalMetric">Metric</label>
+                <select id="goalMetric">
+                    <option value="pass_rate">Pass rate (% scoring ≥ 50%)</option>
+                    <option value="avg_score">Average score (%)</option>
+                    <option value="submission_rate">Submission rate (%)</option>
+                </select>
+            </div>
+            <div class="modal-field">
+                <label for="goalTarget">Target value (%)</label>
+                <input type="number" id="goalTarget" min="0" max="100" step="1" value="80">
+            </div>
+            <div class="modal-field">
+                <label for="goalBand">Target band</label>
+                <select id="goalBand">
+                    <option value="">All bands</option>
+                    <option value="sec1">Sec 1</option>
+                    <option value="sec2">Sec 2</option>
+                    <option value="sec3">Sec 3</option>
+                    <option value="sec45">Sec 4/5</option>
+                </select>
+            </div>
+            <div class="modal-field">
+                <label for="goalSubject">Target subject</label>
+                <select id="goalSubject">
+                    <option value="">All subjects</option>
+                    {% for s in canonical_subjects %}
+                    <option value="{{ s }}">{{ s }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="modal-btn danger" id="goalDeleteBtn" style="display:none;">Delete</button>
+                <button type="button" class="modal-btn ghost" id="goalCancelBtn">Cancel</button>
+                <button type="button" class="modal-btn primary" id="goalSaveBtn">Save</button>
             </div>
         </div>
-        <div class="chart-card">
-            <h3>Score Distribution</h3>
-            <div class="v-bar-chart" id="distChart">
-            </div>
-        </div>
-    </div>
-
-    <div class="chart-card animate__animated animate__fadeIn" style="animation-delay:0.3s;animation-duration:0.5s;margin-bottom: 24px;">
-        <h3>Question Difficulty (% Correct)</h3>
-        <div class="bar-chart" id="questionChart">
-            <div class="no-data">Select filters and click Apply</div>
-        </div>
-    </div>
-
-    <div class="export-bar animate__animated animate__fadeIn" style="animation-delay:0.35s;animation-duration:0.5s;">
-        <a class="export-btn csv" id="csvLink" href="/department/export/csv">Export CSV</a>
-    </div>
-
-    <!-- AI Analysis -->
-    <div class="chart-card ai-card animate__animated animate__fadeIn" style="animation-delay:0.4s;animation-duration:0.5s;">
-        <h3>AI Analysis</h3>
-        <div class="ai-controls">
-            <div class="filter-group">
-                <label>Provider</label>
-                <select id="aiProvider" onchange="updateAiModels()"></select>
-            </div>
-            <div class="filter-group">
-                <label>Model</label>
-                <select id="aiModel"></select>
-            </div>
-            <button class="filter-btn" id="analyzeBtn" onclick="generateAnalysis()">Generate Analysis</button>
-        </div>
-        <div class="ai-loading" id="aiLoading">Analyzing data... this may take a few seconds.</div>
-        <div class="ai-result" id="aiResult">
-            <div class="ai-summary" id="aiSummary"></div>
-            <ul class="ai-actions" id="aiActions"></ul>
-            <div class="ai-meta" id="aiMeta"></div>
-        </div>
-    </div>
-
-    <!-- Item Analysis -->
-    <div class="chart-card item-card animate__animated animate__fadeIn" style="animation-delay:0.45s;animation-duration:0.5s;">
-        <h3>Item Analysis &mdash; Compare Assignments</h3>
-        <p style="font-size:13px;color:#888;margin-bottom:12px;">Select 2 or more assignments to compare per-question performance across classes.</p>
-        <div class="asn-checklist" id="asnChecklist">
-            {% for asn in assignments %}
-            <label class="asn-check-item">
-                <input type="checkbox" value="{{ asn.id }}" onchange="updateCompareBtn()">
-                <span style="color:#667eea;font-weight:600;">{{ asn.dept_class.name if asn.dept_class else 'Unknown' }}</span>
-                &mdash; {{ asn.title or asn.subject or 'Untitled' }}
-            </label>
-            {% endfor %}
-        </div>
-        <div style="margin-top:12px;">
-            <button class="filter-btn" id="compareBtn" onclick="runItemAnalysis()" disabled>Compare</button>
-        </div>
-        <div id="itemResult"></div>
     </div>
 
     {% endif %}
@@ -254,303 +537,1104 @@
 
 {% block scripts %}
 {% if not demo_mode or dept_mode %}
+<script src="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack-all.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script>
-function loadInsights() {
-    var asnId = document.getElementById('filterAssignment').value;
-    var clsId = document.getElementById('filterClass').value;
-    var params = new URLSearchParams();
-    if (asnId) params.set('assignment_id', asnId);
-    if (clsId) params.set('class_id', clsId);
-
-    // Show/hide class insights link
-    var ciLink = document.getElementById('classInsightsLink');
-    if (asnId) {
-        ciLink.href = '/department/insights/class/' + asnId;
-        ciLink.style.display = 'inline-block';
-    } else {
-        ciLink.style.display = 'none';
-    }
-
-    // Update CSV link
-    var csvParams = new URLSearchParams(params);
-    document.getElementById('csvLink').href = '/department/export/csv?' + csvParams.toString();
-
-    fetch('/department/insights/data?' + params.toString())
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-        if (!data.success) return;
-
-        document.getElementById('totalStudents').textContent = data.total_students;
-        document.getElementById('overallAvg').textContent = data.overall_avg + '%';
-        document.getElementById('passRate').textContent = data.pass_rate + '%';
-
-        renderClassChart(data.class_comparison);
-        renderDistChart(data.score_distribution);
-        renderQuestionChart(data.question_difficulty);
-        loadSavedAnalysis();
-    });
-}
-
-function renderClassChart(comparison) {
-    var el = document.getElementById('classChart');
-    var keys = Object.keys(comparison);
-    if (!keys.length) { el.innerHTML = '<div class="no-data">No data</div>'; return; }
-    var max = Math.max.apply(null, keys.map(function(k) { return comparison[k]; }));
-    if (max === 0) max = 1;
-    var html = '';
-    keys.forEach(function(name) {
-        var val = comparison[name];
-        var w = (val / 100) * 100;
-        var color = val >= 70 ? '#28a745' : (val >= 50 ? '#ffc107' : '#dc3545');
-        html += '<div class="bar-row">' +
-            '<span class="bar-label">' + esc(name) + '</span>' +
-            '<div class="bar-track"><div class="bar-fill" style="width:' + w + '%;background:' + color + '"></div></div>' +
-            '<span class="bar-value">' + val + '%</span>' +
-            '</div>';
-    });
-    el.innerHTML = html;
-}
-
-function renderDistChart(dist) {
-    var el = document.getElementById('distChart');
-    var keys = ['0-20', '21-40', '41-60', '61-80', '81-100'];
-    var max = Math.max.apply(null, keys.map(function(k) { return dist[k] || 0; }));
-    if (max === 0) max = 1;
-    var colors = ['#dc3545', '#fd7e14', '#ffc107', '#28a745', '#667eea'];
-    var html = '';
-    keys.forEach(function(k, i) {
-        var val = dist[k] || 0;
-        var h = (val / max) * 160;
-        html += '<div class="v-bar-col">' +
-            '<span class="v-bar-value">' + val + '</span>' +
-            '<div class="v-bar" style="height:' + h + 'px;background:' + colors[i] + '"></div>' +
-            '<span class="v-bar-label">' + k + '</span>' +
-            '</div>';
-    });
-    el.innerHTML = html;
-}
-
-function renderQuestionChart(difficulty) {
-    var el = document.getElementById('questionChart');
-    var keys = Object.keys(difficulty);
-    if (!keys.length) { el.innerHTML = '<div class="no-data">No data</div>'; return; }
-    var html = '';
-    keys.forEach(function(qnum) {
-        var val = difficulty[qnum];
-        var color = val >= 70 ? '#28a745' : (val >= 50 ? '#ffc107' : '#dc3545');
-        html += '<div class="bar-row">' +
-            '<span class="bar-label">Q' + esc(qnum) + '</span>' +
-            '<div class="bar-track"><div class="bar-fill" style="width:' + val + '%;background:' + color + '"></div></div>' +
-            '<span class="bar-value">' + val + '%</span>' +
-            '</div>';
-    });
-    el.innerHTML = html;
-}
-
-/* AI Analysis */
 var AI_PROVIDERS = {{ ai_providers | tojson }};
+var VIEWER_ROLE = {{ teacher.role | tojson }};
+var VIEWER_SUBJECTS = {{ viewer_subjects | tojson }};
+var CANONICAL_SUBJECTS = {{ canonical_subjects | tojson }};
+var BANDS = [
+    {% for b in visible_bands %}
+    { key: {{ b.key | tojson }}, label: {{ b.label | tojson }}, has_data: {{ b.has_data | tojson }} }{% if not loop.last %},{% endif %}
+    {% endfor %}
+];
+var BAND_LABEL_LOOKUP = {};
+BANDS.forEach(function (b) { BAND_LABEL_LOOKUP[b.key] = b.label; });
 
-function updateAiProviderSelect() {
-    var sel = document.getElementById('aiProvider');
-    sel.innerHTML = '';
-    var providerOrder = ['anthropic', 'openai', 'qwen'];
-    var budgetModels = {
-        'anthropic': 'claude-haiku-4-5-20251001',
-        'openai': 'gpt-5.4-mini',
-        'qwen': 'qwen3.5-plus-2026-02-15'
-    };
-    providerOrder.forEach(function(key) {
-        if (!AI_PROVIDERS[key]) return;
-        var o = document.createElement('option');
-        o.value = key;
-        o.textContent = AI_PROVIDERS[key].label;
-        sel.appendChild(o);
+var WIDGET_CATALOG = {
+    band_health: {
+        title: 'Band Health',
+        desc: 'Headline numbers + 8-week trend for this band.',
+        defaults: { w: 12, h: 3, minW: 6, minH: 3 },
+        render: renderBandHealth,
+        non_removable: true,
+    },
+    dept_goals: {
+        title: 'Departmental Goals',
+        desc: 'Progress against goals HOD / SH / Lead set.',
+        defaults: { w: 6, h: 5, minW: 4, minH: 4 },
+        render: renderDeptGoals,
+    },
+    score_distribution: {
+        title: 'Score Distribution',
+        desc: 'How submissions fall across five score bands.',
+        defaults: { w: 6, h: 5, minW: 4, minH: 4 },
+        render: renderScoreDistribution,
+    },
+    ai_analysis: {
+        title: 'AI Analysis',
+        desc: 'Hardened summary + tagged actions, band-aggregate.',
+        defaults: { w: 12, h: 7, minW: 6, minH: 6 },
+        render: renderAIAnalysis,
+    },
+    frequently_amended: {
+        title: 'Items to Re-review',
+        desc: 'Questions teachers most often amend after AI marking.',
+        defaults: { w: 6, h: 5, minW: 4, minH: 4 },
+        render: renderFrequentlyAmended,
+    },
+    calibration_alignment: {
+        title: 'Calibration Alignment',
+        desc: 'How aligned teachers are on mistake themes per question.',
+        defaults: { w: 6, h: 5, minW: 4, minH: 4 },
+        render: renderCalibrationAlignment,
+    },
+    partial_credit_hotspots: {
+        title: 'Partial-credit Hotspots',
+        desc: 'Questions that land in the messy middle.',
+        defaults: { w: 6, h: 5, minW: 4, minH: 4 },
+        render: renderPartialCreditHotspots,
+    },
+    wins_to_share: {
+        title: 'Wins Worth Sharing',
+        desc: 'Recent improvements worth celebrating.',
+        defaults: { w: 6, h: 5, minW: 4, minH: 4 },
+        render: renderWinsToShare,
+    },
+    persistent_gap: {
+        title: 'Persistent Gap',
+        desc: 'Students consistently below 40% across their last 4 assessments.',
+        defaults: { w: 4, h: 5, minW: 3, minH: 4 },
+        render: renderPersistentGap,
+    },
+    marking_pipeline: {
+        title: 'Marking Pipeline',
+        desc: 'Submitted vs marked vs pending, last 14 days.',
+        defaults: { w: 6, h: 5, minW: 4, minH: 4 },
+        render: renderMarkingPipeline,
+    },
+    assessment_rhythm: {
+        title: 'Assessment Rhythm',
+        desc: 'Assignments per fortnight, with the cross-band median.',
+        defaults: { w: 6, h: 4, minW: 4, minH: 3 },
+        render: renderAssessmentRhythm,
+    },
+};
+
+var STARTER_TEMPLATES = [
+    {
+        key: 'overview', label: 'Overview', icon: '🏠',
+        desc: 'Default — band health, goals, score spread, AI, wins.',
+        layout: [
+            { key: 'band_health',        x: 0, y: 0,  w: 12, h: 3 },
+            { key: 'dept_goals',         x: 0, y: 3,  w: 6,  h: 5 },
+            { key: 'score_distribution', x: 6, y: 3,  w: 6,  h: 5 },
+            { key: 'ai_analysis',        x: 0, y: 8,  w: 12, h: 7 },
+            { key: 'wins_to_share',      x: 0, y: 15, w: 6,  h: 5 },
+            { key: 'marking_pipeline',   x: 6, y: 15, w: 6,  h: 5 },
+        ]
+    },
+    {
+        key: 'calibration', label: 'Calibration', icon: '🎯',
+        desc: 'For subject leads — how aligned the team is on marking.',
+        layout: [
+            { key: 'band_health',             x: 0, y: 0,  w: 12, h: 3 },
+            { key: 'calibration_alignment',   x: 0, y: 3,  w: 6,  h: 5 },
+            { key: 'frequently_amended',      x: 6, y: 3,  w: 6,  h: 5 },
+            { key: 'partial_credit_hotspots', x: 0, y: 8,  w: 6,  h: 5 },
+            { key: 'ai_analysis',             x: 0, y: 13, w: 12, h: 7 },
+        ]
+    },
+    {
+        key: 'capacity', label: 'Support & Capacity', icon: '🤝',
+        desc: 'For HODs doing pastoral review — gap, pipeline, rhythm.',
+        layout: [
+            { key: 'band_health',       x: 0, y: 0,  w: 12, h: 3 },
+            { key: 'persistent_gap',    x: 0, y: 3,  w: 4,  h: 5 },
+            { key: 'marking_pipeline',  x: 4, y: 3,  w: 8,  h: 5 },
+            { key: 'assessment_rhythm', x: 0, y: 8,  w: 6,  h: 4 },
+            { key: 'wins_to_share',     x: 6, y: 8,  w: 6,  h: 4 },
+            { key: 'ai_analysis',       x: 0, y: 12, w: 12, h: 7 },
+        ]
+    },
+];
+var DEFAULT_TEMPLATE_KEY = 'overview';
+
+var grid = null;
+var currentBand = 'sec1';
+var currentPayload = null;
+var payloadCache = {};
+var saveTimer = null;
+
+function escHtml(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+
+function widgetTileHtml(key) {
+    var w = WIDGET_CATALOG[key];
+    var removeBtn = w.non_removable ? '' :
+        '<button type="button" class="widget-remove" title="Remove widget">&times;</button>';
+    return (
+        '<div class="widget-header">' +
+            '<div class="widget-title">' + escHtml(w.title) + '</div>' +
+            '<div class="widget-controls">' +
+                '<button type="button" class="widget-color-btn" title="Accent colour">&#127912;</button>' +
+                removeBtn +
+                '<div class="widget-color-pop" role="menu">' +
+                    '<button type="button" class="swatch" data-color="" title="No tint"></button>' +
+                    '<button type="button" class="swatch" data-color="red" title="Pink"></button>' +
+                    '<button type="button" class="swatch" data-color="orange" title="Orange"></button>' +
+                    '<button type="button" class="swatch" data-color="yellow" title="Yellow"></button>' +
+                    '<button type="button" class="swatch" data-color="green" title="Green"></button>' +
+                    '<button type="button" class="swatch" data-color="teal" title="Teal"></button>' +
+                    '<button type="button" class="swatch" data-color="blue" title="Blue"></button>' +
+                    '<button type="button" class="swatch" data-color="purple" title="Purple"></button>' +
+                '</div>' +
+            '</div>' +
+        '</div>' +
+        '<div class="widget-body" data-widget-body></div>'
+    );
+}
+
+function addWidget(key) {
+    var w = WIDGET_CATALOG[key];
+    if (!w) return;
+    var existing = grid.engine.nodes.find(function (n) { return n.el && n.el.dataset.widgetKey === key; });
+    if (existing) return;
+    var el = grid.addWidget({
+        w: w.defaults.w, h: w.defaults.h,
+        minW: w.defaults.minW, minH: w.defaults.minH,
+        autoPosition: true, content: widgetTileHtml(key),
     });
-    updateAiModels();
+    el.dataset.widgetKey = key;
+    bindWidget(el, key);
+    syncAddPanelState();
+    syncEmptyState();
+    scheduleSave();
 }
 
-function updateAiModels() {
-    var prov = document.getElementById('aiProvider').value;
-    var sel = document.getElementById('aiModel');
-    sel.innerHTML = '';
-    if (!prov || !AI_PROVIDERS[prov]) return;
-    var models = AI_PROVIDERS[prov].models;
-    var budgetModels = {
-        'anthropic': 'claude-haiku-4-5-20251001',
-        'openai': 'gpt-5.4-mini',
-        'qwen': 'qwen3.5-plus-2026-02-15'
-    };
-    var defaultModel = budgetModels[prov] || AI_PROVIDERS[prov].default;
-    for (var id in models) {
+function bindWidget(el, key) {
+    var w = WIDGET_CATALOG[key];
+    if (!w) return;
+    var body = el.querySelector('[data-widget-body]');
+    if (body) {
+        var render = function () {
+            try {
+                if (currentPayload) w.render(body, currentPayload);
+                else body.innerHTML = '<div class="widget-empty">Loading…</div>';
+            } catch (err) {
+                body.innerHTML = '<div class="widget-placeholder" style="color:#dc3545;">Widget failed to render.</div>';
+                console.error(err);
+            }
+        };
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(render);
+        else render();
+        attachResizeObserver(body);
+    }
+    var removeBtn = el.querySelector('.widget-remove');
+    if (removeBtn && !w.non_removable) {
+        removeBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            grid.removeWidget(el);
+            autoArrange();
+            syncAddPanelState();
+            syncEmptyState();
+            scheduleSave();
+        });
+    }
+    setupColorPicker(el);
+}
+
+function setupColorPicker(el) {
+    var btn = el.querySelector('.widget-color-btn');
+    var pop = el.querySelector('.widget-color-pop');
+    if (!btn || !pop) return;
+    function highlight() {
+        var current = el.dataset.color || '';
+        pop.querySelectorAll('.swatch').forEach(function (s) {
+            s.classList.toggle('active', (s.dataset.color || '') === current);
+        });
+    }
+    highlight();
+    btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        document.querySelectorAll('.widget-color-pop.open').forEach(function (p) {
+            if (p !== pop) p.classList.remove('open');
+        });
+        pop.classList.toggle('open');
+        highlight();
+    });
+    pop.querySelectorAll('.swatch').forEach(function (s) {
+        s.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var color = s.dataset.color || '';
+            if (color) el.dataset.color = color;
+            else delete el.dataset.color;
+            highlight();
+            pop.classList.remove('open');
+            scheduleSave();
+        });
+    });
+}
+
+var _resizeObservers = new WeakMap();
+function attachResizeObserver(body) {
+    if (typeof ResizeObserver === 'undefined') return;
+    if (_resizeObservers.has(body)) return;
+    var ro = new ResizeObserver(function () {
+        body.querySelectorAll('canvas').forEach(function (canvas) {
+            if (typeof Chart !== 'undefined' && Chart.getChart) {
+                var ch = Chart.getChart(canvas);
+                if (ch) { try { ch.resize(); } catch (e) {} }
+            }
+        });
+    });
+    ro.observe(body);
+    _resizeObservers.set(body, ro);
+}
+
+function autoArrange() {
+    if (!grid) return;
+    try { grid.compact(); } catch (e) {}
+    document.querySelectorAll('.grid-stack-item canvas').forEach(function (canvas) {
+        if (typeof Chart !== 'undefined' && Chart.getChart) {
+            var ch = Chart.getChart(canvas);
+            if (ch) { try { ch.resize(); } catch (e) {} }
+        }
+    });
+}
+
+function syncEmptyState() {
+    var empty = document.getElementById('emptyDashboard');
+    if (!empty) return;
+    empty.style.display = grid.engine.nodes.length === 0 ? '' : 'none';
+}
+
+function syncAddPanelState() {
+    var present = {};
+    grid.engine.nodes.forEach(function (n) {
+        if (n.el && n.el.dataset.widgetKey) present[n.el.dataset.widgetKey] = true;
+    });
+    document.querySelectorAll('.widget-option').forEach(function (btn) {
+        var key = btn.dataset.key;
+        btn.classList.toggle('selected', !!present[key]);
+        if (WIDGET_CATALOG[key] && WIDGET_CATALOG[key].non_removable) {
+            btn.classList.add('locked');
+        }
+    });
+}
+
+function buildWidgetOptions() {
+    var container = document.getElementById('widgetOptions');
+    container.innerHTML = '';
+    Object.keys(WIDGET_CATALOG).forEach(function (key) {
+        var w = WIDGET_CATALOG[key];
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'widget-option' + (w.non_removable ? ' locked' : '');
+        btn.dataset.key = key;
+        btn.innerHTML =
+            '<span class="opt-title">' + escHtml(w.title) +
+            (w.non_removable ? ' <span style="font-size:9px;color:#888;">(always shown)</span>' : '') + '</span>' +
+            '<span class="opt-desc">' + escHtml(w.desc) + '</span>';
+        btn.addEventListener('click', function () {
+            if (w.non_removable) return;
+            toggleWidget(key);
+        });
+        container.appendChild(btn);
+    });
+}
+
+function toggleWidget(key) {
+    var w = WIDGET_CATALOG[key];
+    if (w && w.non_removable) return;
+    var node = grid.engine.nodes.find(function (n) { return n.el && n.el.dataset.widgetKey === key; });
+    if (node) {
+        grid.removeWidget(node.el);
+        autoArrange();
+    } else {
+        addWidget(key);
+        autoArrange();
+    }
+    syncAddPanelState();
+    syncEmptyState();
+    scheduleSave();
+}
+
+function buildTemplateOptions() {
+    var container = document.getElementById('templateOptions');
+    container.innerHTML = '';
+    STARTER_TEMPLATES.forEach(function (tpl) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'template-option';
+        btn.dataset.key = tpl.key;
+        btn.innerHTML =
+            '<span class="opt-title"><span class="opt-icon">' + escHtml(tpl.icon) + '</span>' + escHtml(tpl.label) + '</span>' +
+            '<span class="opt-desc">' + escHtml(tpl.desc) + '</span>';
+        btn.addEventListener('click', function () { applyTemplate(tpl.key); });
+        container.appendChild(btn);
+    });
+}
+
+function applyTemplate(key, options) {
+    options = options || {};
+    var tpl = STARTER_TEMPLATES.find(function (t) { return t.key === key; });
+    if (!tpl) return;
+    var hasTiles = grid && grid.engine && grid.engine.nodes.length > 0;
+    if (hasTiles && !options.silent) {
+        if (!confirm('Replace your current dashboard with the "' + tpl.label + '" layout?')) return;
+    }
+    grid.removeAll();
+    var items = tpl.layout
+        .filter(function (e) { return e && e.key && WIDGET_CATALOG[e.key]; })
+        .map(function (e) {
+            return { w: e.w, h: e.h, x: e.x, y: e.y, content: widgetTileHtml(e.key) };
+        });
+    if (items.length) {
+        grid.load(items);
+        grid.engine.nodes.forEach(function (n, i) {
+            var entry = tpl.layout[i];
+            if (entry && entry.key && n.el) {
+                n.el.dataset.widgetKey = entry.key;
+                if (entry.color) n.el.dataset.color = entry.color;
+                bindWidget(n.el, entry.key);
+            }
+        });
+        animateWidgetsIn();
+    }
+    syncAddPanelState();
+    syncEmptyState();
+    scheduleSave();
+}
+
+function animateWidgetsIn() {
+    var nodes = (grid && grid.engine && grid.engine.nodes) || [];
+    nodes.forEach(function (n, i) {
+        if (!n || !n.el) return;
+        var inner = n.el.querySelector('.grid-stack-item-content');
+        if (!inner) return;
+        inner.classList.add('animate__animated', 'animate__fadeInUp');
+        inner.style.animationDelay = (0.05 + i * 0.05).toFixed(2) + 's';
+        inner.style.animationDuration = '0.45s';
+        var cleanup = function () {
+            inner.classList.remove('animate__animated', 'animate__fadeInUp');
+            inner.style.animationDelay = '';
+            inner.style.animationDuration = '';
+            inner.removeEventListener('animationend', cleanup);
+        };
+        inner.addEventListener('animationend', cleanup);
+    });
+}
+
+function currentLayout() {
+    return grid.engine.nodes.map(function (n) {
+        var entry = { key: n.el.dataset.widgetKey, x: n.x, y: n.y, w: n.w, h: n.h };
+        if (n.el.dataset.color) entry.color = n.el.dataset.color;
+        return entry;
+    }).filter(function (e) { return !!e.key; });
+}
+
+function scheduleSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveLayout, 600);
+}
+
+async function saveLayout() {
+    saveTimer = null;
+    try {
+        await fetch('/department/insights/layout', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ layout: currentLayout(), last_band: currentBand }),
+        });
+    } catch (e) { console.error('Save layout failed', e); }
+}
+
+async function loadLayout() {
+    var res = await fetch('/department/insights/layout');
+    var data = await res.json();
+    var layout = (data && data.layout) || [];
+    if (data && data.last_band) currentBand = data.last_band;
+
+    if (!layout.length) {
+        applyTemplate(DEFAULT_TEMPLATE_KEY, { silent: true });
+        return;
+    }
+    var items = layout
+        .filter(function (e) { return e && e.key && WIDGET_CATALOG[e.key]; })
+        .map(function (e) {
+            return { w: e.w, h: e.h, x: e.x, y: e.y, content: widgetTileHtml(e.key) };
+        });
+    if (items.length) {
+        grid.load(items);
+        grid.engine.nodes.forEach(function (n, i) {
+            var entry = layout[i];
+            if (entry && entry.key && n.el) {
+                n.el.dataset.widgetKey = entry.key;
+                if (entry.color) n.el.dataset.color = entry.color;
+                bindWidget(n.el, entry.key);
+            }
+        });
+        animateWidgetsIn();
+    }
+    syncAddPanelState();
+    syncEmptyState();
+}
+
+function setEditMode(on) {
+    document.body.classList.toggle('edit-mode', on);
+    var btn = document.getElementById('editModeBtn');
+    var label = document.getElementById('editModeLabel');
+    btn.classList.toggle('active', on);
+    if (label) label.textContent = on ? 'Done' : 'Edit';
+    grid.setStatic(!on);
+    if (!on) {
+        try { grid.compact(); } catch (e) {}
+        document.querySelectorAll('.grid-stack-item canvas').forEach(function (canvas) {
+            if (typeof Chart !== 'undefined' && Chart.getChart) {
+                var ch = Chart.getChart(canvas);
+                if (ch) { try { ch.resize(); } catch (e) {} }
+            }
+        });
+    }
+}
+
+function highlightBandTab(band) {
+    document.querySelectorAll('.band-tab').forEach(function (btn) {
+        btn.classList.toggle('active', btn.dataset.band === band);
+    });
+}
+
+async function switchBand(band) {
+    currentBand = band;
+    highlightBandTab(band);
+    scheduleSave();
+
+    if (payloadCache[band]) {
+        currentPayload = payloadCache[band];
+        rerenderAllWidgets();
+        return;
+    }
+    try {
+        var res = await fetch('/department/insights/widgets?band=' + encodeURIComponent(band));
+        var data = await res.json();
+        if (!data || !data.success) {
+            currentPayload = null;
+            rerenderAllWidgets();
+            return;
+        }
+        payloadCache[band] = data;
+        currentPayload = data;
+        rerenderAllWidgets();
+    } catch (e) {
+        console.error('Band switch fetch failed', e);
+        currentPayload = null;
+        rerenderAllWidgets();
+    }
+}
+
+function rerenderAllWidgets() {
+    if (!grid) return;
+    grid.engine.nodes.forEach(function (n) {
+        if (!n.el) return;
+        var key = n.el.dataset.widgetKey;
+        var w = WIDGET_CATALOG[key];
+        if (!w) return;
+        var body = n.el.querySelector('[data-widget-body]');
+        if (!body) return;
+        try {
+            if (currentPayload) w.render(body, currentPayload);
+            else body.innerHTML = '<div class="widget-empty">No data yet.</div>';
+        } catch (err) {
+            body.innerHTML = '<div class="widget-placeholder" style="color:#dc3545;">Widget failed to render.</div>';
+            console.error(err);
+        }
+    });
+}
+
+function fmtPct(v, fb) {
+    if (v == null) return (fb == null ? '—' : fb);
+    return v + '%';
+}
+function fmtDelta(v) {
+    if (v == null) return '';
+    var arrow = v > 0 ? '↑' : (v < 0 ? '↓' : '→');
+    var sign = v > 0 ? '+' : '';
+    return arrow + ' ' + sign + v + ' pp vs last term';
+}
+function fmtDeltaClass(v) {
+    if (v == null || v === 0) return '';
+    return v > 0 ? 'up' : 'down';
+}
+
+function renderBandHealth(body, payload) {
+    var bh = payload.band_health || {};
+    var html =
+        '<div class="bh-row">' +
+            '<div class="bh-stat"><span class="num">' + (bh.classes_count || 0) + '</span>' +
+                '<span class="label">Classes</span></div>' +
+            '<div class="bh-stat"><span class="num">' + (bh.teachers_count || 0) + '</span>' +
+                '<span class="label">Teachers</span></div>' +
+            '<div class="bh-stat"><span class="num">' + (bh.assignments_term_count || 0) + '</span>' +
+                '<span class="label">Assignments (term)</span></div>' +
+            '<div class="bh-stat"><span class="num">' + fmtPct(bh.avg_score) + '</span>' +
+                '<span class="label">Avg score</span>' +
+                '<span class="delta ' + fmtDeltaClass(bh.avg_score_delta_vs_last_term) + '">' +
+                fmtDelta(bh.avg_score_delta_vs_last_term) + '</span></div>' +
+            '<div class="bh-stat"><span class="num">' + fmtPct(bh.submission_rate) + '</span>' +
+                '<span class="label">Submission rate</span>' +
+                '<span class="delta ' + fmtDeltaClass(bh.submission_rate_delta_vs_last_term) + '">' +
+                fmtDelta(bh.submission_rate_delta_vs_last_term) + '</span></div>' +
+            '<div class="bh-spark-wrap"><canvas></canvas></div>' +
+        '</div>';
+    body.innerHTML = html;
+    if (bh.low_sample) {
+        body.insertAdjacentHTML('beforeend',
+            '<div class="widget-empty" style="margin-top:8px;font-size:11px;">' +
+            'Trend hidden — fewer than 3 assignments this term.</div>');
+        return;
+    }
+    var canvas = body.querySelector('.bh-spark-wrap canvas');
+    if (!canvas) return;
+    var weeks = (bh.sparkline_weeks || []);
+    new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels: weeks.map(function (_, i) { return 'W' + (i + 1); }),
+            datasets: [{
+                data: weeks,
+                borderColor: '#667eea',
+                backgroundColor: 'rgba(102,126,234,0.12)',
+                fill: true, tension: 0.3, pointRadius: 2, spanGaps: true,
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: { enabled: true } },
+            scales: { x: { display: false }, y: { display: false, beginAtZero: false } },
+        }
+    });
+}
+
+function renderScoreDistribution(body, payload) {
+    var sd = payload.score_distribution || {};
+    if (sd.low_sample) {
+        body.innerHTML = '<div class="widget-empty">Not enough submissions yet (' +
+            (sd.total || 0) + ' &lt; 10).</div>';
+        return;
+    }
+    var b = sd.buckets || {};
+    var keys = ['0-20', '21-40', '41-60', '61-80', '81-100'];
+    var max = Math.max.apply(null, keys.map(function (k) { return b[k] || 0; })) || 1;
+    var colors = ['#dc3545', '#fd7e14', '#ffc107', '#28a745', '#667eea'];
+    var html = '<div class="v-bar-chart">';
+    keys.forEach(function (k, i) {
+        var v = b[k] || 0;
+        var h = (v / max) * 100;
+        html +=
+            '<div class="v-bar-col">' +
+                '<span class="v-bar-value">' + v + '</span>' +
+                '<div class="v-bar" style="height:' + h + '%;background:' + colors[i] + ';"></div>' +
+                '<span class="v-bar-label">' + k + '</span>' +
+            '</div>';
+    });
+    html += '</div>';
+    html += '<div class="rhythm-footer" style="text-align:center;">Total submissions: ' + (sd.total || 0) + '</div>';
+    body.innerHTML = html;
+}
+
+function canEditGoal(g) {
+    if (VIEWER_ROLE === 'hod' || VIEWER_ROLE === 'lead') return true;
+    if (VIEWER_ROLE === 'subject_head' && g.target_subject) {
+        return VIEWER_SUBJECTS.some(function (s) {
+            return s.toLowerCase() === g.target_subject.toLowerCase();
+        });
+    }
+    return false;
+}
+
+function renderDeptGoals(body, payload) {
+    var goals = payload.dept_goals || [];
+    var canCreate = (VIEWER_ROLE === 'hod' || VIEWER_ROLE === 'lead' || VIEWER_ROLE === 'subject_head');
+
+    if (!goals.length) {
+        body.innerHTML = '<div class="widget-empty" style="margin-bottom:12px;">No goals yet.</div>' +
+            (canCreate ? '<button type="button" class="add-goal-btn" onclick="openGoalModal()">+ Add a goal</button>' : '');
+        return;
+    }
+    var html = '';
+    goals.forEach(function (g) {
+        var scope = (g.target_subject || 'All subjects') + ' · ' + (g.target_band ? BAND_LABEL_LOOKUP[g.target_band] || g.target_band : 'All bands');
+        var metricLabel = g.metric_type === 'pass_rate' ? 'Pass rate' :
+                          g.metric_type === 'avg_score' ? 'Avg score' :
+                          g.metric_type === 'submission_rate' ? 'Submission rate' : g.metric_type;
+        var progress = (g.progress != null) ? g.progress : 0;
+        var width = Math.min(100, Math.max(0, (progress / g.target_value) * 100));
+        var canEdit = canEditGoal(g);
+        html +=
+            '<div class="goal-row' + (g.out_of_band ? ' out-of-band' : '') + '">' +
+                '<div class="goal-head">' +
+                    '<span class="goal-title">' + escHtml(g.title) + '</span>' +
+                    '<span class="goal-status ' + g.status + '">' + g.status.replace('_', ' ') + '</span>' +
+                '</div>' +
+                '<div class="goal-meta">' +
+                    '<span class="goal-chip">' + escHtml(scope) + '</span>' +
+                    '<span>' + escHtml(metricLabel) + '</span>' +
+                '</div>' +
+                '<div class="goal-bar-wrap"><div class="goal-bar ' + g.status + '" style="width:' + width + '%;"></div></div>' +
+                '<div class="goal-meta">' +
+                    '<span>' + (g.progress != null ? g.progress + '%' : '—') + ' of ' + g.target_value + '%</span>' +
+                    (canEdit ?
+                        '<span class="goal-actions">' +
+                            '<button type="button" class="goal-action-btn" onclick="openGoalModal(' + g.id + ')" title="Edit">&#9998;</button>' +
+                        '</span>' : '') +
+                '</div>' +
+            '</div>';
+    });
+    if (canCreate) {
+        html += '<button type="button" class="add-goal-btn" onclick="openGoalModal()" style="margin-top:8px;">+ Add a goal</button>';
+    }
+    body.innerHTML = html;
+}
+
+function renderFrequentlyAmended(body, payload) {
+    var rows = payload.frequently_amended || [];
+    if (!rows.length) {
+        body.innerHTML = '<div class="widget-empty">No items above the re-review threshold.</div>';
+        return;
+    }
+    var max = Math.max.apply(null, rows.map(function (r) { return r.rate; })) || 1;
+    var html = '<div class="row-list">';
+    rows.forEach(function (r) {
+        var width = (r.rate / max) * 100;
+        html +=
+            '<div class="row-item">' +
+                '<div class="row-head">' +
+                    '<span class="row-title">' + escHtml(r.assignment_title) + ' · ' + escHtml(r.criterion_id) + '</span>' +
+                    '<span class="row-value">' + r.rate + '%</span>' +
+                '</div>' +
+                '<div class="row-bar-wrap"><div class="row-bar" style="width:' + width + '%;"></div></div>' +
+                '<div class="row-sub">' + r.edit_count + ' edits across ' + r.submission_count + ' submissions</div>' +
+            '</div>';
+    });
+    html += '</div>';
+    html += '<div class="rhythm-footer" style="margin-top:6px;">No teacher is named. The list shows where teacher amendments concentrate.</div>';
+    body.innerHTML = html;
+}
+
+function renderCalibrationAlignment(body, payload) {
+    var rows = payload.calibration_alignment || [];
+    if (!rows.length) {
+        body.innerHTML = '<div class="widget-empty">Not enough calibration data across teachers yet.</div>';
+        return;
+    }
+    var html = '<div class="row-list">';
+    rows.forEach(function (r) {
+        html +=
+            '<div class="row-item">' +
+                '<div class="row-head">' +
+                    '<span class="row-title">' + escHtml(r.assignment_title) + ' · ' + escHtml(r.criterion_id) + '</span>' +
+                    '<span class="row-chip ' + r.bucket + '">' + r.bucket + '</span>' +
+                '</div>' +
+                '<div class="row-bar-wrap"><div class="row-bar ' + r.bucket + '" style="width:' + r.alignment_pct + '%;"></div></div>' +
+                '<div class="row-sub">' + r.alignment_pct + '% alignment across ' + r.teachers_contributing + ' teachers' +
+                    (r.bucket === 'low' ? ' · suggest joint mark' : '') +
+                '</div>' +
+            '</div>';
+    });
+    html += '</div>';
+    body.innerHTML = html;
+}
+
+function renderPartialCreditHotspots(body, payload) {
+    var rows = payload.partial_credit_hotspots || [];
+    if (!rows.length) {
+        body.innerHTML = '<div class="widget-empty">No question with enough data passes the threshold yet.</div>';
+        return;
+    }
+    var max = Math.max.apply(null, rows.map(function (r) { return r.partial_rate; })) || 1;
+    var html = '<div class="row-list">';
+    rows.forEach(function (r) {
+        var width = (r.partial_rate / max) * 100;
+        html +=
+            '<div class="row-item">' +
+                '<div class="row-head">' +
+                    '<span class="row-title">' + escHtml(r.assignment_title) + ' · Q' + escHtml(r.question_number) + '</span>' +
+                    '<span class="row-value">' + r.partial_rate + '%</span>' +
+                '</div>' +
+                '<div class="row-bar-wrap"><div class="row-bar mid" style="width:' + width + '%;"></div></div>' +
+                '<div class="row-sub">' + r.total + ' attempts</div>' +
+            '</div>';
+    });
+    html += '</div>';
+    html += '<div class="rhythm-footer" style="margin-top:6px;">These questions often land in the messy middle — worth reviewing the rubric or model answer.</div>';
+    body.innerHTML = html;
+}
+
+function renderWinsToShare(body, payload) {
+    var wins = payload.wins_to_share || [];
+    if (!wins.length) {
+        body.innerHTML = '<div class="widget-empty">Quiet week — keep going.</div>';
+        return;
+    }
+    var html = '';
+    wins.forEach(function (w) {
+        html +=
+            '<div class="win-row">' +
+                '<span class="win-glyph">' + escHtml(w.glyph || '⬆') + '</span>' +
+                '<span>' + escHtml(w.text) + '</span>' +
+            '</div>';
+    });
+    body.innerHTML = html;
+}
+
+function renderPersistentGap(body, payload) {
+    var g = payload.persistent_gap || {};
+    if (g.pct == null) {
+        body.innerHTML = '<div class="widget-empty">Not enough assessment history yet (need 4+ submissions per student).</div>';
+        return;
+    }
+    var bandLabel = BAND_LABEL_LOOKUP[currentBand] || 'this band';
+    var html =
+        '<div class="big-pct ' + (g.pct > 25 ? 'flagged' : '') + '">' + g.pct + '%</div>' +
+        '<div class="big-pct-caption">of ' + g.n_qualified + ' ' + escHtml(bandLabel) +
+            ' students with at least 4 assessments</div>' +
+        '<div class="big-pct-suggest">Suggested supports: after-school clinic · peer tutoring</div>';
+    if (g.low_sample) {
+        html += '<div class="widget-empty" style="margin-top:8px;font-size:11px;">Low sample (qualifying students &lt; 50% of band).</div>';
+    }
+    body.innerHTML = html;
+}
+
+function renderMarkingPipeline(body, payload) {
+    var p = payload.marking_pipeline || {};
+    if (p.low_sample) {
+        body.innerHTML = '<div class="widget-empty">Quiet fortnight — fewer than 10 submissions in last 14 days.</div>';
+        return;
+    }
+    var max = Math.max(p.submitted || 0, 1);
+    var pctSubmitted = 100;
+    var pctMarked = (p.marked / max) * 100;
+    var pctPending = (p.pending / max) * 100;
+    var html =
+        '<div class="pipeline-row"><span class="pipeline-label">Submitted</span>' +
+            '<div class="pipeline-bar-wrap"><div class="pipeline-bar submitted" style="width:' + pctSubmitted + '%;"></div></div>' +
+            '<span class="pipeline-value">' + p.submitted + '</span></div>' +
+        '<div class="pipeline-row"><span class="pipeline-label">Marked</span>' +
+            '<div class="pipeline-bar-wrap"><div class="pipeline-bar marked" style="width:' + pctMarked + '%;"></div></div>' +
+            '<span class="pipeline-value">' + p.marked + '</span></div>' +
+        '<div class="pipeline-row"><span class="pipeline-label">Pending</span>' +
+            '<div class="pipeline-bar-wrap"><div class="pipeline-bar pending" style="width:' + pctPending + '%;"></div></div>' +
+            '<span class="pipeline-value">' + p.pending + '</span></div>' +
+        '<div class="pipeline-caption">Pending share: ' + (p.pending_share_now != null ? p.pending_share_now + '%' : '—') +
+            ' (90-day baseline: ' + (p.pending_share_baseline != null ? p.pending_share_baseline + '%' : '—') + ')' +
+            ' — department aggregate, not per teacher.</div>';
+    body.innerHTML = html;
+}
+
+function renderAssessmentRhythm(body, payload) {
+    var r = payload.assessment_rhythm || {};
+    var bins = r.bins || [];
+    if (!bins.length) {
+        body.innerHTML = '<div class="widget-empty">No assignments in the current term window.</div>';
+        return;
+    }
+    body.innerHTML = '<div class="rhythm-wrap"><canvas></canvas></div>' +
+        '<div class="rhythm-footer">Median across bands: ' + (r.median_across_bands || 0) +
+        '/fortnight · This band: ' + (r.band_rate || 0) +
+        (r.band_rate >= r.median_across_bands ? ' ✓' : '') + '</div>';
+    var canvas = body.querySelector('canvas');
+    new Chart(canvas, {
+        type: 'bar',
+        data: {
+            labels: bins.map(function (b, i) { return 'F' + (i + 1); }),
+            datasets: [{
+                data: bins.map(function (b) { return b.count; }),
+                backgroundColor: '#667eea',
+                borderRadius: 4,
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: { callbacks: { title: function (items) {
+                    var b = bins[items[0].dataIndex];
+                    return b.start + ' → ' + b.end;
+                } } },
+            },
+            scales: {
+                x: { display: false },
+                y: { beginAtZero: true, ticks: { stepSize: 1, precision: 0 } },
+            }
+        }
+    });
+}
+
+function renderAIAnalysis(body, payload) {
+    if (body.dataset.aiInitialised === '1') {
+        refreshAIAnalysisFromCache(body);
+        return;
+    }
+    body.dataset.aiInitialised = '1';
+    body.innerHTML =
+        '<div class="ai-controls">' +
+            '<div><label>Provider</label>' +
+                '<select class="ai-select" data-ai-provider></select></div>' +
+            '<div><label>Model</label>' +
+                '<select class="ai-select" data-ai-model></select></div>' +
+            '<button type="button" class="ai-btn" data-ai-go>Generate Analysis</button>' +
+        '</div>' +
+        '<div class="ai-loading" data-ai-loading>Analyzing this band\'s data… this may take a few seconds.</div>' +
+        '<div data-ai-result></div>';
+
+    var providerSel = body.querySelector('[data-ai-provider]');
+    var modelSel = body.querySelector('[data-ai-model]');
+    var goBtn = body.querySelector('[data-ai-go]');
+
+    var providerKeys = ['anthropic', 'openai', 'qwen'];
+    providerKeys.forEach(function (k) {
+        if (!AI_PROVIDERS[k]) return;
         var o = document.createElement('option');
-        o.value = id;
-        o.textContent = models[id];
-        if (id === defaultModel) o.selected = true;
-        sel.appendChild(o);
+        o.value = k; o.textContent = AI_PROVIDERS[k].label;
+        providerSel.appendChild(o);
+    });
+    var budget = { anthropic: 'claude-haiku-4-5-20251001', openai: 'gpt-5.4-mini', qwen: 'qwen3.5-plus-2026-02-15' };
+    function refreshModels() {
+        modelSel.innerHTML = '';
+        var prov = providerSel.value;
+        if (!prov || !AI_PROVIDERS[prov]) return;
+        var models = AI_PROVIDERS[prov].models;
+        var dflt = budget[prov] || AI_PROVIDERS[prov].default;
+        for (var id in models) {
+            var o = document.createElement('option');
+            o.value = id; o.textContent = models[id];
+            if (id === dflt) o.selected = true;
+            modelSel.appendChild(o);
+        }
     }
+    providerSel.addEventListener('change', refreshModels);
+    refreshModels();
+
+    goBtn.addEventListener('click', function () { runAIAnalysis(body); });
+    refreshAIAnalysisFromCache(body);
 }
 
-function generateAnalysis() {
-    var provider = document.getElementById('aiProvider').value;
-    var model = document.getElementById('aiModel').value;
-    var asnId = document.getElementById('filterAssignment').value;
-    var clsId = document.getElementById('filterClass').value;
+async function refreshAIAnalysisFromCache(body) {
+    var resEl = body.querySelector('[data-ai-result]');
+    if (!resEl) return;
+    resEl.innerHTML = '';
+    try {
+        var res = await fetch('/department/insights/saved-analysis?band=' + encodeURIComponent(currentBand));
+        var data = await res.json();
+        var btn = body.querySelector('[data-ai-go]');
+        if (data && data.success && data.exists) {
+            renderAnalysisBlock(resEl, data);
+            if (btn) btn.textContent = 'Regenerate';
+        } else {
+            if (btn) btn.textContent = 'Generate Analysis';
+        }
+    } catch (e) { console.error(e); }
+}
 
-    if (!provider) return alert('Select a provider.');
-
-    var itemData = null;
-    var itemEl = document.getElementById('itemResult');
-    if (itemEl && itemEl.dataset.summary) {
-        itemData = itemEl.dataset.summary;
-    }
-
-    document.getElementById('aiLoading').classList.add('visible');
-    document.getElementById('aiResult').classList.remove('visible');
-    document.getElementById('analyzeBtn').disabled = true;
-
-    fetch('/department/insights/analyze', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-            provider: provider,
-            model: model,
-            assignment_id: asnId,
-            class_id: clsId,
-            item_analysis: itemData,
-        })
-    })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-        document.getElementById('aiLoading').classList.remove('visible');
-        document.getElementById('analyzeBtn').disabled = false;
+async function runAIAnalysis(body) {
+    var providerSel = body.querySelector('[data-ai-provider]');
+    var modelSel = body.querySelector('[data-ai-model]');
+    var goBtn = body.querySelector('[data-ai-go]');
+    var loading = body.querySelector('[data-ai-loading]');
+    var resEl = body.querySelector('[data-ai-result]');
+    var provider = providerSel.value;
+    var model = modelSel.value;
+    if (!provider) return alert('Pick a provider.');
+    loading.classList.add('visible');
+    resEl.innerHTML = '';
+    goBtn.disabled = true;
+    try {
+        var res = await fetch('/department/insights/analyze-band', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: provider, model: model, band: currentBand }),
+        });
+        var data = await res.json();
         if (!data.success) {
             alert(data.error || 'Analysis failed.');
             return;
         }
-        renderAnalysis(data);
-    })
-    .catch(function() {
-        document.getElementById('aiLoading').classList.remove('visible');
-        document.getElementById('analyzeBtn').disabled = false;
+        renderAnalysisBlock(resEl, data);
+        goBtn.textContent = 'Regenerate';
+    } catch (e) {
+        console.error(e);
         alert('Connection error.');
-    });
-}
-
-function renderAnalysis(data) {
-    var summaryEl = document.getElementById('aiSummary');
-    summaryEl.textContent = data.summary || '';
-    var ul = document.getElementById('aiActions');
-    ul.innerHTML = '';
-    (data.action_items || []).forEach(function(item) {
-        var li = document.createElement('li');
-        li.textContent = item;
-        ul.appendChild(li);
-    });
-    var meta = '';
-    if (data.provider) meta += data.provider;
-    if (data.model) meta += ' / ' + data.model;
-    if (data.generated_at) meta += ' — ' + new Date(data.generated_at).toLocaleString();
-    document.getElementById('aiMeta').textContent = meta;
-    document.getElementById('aiResult').classList.add('visible');
-    document.getElementById('analyzeBtn').textContent = 'Regenerate';
-    if (window.MathJax && MathJax.typesetPromise) {
-        MathJax.typesetPromise([summaryEl, ul]).catch(function() {});
+    } finally {
+        loading.classList.remove('visible');
+        goBtn.disabled = false;
     }
 }
 
-function loadSavedAnalysis() {
-    var asnId = document.getElementById('filterAssignment').value || '';
-    var clsId = document.getElementById('filterClass').value || '';
-    var params = new URLSearchParams();
-    if (asnId) params.set('assignment_id', asnId);
-    if (clsId) params.set('class_id', clsId);
-
-    fetch('/department/insights/analysis?' + params.toString())
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-        if (data.success && data.exists) {
-            renderAnalysis(data);
-        } else {
-            document.getElementById('aiResult').classList.remove('visible');
-            document.getElementById('analyzeBtn').textContent = 'Generate Analysis';
-        }
-    });
-}
-
-/* Item Analysis */
-function updateCompareBtn() {
-    var checked = document.querySelectorAll('#asnChecklist input:checked');
-    document.getElementById('compareBtn').disabled = checked.length < 2;
-}
-
-function runItemAnalysis() {
-    var checked = document.querySelectorAll('#asnChecklist input:checked');
-    var ids = [];
-    checked.forEach(function(cb) { ids.push(cb.value); });
-    if (ids.length < 2) return;
-
-    document.getElementById('compareBtn').disabled = true;
-    document.getElementById('compareBtn').textContent = 'Loading...';
-
-    fetch('/department/insights/item-analysis?assignment_ids=' + ids.join(','))
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-        document.getElementById('compareBtn').disabled = false;
-        document.getElementById('compareBtn').textContent = 'Compare';
-        if (!data.success) {
-            alert(data.error || 'Failed.');
-            return;
-        }
-        renderItemAnalysis(data);
-    })
-    .catch(function() {
-        document.getElementById('compareBtn').disabled = false;
-        document.getElementById('compareBtn').textContent = 'Compare';
-        alert('Connection error.');
-    });
-}
-
-function renderItemAnalysis(data) {
-    var el = document.getElementById('itemResult');
-    if (!data.assignments.length || !data.question_numbers.length) {
-        el.innerHTML = '<div class="no-data" style="margin-top:16px;">No submission data for selected assignments.</div>';
-        return;
+function renderAnalysisBlock(el, data) {
+    var html = '';
+    if (data.sweep_warning) {
+        html += '<div class="ai-warn-banner">The model may have named someone. Please regenerate before sharing.</div>';
     }
-
-    var html = '<table class="item-table"><thead><tr><th>Question</th>';
-    data.assignments.forEach(function(a) {
-        html += '<th>' + esc(a.class_name) + '<br><span style="font-weight:400;font-size:11px;">' + esc(a.title) + '</span></th>';
-    });
-    html += '</tr></thead><tbody>';
-
-    var summaryLines = [];
-    data.question_numbers.forEach(function(qnum) {
-        html += '<tr><td>Q' + esc(qnum) + '</td>';
-        var line = 'Q' + qnum + ': ';
-        data.assignments.forEach(function(a) {
-            var pct = a.questions[qnum];
-            if (pct == null) {
-                html += '<td>\u2014</td>';
-                line += a.class_name + ' N/A, ';
-            } else {
-                var cls = pct >= 70 ? 'pct-good' : (pct >= 50 ? 'pct-mid' : 'pct-low');
-                html += '<td class="' + cls + '">' + pct + '%</td>';
-                line += a.class_name + ' ' + pct + '%, ';
-            }
+    var caveats = (data.caveats || []);
+    if (caveats.length) {
+        html += '<div class="ai-caveats"><h4>Important caveats</h4><ul>';
+        caveats.forEach(function (c) { html += '<li>' + escHtml(c) + '</li>'; });
+        html += '</ul></div>';
+    } else if ((data.low_sample_widgets || []).length) {
+        html += '<div class="ai-caveats"><h4>Important caveats</h4><ul><li>Low-sample widgets in this view: ' +
+            escHtml(data.low_sample_widgets.join(', ')) + '</li></ul></div>';
+    }
+    if (data.summary) html += '<div class="ai-summary">' + escHtml(data.summary) + '</div>';
+    var actions = data.action_items || [];
+    if (actions.length) {
+        html += '<ul class="ai-actions">';
+        actions.forEach(function (a) {
+            var tagHtml = a.tag ? '<span class="ai-tag ' + escHtml(a.tag) + '">' + escHtml(a.tag) + '</span>' : '';
+            html += '<li>' + tagHtml + '<span>' + escHtml(a.text) + '</span></li>';
         });
-        summaryLines.push(line);
-        html += '</tr>';
-    });
-
-    html += '</tbody></table>';
+        html += '</ul>';
+    }
+    if (data.closing) html += '<div class="ai-closing">' + escHtml(data.closing) + '</div>';
+    var meta = [];
+    if (data.provider) meta.push(data.provider);
+    if (data.model) meta.push(data.model);
+    if (data.generated_at) meta.push(new Date(data.generated_at).toLocaleString());
+    if (meta.length) html += '<div class="ai-meta">' + escHtml(meta.join(' / ')) + '</div>';
     el.innerHTML = html;
-    el.dataset.summary = summaryLines.join('\n');
 }
 
-// Init
-updateAiProviderSelect();
-loadInsights();
-loadSavedAnalysis();
+var editingGoalId = null;
+
+function openGoalModal(goalId) {
+    editingGoalId = goalId || null;
+    var modal = document.getElementById('goalModal');
+    var title = document.getElementById('goalModalTitle');
+    var deleteBtn = document.getElementById('goalDeleteBtn');
+    title.textContent = editingGoalId ? 'Edit goal' : 'Add a department goal';
+    deleteBtn.style.display = editingGoalId ? 'inline-block' : 'none';
+
+    var titleInput = document.getElementById('goalTitle');
+    var metricSel = document.getElementById('goalMetric');
+    var targetInput = document.getElementById('goalTarget');
+    var bandSel = document.getElementById('goalBand');
+    var subjectSel = document.getElementById('goalSubject');
+
+    if (editingGoalId && currentPayload && currentPayload.dept_goals) {
+        var g = currentPayload.dept_goals.find(function (x) { return x.id === editingGoalId; });
+        if (g) {
+            titleInput.value = g.title || '';
+            metricSel.value = g.metric_type || 'pass_rate';
+            targetInput.value = g.target_value || 80;
+            bandSel.value = g.target_band || '';
+            subjectSel.value = g.target_subject || '';
+        }
+    } else {
+        titleInput.value = '';
+        metricSel.value = 'pass_rate';
+        targetInput.value = 80;
+        bandSel.value = (currentBand === 'all' || currentBand === 'unbanded') ? '' : currentBand;
+        if (VIEWER_ROLE === 'subject_head') {
+            subjectSel.value = (VIEWER_SUBJECTS[0] || '');
+        } else {
+            subjectSel.value = '';
+        }
+    }
+    modal.classList.add('open');
+    titleInput.focus();
+}
+
+function closeGoalModal() {
+    document.getElementById('goalModal').classList.remove('open');
+    editingGoalId = null;
+}
+
+async function saveGoal() {
+    var payload = {
+        title: document.getElementById('goalTitle').value.trim(),
+        metric_type: document.getElementById('goalMetric').value,
+        target_value: parseFloat(document.getElementById('goalTarget').value),
+        target_band: document.getElementById('goalBand').value || null,
+        target_subject: document.getElementById('goalSubject').value || null,
+    };
+    if (!payload.title) return alert('Title is required.');
+    if (isNaN(payload.target_value)) return alert('Target value must be a number.');
+    if (VIEWER_ROLE === 'subject_head' && !payload.target_subject) {
+        return alert('Subject Heads must pick a target subject.');
+    }
+    var url = '/department/insights/goals' + (editingGoalId ? ('/' + editingGoalId) : '');
+    var method = editingGoalId ? 'PATCH' : 'POST';
+    try {
+        var res = await fetch(url, {
+            method: method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        var data = await res.json();
+        if (!data.success) return alert(data.error || 'Save failed.');
+        closeGoalModal();
+        payloadCache = {};
+        await switchBand(currentBand);
+    } catch (e) {
+        console.error(e);
+        alert('Connection error.');
+    }
+}
+
+async function deleteGoal() {
+    if (!editingGoalId) return;
+    if (!confirm('Delete this goal? It will be removed from the dashboard.')) return;
+    try {
+        var res = await fetch('/department/insights/goals/' + editingGoalId, { method: 'DELETE' });
+        var data = await res.json();
+        if (!data.success) return alert(data.error || 'Delete failed.');
+        closeGoalModal();
+        payloadCache = {};
+        await switchBand(currentBand);
+    } catch (e) {
+        console.error(e);
+        alert('Connection error.');
+    }
+}
+
+(function init() {
+    grid = GridStack.init({
+        column: 12, cellHeight: 60, margin: 8,
+        animate: true, disableOneColumnMode: true, float: false,
+        resizable: { handles: 'e, se, s, sw, w' },
+    }, '#dashboardGrid');
+
+    grid.on('change', scheduleSave);
+
+    buildWidgetOptions();
+    buildTemplateOptions();
+
+    document.querySelectorAll('.band-tab').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var b = btn.dataset.band;
+            if (b && b !== currentBand) switchBand(b);
+        });
+    });
+
+    document.getElementById('editModeBtn').addEventListener('click', function () {
+        setEditMode(!document.body.classList.contains('edit-mode'));
+    });
+
+    document.getElementById('goalSaveBtn').addEventListener('click', saveGoal);
+    document.getElementById('goalCancelBtn').addEventListener('click', closeGoalModal);
+    document.getElementById('goalDeleteBtn').addEventListener('click', deleteGoal);
+    document.getElementById('goalModal').addEventListener('click', function (e) {
+        if (e.target === this) closeGoalModal();
+    });
+
+    grid.setStatic(true);
+
+    (async function () {
+        await loadLayout();
+        highlightBandTab(currentBand);
+        await switchBand(currentBand);
+    })();
+})();
 </script>
 {% endif %}
 {% endblock %}

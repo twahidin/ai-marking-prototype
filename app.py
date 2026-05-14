@@ -19,7 +19,7 @@ import io
 
 from ai_marking import mark_script, get_available_providers, PROVIDERS, generate_exemplar_analysis, explain_criterion, evaluate_correction, consume_last_usage, MarkingError, AIProviderError, ResponseParseError
 from pdf_generator import generate_report_pdf, generate_overview_pdf
-from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig, TeacherDashboardLayout, BulkJob, SubmissionStatus, utc
+from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig, TeacherDashboardLayout, BulkJob, SubmissionStatus, utc, FeedbackEdit, DepartmentDashboardLayout, DepartmentGoal
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -3324,28 +3324,70 @@ def teacher_widget_submission_rate_trend():
 
 @app.route('/department/insights')
 def department_insights():
+    """Department insights — band-tabbed customisable widget dashboard.
+
+    Layout JSON lives in DepartmentDashboardLayout (one row per viewer);
+    the same layout renders across every band tab, only the data swaps.
+    See docs/superpowers/specs/2026-05-14-department-insights-widgets-design.md.
+    """
     err = _require_insights_access()
     if err:
         return redirect(url_for('hub'))
 
     teacher = _current_teacher()
     classes = Class.query.order_by(Class.name).all()
-    assignments = Assignment.query.filter(Assignment.class_id.isnot(None))\
-        .order_by(Assignment.created_at.desc()).all()
 
-    # Get available AI providers for analysis
+    # AI provider list (for the AI Analysis widget's provider dropdown).
     from ai_marking import get_available_providers, PROVIDERS
     dept_keys = _get_dept_keys()
     ai_providers = get_available_providers(dept_keys) if dept_keys else get_available_providers()
     if not ai_providers:
         ai_providers = PROVIDERS
 
+    # Band tab list — show all four standard tabs even if empty, plus
+    # 'unbanded' if any class falls outside the taxonomy, plus 'all'.
+    from bands import bands_present, BAND_LABELS, ORDERED_BAND_KEYS
+    present = bands_present(classes)
+    visible_bands = [
+        {'key': k, 'label': BAND_LABELS[k], 'has_data': k in present}
+        for k in ORDERED_BAND_KEYS
+    ]
+    if 'unbanded' in present:
+        visible_bands.append({'key': 'unbanded', 'label': 'Unbanded',
+                              'has_data': True})
+    visible_bands.append({'key': 'all', 'label': 'All', 'has_data': True})
+
+    # Viewer's teaching subjects — feeds the Subject Head's goal modal.
+    viewer_subjects = []
+    if teacher and teacher.role in ('subject_head', 'hod', 'lead'):
+        teaching_class_ids = {c.id for c in (teacher.classes or [])}
+        if teaching_class_ids:
+            asns = Assignment.query.filter(
+                Assignment.class_id.in_(teaching_class_ids)
+            ).all()
+            seen = set()
+            for a in asns:
+                s = (a.subject or '').strip()
+                if s and s.lower() not in seen:
+                    seen.add(s.lower())
+                    viewer_subjects.append(s)
+            viewer_subjects.sort()
+
+    # Canonical subjects for the goal-modal subject dropdown.
+    try:
+        from subjects import SUBJECTS
+        canonical_subjects = [s['display'] for s in SUBJECTS]
+    except Exception:
+        canonical_subjects = []
+
     can_view_overview = teacher.role in ROLES_CAN_VIEW_OVERVIEW
 
     return render_template('department_insights.html',
                            teacher=teacher,
                            classes=classes,
-                           assignments=assignments,
+                           visible_bands=visible_bands,
+                           viewer_subjects=viewer_subjects,
+                           canonical_subjects=canonical_subjects,
                            ai_providers=ai_providers,
                            can_view_overview=can_view_overview,
                            demo_mode=is_demo_mode(),
@@ -3529,7 +3571,12 @@ def department_get_analysis():
 
 @app.route('/department/insights/analyze', methods=['POST'])
 def department_analyze():
-    """Generate AI analysis of insights data."""
+    """Generate AI analysis of insights data.
+
+    LEGACY ROUTE — invoked by the deprecated class_insights.html deep-link.
+    The new band-tabbed dashboard calls `/department/insights/analyze-band`
+    below (hardened prompt, regex sweep, band-keyed cache).
+    """
     err = _require_insights_access()
     if err:
         return err
@@ -3714,6 +3761,474 @@ Respond in JSON format:
         cfg.value = json.dumps(saved, ensure_ascii=False)
     else:
         cfg = DepartmentConfig(key=config_key, value=json.dumps(saved, ensure_ascii=False))
+        db.session.add(cfg)
+    db.session.commit()
+
+    return jsonify({'success': True, **saved})
+
+
+# ---------------------------------------------------------------------------
+# Department insights — band-tabbed dashboard endpoints (v2)
+# ---------------------------------------------------------------------------
+
+_VALID_BANDS = ('sec1', 'sec2', 'sec3', 'sec45', 'unbanded', 'all')
+
+
+def _viewer_role_and_subjects():
+    """Return (role, teaching_subjects_set) for the current teacher.
+
+    Used by the goal-modal authz and AI prompt assembly. teaching_subjects
+    is empty for HOD / Lead / Manager / Owner — they aren't subject-scoped."""
+    teacher = _current_teacher()
+    if not teacher:
+        return None, set()
+    if teacher.role == 'subject_head':
+        subjects = set()
+        for c in (teacher.classes or []):
+            for a in Assignment.query.filter_by(class_id=c.id).all():
+                if a.subject:
+                    subjects.add(a.subject.strip().lower())
+        return teacher.role, subjects
+    return teacher.role, set()
+
+
+@app.route('/department/insights/widgets')
+def department_insights_widgets():
+    """Return all widget payloads for one band tab."""
+    err = _require_insights_access()
+    if err:
+        return err
+    band = (request.args.get('band') or 'sec1').strip().lower()
+    if band not in _VALID_BANDS:
+        band = 'sec1'
+    role, subjects = _viewer_role_and_subjects()
+    from dept_insights_widgets import compute_widgets
+    payload = compute_widgets(band, viewer_role=role, viewer_subjects=subjects)
+    return jsonify({'success': True, **payload})
+
+
+@app.route('/department/insights/layout', methods=['GET'])
+def department_insights_layout_get():
+    err = _require_insights_access()
+    if err:
+        return err
+    teacher = _current_teacher()
+    row = DepartmentDashboardLayout.query.filter_by(teacher_id=teacher.id).first()
+    layout = []
+    last_band = 'sec1'
+    if row:
+        if row.layout_json:
+            try:
+                parsed = json.loads(row.layout_json)
+                if isinstance(parsed, list):
+                    layout = parsed
+            except (json.JSONDecodeError, TypeError):
+                layout = []
+        last_band = row.last_band or 'sec1'
+    return jsonify({'success': True, 'layout': layout, 'last_band': last_band})
+
+
+@app.route('/department/insights/layout', methods=['PUT'])
+def department_insights_layout_put():
+    err = _require_insights_access()
+    if err:
+        return err
+    teacher = _current_teacher()
+    data = request.get_json(silent=True) or {}
+    layout = data.get('layout')
+    last_band = (data.get('last_band') or 'sec1').strip().lower()
+    if last_band not in _VALID_BANDS:
+        last_band = 'sec1'
+    if not isinstance(layout, list):
+        return jsonify({'success': False, 'error': 'layout must be a list'}), 400
+    row = DepartmentDashboardLayout.query.filter_by(teacher_id=teacher.id).first()
+    payload = json.dumps(layout)
+    if row:
+        row.layout_json = payload
+        row.last_band = last_band
+    else:
+        row = DepartmentDashboardLayout(
+            teacher_id=teacher.id, layout_json=payload, last_band=last_band,
+        )
+        db.session.add(row)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/department/insights/layout/reset', methods=['POST'])
+def department_insights_layout_reset():
+    """Wipe the saved layout so the page falls back to its starter template."""
+    err = _require_insights_access()
+    if err:
+        return err
+    teacher = _current_teacher()
+    row = DepartmentDashboardLayout.query.filter_by(teacher_id=teacher.id).first()
+    if row:
+        row.layout_json = '[]'
+        db.session.commit()
+    return jsonify({'success': True})
+
+
+def _can_edit_goal(goal, role, subjects):
+    if role in ('hod', 'lead'):
+        return True
+    if role == 'subject_head':
+        return bool(goal.target_subject) and (goal.target_subject.strip().lower() in subjects)
+    return False
+
+
+def _validate_goal_payload(data, role, subjects, is_create=True):
+    """Return (cleaned_dict, error_response_tuple_or_None)."""
+    title = (data.get('title') or '').strip()
+    metric_type = (data.get('metric_type') or '').strip()
+    try:
+        target_value = float(data.get('target_value'))
+    except (TypeError, ValueError):
+        return None, (jsonify({'success': False, 'error': 'target_value must be a number'}), 400)
+    target_band = (data.get('target_band') or '').strip().lower() or None
+    target_subject = (data.get('target_subject') or '').strip() or None
+
+    if is_create and not title:
+        return None, (jsonify({'success': False, 'error': 'title is required'}), 400)
+    if metric_type and metric_type not in ('pass_rate', 'avg_score', 'submission_rate'):
+        return None, (jsonify({'success': False, 'error': 'unknown metric_type'}), 400)
+    if target_band and target_band not in _VALID_BANDS:
+        return None, (jsonify({'success': False, 'error': 'unknown target_band'}), 400)
+
+    # Subject Heads must pin a subject they teach.
+    if role == 'subject_head':
+        if not target_subject:
+            return None, (jsonify({'success': False, 'error': 'Subject Heads must pick a target subject'}), 403)
+        if target_subject.strip().lower() not in subjects:
+            return None, (jsonify({'success': False, 'error': 'You can only set goals for subjects you teach'}), 403)
+
+    return {
+        'title': title, 'metric_type': metric_type, 'target_value': target_value,
+        'target_band': target_band, 'target_subject': target_subject,
+    }, None
+
+
+@app.route('/department/insights/goals', methods=['GET'])
+def department_insights_goals_list():
+    err = _require_insights_access()
+    if err:
+        return err
+    goals = (
+        DepartmentGoal.query
+        .filter(DepartmentGoal.deleted_at.is_(None))
+        .order_by(DepartmentGoal.created_at.desc())
+        .all()
+    )
+    role, subjects = _viewer_role_and_subjects()
+    out = []
+    for g in goals:
+        out.append({
+            'id': g.id,
+            'title': g.title,
+            'metric_type': g.metric_type,
+            'target_value': g.target_value,
+            'target_band': g.target_band,
+            'target_subject': g.target_subject,
+            'created_by_id': g.created_by_id,
+            'can_edit': _can_edit_goal(g, role, subjects),
+        })
+    return jsonify({'success': True, 'goals': out, 'viewer_role': role,
+                    'viewer_subjects': sorted(subjects)})
+
+
+@app.route('/department/insights/goals', methods=['POST'])
+def department_insights_goals_create():
+    err = _require_insights_access()
+    if err:
+        return err
+    teacher = _current_teacher()
+    role, subjects = _viewer_role_and_subjects()
+    if role not in ('hod', 'subject_head', 'lead'):
+        return jsonify({'success': False, 'error': 'Not permitted'}), 403
+    data = request.get_json(silent=True) or {}
+    cleaned, error = _validate_goal_payload(data, role, subjects, is_create=True)
+    if error:
+        return error
+    if not cleaned['metric_type']:
+        return jsonify({'success': False, 'error': 'metric_type is required'}), 400
+    goal = DepartmentGoal(
+        title=cleaned['title'],
+        metric_type=cleaned['metric_type'],
+        target_value=cleaned['target_value'],
+        target_band=cleaned['target_band'],
+        target_subject=cleaned['target_subject'],
+        created_by_id=teacher.id,
+    )
+    db.session.add(goal)
+    db.session.commit()
+    return jsonify({'success': True, 'id': goal.id})
+
+
+@app.route('/department/insights/goals/<int:goal_id>', methods=['PATCH'])
+def department_insights_goals_update(goal_id):
+    err = _require_insights_access()
+    if err:
+        return err
+    goal = DepartmentGoal.query.filter_by(id=goal_id, deleted_at=None).first()
+    if not goal:
+        return jsonify({'success': False, 'error': 'Not found'}), 404
+    role, subjects = _viewer_role_and_subjects()
+    if not _can_edit_goal(goal, role, subjects):
+        return jsonify({'success': False, 'error': 'Not permitted'}), 403
+    data = request.get_json(silent=True) or {}
+    cleaned, error = _validate_goal_payload(data, role, subjects, is_create=False)
+    if error:
+        return error
+    if 'title' in data and cleaned['title']:
+        goal.title = cleaned['title']
+    if cleaned['metric_type']:
+        goal.metric_type = cleaned['metric_type']
+    if 'target_value' in data:
+        goal.target_value = cleaned['target_value']
+    if 'target_band' in data:
+        goal.target_band = cleaned['target_band']
+    if 'target_subject' in data:
+        goal.target_subject = cleaned['target_subject']
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/department/insights/goals/<int:goal_id>', methods=['DELETE'])
+def department_insights_goals_delete(goal_id):
+    err = _require_insights_access()
+    if err:
+        return err
+    goal = DepartmentGoal.query.filter_by(id=goal_id, deleted_at=None).first()
+    if not goal:
+        return jsonify({'success': False, 'error': 'Not found'}), 404
+    role, subjects = _viewer_role_and_subjects()
+    if not _can_edit_goal(goal, role, subjects):
+        return jsonify({'success': False, 'error': 'Not permitted'}), 403
+    goal.deleted_at = datetime.now(timezone.utc)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/department/insights/saved-analysis')
+def department_insights_saved_analysis():
+    """Return the last cached AI analysis for a band (if any)."""
+    err = _require_insights_access()
+    if err:
+        return err
+    band = (request.args.get('band') or 'sec1').strip().lower()
+    if band not in _VALID_BANDS:
+        band = 'sec1'
+    cfg = DepartmentConfig.query.filter_by(key=f'dept_ai_analysis:band={band}').first()
+    if cfg and cfg.value:
+        try:
+            return jsonify({'success': True, 'exists': True, **json.loads(cfg.value)})
+        except Exception:
+            pass
+    return jsonify({'success': True, 'exists': False})
+
+
+@app.route('/department/insights/analyze-band', methods=['POST'])
+def department_analyze_band():
+    """Hardened AI analysis for the band-tabbed dashboard.
+
+    Differs from the legacy `/department/insights/analyze`:
+      - Reads the consolidated widgets payload, not a one-shot SQL pull.
+      - System prompt forbids naming teachers / classes / students.
+      - Output forced into tagged buckets ([Curriculum] [Resource] [PD]
+        [Scheduling]).
+      - Post-response regex sweep catches any teacher / class names that
+        slip through and re-prompts once.
+    """
+    err = _require_insights_access()
+    if err:
+        return err
+
+    data = request.get_json() or {}
+    provider = data.get('provider')
+    model = data.get('model')
+    band = (data.get('band') or 'sec1').strip().lower()
+    if band not in _VALID_BANDS:
+        band = 'sec1'
+    if not provider:
+        return jsonify({'success': False, 'error': 'No provider selected'}), 400
+
+    dept_keys = _get_dept_keys()
+    if not dept_keys:
+        from db import _get_fernet
+        for prov in ('anthropic', 'openai', 'qwen'):
+            cfg_row = DepartmentConfig.query.filter_by(key=f'api_key_{prov}').first()
+            if cfg_row and cfg_row.value:
+                f = _get_fernet()
+                if f:
+                    try:
+                        dept_keys[prov] = f.decrypt(cfg_row.value.encode()).decode()
+                        continue
+                    except Exception:
+                        pass
+                dept_keys[prov] = cfg_row.value
+    from ai_marking import get_ai_client
+    client, model_name, prov_type = get_ai_client(provider, model, dept_keys if dept_keys else None)
+    if not client:
+        return jsonify({'success': False, 'error': f'No API key for {provider}'}), 400
+
+    role, subjects = _viewer_role_and_subjects()
+    from dept_insights_widgets import compute_widgets
+    payload = compute_widgets(band, viewer_role=role, viewer_subjects=subjects)
+    low_sample = payload.get('low_sample_widgets', [])
+
+    from bands import BAND_LABELS
+    band_label = BAND_LABELS.get(band, band)
+    prompt_body = (
+        f"BAND: {band_label}\n"
+        f"AS OF: {payload.get('as_of')}\n"
+        f"TERM WINDOW: {payload.get('term_window', {}).get('days')} days\n\n"
+        f"DATA:\n{json.dumps(payload, default=str)}"
+    )
+    system_prompt = (
+        "You are an analyst for a school department's marking insights page. "
+        "The viewer is the HOD or a subject lead. Your job is to help them "
+        "make systemic decisions about curriculum, shared resources, "
+        "professional development, and scheduling.\n\n"
+        "ABSOLUTE RULES:\n"
+        "1. Open with `## Important caveats`. List low-sample data exclusions "
+        "and any teacher-supplied known-issue annotations (none in v1). If "
+        "there are no caveats, write 'None for this view.'\n"
+        "2. NEVER name an individual teacher, class, or student as a cause "
+        "or as the target of an action. If the data implies one, talk about "
+        "the band as a whole.\n"
+        "3. Tag every recommendation with exactly one of: [Curriculum] "
+        "[Resource] [PD] [Scheduling]. Reject the temptation to invent "
+        "other tags.\n"
+        "4. End with the literal sentence: 'These are hypotheses for "
+        "department discussion, not conclusions.'\n\n"
+        "RESPOND in JSON only:\n"
+        "{\n"
+        '  "caveats": ["..."],\n'
+        '  "summary": "2-3 sentence overview, no names.",\n'
+        '  "action_items": [\n'
+        '    {"tag": "Curriculum|Resource|PD|Scheduling", "text": "..."}\n'
+        "  ],\n"
+        '  "closing": "These are hypotheses for department discussion, not conclusions."\n'
+        "}"
+    )
+
+    def _call_ai(user_text):
+        if prov_type == 'anthropic':
+            response = client.messages.create(
+                model=model_name, max_tokens=1500,
+                system=system_prompt,
+                messages=[{'role': 'user', 'content': user_text}],
+            )
+            return response.content[0].text
+        response = client.chat.completions.create(
+            model=model_name, max_tokens=1500,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_text},
+            ],
+        )
+        return response.choices[0].message.content
+
+    def _parse(text):
+        m = re.search(r'\{[\s\S]*\}', text)
+        if not m:
+            return {'caveats': [], 'summary': text, 'action_items': [],
+                    'closing': 'These are hypotheses for department discussion, not conclusions.'}
+        try:
+            return json.loads(m.group())
+        except Exception:
+            return {'caveats': [], 'summary': text, 'action_items': [],
+                    'closing': 'These are hypotheses for department discussion, not conclusions.'}
+
+    # Build the forbidden-names regex so we can sweep for teacher / class names.
+    classes_in_band = []
+    teachers_in_band = []
+    try:
+        from bands import classes_in_band as _cls_in_band, BAND_ALL
+        all_cls = Class.query.all()
+        if band == BAND_ALL:
+            relevant = all_cls
+        else:
+            relevant = _cls_in_band(all_cls, band)
+        classes_in_band = [c.name for c in relevant if c.name]
+        teacher_ids = set()
+        for c in relevant:
+            for tc in TeacherClass.query.filter_by(class_id=c.id).all():
+                teacher_ids.add(tc.teacher_id)
+        if teacher_ids:
+            teachers_in_band = [
+                t.name for t in
+                Teacher.query.filter(Teacher.id.in_(teacher_ids)).all()
+                if t.name
+            ]
+    except Exception:
+        pass
+
+    forbidden = [n for n in (classes_in_band + teachers_in_band) if n]
+    forbidden_pattern = None
+    if forbidden:
+        forbidden_pattern = re.compile(
+            r'\b(' + '|'.join(re.escape(n) for n in forbidden) + r')\b',
+            re.IGNORECASE,
+        )
+
+    try:
+        text = _call_ai(prompt_body)
+    except Exception as e:
+        logger.error(f'Dept band AI analysis failed: {e}')
+        return jsonify({'success': False, 'error': 'AI analysis failed.'}), 500
+
+    sweep_warning = False
+    if forbidden_pattern and forbidden_pattern.search(text):
+        stronger = prompt_body + (
+            "\n\nSTRICT REMINDER: the previous response named a teacher or "
+            "class. Rewrite without any proper nouns referring to people or "
+            "classes. Replace with band-level statements."
+        )
+        try:
+            text2 = _call_ai(stronger)
+            if not (forbidden_pattern and forbidden_pattern.search(text2)):
+                text = text2
+            else:
+                sweep_warning = True
+        except Exception:
+            sweep_warning = True
+
+    parsed = _parse(text)
+
+    items = []
+    valid_tags = {'Curriculum', 'Resource', 'PD', 'Scheduling'}
+    for raw in (parsed.get('action_items') or []):
+        if isinstance(raw, dict):
+            tag = (raw.get('tag') or '').strip()
+            txt = (raw.get('text') or '').strip()
+        else:
+            tag, txt = '', str(raw).strip()
+        if tag not in valid_tags:
+            tag = ''
+        if txt:
+            items.append({'tag': tag, 'text': txt})
+
+    saved = {
+        'caveats': parsed.get('caveats') or [],
+        'summary': parsed.get('summary') or '',
+        'action_items': items,
+        'closing': parsed.get('closing') or
+                   'These are hypotheses for department discussion, not conclusions.',
+        'low_sample_widgets': low_sample,
+        'sweep_warning': sweep_warning,
+        'provider': provider,
+        'model': model_name,
+        'generated_at': datetime.now(timezone.utc).isoformat(),
+        'band': band,
+    }
+
+    cache_key = f'dept_ai_analysis:band={band}'
+    cfg = DepartmentConfig.query.filter_by(key=cache_key).first()
+    if cfg:
+        cfg.value = json.dumps(saved)
+    else:
+        cfg = DepartmentConfig(key=cache_key, value=json.dumps(saved))
         db.session.add(cfg)
     db.session.commit()
 
