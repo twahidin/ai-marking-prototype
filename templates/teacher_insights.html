@@ -673,10 +673,34 @@ async function applyTemplate(key, options) {
                 bindWidget(n.el, entry.key);
             }
         });
+        animateWidgetsIn();
     }
     syncAddPanelState();
     syncEmptyState();
     scheduleSave();
+}
+
+/* Staggered fade-in for the widget tiles on initial layout load /
+   template apply — mirrors the animate__fadeInUp pattern used on
+   Overview and Department Insights. Drag/drop and single-widget adds
+   intentionally don't go through this path. */
+function animateWidgetsIn() {
+    var nodes = (grid && grid.engine && grid.engine.nodes) || [];
+    nodes.forEach(function (n, i) {
+        if (!n || !n.el) return;
+        var inner = n.el.querySelector('.grid-stack-item-content');
+        if (!inner) return;
+        inner.classList.add('animate__animated', 'animate__fadeInUp');
+        inner.style.animationDelay = (0.05 + i * 0.05).toFixed(2) + 's';
+        inner.style.animationDuration = '0.5s';
+        var cleanup = function () {
+            inner.classList.remove('animate__animated', 'animate__fadeInUp');
+            inner.style.animationDelay = '';
+            inner.style.animationDuration = '';
+            inner.removeEventListener('animationend', cleanup);
+        };
+        inner.addEventListener('animationend', cleanup);
+    });
 }
 
 function syncAddPanelState() {
@@ -926,6 +950,7 @@ async function loadLayout() {
                 bindWidget(n.el, entry.key);
             }
         });
+        animateWidgetsIn();
     }
     syncAddPanelState();
     syncEmptyState();
