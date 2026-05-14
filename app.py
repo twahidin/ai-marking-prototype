@@ -2428,12 +2428,11 @@ def teacher_insights():
     if not teacher:
         return redirect(url_for('hub'))
 
-    # Senior roles see all classes; teachers see only their assigned classes.
-    is_senior = teacher.role in ROLES_CAN_VIEW_INSIGHTS
-    if is_senior:
-        classes = Class.query.order_by(Class.name).all()
-    else:
-        classes = sorted(teacher.classes, key=lambda c: c.name or '')
+    # "My Class" means classes the account actually teaches — every role,
+    # including HOD/SH/Lead, only sees classes they're on the TeacherClass
+    # roster for. Senior roles get the cohort-wide view from
+    # /department/insights instead.
+    classes = sorted(teacher.classes, key=lambda c: c.name or '')
 
     # Class selection: ?class_id= takes priority; otherwise pick the first
     # class the user has access to. None is a legit state (no classes yet).
