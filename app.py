@@ -1841,50 +1841,93 @@ def department_page():
     classes = Class.query.order_by(Class.name).all()
     teachers = Teacher.query.filter(Teacher.role != 'hod').order_by(Teacher.name).all()
 
-    # Bulk load all assignments for these classes
+    # Aggregate everything in three GROUP BY queries + one join — no
+    # ORM row materialisation for Submissions or Assignments. The old
+    # version hydrated every Submission with its blob/JSON columns
+    # (result_json, script_bytes, etc., often MBs each) just to count
+    # them; that alone could move hundreds of MB across the DB wire.
+    from sqlalchemy import func as _func, case as _case
+
     class_ids = [c.id for c in classes]
-    all_assignments = Assignment.query.filter(Assignment.class_id.in_(class_ids)).all() if class_ids else []
-    assignments_by_class = {}
-    for a in all_assignments:
-        assignments_by_class.setdefault(a.class_id, []).append(a)
 
-    # Bulk load student counts by class
-    student_counts_by_class = {}
-    for cls in classes:
-        student_counts_by_class[cls.id] = Student.query.filter_by(class_id=cls.id).count()
+    # Assignments: only need (id, class_id). Lightweight.
+    asn_rows = (
+        db.session.query(Assignment.id, Assignment.class_id)
+        .filter(Assignment.class_id.in_(class_ids))
+        .all()
+    ) if class_ids else []
+    asn_count_by_class = {}
+    asn_ids = []
+    asn_class_map = {}
+    for asn_id, cid in asn_rows:
+        asn_count_by_class[cid] = asn_count_by_class.get(cid, 0) + 1
+        asn_ids.append(asn_id)
+        asn_class_map[asn_id] = cid
 
-    # Bulk load all submissions for these assignments
-    asn_ids = [a.id for a in all_assignments]
-    all_subs = Submission.query.filter(Submission.assignment_id.in_(asn_ids)).all() if asn_ids else []
-    subs_by_assignment = {}
-    for s in all_subs:
-        subs_by_assignment.setdefault(s.assignment_id, []).append(s)
+    # Student counts per class — single GROUP BY (replaces N+1 loop).
+    student_counts_by_class = {cid: 0 for cid in class_ids}
+    if class_ids:
+        for cid, n in (db.session.query(Student.class_id, _func.count(Student.id))
+                       .filter(Student.class_id.in_(class_ids))
+                       .group_by(Student.class_id).all()):
+            student_counts_by_class[cid] = n
+
+    # Submission counts per assignment — single GROUP BY for total + done.
+    # Avoids hydrating blob/JSON columns on every row.
+    total_by_asn = {}
+    done_by_asn = {}
+    if asn_ids:
+        sub_rows = (
+            db.session.query(
+                Submission.assignment_id,
+                _func.count(Submission.id),
+                _func.sum(_case((Submission.status == 'done', 1), else_=0)),
+            )
+            .filter(Submission.assignment_id.in_(asn_ids))
+            .group_by(Submission.assignment_id)
+            .all()
+        )
+        for asn_id, total, done in sub_rows:
+            total_by_asn[asn_id] = total or 0
+            done_by_asn[asn_id] = int(done or 0)
+
+    # Class -> teacher names via TeacherClass join (replaces N+1 lazy loads).
+    teachers_by_class = {cid: [] for cid in class_ids}
+    if class_ids:
+        for cid, name in (db.session.query(TeacherClass.class_id, Teacher.name)
+                          .join(Teacher, TeacherClass.teacher_id == Teacher.id)
+                          .filter(TeacherClass.class_id.in_(class_ids))
+                          .order_by(Teacher.name).all()):
+            teachers_by_class.setdefault(cid, []).append(name)
+
+    # Roll per-assignment counts up to per-class totals in memory.
+    per_class_total_sub = {cid: 0 for cid in class_ids}
+    per_class_done_sub = {cid: 0 for cid in class_ids}
+    for asn_id, cid in asn_class_map.items():
+        per_class_total_sub[cid] += total_by_asn.get(asn_id, 0)
+        per_class_done_sub[cid] += done_by_asn.get(asn_id, 0)
 
     class_data = []
     for cls in classes:
-        assignments = assignments_by_class.get(cls.id, [])
         students_in_class = student_counts_by_class.get(cls.id, 0)
-        total_students = students_in_class * len(assignments)
-        total_submissions = 0
-        done_submissions = 0
-        for asn in assignments:
-            subs = subs_by_assignment.get(asn.id, [])
-            total_submissions += len(subs)
-            done_submissions += sum(1 for s in subs if s.status == 'done')
+        asn_count = asn_count_by_class.get(cls.id, 0)
+        total_students = students_in_class * asn_count
+        total_submissions = per_class_total_sub.get(cls.id, 0)
+        done_submissions = per_class_done_sub.get(cls.id, 0)
 
         class_data.append({
             'id': cls.id,
             'name': cls.name,
             'level': cls.level,
-            'teachers': [t.name for t in cls.teachers],
-            'assignment_count': len(assignments),
+            'teachers': teachers_by_class.get(cls.id, []),
+            'assignment_count': asn_count,
             'total_students': total_students,
             'total_submissions': total_submissions,
             'done_submissions': done_submissions,
             'completion_pct': round(done_submissions / total_students * 100) if total_students > 0 else 0,
         })
 
-    total_assignments = Assignment.query.filter(Assignment.class_id.isnot(None)).count()
+    total_assignments = len(asn_ids)
     total_subs = Submission.query.count()
 
     can_view_dept = teacher.role in ROLES_CAN_VIEW_INSIGHTS
