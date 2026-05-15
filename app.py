@@ -19,7 +19,7 @@ import io
 
 from ai_marking import mark_script, get_available_providers, PROVIDERS, generate_exemplar_analysis, explain_criterion, evaluate_correction, consume_last_usage, MarkingError, AIProviderError, ResponseParseError
 from pdf_generator import generate_report_pdf, generate_overview_pdf
-from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig, TeacherDashboardLayout, BulkJob, SubmissionStatus, utc, FeedbackEdit, DepartmentDashboardLayout, DepartmentGoal
+from db import db, init_db, Assignment, AssignmentBank, Student, Submission, Teacher, Class, TeacherClass, DepartmentConfig, TeacherDashboardLayout, BulkJob, SubmissionStatus, utc, FeedbackEdit, DepartmentDashboardLayout, DepartmentGoal, Department, TeacherDepartment
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1967,6 +1967,24 @@ def department_manage():
     # All teachers for class assignment dropdown (including HOD)
     assignable_teachers = Teacher.query.order_by(Teacher.name).all()
 
+    # Option-C dept tagging: surface every active department and the
+    # per-teacher current membership so the manage page can render
+    # badges + a checkbox picker. Dept tags are the only mechanism
+    # that puts a teacher into a department; assignment subjects are
+    # never used for auto-tagging.
+    all_departments = Department.query.filter_by(is_active=True) \
+        .order_by(Department.sort_order, Department.name).all()
+    td_rows = TeacherDepartment.query.filter(
+        TeacherDepartment.teacher_id.in_([t.id for t in teachers])).all() if teachers else []
+    dept_ids_by_teacher = {}
+    for row in td_rows:
+        dept_ids_by_teacher.setdefault(row.teacher_id, set()).add(row.department_id)
+    dept_name_by_id = {d.id: (d.short_name or d.name) for d in all_departments}
+    for t in teachers:
+        ids = sorted(dept_ids_by_teacher.get(t.id, set()))
+        t.dept_ids = ids
+        t.dept_chips = [{'id': did, 'label': dept_name_by_id.get(did, '?')} for did in ids]
+
     # Get masked API key status for display
     from db import _get_fernet
     api_keys_masked = {}
@@ -1995,6 +2013,7 @@ def department_manage():
                            teachers=teachers,
                            assignable_teachers=assignable_teachers,
                            all_dept_roles=ALL_DEPT_ROLES,
+                           all_departments=all_departments,
                            api_keys_masked=api_keys_masked,
                            dept_mode=is_dept_mode(),
                            demo_mode=is_demo_mode())
@@ -2123,9 +2142,47 @@ def dept_update_teacher(teacher_id):
             if viewer.id == t.id and ROLE_HIERARCHY.get(new_role, 0) > ROLE_HIERARCHY.get(viewer.role, 0):
                 return jsonify({'success': False, 'error': 'Cannot promote yourself'}), 403
         t.role = new_role
+
+    # Option-C: department membership is set explicitly here, only here.
+    # `department_ids` is the full intended membership — we diff against
+    # the existing rows so we can preserve is_lead flags for memberships
+    # the caller is keeping. Missing key means "leave dept membership
+    # alone" (older clients / role-only saves).
+    if 'department_ids' in data:
+        raw = data.get('department_ids') or []
+        if not isinstance(raw, list):
+            return jsonify({'success': False, 'error': 'department_ids must be a list'}), 400
+        try:
+            wanted = {int(x) for x in raw}
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': 'department_ids must be integers'}), 400
+        if wanted:
+            valid_ids = {d.id for d in Department.query.filter(
+                Department.id.in_(wanted), Department.is_active.is_(True)).all()}
+            unknown = wanted - valid_ids
+            if unknown:
+                return jsonify({'success': False,
+                                'error': f'Unknown department ids: {sorted(unknown)}'}), 400
+        existing_rows = TeacherDepartment.query.filter_by(teacher_id=t.id).all()
+        existing_ids = {r.department_id for r in existing_rows}
+        to_remove = existing_ids - wanted
+        to_add = wanted - existing_ids
+        for r in existing_rows:
+            if r.department_id in to_remove:
+                db.session.delete(r)
+        for did in to_add:
+            db.session.add(TeacherDepartment(
+                teacher_id=t.id, department_id=did, is_lead=False))
+
     db.session.commit()
+
+    # Re-read membership so the client can render the updated chips
+    # without an extra round-trip.
+    fresh_ids = sorted({r.department_id for r in
+                        TeacherDepartment.query.filter_by(teacher_id=t.id).all()})
     return jsonify({'success': True, 'teacher': {
         'id': t.id, 'name': t.name, 'role': t.role,
+        'department_ids': fresh_ids,
     }})
 
 

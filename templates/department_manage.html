@@ -142,6 +142,36 @@
     .save-keys-btn:hover { background: #5a6fd6; }
 
     .role-label-map { display: none; }
+
+    /* Department membership chips on the teacher card */
+    .dept-chip {
+        display: inline-flex; align-items: center;
+        padding: 3px 9px; border-radius: 12px;
+        font-size: 11px; font-weight: 600;
+        background: #eef1ff; color: #4f46e5;
+        border: 1px solid #dadffb;
+    }
+    .dept-chip-empty {
+        font-size: 11px; color: #999; font-style: italic;
+    }
+
+    /* Department multi-select inside the inline edit form */
+    .dept-picker { width: 100%; }
+    .dept-picker-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        gap: 6px 10px;
+        margin-top: 4px;
+    }
+    .dept-picker-item {
+        display: flex; align-items: center; gap: 6px;
+        font-size: 12px; color: #333;
+        padding: 4px 6px; border-radius: 6px;
+        cursor: pointer;
+    }
+    .dept-picker-item:hover { background: #eef1ff; }
+    .dept-picker-item input[type="checkbox"] { margin: 0; cursor: pointer; }
+    .dept-picker-hint { font-size: 11px; color: #888; margin-top: 4px; }
 </style>
 {% endblock %}
 
@@ -234,6 +264,15 @@
                         <button class="purge-btn" onclick="purgeTeacher('{{ t.id }}')">Remove</button>
                         {% endif %}
                     </div>
+                    <div class="item-badges" id="dept-chips-{{ t.id }}" style="margin-top:8px;">
+                        {% if t.dept_chips %}
+                            {% for chip in t.dept_chips %}
+                            <span class="dept-chip">{{ chip.label }}</span>
+                            {% endfor %}
+                        {% else %}
+                            <span class="dept-chip-empty">No departments assigned</span>
+                        {% endif %}
+                    </div>
                     <!-- Inline edit form -->
                     <div class="edit-form" id="edit-form-{{ t.id }}">
                         <div class="edit-form-row">
@@ -253,6 +292,23 @@
                                 <option value="hod" {{ 'selected' if t.role == 'hod' }}>HOD</option>
                                 {% endif %}
                             </select>
+                        </div>
+                        <div class="edit-form-row" style="align-items:flex-start;">
+                            <label>Depts</label>
+                            <div class="dept-picker">
+                                <div class="dept-picker-grid" id="dept-picker-{{ t.id }}">
+                                    {% for d in all_departments %}
+                                    <label class="dept-picker-item">
+                                        <input type="checkbox"
+                                               value="{{ d.id }}"
+                                               class="dept-picker-cb dept-picker-cb-{{ t.id }}"
+                                               {% if d.id in t.dept_ids %}checked{% endif %}>
+                                        <span>{{ d.short_name or d.name }}</span>
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                                <div class="dept-picker-hint">Tick every department this teacher belongs to. Empty = no department filters will include them.</div>
+                            </div>
                         </div>
                         <div class="edit-form-row">
                             <label></label>
@@ -429,18 +485,53 @@ function saveEdit(teacherId) {
     var name = document.getElementById('edit-name-' + teacherId).value.trim();
     var role = document.getElementById('edit-role-' + teacherId).value;
     if (!name) { showToast('Name is required', 'error'); return; }
+    var deptIds = [];
+    var cbs = document.querySelectorAll('.dept-picker-cb-' + teacherId);
+    for (var i = 0; i < cbs.length; i++) {
+        if (cbs[i].checked) deptIds.push(parseInt(cbs[i].value, 10));
+    }
     fetch('/department/teacher/' + teacherId + '/update', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({name: name, role: role})
+        body: JSON.stringify({name: name, role: role, department_ids: deptIds})
     }).then(r => r.json()).then(data => {
         if (data.success) {
             document.getElementById('name-' + teacherId).textContent = data.teacher.name;
             var badge = document.getElementById('role-badge-' + teacherId);
             badge.textContent = ROLE_LABELS[data.teacher.role] || data.teacher.role.toUpperCase();
             badge.className = 'manage-badge manage-badge-' + data.teacher.role;
+            renderDeptChips(teacherId, data.teacher.department_ids || []);
             toggleEdit(teacherId);
             showToast('Updated successfully', 'success');
         } else { showToast(data.error || 'Error', 'error'); }
+    });
+}
+
+// Re-render the per-teacher dept chip row to match the latest membership
+// returned from /update, so the UI doesn't lie until the next page load.
+function renderDeptChips(teacherId, deptIds) {
+    var host = document.getElementById('dept-chips-' + teacherId);
+    if (!host) return;
+    host.innerHTML = '';
+    if (!deptIds || !deptIds.length) {
+        var empty = document.createElement('span');
+        empty.className = 'dept-chip-empty';
+        empty.textContent = 'No departments assigned';
+        host.appendChild(empty);
+        return;
+    }
+    // Look up labels from the matching checkboxes we already rendered.
+    var labelsById = {};
+    var cbs = document.querySelectorAll('.dept-picker-cb-' + teacherId);
+    for (var i = 0; i < cbs.length; i++) {
+        var lbl = cbs[i].parentNode.querySelector('span');
+        labelsById[parseInt(cbs[i].value, 10)] = lbl ? lbl.textContent : '?';
+    }
+    deptIds.sort(function (a, b) { return a - b; });
+    deptIds.forEach(function (id) {
+        var chip = document.createElement('span');
+        chip.className = 'dept-chip';
+        chip.textContent = labelsById[id] || ('Dept ' + id);
+        host.appendChild(chip);
     });
 }
 
