@@ -30,6 +30,7 @@
                autocomplete="off"
                value="{{ entity.subject or '' }}"
                data-subject-options='{{ canonical_subjects|tojson }}'
+               data-subject-aliases='{{ canonical_subject_aliases|tojson }}'
                oninput="updateEditPinyinVis()"
                onchange="updateEditPinyinVis()">
     </div>

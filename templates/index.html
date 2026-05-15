@@ -101,8 +101,9 @@
         <span class="section-label" style="margin-top:16px;">Subject (optional)</span>
         <input type="text" class="form-input subject-autocomplete" id="subject"
                autocomplete="off"
-               placeholder="Pick or type — Mathematics, Physics, English…"
-               data-subject-options='{{ canonical_subjects|tojson }}'>
+               placeholder="Select a subject (type to filter)"
+               data-subject-options='{{ canonical_subjects|tojson }}'
+               data-subject-aliases='{{ canonical_subject_aliases|tojson }}'>
 
         <!-- Assignment Type -->
         <span class="section-label" style="margin-top:16px;">Assignment Type</span>
