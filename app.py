@@ -5326,11 +5326,12 @@ def teacher_dashboard():
     teacher_class_ids = [cls.id for cls in teacher_classes]
     if teacher_class_ids:
         q = Assignment.query.filter(Assignment.class_id.in_(teacher_class_ids))
-        # Co-teaching: regular teachers see every assignment for the classes
-        # they're on the roster for — not just their own. The is_senior +
-        # filter_teacher_id branch is the HOD/SH/Lead "view a specific
-        # teacher's roster" dropdown and remains scoped to that teacher.
-        if is_senior and filter_teacher_id:
+        # Co-teaching: a teacher viewing their own roster sees every
+        # assignment in those classes, not just the ones they authored.
+        # The creator filter only kicks in when a senior uses the dropdown
+        # to inspect ANOTHER teacher's authored work — viewing yourself
+        # (default first visit) keeps the full co-teaching view.
+        if is_senior and filter_teacher_id and filter_teacher_id != teacher.id:
             q = q.filter(Assignment.teacher_id == filter_teacher_id)
         all_assignments = q.order_by(Assignment.created_at.desc()).all()
     else:
