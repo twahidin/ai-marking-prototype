@@ -898,6 +898,39 @@ function buildTemplateOptions() {
     });
 }
 
+// Legacy widget keys older saved layouts may still reference. Map them
+// forward so the user's slot isn't silently dropped after a rename.
+var LEGACY_WIDGET_KEY_REMAP = { band_health: 'level_health' };
+
+function _normaliseLayoutEntries(layout) {
+    // Keep only entries whose key resolves to a current WIDGET_CATALOG
+    // member after legacy remapping. Returns entries with `key` rewritten
+    // in-place so callers can use the filtered array directly.
+    return (layout || [])
+        .filter(function (e) { return e && e.key; })
+        .map(function (e) {
+            var remapped = LEGACY_WIDGET_KEY_REMAP[e.key] || e.key;
+            return Object.assign({}, e, { key: remapped });
+        })
+        .filter(function (e) { return WIDGET_CATALOG[e.key]; });
+}
+
+function _bindLoadedLayout(entries) {
+    // grid.load() has already created one node per item we passed in,
+    // in the same order. We MUST iterate the entries we filtered (not
+    // the original/unfiltered layout) — otherwise widget bodies get
+    // wired to the wrong render function when any entry was dropped.
+    if (!entries.length) return;
+    var nodes = (grid && grid.engine && grid.engine.nodes) || [];
+    entries.forEach(function (entry, i) {
+        var n = nodes[i];
+        if (!entry || !entry.key || !n || !n.el) return;
+        n.el.dataset.widgetKey = entry.key;
+        if (entry.color) n.el.dataset.color = entry.color;
+        bindWidget(n.el, entry.key);
+    });
+}
+
 function applyTemplate(key, options) {
     options = options || {};
     var tpl = STARTER_TEMPLATES.find(function (t) { return t.key === key; });
@@ -907,21 +940,13 @@ function applyTemplate(key, options) {
         if (!confirm('Replace your current dashboard with the "' + tpl.label + '" layout?')) return;
     }
     grid.removeAll();
-    var items = tpl.layout
-        .filter(function (e) { return e && e.key && WIDGET_CATALOG[e.key]; })
-        .map(function (e) {
-            return { w: e.w, h: e.h, x: e.x, y: e.y, content: widgetTileHtml(e.key) };
-        });
+    var entries = _normaliseLayoutEntries(tpl.layout);
+    var items = entries.map(function (e) {
+        return { w: e.w, h: e.h, x: e.x, y: e.y, content: widgetTileHtml(e.key) };
+    });
     if (items.length) {
         grid.load(items);
-        grid.engine.nodes.forEach(function (n, i) {
-            var entry = tpl.layout[i];
-            if (entry && entry.key && n.el) {
-                n.el.dataset.widgetKey = entry.key;
-                if (entry.color) n.el.dataset.color = entry.color;
-                bindWidget(n.el, entry.key);
-            }
-        });
+        _bindLoadedLayout(entries);
         animateWidgetsIn();
     }
     syncAddPanelState();
@@ -987,22 +1012,24 @@ async function loadLayout() {
         applyTemplate(DEFAULT_TEMPLATE_KEY, { silent: true });
         return;
     }
-    var items = layout
-        .filter(function (e) { return e && e.key && WIDGET_CATALOG[e.key]; })
-        .map(function (e) {
-            return { w: e.w, h: e.h, x: e.x, y: e.y, content: widgetTileHtml(e.key) };
-        });
+    var entries = _normaliseLayoutEntries(layout);
+    var items = entries.map(function (e) {
+        return { w: e.w, h: e.h, x: e.x, y: e.y, content: widgetTileHtml(e.key) };
+    });
     if (items.length) {
         grid.load(items);
-        grid.engine.nodes.forEach(function (n, i) {
-            var entry = layout[i];
-            if (entry && entry.key && n.el) {
-                n.el.dataset.widgetKey = entry.key;
-                if (entry.color) n.el.dataset.color = entry.color;
-                bindWidget(n.el, entry.key);
-            }
-        });
+        _bindLoadedLayout(entries);
         animateWidgetsIn();
+        // If we remapped any legacy keys above, persist the cleaned layout
+        // back so we never have to apply the shim again for this viewer.
+        var changed = entries.some(function (e, i) { return layout[i] && layout[i].key !== e.key; })
+            || entries.length !== layout.length;
+        if (changed) scheduleSave();
+    } else {
+        // Every saved entry was legacy/unknown — fall back to the default
+        // template so the user doesn't see an empty dashboard.
+        applyTemplate(DEFAULT_TEMPLATE_KEY, { silent: true });
+        return;
     }
     syncAddPanelState();
     syncEmptyState();
