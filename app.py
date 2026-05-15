@@ -755,6 +755,12 @@ def _current_teacher():
 ROLE_HIERARCHY = {'hod': 5, 'subject_head': 4, 'lead': 3, 'manager': 2, 'teacher': 1, 'owner': 5}
 ROLES_CAN_MANAGE = {'hod', 'subject_head', 'manager'}
 ROLES_CAN_VIEW_INSIGHTS = {'hod', 'subject_head', 'lead', 'owner', 'manager'}
+# Department insights are pedagogical, not administrative — managers
+# (account/code-reset specialists) don't need them. Use this set for
+# everything that gates the Department insights surface; keep
+# ROLES_CAN_VIEW_INSIGHTS for the broader "any cross-class role"
+# checks elsewhere.
+ROLES_CAN_VIEW_DEPT_INSIGHTS = {'hod', 'subject_head', 'lead', 'owner'}
 # Overview lives inside Insights as its own tab; visibility matches the
 # existing management gate (HOD / Subject Head / Manager). Lead/Owner still
 # see Department + My Class but no Overview tab.
@@ -1045,13 +1051,17 @@ def _require_management():
 
 
 def _require_insights_access():
-    """Return error response if not an insights-capable role, or None if OK."""
+    """Return error response if not allowed on Department insights, or None.
+
+    Gated by ROLES_CAN_VIEW_DEPT_INSIGHTS — managers are excluded; this is
+    the pedagogical surface, not the admin one.
+    """
     if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
     teacher = _current_teacher()
     if not teacher:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-    if teacher.role in ROLES_CAN_VIEW_INSIGHTS:
+    if teacher.role in ROLES_CAN_VIEW_DEPT_INSIGHTS:
         return None
     return jsonify({'success': False, 'error': 'Access denied'}), 403
 
@@ -1966,7 +1976,7 @@ def department_page():
     total_assignments = len(asn_ids)
     total_subs = Submission.query.count()
 
-    can_view_dept = teacher.role in ROLES_CAN_VIEW_INSIGHTS
+    can_view_dept = teacher.role in ROLES_CAN_VIEW_DEPT_INSIGHTS
 
     return render_template('department.html',
                            teacher=teacher,
@@ -2697,7 +2707,7 @@ def teacher_insights():
     if not selected_class and classes:
         selected_class = classes[0]
 
-    can_view_dept = teacher.role in ROLES_CAN_VIEW_INSIGHTS
+    can_view_dept = teacher.role in ROLES_CAN_VIEW_DEPT_INSIGHTS
     can_view_overview = teacher.role in ROLES_CAN_VIEW_OVERVIEW
 
     return render_template(
@@ -2715,14 +2725,15 @@ def teacher_insights():
 def _check_class_access_for_teacher(class_id):
     """Authorise the current teacher to read/write dashboards for class_id.
 
-    Senior roles (HOD/SH/Lead/Owner) can address any class; everyone else
-    must be on the class's TeacherClass roster. Returns (teacher, error)."""
+    Pedagogical senior roles (HOD/SH/Lead/Owner) can address any class;
+    managers and teachers must be on the class's TeacherClass roster.
+    Returns (teacher, error)."""
     if not _is_authenticated():
         return None, (jsonify({'success': False, 'error': 'Not authenticated'}), 401)
     teacher = _current_teacher()
     if not teacher:
         return None, (jsonify({'success': False, 'error': 'Not authenticated'}), 401)
-    if teacher.role in ROLES_CAN_VIEW_INSIGHTS:
+    if teacher.role in ROLES_CAN_VIEW_DEPT_INSIGHTS:
         return teacher, None
     tc = TeacherClass.query.filter_by(teacher_id=teacher.id, class_id=class_id).first()
     if not tc:
@@ -3573,19 +3584,43 @@ def department_insights():
                                'has_data': True})
     visible_levels.append({'key': 'all', 'label': 'All', 'has_data': True})
 
-    # Dept tab list — per Joe's call (2026-05-15), surface every active
-    # department to every insights viewer for now. Plus an "All" tab
-    # that turns off the dept filter entirely.
+    # Dept tab list. An HOD only oversees the depts on their
+    # TeacherDepartment roster, so the tab strip is scoped to those:
+    #   * 1 dept  → no tab UI at all (page locks to that dept).
+    #   * 2+ depts → tabs limited to their depts, plus "All" (aggregate
+    #                across the depts they oversee).
+    # Other senior roles (subject_head / lead / owner) keep the full
+    # cross-dept view: every active dept plus "All". HOD with 0 dept tags
+    # is treated like a global HOD and gets the full view too.
     all_departments = Department.query.filter_by(is_active=True) \
         .order_by(Department.sort_order, Department.name).all()
-    visible_depts = [
-        {'key': 'all', 'label': 'All', 'dept_id': None}
-    ] + [
-        {'key': str(d.id),
-         'label': d.short_name or d.name,
-         'dept_id': d.id}
-        for d in all_departments
-    ]
+    hod_dept_ids = []
+    if teacher.role == 'hod':
+        hod_dept_ids = [td.department_id for td in
+                        TeacherDepartment.query.filter_by(teacher_id=teacher.id).all()]
+
+    forced_dept_id = None  # None = no forcing (JS keeps saved/All default).
+    if teacher.role == 'hod' and len(hod_dept_ids) == 1:
+        only = next((d for d in all_departments if d.id == hod_dept_ids[0]), None)
+        if only is not None:
+            visible_depts = [{'key': str(only.id),
+                              'label': only.short_name or only.name,
+                              'dept_id': only.id}]
+            forced_dept_id = only.id
+        else:
+            # Tagged dept is inactive/missing — fall through to global view.
+            visible_depts = [{'key': 'all', 'label': 'All', 'dept_id': None}] + [
+                {'key': str(d.id), 'label': d.short_name or d.name, 'dept_id': d.id}
+                for d in all_departments]
+    elif teacher.role == 'hod' and len(hod_dept_ids) >= 2:
+        owned = [d for d in all_departments if d.id in set(hod_dept_ids)]
+        visible_depts = [{'key': 'all', 'label': 'All', 'dept_id': None}] + [
+            {'key': str(d.id), 'label': d.short_name or d.name, 'dept_id': d.id}
+            for d in owned]
+    else:
+        visible_depts = [{'key': 'all', 'label': 'All', 'dept_id': None}] + [
+            {'key': str(d.id), 'label': d.short_name or d.name, 'dept_id': d.id}
+            for d in all_departments]
 
     # Viewer's teaching subjects — feeds the Subject Head's goal modal.
     viewer_subjects = []
@@ -3617,6 +3652,7 @@ def department_insights():
                            classes=classes,
                            visible_levels=visible_levels,
                            visible_depts=visible_depts,
+                           forced_dept_id=forced_dept_id,
                            viewer_subjects=viewer_subjects,
                            canonical_subjects=canonical_subjects,
                            ai_providers=ai_providers,

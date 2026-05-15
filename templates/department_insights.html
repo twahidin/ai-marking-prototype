@@ -454,6 +454,10 @@
     </div>
     {% else %}
 
+    {# Single-dept HOD: nothing to filter, so the whole row is suppressed.
+       The page is locked to that one dept via FORCED_DEPT_ID in the JS
+       below. #}
+    {% if visible_depts | length > 1 %}
     <div class="insights-tabs animate__animated animate__fadeIn" style="animation-delay:0.05s;animation-duration:0.4s;" id="deptTabs">
         <span class="tab-row-label">Department</span>
         {% for d in visible_depts %}
@@ -462,6 +466,7 @@
                 data-dept-id="{{ '' if d.dept_id is none else d.dept_id }}">{{ d.label }}</button>
         {% endfor %}
     </div>
+    {% endif %}
 
     <div class="insights-tabs animate__animated animate__fadeIn" style="animation-delay:0.08s;animation-duration:0.4s;" id="levelTabs">
         <span class="tab-row-label">Level</span>
@@ -581,6 +586,10 @@ var DEPTS = [
     { dept_id: {{ d.dept_id | tojson }}, label: {{ d.label | tojson }} }{% if not loop.last %},{% endif %}
     {% endfor %}
 ];
+// Single-dept HOD lock: server pins the page to one dept and the tab row
+// is suppressed. Non-null FORCED_DEPT_ID means "ignore any saved
+// last_dept_id, every fetch must use this id".
+var FORCED_DEPT_ID = {{ forced_dept_id | tojson }};
 // Keyed by stringified dept_id so the lookup is reliable for both "1" and 1.
 var DEPT_LABEL_LOOKUP = {};
 DEPTS.forEach(function (d) {
@@ -672,7 +681,7 @@ var DEFAULT_TEMPLATE_KEY = 'overview';
 
 var grid = null;
 var currentLevel = 'sec1';
-var currentDeptId = null;   // null = "All" dept tab.
+var currentDeptId = (FORCED_DEPT_ID !== null && FORCED_DEPT_ID !== undefined) ? FORCED_DEPT_ID : null;   // null = "All" dept tab.
 var currentPayload = null;
 var payloadCache = {};      // keyed by `${dept_id ?? 'all'}|${level}`.
 var saveTimer = null;
@@ -1006,7 +1015,13 @@ async function loadLayout() {
     var data = await res.json();
     var layout = (data && data.layout) || [];
     if (data && data.last_level) currentLevel = data.last_level;
-    if (data && (data.last_dept_id !== undefined)) currentDeptId = data.last_dept_id;
+    // Single-dept HOD: ignore any saved last_dept_id; the route forced us
+    // to this dept and the tab UI is gone, so we must stick to it.
+    if (FORCED_DEPT_ID !== null && FORCED_DEPT_ID !== undefined) {
+        currentDeptId = FORCED_DEPT_ID;
+    } else if (data && (data.last_dept_id !== undefined)) {
+        currentDeptId = data.last_dept_id;
+    }
 
     if (!layout.length) {
         applyTemplate(DEFAULT_TEMPLATE_KEY, { silent: true });
