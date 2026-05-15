@@ -21,7 +21,7 @@ from db import (
     Assignment, Class, DepartmentConfig, DepartmentGoal, FeedbackEdit, Student,
     Submission, TeacherClass,
 )
-from bands import (
+from levels import (
     BAND_ALL, BAND_UNBANDED, ORDERED_BAND_KEYS, classes_in_band, resolve_band,
 )
 from moe_terms import current_term as moe_current_term, most_recent_term as moe_most_recent_term

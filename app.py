@@ -3526,7 +3526,7 @@ def department_insights():
 
     # Band tab list — show all four standard tabs even if empty, plus
     # 'unbanded' if any class falls outside the taxonomy, plus 'all'.
-    from bands import bands_present, BAND_LABELS, ORDERED_BAND_KEYS
+    from levels import bands_present, BAND_LABELS, ORDERED_BAND_KEYS
     present = bands_present(classes)
     visible_bands = [
         {'key': k, 'label': BAND_LABELS[k], 'has_data': k in present}
@@ -4256,7 +4256,7 @@ def department_analyze_band():
     payload = compute_widgets(band, viewer_role=role, viewer_subjects=subjects)
     low_sample = payload.get('low_sample_widgets', [])
 
-    from bands import BAND_LABELS
+    from levels import BAND_LABELS
     band_label = BAND_LABELS.get(band, band)
     prompt_body = (
         f"BAND: {band_label}\n"
@@ -4324,7 +4324,7 @@ def department_analyze_band():
     classes_in_band = []
     teachers_in_band = []
     try:
-        from bands import classes_in_band as _cls_in_band, BAND_ALL
+        from levels import classes_in_band as _cls_in_band, BAND_ALL
         all_cls = Class.query.all()
         if band == BAND_ALL:
             relevant = all_cls
