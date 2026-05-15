@@ -152,6 +152,9 @@
                href="/teacher/assignment/{{ asn.id }}">
                 <div class="asn-card-title">{{ asn.title }}</div>
                 <div class="asn-card-subject">{{ asn.subject }}</div>
+                {% if asn.created_by_name and asn.created_by_id != teacher.id %}
+                <div class="asn-card-author" style="font-size:12px;color:#1565c0;font-weight:600;margin-top:2px;">by {{ asn.created_by_name }}</div>
+                {% endif %}
                 <span class="asn-card-code">{{ asn.classroom_code }}</span>
 
                 <div class="progress-row">

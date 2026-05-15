@@ -852,7 +852,16 @@ def _can_edit_subject_standards(teacher, subject=None):
 
 
 def _check_assignment_ownership(asn):
-    """Return error response if current user doesn't own this assignment, or None if OK."""
+    """Authorise the current teacher for this assignment.
+
+    Access is granted when the teacher is:
+      - a senior role (hod / subject_head / lead),
+      - the original creator (asn.teacher_id), OR
+      - on the TeacherClass roster for the assignment's class
+        (co-teaching: all teachers assigned to a class share full
+        view / edit / mark / delete rights over every assignment in
+        that class, regardless of who created it).
+    """
     if not _is_authenticated():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
     teacher = _current_teacher()
@@ -860,9 +869,14 @@ def _check_assignment_ownership(asn):
         return None  # Non-dept mode, auth already checked
     if teacher.role in ('hod', 'subject_head', 'lead'):
         return None  # Senior roles can access all
-    if asn.teacher_id != teacher.id:
-        return jsonify({'success': False, 'error': 'Access denied'}), 403
-    return None
+    if asn.teacher_id == teacher.id:
+        return None  # Original creator
+    if asn.class_id:
+        tc = TeacherClass.query.filter_by(
+            teacher_id=teacher.id, class_id=asn.class_id).first()
+        if tc:
+            return None  # Co-teacher on the same class roster
+    return jsonify({'success': False, 'error': 'Access denied'}), 403
 
 
 def _parse_max_drafts(raw):
@@ -1537,10 +1551,30 @@ def class_page():
             if teacher and teacher.role in ('hod', 'subject_head', 'lead'):
                 assignments = Assignment.query.order_by(Assignment.created_at.desc()).all()
             elif teacher:
-                assignments = Assignment.query.filter_by(teacher_id=teacher.id)\
-                    .order_by(Assignment.created_at.desc()).all()
+                # Co-teaching: a teacher sees every assignment for any class
+                # they're on the TeacherClass roster for, not just the ones
+                # they created. Falls back to the assignments they personally
+                # authored (covers legacy rows with no class_id).
+                class_ids = [tc.class_id for tc in TeacherClass.query
+                             .filter_by(teacher_id=teacher.id).all()]
+                q = Assignment.query
+                if class_ids:
+                    q = q.filter(db.or_(
+                        Assignment.class_id.in_(class_ids),
+                        Assignment.teacher_id == teacher.id,
+                    ))
+                else:
+                    q = q.filter(Assignment.teacher_id == teacher.id)
+                assignments = q.order_by(Assignment.created_at.desc()).all()
         else:
             assignments = Assignment.query.order_by(Assignment.created_at.desc()).all()
+    # Resolve author names for the "Created by …" label so co-teachers can
+    # see at a glance which assignments their teammates added.
+    teacher_name_by_id = {}
+    author_ids = {a.teacher_id for a in assignments if a.teacher_id}
+    if author_ids:
+        teacher_name_by_id = {t.id: t.name for t in
+                              Teacher.query.filter(Teacher.id.in_(author_ids)).all()}
     return render_template('class.html',
                            authenticated=authenticated,
                            providers=providers,
@@ -1548,7 +1582,8 @@ def class_page():
                            dept_mode=_dept,
                            teacher=teacher,
                            all_providers=PROVIDERS,
-                           assignments=assignments)
+                           assignments=assignments,
+                           teacher_name_by_id=teacher_name_by_id)
 
 
 @app.route('/verify-code', methods=['POST'])
@@ -5291,13 +5326,22 @@ def teacher_dashboard():
     teacher_class_ids = [cls.id for cls in teacher_classes]
     if teacher_class_ids:
         q = Assignment.query.filter(Assignment.class_id.in_(teacher_class_ids))
-        if not is_senior:
-            q = q.filter(Assignment.teacher_id == teacher.id)
-        elif filter_teacher_id:
+        # Co-teaching: regular teachers see every assignment for the classes
+        # they're on the roster for — not just their own. The is_senior +
+        # filter_teacher_id branch is the HOD/SH/Lead "view a specific
+        # teacher's roster" dropdown and remains scoped to that teacher.
+        if is_senior and filter_teacher_id:
             q = q.filter(Assignment.teacher_id == filter_teacher_id)
         all_assignments = q.order_by(Assignment.created_at.desc()).all()
     else:
         all_assignments = []
+
+    # Resolve creator names for the "Created by …" label on each card.
+    author_ids = {a.teacher_id for a in all_assignments if a.teacher_id}
+    teacher_name_by_id = (
+        {t.id: t.name for t in Teacher.query.filter(Teacher.id.in_(author_ids)).all()}
+        if author_ids else {}
+    )
     assignments_by_class = {}
     for a in all_assignments:
         assignments_by_class.setdefault(a.class_id, []).append(a)
@@ -5379,6 +5423,8 @@ def teacher_dashboard():
                 'submitted': len(subs),
                 'done': len(done),
                 'avg_score': avg_score,
+                'created_by_id': asn.teacher_id,
+                'created_by_name': teacher_name_by_id.get(asn.teacher_id, ''),
             })
 
         class_data.append({

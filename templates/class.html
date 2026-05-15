@@ -305,10 +305,12 @@
 
         <!-- My Assignments -->
         <div class="card">
-            <h2>My Assignments</h2>
+            <h2>{% if dept_mode and teacher %}Class Assignments{% else %}My Assignments{% endif %}</h2>
             {% if assignments %}
             <div id="assignmentList" class="assignment-grid">
                 {% for asn in assignments %}
+                {% set author_name = teacher_name_by_id.get(asn.teacher_id) if teacher_name_by_id else none %}
+                {% set is_mine = teacher and asn.teacher_id == teacher.id %}
                 <div class="assignment-item" id="asn_{{ asn.id }}">
                     <div class="assignment-item-header">
                         <div>
@@ -316,6 +318,9 @@
                             {% if asn.title and asn.subject %}<div class="assignment-meta" style="margin-top:2px;"><span>{{ asn.subject }}</span></div>{% endif %}
                             <div class="assignment-meta">
                                 <span>{{ asn.created_at.strftime('%d %b %Y, %H:%M') }}</span>
+                                {% if dept_mode and author_name and not is_mine %}
+                                <span style="color:#1565c0;font-weight:600;">&middot; by {{ author_name }}</span>
+                                {% endif %}
                             </div>
                         </div>
                         <div class="assignment-code">{{ asn.classroom_code }}</div>
