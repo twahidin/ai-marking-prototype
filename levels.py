@@ -109,24 +109,3 @@ def levels_present(classes):
     if saw_unlevelled:
         out.append(LEVEL_UNLEVELLED)
     return out
-
-
-# ---------------------------------------------------------------------------
-# Back-compat aliases — the rest of the codebase still uses the old "band"
-# names for the Sec-1-to-5 axis. These re-exports let callers migrate
-# incrementally without one giant rename PR. Remove once the sweep is
-# complete (`grep -rE '\bBAND_|resolve_band|classes_in_band|bands_present' .`
-# returns empty across non-comment lines).
-# ---------------------------------------------------------------------------
-BAND_SEC1 = LEVEL_SEC1
-BAND_SEC2 = LEVEL_SEC2
-BAND_SEC3 = LEVEL_SEC3
-BAND_SEC45 = LEVEL_SEC45
-BAND_UNBANDED = LEVEL_UNLEVELLED
-BAND_ALL = LEVEL_ALL
-BAND_LABELS = LEVEL_LABELS
-ORDERED_BAND_KEYS = ORDERED_LEVEL_KEYS
-resolve_band = resolve_level
-band_label = level_label
-classes_in_band = classes_in_level
-bands_present = levels_present

@@ -1,13 +1,18 @@
 """Widget metric computation for the department insights dashboard.
 
-Loaded once per `/department/insights/widgets?band={band}` request. The
-top-level `compute_widgets(band)` function builds every widget's payload
-from a shared band slice — one pass over Submission.query_no_blobs() per
+Loaded once per `/department/insights/widgets?level={level}` request. The
+top-level `compute_widgets(level)` function builds every widget's payload
+from a shared level slice — one pass over Submission.query_no_blobs() per
 request keeps things snappy on schools with thousands of submissions.
 
 Every widget is deliberately **systemic** — no teacher / student / class
 appears by name in any payload. That's the design contract from
 docs/superpowers/specs/2026-05-14-department-insights-widgets-design.md.
+
+Terminology note: "level" = Sec 1 / Sec 2 / Sec 3 / Sec 4-5 (Singapore
+year-of-study). Do not call these "bands" — band means G1/G2/G3 in
+Singapore secondary context (post-PSLE Subject-Based Banding), a
+separate axis not yet modelled here.
 """
 
 from __future__ import annotations
@@ -18,11 +23,12 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 
 from db import (
-    Assignment, Class, DepartmentConfig, DepartmentGoal, FeedbackEdit, Student,
-    Submission, TeacherClass,
+    Assignment, Class, DepartmentConfig, DepartmentGoal, DepartmentSubject,
+    FeedbackEdit, Student, Submission, TeacherClass,
 )
 from levels import (
-    BAND_ALL, BAND_UNBANDED, ORDERED_BAND_KEYS, classes_in_band, resolve_band,
+    LEVEL_ALL, LEVEL_UNLEVELLED, ORDERED_LEVEL_KEYS,
+    classes_in_level, resolve_level,
 )
 from moe_terms import current_term as moe_current_term, most_recent_term as moe_most_recent_term
 
@@ -178,17 +184,50 @@ def _resolve_term_window(now):
 
 
 # ---------------------------------------------------------------------------
-# Band slice — the shared data load used by every widget on one request
+# Level slice — the shared data load used by every widget on one request
 # ---------------------------------------------------------------------------
 
-class BandSlice:
-    """Pre-loaded view of the data for one band tab.
+def _classes_for_dept(all_classes, dept_id):
+    """Filter `all_classes` to those whose assignments resolve to a subject
+    owned by the given department. Non-canonical-subject assignments are
+    ignored — they only appear in `dept_id=None` (= no dept filter).
+
+    Implementation: look up the dept's subject keys, then keep classes
+    that have at least one Assignment whose `subject` resolves to one of
+    those keys. Cheap because subject resolution is O(1) per assignment.
+    """
+    if dept_id is None:
+        return list(all_classes)
+    from subjects import resolve_subject_key
+    subject_keys = {
+        ds.subject_key for ds in DepartmentSubject.query.filter_by(department_id=dept_id).all()
+    }
+    if not subject_keys:
+        return []
+    class_ids = {c.id for c in all_classes}
+    if not class_ids:
+        return []
+    matching_ids = set()
+    for a in Assignment.query.filter(Assignment.class_id.in_(class_ids)).all():
+        key = resolve_subject_key(a.subject) if a.subject else None
+        if key and key in subject_keys:
+            matching_ids.add(a.class_id)
+    return [c for c in all_classes if c.id in matching_ids]
+
+
+class LevelSlice:
+    """Pre-loaded view of the data for one (department, level) tab.
 
     Constructed once per request; widget computations read from its
-    pre-indexed dicts so no widget incurs its own SQL round-trip."""
+    pre-indexed dicts so no widget incurs its own SQL round-trip.
 
-    def __init__(self, band):
-        self.band = band
+    `level` slices on Class.level (Sec 1–5). `dept_id` further narrows
+    to classes whose assignments resolve to that department's subjects;
+    `dept_id=None` means no dept filter (the "All" dept tab)."""
+
+    def __init__(self, level, dept_id=None):
+        self.level = level
+        self.dept_id = dept_id
         self.now = datetime.now(timezone.utc)
         self.term_start, self.term_end, self.term_label, self.term_source = (
             _resolve_term_window(self.now)
@@ -199,20 +238,36 @@ class BandSlice:
         self.prior_term_start = self.term_start - term_length
 
         all_classes = Class.query.all()
-        self.classes = classes_in_band(all_classes, band)
+        level_classes = classes_in_level(all_classes, level)
+        self.classes = _classes_for_dept(level_classes, dept_id)
         self.class_ids = {c.id for c in self.classes}
 
-        # Assignments scoped to band's classes.
+        # Assignments scoped to the (level × dept) classes. Within those
+        # classes, further drop any assignment whose subject isn't owned
+        # by the chosen dept — a class can hold mixed-subject assignments
+        # and only the dept-owned ones should drive the dept widgets.
         if not self.class_ids:
             self.assignments = []
             self.submissions = []
             self.students = []
         else:
-            self.assignments = (
+            asns = (
                 Assignment.query
                 .filter(Assignment.class_id.in_(self.class_ids))
                 .all()
             )
+            if dept_id is None:
+                self.assignments = asns
+            else:
+                from subjects import resolve_subject_key
+                subject_keys = {
+                    ds.subject_key for ds in
+                    DepartmentSubject.query.filter_by(department_id=dept_id).all()
+                }
+                self.assignments = [
+                    a for a in asns
+                    if a.subject and resolve_subject_key(a.subject) in subject_keys
+                ]
             asn_ids = {a.id for a in self.assignments}
             if asn_ids:
                 q = Submission.query_no_blobs() if hasattr(Submission, 'query_no_blobs') else Submission.query
@@ -226,7 +281,7 @@ class BandSlice:
         # Index for fast joins.
         self.asn_by_id = {a.id: a for a in self.assignments}
 
-        # Teachers participating in band (distinct via TeacherClass).
+        # Teachers participating in the slice (distinct via TeacherClass).
         teacher_ids = set()
         if self.class_ids:
             for row in TeacherClass.query.filter(
@@ -269,7 +324,7 @@ class BandSlice:
 # Widget computations
 # ---------------------------------------------------------------------------
 
-def compute_band_health(slice_):
+def compute_level_health(slice_):
     pcts = [slice_.percent(s) for s in slice_.final_done_term]
     pcts = [p for p in pcts if p is not None]
     prior_pcts = [slice_.percent(s) for s in slice_.final_done_prior]
@@ -280,7 +335,7 @@ def compute_band_health(slice_):
     avg_delta = (round(avg_score - prior_avg, 1)
                  if avg_score is not None and prior_avg is not None else None)
 
-    # Submission rate: marked / (students_in_band × assignments_term_count)
+    # Submission rate: marked / (students_in_slice × assignments_term_count)
     asn_term_ids = {
         a.id for a in slice_.assignments
         if _aware(a.created_at) and _aware(a.created_at) >= slice_.term_start
@@ -356,21 +411,29 @@ def compute_score_distribution(slice_):
 
 
 def compute_dept_goals(slice_, viewer_role=None, viewer_subjects=None):
-    """Return one row per active goal with its current progress.
+    """Return one row per active goal scoped to this (department, level).
 
-    `viewer_role` / `viewer_subjects` aren't filters — every active goal
-    is shown to every viewer per the spec — they're carried back so the
-    UI can decide whether to render "edit" affordances per row."""
-    goals = (
+    A goal whose `department_id` is NULL applies to every dept; otherwise
+    it only surfaces when its `department_id` matches the slice's dept.
+    Same rule for `target_level`. `viewer_role` / `viewer_subjects` are
+    not filters — the UI uses them to decide edit affordances per row."""
+    q = (
         DepartmentGoal.query
         .filter(DepartmentGoal.deleted_at.is_(None))
+        .filter(
+            (DepartmentGoal.department_id.is_(None))
+            | (DepartmentGoal.department_id == slice_.dept_id)
+        )
+        .filter(
+            (DepartmentGoal.target_level.is_(None))
+            | (DepartmentGoal.target_level == slice_.level)
+        )
         .order_by(DepartmentGoal.created_at.desc())
-        .all()
     )
+    goals = q.all()
     rows = []
     for g in goals:
         scoped_subs = list(slice_.final_done_term)
-        out_of_band = bool(g.target_band and g.target_band != slice_.band)
 
         if g.target_subject:
             target_s = g.target_subject.strip().lower()
@@ -427,13 +490,13 @@ def compute_dept_goals(slice_, viewer_role=None, viewer_subjects=None):
             'title': g.title,
             'metric_type': g.metric_type,
             'target_value': g.target_value,
-            'target_band': g.target_band,
+            'target_level': g.target_level,
             'target_subject': g.target_subject,
+            'department_id': g.department_id,
             'progress': round(progress, 1) if progress is not None else None,
             'numer': numer,
             'denom': denom,
             'status': status,
-            'out_of_band': out_of_band,
             'created_by_id': g.created_by_id,
         })
 
@@ -444,7 +507,7 @@ def compute_dept_goals(slice_, viewer_role=None, viewer_subjects=None):
 
 def compute_marking_pipeline(slice_):
     """Submitted vs marked vs pending in last 14 days, against the prior
-    90-day baseline ratio. Band-aggregate, never per teacher."""
+    90-day baseline ratio. Slice-aggregate, never per teacher."""
     recent_cutoff = slice_.now - timedelta(days=MARKING_PIPELINE_RECENT_DAYS)
     baseline_cutoff = slice_.now - timedelta(days=MARKING_PIPELINE_BASELINE_DAYS)
 
@@ -478,7 +541,7 @@ def compute_marking_pipeline(slice_):
 
 def compute_assessment_rhythm(slice_):
     """Assignments per weekly bin from term start to term end, plus the
-    median weekly rate across all bands for context.
+    median weekly rate across all levels for context.
 
     Bins cover the full term (10 weeks for an MOE term). Weeks that fall
     after `slice_.now` are kept in the chart with count=0 so the planned
@@ -503,20 +566,20 @@ def compute_assessment_rhythm(slice_):
         cursor = end
 
     # Rate is computed over elapsed bins only — future weeks shouldn't
-    # drag the band's average down.
+    # drag the level's average down.
     elapsed_bins = [b for b in bins if not b['future']]
-    band_rate = (
+    level_rate = (
         sum(b['count'] for b in elapsed_bins) / len(elapsed_bins)
         if elapsed_bins else 0
     )
 
     other_rates = []
     n_elapsed = max(1, len(elapsed_bins))
-    for other_band in ORDERED_BAND_KEYS:
-        if other_band == slice_.band:
-            other_rates.append(band_rate)
+    for other_level in ORDERED_LEVEL_KEYS:
+        if other_level == slice_.level:
+            other_rates.append(level_rate)
             continue
-        other_classes = [c for c in Class.query.all() if resolve_band(c.level) == other_band]
+        other_classes = [c for c in Class.query.all() if resolve_level(c.level) == other_level]
         other_class_ids = {c.id for c in other_classes}
         if not other_class_ids:
             continue
@@ -532,8 +595,8 @@ def compute_assessment_rhythm(slice_):
 
     return {
         'bins': bins,
-        'band_rate': round(band_rate, 2),
-        'median_across_bands': median_across,
+        'level_rate': round(level_rate, 2),
+        'median_across_levels': median_across,
         'term_label': slice_.term_label,
         'term_source': slice_.term_source,
     }
@@ -580,7 +643,7 @@ def compute_wins_to_share(slice_):
         if delta >= 3:
             wins.append({
                 'glyph': '⬆',
-                'text': f'Average band score up {round(delta, 1)} pp vs the prior 4 weeks.',
+                'text': f'Average score up {round(delta, 1)} pp vs the prior 4 weeks.',
             })
 
     pipeline = compute_marking_pipeline(slice_)
@@ -606,7 +669,7 @@ def build_low_sample_list(payload):
     whose `low_sample` flag fired. The AI prompt's caveats banner reads
     this so the HOD sees what was excluded."""
     flagged = []
-    for key in ('band_health', 'score_distribution', 'marking_pipeline'):
+    for key in ('level_health', 'score_distribution', 'marking_pipeline'):
         if isinstance(payload.get(key), dict) and payload[key].get('low_sample'):
             flagged.append(key)
     return flagged
@@ -616,14 +679,19 @@ def build_low_sample_list(payload):
 # Top-level entrypoint
 # ---------------------------------------------------------------------------
 
-def compute_widgets(band, viewer_role=None, viewer_subjects=None):
-    """Build the full widget payload for one band tab."""
-    if band not in (BAND_ALL, BAND_UNBANDED) and band not in ORDERED_BAND_KEYS:
-        band = ORDERED_BAND_KEYS[0]
+def compute_widgets(level, dept_id=None, viewer_role=None, viewer_subjects=None):
+    """Build the full widget payload for one (department, level) tab.
 
-    slice_ = BandSlice(band)
+    `dept_id=None` means no dept filter (the "All" dept tab); the slice
+    falls back to every class at that level regardless of subject.
+    """
+    if level not in (LEVEL_ALL, LEVEL_UNLEVELLED) and level not in ORDERED_LEVEL_KEYS:
+        level = ORDERED_LEVEL_KEYS[0]
+
+    slice_ = LevelSlice(level, dept_id=dept_id)
     payload = {
-        'band': band,
+        'level': level,
+        'dept_id': dept_id,
         'as_of': slice_.now.isoformat(),
         'term_window': {
             'start': slice_.term_start.date().isoformat(),
@@ -632,7 +700,7 @@ def compute_widgets(band, viewer_role=None, viewer_subjects=None):
             'label': slice_.term_label,
             'source': slice_.term_source,
         },
-        'band_health': compute_band_health(slice_),
+        'level_health': compute_level_health(slice_),
         'dept_goals': compute_dept_goals(slice_, viewer_role, viewer_subjects),
         'score_distribution': compute_score_distribution(slice_),
         'marking_pipeline': compute_marking_pipeline(slice_),

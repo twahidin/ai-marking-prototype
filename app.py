@@ -3504,11 +3504,12 @@ def teacher_widget_submission_rate_trend():
 
 @app.route('/department/insights')
 def department_insights():
-    """Department insights — band-tabbed customisable widget dashboard.
+    """Department insights — (dept × level)-tabbed widget dashboard.
 
     Layout JSON lives in DepartmentDashboardLayout (one row per viewer);
-    the same layout renders across every band tab, only the data swaps.
-    See docs/superpowers/specs/2026-05-14-department-insights-widgets-design.md.
+    the same layout renders across every (dept × level) tab — only the
+    data swaps when the tab changes. See
+    docs/superpowers/specs/2026-05-14-department-insights-widgets-design.md.
     """
     err = _require_insights_access()
     if err:
@@ -3524,18 +3525,32 @@ def department_insights():
     if not ai_providers:
         ai_providers = PROVIDERS
 
-    # Band tab list — show all four standard tabs even if empty, plus
-    # 'unbanded' if any class falls outside the taxonomy, plus 'all'.
-    from levels import bands_present, BAND_LABELS, ORDERED_BAND_KEYS
-    present = bands_present(classes)
-    visible_bands = [
-        {'key': k, 'label': BAND_LABELS[k], 'has_data': k in present}
-        for k in ORDERED_BAND_KEYS
+    # Level tab list — show all four standard tabs even if empty, plus
+    # 'unlevelled' if any class falls outside the taxonomy, plus 'all'.
+    from levels import levels_present, LEVEL_LABELS, ORDERED_LEVEL_KEYS
+    present = levels_present(classes)
+    visible_levels = [
+        {'key': k, 'label': LEVEL_LABELS[k], 'has_data': k in present}
+        for k in ORDERED_LEVEL_KEYS
     ]
-    if 'unbanded' in present:
-        visible_bands.append({'key': 'unbanded', 'label': 'Unbanded',
-                              'has_data': True})
-    visible_bands.append({'key': 'all', 'label': 'All', 'has_data': True})
+    if 'unlevelled' in present:
+        visible_levels.append({'key': 'unlevelled', 'label': 'Unlevelled',
+                               'has_data': True})
+    visible_levels.append({'key': 'all', 'label': 'All', 'has_data': True})
+
+    # Dept tab list — per Joe's call (2026-05-15), surface every active
+    # department to every insights viewer for now. Plus an "All" tab
+    # that turns off the dept filter entirely.
+    all_departments = Department.query.filter_by(is_active=True) \
+        .order_by(Department.sort_order, Department.name).all()
+    visible_depts = [
+        {'key': 'all', 'label': 'All', 'dept_id': None}
+    ] + [
+        {'key': str(d.id),
+         'label': d.short_name or d.name,
+         'dept_id': d.id}
+        for d in all_departments
+    ]
 
     # Viewer's teaching subjects — feeds the Subject Head's goal modal.
     viewer_subjects = []
@@ -3565,7 +3580,8 @@ def department_insights():
     return render_template('department_insights.html',
                            teacher=teacher,
                            classes=classes,
-                           visible_bands=visible_bands,
+                           visible_levels=visible_levels,
+                           visible_depts=visible_depts,
                            viewer_subjects=viewer_subjects,
                            canonical_subjects=canonical_subjects,
                            ai_providers=ai_providers,
@@ -3754,8 +3770,8 @@ def department_analyze():
     """Generate AI analysis of insights data.
 
     LEGACY ROUTE — invoked by the deprecated class_insights.html deep-link.
-    The new band-tabbed dashboard calls `/department/insights/analyze-band`
-    below (hardened prompt, regex sweep, band-keyed cache).
+    The current dashboard calls `/department/insights/analyze-level` below
+    (hardened prompt, regex sweep, (dept × level)-keyed cache).
     """
     err = _require_insights_access()
     if err:
@@ -3948,10 +3964,10 @@ Respond in JSON format:
 
 
 # ---------------------------------------------------------------------------
-# Department insights — band-tabbed dashboard endpoints (v2)
+# Department insights — (dept × level)-tabbed dashboard endpoints (v2)
 # ---------------------------------------------------------------------------
 
-_VALID_BANDS = ('sec1', 'sec2', 'sec3', 'sec45', 'unbanded', 'all')
+_VALID_LEVELS = ('sec1', 'sec2', 'sec3', 'sec45', 'unlevelled', 'all')
 
 
 def _viewer_role_and_subjects():
@@ -3972,18 +3988,38 @@ def _viewer_role_and_subjects():
     return teacher.role, set()
 
 
+def _parse_dept_id_arg(raw):
+    """Parse the `dept_id` query / form param.
+
+    Returns the integer dept id, or None for "All depts". Treats missing,
+    blank, 'all', and unparseable values as None — the dept filter just
+    falls through to the school-wide view rather than 400-ing."""
+    if raw is None:
+        return None
+    s = str(raw).strip().lower()
+    if not s or s == 'all':
+        return None
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return None
+
+
 @app.route('/department/insights/widgets')
 def department_insights_widgets():
-    """Return all widget payloads for one band tab."""
+    """Return all widget payloads for one (dept × level) tab."""
     err = _require_insights_access()
     if err:
         return err
-    band = (request.args.get('band') or 'sec1').strip().lower()
-    if band not in _VALID_BANDS:
-        band = 'sec1'
+    level = (request.args.get('level') or 'sec1').strip().lower()
+    if level not in _VALID_LEVELS:
+        level = 'sec1'
+    dept_id = _parse_dept_id_arg(request.args.get('dept_id'))
     role, subjects = _viewer_role_and_subjects()
     from dept_insights_widgets import compute_widgets
-    payload = compute_widgets(band, viewer_role=role, viewer_subjects=subjects)
+    payload = compute_widgets(
+        level, dept_id=dept_id, viewer_role=role, viewer_subjects=subjects,
+    )
     return jsonify({'success': True, **payload})
 
 
@@ -3995,7 +4031,8 @@ def department_insights_layout_get():
     teacher = _current_teacher()
     row = DepartmentDashboardLayout.query.filter_by(teacher_id=teacher.id).first()
     layout = []
-    last_band = 'sec1'
+    last_level = 'sec1'
+    last_dept_id = None
     if row:
         if row.layout_json:
             try:
@@ -4004,8 +4041,10 @@ def department_insights_layout_get():
                     layout = parsed
             except (json.JSONDecodeError, TypeError):
                 layout = []
-        last_band = row.last_band or 'sec1'
-    return jsonify({'success': True, 'layout': layout, 'last_band': last_band})
+        last_level = row.last_level or 'sec1'
+        last_dept_id = row.last_dept_id
+    return jsonify({'success': True, 'layout': layout,
+                    'last_level': last_level, 'last_dept_id': last_dept_id})
 
 
 @app.route('/department/insights/layout', methods=['PUT'])
@@ -4016,19 +4055,22 @@ def department_insights_layout_put():
     teacher = _current_teacher()
     data = request.get_json(silent=True) or {}
     layout = data.get('layout')
-    last_band = (data.get('last_band') or 'sec1').strip().lower()
-    if last_band not in _VALID_BANDS:
-        last_band = 'sec1'
+    last_level = (data.get('last_level') or 'sec1').strip().lower()
+    if last_level not in _VALID_LEVELS:
+        last_level = 'sec1'
+    last_dept_id = _parse_dept_id_arg(data.get('last_dept_id'))
     if not isinstance(layout, list):
         return jsonify({'success': False, 'error': 'layout must be a list'}), 400
     row = DepartmentDashboardLayout.query.filter_by(teacher_id=teacher.id).first()
     payload = json.dumps(layout)
     if row:
         row.layout_json = payload
-        row.last_band = last_band
+        row.last_level = last_level
+        row.last_dept_id = last_dept_id
     else:
         row = DepartmentDashboardLayout(
-            teacher_id=teacher.id, layout_json=payload, last_band=last_band,
+            teacher_id=teacher.id, layout_json=payload,
+            last_level=last_level, last_dept_id=last_dept_id,
         )
         db.session.add(row)
     db.session.commit()
@@ -4065,15 +4107,20 @@ def _validate_goal_payload(data, role, subjects, is_create=True):
         target_value = float(data.get('target_value'))
     except (TypeError, ValueError):
         return None, (jsonify({'success': False, 'error': 'target_value must be a number'}), 400)
-    target_band = (data.get('target_band') or '').strip().lower() or None
+    target_level = (data.get('target_level') or '').strip().lower() or None
     target_subject = (data.get('target_subject') or '').strip() or None
+    department_id = _parse_dept_id_arg(data.get('department_id'))
 
     if is_create and not title:
         return None, (jsonify({'success': False, 'error': 'title is required'}), 400)
     if metric_type and metric_type not in ('pass_rate', 'avg_score', 'submission_rate'):
         return None, (jsonify({'success': False, 'error': 'unknown metric_type'}), 400)
-    if target_band and target_band not in _VALID_BANDS:
-        return None, (jsonify({'success': False, 'error': 'unknown target_band'}), 400)
+    if target_level and target_level not in _VALID_LEVELS:
+        return None, (jsonify({'success': False, 'error': 'unknown target_level'}), 400)
+    if department_id is not None:
+        dept = Department.query.filter_by(id=department_id, is_active=True).first()
+        if not dept:
+            return None, (jsonify({'success': False, 'error': 'unknown department_id'}), 400)
 
     # Subject Heads must pin a subject they teach.
     if role == 'subject_head':
@@ -4084,7 +4131,8 @@ def _validate_goal_payload(data, role, subjects, is_create=True):
 
     return {
         'title': title, 'metric_type': metric_type, 'target_value': target_value,
-        'target_band': target_band, 'target_subject': target_subject,
+        'target_level': target_level, 'target_subject': target_subject,
+        'department_id': department_id,
     }, None
 
 
@@ -4107,8 +4155,9 @@ def department_insights_goals_list():
             'title': g.title,
             'metric_type': g.metric_type,
             'target_value': g.target_value,
-            'target_band': g.target_band,
+            'target_level': g.target_level,
             'target_subject': g.target_subject,
+            'department_id': g.department_id,
             'created_by_id': g.created_by_id,
             'can_edit': _can_edit_goal(g, role, subjects),
         })
@@ -4135,8 +4184,9 @@ def department_insights_goals_create():
         title=cleaned['title'],
         metric_type=cleaned['metric_type'],
         target_value=cleaned['target_value'],
-        target_band=cleaned['target_band'],
+        target_level=cleaned['target_level'],
         target_subject=cleaned['target_subject'],
+        department_id=cleaned['department_id'],
         created_by_id=teacher.id,
     )
     db.session.add(goal)
@@ -4165,10 +4215,12 @@ def department_insights_goals_update(goal_id):
         goal.metric_type = cleaned['metric_type']
     if 'target_value' in data:
         goal.target_value = cleaned['target_value']
-    if 'target_band' in data:
-        goal.target_band = cleaned['target_band']
+    if 'target_level' in data:
+        goal.target_level = cleaned['target_level']
     if 'target_subject' in data:
         goal.target_subject = cleaned['target_subject']
+    if 'department_id' in data:
+        goal.department_id = cleaned['department_id']
     db.session.commit()
     return jsonify({'success': True})
 
@@ -4189,16 +4241,27 @@ def department_insights_goals_delete(goal_id):
     return jsonify({'success': True})
 
 
+def _ai_analysis_cache_key(level, dept_id):
+    """Cache key for the AI analysis cache, scoped per (dept, level).
+
+    `dept_id=None` is the "All depts" tab; spelled as 'all' in the key
+    so DepartmentConfig.key remains a flat string (no NULL handling)."""
+    dept_part = 'all' if dept_id is None else str(int(dept_id))
+    return f'dept_ai_analysis:dept={dept_part}:level={level}'
+
+
 @app.route('/department/insights/saved-analysis')
 def department_insights_saved_analysis():
-    """Return the last cached AI analysis for a band (if any)."""
+    """Return the last cached AI analysis for one (dept × level) tab."""
     err = _require_insights_access()
     if err:
         return err
-    band = (request.args.get('band') or 'sec1').strip().lower()
-    if band not in _VALID_BANDS:
-        band = 'sec1'
-    cfg = DepartmentConfig.query.filter_by(key=f'dept_ai_analysis:band={band}').first()
+    level = (request.args.get('level') or 'sec1').strip().lower()
+    if level not in _VALID_LEVELS:
+        level = 'sec1'
+    dept_id = _parse_dept_id_arg(request.args.get('dept_id'))
+    cfg = DepartmentConfig.query.filter_by(
+        key=_ai_analysis_cache_key(level, dept_id)).first()
     if cfg and cfg.value:
         try:
             return jsonify({'success': True, 'exists': True, **json.loads(cfg.value)})
@@ -4207,9 +4270,9 @@ def department_insights_saved_analysis():
     return jsonify({'success': True, 'exists': False})
 
 
-@app.route('/department/insights/analyze-band', methods=['POST'])
-def department_analyze_band():
-    """Hardened AI analysis for the band-tabbed dashboard.
+@app.route('/department/insights/analyze-level', methods=['POST'])
+def department_analyze_level():
+    """Hardened AI analysis for the (dept × level)-tabbed dashboard.
 
     Differs from the legacy `/department/insights/analyze`:
       - Reads the consolidated widgets payload, not a one-shot SQL pull.
@@ -4218,6 +4281,8 @@ def department_analyze_band():
         [Scheduling]).
       - Post-response regex sweep catches any teacher / class names that
         slip through and re-prompts once.
+      - Cache key includes dept_id so each (dept × level) keeps its own
+        analysis — switching tabs never shows another tab's text.
     """
     err = _require_insights_access()
     if err:
@@ -4226,9 +4291,10 @@ def department_analyze_band():
     data = request.get_json() or {}
     provider = data.get('provider')
     model = data.get('model')
-    band = (data.get('band') or 'sec1').strip().lower()
-    if band not in _VALID_BANDS:
-        band = 'sec1'
+    level = (data.get('level') or 'sec1').strip().lower()
+    if level not in _VALID_LEVELS:
+        level = 'sec1'
+    dept_id = _parse_dept_id_arg(data.get('dept_id'))
     if not provider:
         return jsonify({'success': False, 'error': 'No provider selected'}), 400
 
@@ -4253,13 +4319,21 @@ def department_analyze_band():
 
     role, subjects = _viewer_role_and_subjects()
     from dept_insights_widgets import compute_widgets
-    payload = compute_widgets(band, viewer_role=role, viewer_subjects=subjects)
+    payload = compute_widgets(
+        level, dept_id=dept_id, viewer_role=role, viewer_subjects=subjects,
+    )
     low_sample = payload.get('low_sample_widgets', [])
 
-    from levels import BAND_LABELS
-    band_label = BAND_LABELS.get(band, band)
+    from levels import LEVEL_LABELS
+    level_label = LEVEL_LABELS.get(level, level)
+    dept_label = 'All departments'
+    if dept_id is not None:
+        d = Department.query.get(dept_id)
+        if d:
+            dept_label = d.short_name or d.name
     prompt_body = (
-        f"BAND: {band_label}\n"
+        f"DEPARTMENT: {dept_label}\n"
+        f"LEVEL: {level_label}\n"
         f"AS OF: {payload.get('as_of')}\n"
         f"TERM WINDOW: {payload.get('term_window', {}).get('days')} days\n\n"
         f"DATA:\n{json.dumps(payload, default=str)}"
@@ -4275,7 +4349,7 @@ def department_analyze_band():
         "there are no caveats, write 'None for this view.'\n"
         "2. NEVER name an individual teacher, class, or student as a cause "
         "or as the target of an action. If the data implies one, talk about "
-        "the band as a whole.\n"
+        "the level as a whole.\n"
         "3. Tag every recommendation with exactly one of: [Curriculum] "
         "[Resource] [PD] [Scheduling]. Reject the temptation to invent "
         "other tags.\n"
@@ -4321,22 +4395,22 @@ def department_analyze_band():
                     'closing': 'These are hypotheses for department discussion, not conclusions.'}
 
     # Build the forbidden-names regex so we can sweep for teacher / class names.
-    classes_in_band = []
-    teachers_in_band = []
+    classes_in_slice = []
+    teachers_in_slice = []
     try:
-        from levels import classes_in_band as _cls_in_band, BAND_ALL
+        from levels import classes_in_level as _cls_in_level, LEVEL_ALL
         all_cls = Class.query.all()
-        if band == BAND_ALL:
+        if level == LEVEL_ALL:
             relevant = all_cls
         else:
-            relevant = _cls_in_band(all_cls, band)
-        classes_in_band = [c.name for c in relevant if c.name]
+            relevant = _cls_in_level(all_cls, level)
+        classes_in_slice = [c.name for c in relevant if c.name]
         teacher_ids = set()
         for c in relevant:
             for tc in TeacherClass.query.filter_by(class_id=c.id).all():
                 teacher_ids.add(tc.teacher_id)
         if teacher_ids:
-            teachers_in_band = [
+            teachers_in_slice = [
                 t.name for t in
                 Teacher.query.filter(Teacher.id.in_(teacher_ids)).all()
                 if t.name
@@ -4344,7 +4418,7 @@ def department_analyze_band():
     except Exception:
         pass
 
-    forbidden = [n for n in (classes_in_band + teachers_in_band) if n]
+    forbidden = [n for n in (classes_in_slice + teachers_in_slice) if n]
     forbidden_pattern = None
     if forbidden:
         forbidden_pattern = re.compile(
@@ -4355,7 +4429,7 @@ def department_analyze_band():
     try:
         text = _call_ai(prompt_body)
     except Exception as e:
-        logger.error(f'Dept band AI analysis failed: {e}')
+        logger.error(f'Dept level AI analysis failed: {e}')
         return jsonify({'success': False, 'error': 'AI analysis failed.'}), 500
 
     sweep_warning = False
@@ -4363,7 +4437,7 @@ def department_analyze_band():
         stronger = prompt_body + (
             "\n\nSTRICT REMINDER: the previous response named a teacher or "
             "class. Rewrite without any proper nouns referring to people or "
-            "classes. Replace with band-level statements."
+            "classes. Replace with level-aggregate statements."
         )
         try:
             text2 = _call_ai(stronger)
@@ -4400,10 +4474,11 @@ def department_analyze_band():
         'provider': provider,
         'model': model_name,
         'generated_at': datetime.now(timezone.utc).isoformat(),
-        'band': band,
+        'level': level,
+        'dept_id': dept_id,
     }
 
-    cache_key = f'dept_ai_analysis:band={band}'
+    cache_key = _ai_analysis_cache_key(level, dept_id)
     cfg = DepartmentConfig.query.filter_by(key=cache_key).first()
     if cfg:
         cfg.value = json.dumps(saved)

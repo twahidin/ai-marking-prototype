@@ -35,22 +35,28 @@
     .insights-toggle a.active { background: #667eea; color: white; }
     .insights-toggle a.disabled { opacity: 0.45; pointer-events: none; }
 
-    .band-tabs {
+    .insights-tabs {
         background: white; border-radius: 14px; padding: 8px 12px;
         box-shadow: 0 1px 12px rgba(0,0,0,0.06);
         border: 1px solid rgba(0,0,0,0.04);
-        display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px;
+        display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px;
         align-items: center;
     }
-    .band-tab {
+    .insights-tabs .tab-row-label {
+        font-size: 12px; font-weight: 700; color: #888;
+        letter-spacing: 0.04em; text-transform: uppercase; margin-right: 4px;
+    }
+    .level-tab, .dept-tab {
         padding: 6px 16px; border-radius: 999px;
         font-size: 13px; font-weight: 600; color: #666;
         cursor: pointer; transition: all 0.15s;
         background: #f7f8fc; border: 1px solid transparent;
     }
-    .band-tab:hover { color: #333; border-color: #d0d4e2; }
-    .band-tab.active { background: #667eea; color: white; border-color: #667eea; }
-    .band-tab.no-data { opacity: 0.45; }
+    .level-tab:hover, .dept-tab:hover { color: #333; border-color: #d0d4e2; }
+    .level-tab.active, .dept-tab.active {
+        background: #667eea; color: white; border-color: #667eea;
+    }
+    .level-tab.no-data { opacity: 0.45; }
 
     .icon-btn {
         height: 34px; padding: 0 12px; border-radius: 999px;
@@ -143,7 +149,7 @@
     .insights-mobile-fallback { display: none; }
     @media (max-width: 600px) {
         .insights-toolbar .icon-btn,
-        .band-tabs,
+        .insights-tabs,
         .insights-toolbar .insights-toggle a.disabled { display: none; }
         .insights-toolbar { padding: 10px 12px; gap: 8px; }
         .insights-toolbar h1 { font-size: 16px; }
@@ -238,7 +244,6 @@
         margin-bottom: 8px;
     }
     .goal-row:last-child { margin-bottom: 0; }
-    .goal-row.out-of-band { opacity: 0.5; }
     .goal-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
     .goal-title { font-size: 13px; font-weight: 700; color: #1a1a2e; }
     .goal-chip {
@@ -449,11 +454,21 @@
     </div>
     {% else %}
 
-    <div class="band-tabs animate__animated animate__fadeIn" style="animation-delay:0.05s;animation-duration:0.4s;" id="bandTabs">
-        {% for band in visible_bands %}
+    <div class="insights-tabs animate__animated animate__fadeIn" style="animation-delay:0.05s;animation-duration:0.4s;" id="deptTabs">
+        <span class="tab-row-label">Department</span>
+        {% for d in visible_depts %}
         <button type="button"
-                class="band-tab {% if not band.has_data %}no-data{% endif %}"
-                data-band="{{ band.key }}">{{ band.label }}</button>
+                class="dept-tab"
+                data-dept-id="{{ '' if d.dept_id is none else d.dept_id }}">{{ d.label }}</button>
+        {% endfor %}
+    </div>
+
+    <div class="insights-tabs animate__animated animate__fadeIn" style="animation-delay:0.08s;animation-duration:0.4s;" id="levelTabs">
+        <span class="tab-row-label">Level</span>
+        {% for lvl in visible_levels %}
+        <button type="button"
+                class="level-tab {% if not lvl.has_data %}no-data{% endif %}"
+                data-level="{{ lvl.key }}">{{ lvl.label }}</button>
         {% endfor %}
     </div>
 
@@ -467,7 +482,7 @@
             <div class="widget-options" id="widgetOptions"></div>
         </div>
         <p style="margin-top:12px;font-size:11px;color:#aaa;">
-            Click a widget chip to add it; click again to remove. Drag tiles to rearrange. Drag any edge to resize. The Band Health strip is always shown.
+            Click a widget chip to add it; click again to remove. Drag tiles to rearrange. Drag any edge to resize. The Level Health strip is always shown.
         </p>
     </div>
 
@@ -481,7 +496,7 @@
     <div class="insights-mobile-fallback" aria-hidden="false">
         <span class="icon" aria-hidden="true">📊</span>
         <h3>Open Insights on a desktop</h3>
-        <p>The Department Insights dashboard is built for a wider screen — drag-to-arrange widgets, side-by-side charts, and the band tabs don't yet have a phone layout.</p>
+        <p>The Department Insights dashboard is built for a wider screen — drag-to-arrange widgets, side-by-side charts, and the dept/level tabs don't yet have a phone layout.</p>
         <a href="/dashboard">Back to My Classes</a>
     </div>
 
@@ -505,9 +520,18 @@
                 <input type="number" id="goalTarget" min="0" max="100" step="1" value="80">
             </div>
             <div class="modal-field">
-                <label for="goalBand">Target band</label>
-                <select id="goalBand">
-                    <option value="">All bands</option>
+                <label for="goalDepartment">Department</label>
+                <select id="goalDepartment">
+                    <option value="">All departments</option>
+                    {% for d in visible_depts %}{% if d.dept_id is not none %}
+                    <option value="{{ d.dept_id }}">{{ d.label }}</option>
+                    {% endif %}{% endfor %}
+                </select>
+            </div>
+            <div class="modal-field">
+                <label for="goalLevel">Target level</label>
+                <select id="goalLevel">
+                    <option value="">All levels</option>
                     <option value="sec1">Sec 1</option>
                     <option value="sec2">Sec 2</option>
                     <option value="sec3">Sec 3</option>
@@ -544,20 +568,33 @@ var AI_PROVIDERS = {{ ai_providers | tojson }};
 var VIEWER_ROLE = {{ teacher.role | tojson }};
 var VIEWER_SUBJECTS = {{ viewer_subjects | tojson }};
 var CANONICAL_SUBJECTS = {{ canonical_subjects | tojson }};
-var BANDS = [
-    {% for b in visible_bands %}
+var LEVELS = [
+    {% for b in visible_levels %}
     { key: {{ b.key | tojson }}, label: {{ b.label | tojson }}, has_data: {{ b.has_data | tojson }} }{% if not loop.last %},{% endif %}
     {% endfor %}
 ];
-var BAND_LABEL_LOOKUP = {};
-BANDS.forEach(function (b) { BAND_LABEL_LOOKUP[b.key] = b.label; });
+var LEVEL_LABEL_LOOKUP = {};
+LEVELS.forEach(function (b) { LEVEL_LABEL_LOOKUP[b.key] = b.label; });
+
+var DEPTS = [
+    {% for d in visible_depts %}
+    { dept_id: {{ d.dept_id | tojson }}, label: {{ d.label | tojson }} }{% if not loop.last %},{% endif %}
+    {% endfor %}
+];
+// Keyed by stringified dept_id so the lookup is reliable for both "1" and 1.
+var DEPT_LABEL_LOOKUP = {};
+DEPTS.forEach(function (d) {
+    if (d.dept_id !== null && d.dept_id !== undefined) {
+        DEPT_LABEL_LOOKUP[String(d.dept_id)] = d.label;
+    }
+});
 
 var WIDGET_CATALOG = {
-    band_health: {
-        title: 'Band Health',
-        desc: 'Headline numbers + 8-week trend for this band.',
+    level_health: {
+        title: 'Level Health',
+        desc: 'Headline numbers + 8-week trend for this level.',
         defaults: { w: 12, h: 3, minW: 6, minH: 3 },
-        render: renderBandHealth,
+        render: renderLevelHealth,
         non_removable: true,
     },
     dept_goals: {
@@ -568,13 +605,13 @@ var WIDGET_CATALOG = {
     },
     score_distribution: {
         title: 'Score Distribution',
-        desc: 'How submissions fall across five score bands.',
+        desc: 'How submissions fall across five score buckets.',
         defaults: { w: 6, h: 5, minW: 4, minH: 4 },
         render: renderScoreDistribution,
     },
     ai_analysis: {
         title: 'AI Analysis',
-        desc: 'Hardened summary + tagged actions, band-aggregate.',
+        desc: 'Hardened summary + tagged actions, dept/level aggregate.',
         defaults: { w: 12, h: 7, minW: 6, minH: 6 },
         render: renderAIAnalysis,
     },
@@ -592,7 +629,7 @@ var WIDGET_CATALOG = {
     },
     assessment_rhythm: {
         title: 'Assessments issued this term',
-        desc: 'Assignments per week across the 10-week term, with the cross-band median.',
+        desc: 'Assignments per week across the 10-week term, with the cross-level median.',
         defaults: { w: 6, h: 4, minW: 4, minH: 3 },
         render: renderAssessmentRhythm,
     },
@@ -601,9 +638,9 @@ var WIDGET_CATALOG = {
 var STARTER_TEMPLATES = [
     {
         key: 'overview', label: 'Overview', icon: '🏠',
-        desc: 'Default — band health, goals, score spread, AI, wins.',
+        desc: 'Default — level health, goals, score spread, AI, wins.',
         layout: [
-            { key: 'band_health',        x: 0, y: 0,  w: 12, h: 3 },
+            { key: 'level_health',        x: 0, y: 0,  w: 12, h: 3 },
             { key: 'dept_goals',         x: 0, y: 3,  w: 6,  h: 5 },
             { key: 'score_distribution', x: 6, y: 3,  w: 6,  h: 5 },
             { key: 'ai_analysis',        x: 0, y: 8,  w: 12, h: 7 },
@@ -615,7 +652,7 @@ var STARTER_TEMPLATES = [
         key: 'calibration', label: 'Calibration', icon: '🎯',
         desc: 'For subject leads — how aligned the team is on marking.',
         layout: [
-            { key: 'band_health', x: 0, y: 0, w: 12, h: 3 },
+            { key: 'level_health', x: 0, y: 0, w: 12, h: 3 },
             { key: 'ai_analysis', x: 0, y: 3, w: 12, h: 7 },
         ]
     },
@@ -623,7 +660,7 @@ var STARTER_TEMPLATES = [
         key: 'capacity', label: 'Support & Capacity', icon: '🤝',
         desc: 'For HODs doing pastoral review — pipeline, rhythm, wins.',
         layout: [
-            { key: 'band_health',       x: 0, y: 0,  w: 12, h: 3 },
+            { key: 'level_health',       x: 0, y: 0,  w: 12, h: 3 },
             { key: 'marking_pipeline',  x: 0, y: 3,  w: 12, h: 5 },
             { key: 'assessment_rhythm', x: 0, y: 8,  w: 6,  h: 4 },
             { key: 'wins_to_share',     x: 6, y: 8,  w: 6,  h: 4 },
@@ -634,10 +671,15 @@ var STARTER_TEMPLATES = [
 var DEFAULT_TEMPLATE_KEY = 'overview';
 
 var grid = null;
-var currentBand = 'sec1';
+var currentLevel = 'sec1';
+var currentDeptId = null;   // null = "All" dept tab.
 var currentPayload = null;
-var payloadCache = {};
+var payloadCache = {};      // keyed by `${dept_id ?? 'all'}|${level}`.
 var saveTimer = null;
+
+function cacheKey(deptId, level) {
+    return (deptId === null || deptId === undefined ? 'all' : String(deptId)) + '|' + level;
+}
 
 function escHtml(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
 
@@ -925,7 +967,11 @@ async function saveLayout() {
         await fetch('/department/insights/layout', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
-            body: JSON.stringify({ layout: currentLayout(), last_band: currentBand }),
+            body: JSON.stringify({
+                layout: currentLayout(),
+                last_level: currentLevel,
+                last_dept_id: currentDeptId,
+            }),
         });
     } catch (e) { console.error('Save layout failed', e); }
 }
@@ -934,7 +980,8 @@ async function loadLayout() {
     var res = await fetch('/department/insights/layout');
     var data = await res.json();
     var layout = (data && data.layout) || [];
-    if (data && data.last_band) currentBand = data.last_band;
+    if (data && data.last_level) currentLevel = data.last_level;
+    if (data && (data.last_dept_id !== undefined)) currentDeptId = data.last_dept_id;
 
     if (!layout.length) {
         applyTemplate(DEFAULT_TEMPLATE_KEY, { silent: true });
@@ -979,38 +1026,66 @@ function setEditMode(on) {
     }
 }
 
-function highlightBandTab(band) {
-    document.querySelectorAll('.band-tab').forEach(function (btn) {
-        btn.classList.toggle('active', btn.dataset.band === band);
+function highlightLevelTab(level) {
+    document.querySelectorAll('.level-tab').forEach(function (btn) {
+        btn.classList.toggle('active', btn.dataset.level === level);
     });
 }
 
-async function switchBand(band) {
-    currentBand = band;
-    highlightBandTab(band);
-    scheduleSave();
+function highlightDeptTab(deptId) {
+    var raw = (deptId === null || deptId === undefined) ? '' : String(deptId);
+    document.querySelectorAll('.dept-tab').forEach(function (btn) {
+        btn.classList.toggle('active', (btn.dataset.deptId || '') === raw);
+    });
+}
 
-    if (payloadCache[band]) {
-        currentPayload = payloadCache[band];
+function buildWidgetsUrl(deptId, level) {
+    var qs = 'level=' + encodeURIComponent(level);
+    if (deptId !== null && deptId !== undefined) {
+        qs += '&dept_id=' + encodeURIComponent(deptId);
+    }
+    return '/department/insights/widgets?' + qs;
+}
+
+async function fetchPayload() {
+    var key = cacheKey(currentDeptId, currentLevel);
+    if (payloadCache[key]) {
+        currentPayload = payloadCache[key];
         rerenderAllWidgets();
         return;
     }
     try {
-        var res = await fetch('/department/insights/widgets?band=' + encodeURIComponent(band));
+        var res = await fetch(buildWidgetsUrl(currentDeptId, currentLevel));
         var data = await res.json();
         if (!data || !data.success) {
             currentPayload = null;
             rerenderAllWidgets();
             return;
         }
-        payloadCache[band] = data;
+        payloadCache[key] = data;
         currentPayload = data;
         rerenderAllWidgets();
     } catch (e) {
-        console.error('Band switch fetch failed', e);
+        console.error('Insights fetch failed', e);
         currentPayload = null;
         rerenderAllWidgets();
     }
+}
+
+async function switchLevel(level) {
+    if (level === currentLevel) return;
+    currentLevel = level;
+    highlightLevelTab(level);
+    scheduleSave();
+    await fetchPayload();
+}
+
+async function switchDept(deptId) {
+    if (deptId === currentDeptId) return;
+    currentDeptId = deptId;
+    highlightDeptTab(deptId);
+    scheduleSave();
+    await fetchPayload();
 }
 
 function rerenderAllWidgets() {
@@ -1047,8 +1122,8 @@ function fmtDeltaClass(v) {
     return v > 0 ? 'up' : 'down';
 }
 
-function renderBandHealth(body, payload) {
-    var bh = payload.band_health || {};
+function renderLevelHealth(body, payload) {
+    var bh = payload.level_health || {};
     var html =
         '<div class="bh-row">' +
             '<div class="bh-stat"><span class="num">' + (bh.classes_count || 0) + '</span>' +
@@ -1143,8 +1218,15 @@ function renderDeptGoals(body, payload) {
         return;
     }
     var html = '';
+    var deptLookup = {};
+    (typeof DEPT_LABEL_LOOKUP === 'object' ? DEPT_LABEL_LOOKUP : {});
     goals.forEach(function (g) {
-        var scope = (g.target_subject || 'All subjects') + ' · ' + (g.target_band ? BAND_LABEL_LOOKUP[g.target_band] || g.target_band : 'All bands');
+        var scopeParts = [];
+        scopeParts.push(g.department_id != null ?
+            (DEPT_LABEL_LOOKUP[g.department_id] || ('Dept ' + g.department_id)) : 'All depts');
+        scopeParts.push(g.target_subject || 'All subjects');
+        scopeParts.push(g.target_level ? LEVEL_LABEL_LOOKUP[g.target_level] || g.target_level : 'All levels');
+        var scope = scopeParts.join(' · ');
         var metricLabel = g.metric_type === 'pass_rate' ? 'Pass rate' :
                           g.metric_type === 'avg_score' ? 'Avg score' :
                           g.metric_type === 'submission_rate' ? 'Submission rate' : g.metric_type;
@@ -1152,7 +1234,7 @@ function renderDeptGoals(body, payload) {
         var width = Math.min(100, Math.max(0, (progress / g.target_value) * 100));
         var canEdit = canEditGoal(g);
         html +=
-            '<div class="goal-row' + (g.out_of_band ? ' out-of-band' : '') + '">' +
+            '<div class="goal-row">' +
                 '<div class="goal-head">' +
                     '<span class="goal-title">' + escHtml(g.title) + '</span>' +
                     '<span class="goal-status ' + g.status + '">' + g.status.replace('_', ' ') + '</span>' +
@@ -1230,9 +1312,9 @@ function renderAssessmentRhythm(body, payload) {
     var termLabel = r.term_label ? escHtml(r.term_label) + ' · ' : '';
     body.innerHTML = '<div class="rhythm-wrap"><canvas></canvas></div>' +
         '<div class="rhythm-footer">' + termLabel +
-        'Median across bands: ' + (r.median_across_bands || 0) +
-        '/week · This band: ' + (r.band_rate || 0) +
-        (r.band_rate >= r.median_across_bands ? ' ✓' : '') + '</div>';
+        'Median across levels: ' + (r.median_across_levels || 0) +
+        '/week · This level: ' + (r.level_rate || 0) +
+        (r.level_rate >= r.median_across_levels ? ' ✓' : '') + '</div>';
     var canvas = body.querySelector('canvas');
     new Chart(canvas, {
         type: 'bar',
@@ -1277,7 +1359,7 @@ function renderAIAnalysis(body, payload) {
                 '<select class="ai-select" data-ai-model></select></div>' +
             '<button type="button" class="ai-btn" data-ai-go>Generate Analysis</button>' +
         '</div>' +
-        '<div class="ai-loading" data-ai-loading>Analyzing this band\'s data… this may take a few seconds.</div>' +
+        '<div class="ai-loading" data-ai-loading>Analyzing this view\'s data… this may take a few seconds.</div>' +
         '<div data-ai-result></div>';
 
     var providerSel = body.querySelector('[data-ai-provider]');
@@ -1317,7 +1399,11 @@ async function refreshAIAnalysisFromCache(body) {
     if (!resEl) return;
     resEl.innerHTML = '';
     try {
-        var res = await fetch('/department/insights/saved-analysis?band=' + encodeURIComponent(currentBand));
+        var qs = 'level=' + encodeURIComponent(currentLevel);
+        if (currentDeptId !== null && currentDeptId !== undefined) {
+            qs += '&dept_id=' + encodeURIComponent(currentDeptId);
+        }
+        var res = await fetch('/department/insights/saved-analysis?' + qs);
         var data = await res.json();
         var btn = body.querySelector('[data-ai-go]');
         if (data && data.success && data.exists) {
@@ -1342,10 +1428,13 @@ async function runAIAnalysis(body) {
     resEl.innerHTML = '';
     goBtn.disabled = true;
     try {
-        var res = await fetch('/department/insights/analyze-band', {
+        var res = await fetch('/department/insights/analyze-level', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
-            body: JSON.stringify({ provider: provider, model: model, band: currentBand }),
+            body: JSON.stringify({
+                provider: provider, model: model,
+                level: currentLevel, dept_id: currentDeptId,
+            }),
         });
         var data = await res.json();
         if (!data.success) {
@@ -1409,8 +1498,9 @@ function openGoalModal(goalId) {
     var titleInput = document.getElementById('goalTitle');
     var metricSel = document.getElementById('goalMetric');
     var targetInput = document.getElementById('goalTarget');
-    var bandSel = document.getElementById('goalBand');
+    var levelSel = document.getElementById('goalLevel');
     var subjectSel = document.getElementById('goalSubject');
+    var deptSel = document.getElementById('goalDepartment');
 
     if (editingGoalId && currentPayload && currentPayload.dept_goals) {
         var g = currentPayload.dept_goals.find(function (x) { return x.id === editingGoalId; });
@@ -1418,14 +1508,19 @@ function openGoalModal(goalId) {
             titleInput.value = g.title || '';
             metricSel.value = g.metric_type || 'pass_rate';
             targetInput.value = g.target_value || 80;
-            bandSel.value = g.target_band || '';
+            levelSel.value = g.target_level || '';
             subjectSel.value = g.target_subject || '';
+            deptSel.value = g.department_id != null ? String(g.department_id) : '';
         }
     } else {
         titleInput.value = '';
         metricSel.value = 'pass_rate';
         targetInput.value = 80;
-        bandSel.value = (currentBand === 'all' || currentBand === 'unbanded') ? '' : currentBand;
+        levelSel.value = (currentLevel === 'all' || currentLevel === 'unlevelled') ? '' : currentLevel;
+        // Default the new goal's dept to the current dept tab (or "All"
+        // depts if the user is on the All tab). Keeps the goal scoped to
+        // the dashboard view they're looking at when they hit "+ Add a goal".
+        deptSel.value = currentDeptId != null ? String(currentDeptId) : '';
         if (VIEWER_ROLE === 'subject_head') {
             subjectSel.value = (VIEWER_SUBJECTS[0] || '');
         } else {
@@ -1442,12 +1537,14 @@ function closeGoalModal() {
 }
 
 async function saveGoal() {
+    var deptRaw = document.getElementById('goalDepartment').value;
     var payload = {
         title: document.getElementById('goalTitle').value.trim(),
         metric_type: document.getElementById('goalMetric').value,
         target_value: parseFloat(document.getElementById('goalTarget').value),
-        target_band: document.getElementById('goalBand').value || null,
+        target_level: document.getElementById('goalLevel').value || null,
         target_subject: document.getElementById('goalSubject').value || null,
+        department_id: deptRaw ? parseInt(deptRaw, 10) : null,
     };
     if (!payload.title) return alert('Title is required.');
     if (isNaN(payload.target_value)) return alert('Target value must be a number.');
@@ -1466,7 +1563,7 @@ async function saveGoal() {
         if (!data.success) return alert(data.error || 'Save failed.');
         closeGoalModal();
         payloadCache = {};
-        await switchBand(currentBand);
+        await fetchPayload();
     } catch (e) {
         console.error(e);
         alert('Connection error.');
@@ -1485,7 +1582,7 @@ async function deleteGoal() {
         if (!data.success) return alert(data.error || 'Delete failed.');
         closeGoalModal();
         payloadCache = {};
-        await switchBand(currentBand);
+        await fetchPayload();
     } catch (e) {
         console.error(e);
         alert('Connection error.');
@@ -1504,10 +1601,20 @@ async function deleteGoal() {
     buildWidgetOptions();
     buildTemplateOptions();
 
-    document.querySelectorAll('.band-tab').forEach(function (btn) {
+    document.querySelectorAll('.level-tab').forEach(function (btn) {
         btn.addEventListener('click', function () {
-            var b = btn.dataset.band;
-            if (b && b !== currentBand) switchBand(b);
+            var key = btn.dataset.level;
+            if (key && key !== currentLevel) switchLevel(key);
+        });
+    });
+
+    document.querySelectorAll('.dept-tab').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var raw = btn.dataset.deptId;
+            var deptId = (raw === undefined || raw === '') ? null : parseInt(raw, 10);
+            if (Number.isNaN(deptId)) deptId = null;
+            if (deptId === currentDeptId) return;
+            switchDept(deptId);
         });
     });
 
@@ -1526,8 +1633,9 @@ async function deleteGoal() {
 
     (async function () {
         await loadLayout();
-        highlightBandTab(currentBand);
-        await switchBand(currentBand);
+        highlightLevelTab(currentLevel);
+        highlightDeptTab(currentDeptId);
+        await fetchPayload();
     })();
 })();
 </script>

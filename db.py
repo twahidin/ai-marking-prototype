@@ -586,6 +586,120 @@ def _migrate_add_columns(app):
                 logger.info('Added bank_pushed_at column to assignments table')
 
 
+_DEPT_GOAL_MIGRATION_NAME = 'department_goal_dept_level_2026_05_15'
+
+
+def _migrate_department_goal_to_dept_level(app):
+    """One-shot wipe + reshape for DepartmentGoal.
+
+    Goals used to be (target_band, target_subject); we're moving to
+    (department_id, target_level, target_subject). Per Joe's call on a
+    testing platform: drop every existing row rather than try to migrate
+    stale text-band values, then ensure the new columns are present.
+    Idempotent via MigrationFlag.
+    """
+    from sqlalchemy import text, inspect
+    with app.app_context():
+        marker = MigrationFlag.query.filter_by(name=_DEPT_GOAL_MIGRATION_NAME).first()
+        if marker is not None:
+            return
+        inspector = inspect(db.engine)
+        if 'department_goal' not in inspector.get_table_names():
+            db.session.add(MigrationFlag(name=_DEPT_GOAL_MIGRATION_NAME))
+            db.session.commit()
+            return
+        # Wipe every existing goal row. The user has explicitly opted in
+        # to losing the rows rather than translating target_band strings.
+        try:
+            deleted = db.session.execute(text('DELETE FROM department_goal')).rowcount
+        except Exception:
+            db.session.rollback()
+            deleted = 0
+        else:
+            db.session.commit()
+        cols = {c['name'] for c in inspector.get_columns('department_goal')}
+        if 'target_level' not in cols:
+            db.session.execute(text(
+                'ALTER TABLE department_goal ADD COLUMN target_level VARCHAR(20)'
+            ))
+            db.session.commit()
+        if 'department_id' not in cols:
+            # SQLite can't add a FK constraint via ALTER TABLE, but the
+            # column itself is enough — the ORM enforces the relationship
+            # on insert. On Postgres the FK gets added when create_all
+            # rebuilds; manual ALTER avoided here for SQLite parity.
+            db.session.execute(text(
+                'ALTER TABLE department_goal ADD COLUMN department_id INTEGER'
+            ))
+            db.session.commit()
+        if 'target_band' in cols:
+            # Drop the legacy column where the dialect supports it.
+            # SQLite < 3.35 lacks DROP COLUMN entirely — fall back to
+            # leaving the column behind (harmless; never read).
+            try:
+                db.session.execute(text(
+                    'ALTER TABLE department_goal DROP COLUMN target_band'
+                ))
+                db.session.commit()
+                logger.info('Dropped legacy department_goal.target_band')
+            except Exception:
+                db.session.rollback()
+                logger.info(
+                    'Could not DROP COLUMN target_band on this dialect; '
+                    'leaving it in place (unread).'
+                )
+
+        # Same rename pass for department_dashboard_layout: last_band →
+        # last_level + add last_dept_id. We don't wipe layouts — they're
+        # cheap to preserve and the column names already encode the new
+        # dept-tab axis.
+        if 'department_dashboard_layout' in inspector.get_table_names():
+            layout_cols = {c['name'] for c in inspector.get_columns(
+                'department_dashboard_layout')}
+            if 'last_level' not in layout_cols:
+                db.session.execute(text(
+                    'ALTER TABLE department_dashboard_layout '
+                    'ADD COLUMN last_level VARCHAR(20)'
+                ))
+                db.session.commit()
+                if 'last_band' in layout_cols:
+                    # Copy carries the old viewer's tab choice forward.
+                    db.session.execute(text(
+                        'UPDATE department_dashboard_layout '
+                        'SET last_level = last_band '
+                        'WHERE last_level IS NULL'
+                    ))
+                    db.session.commit()
+            if 'last_dept_id' not in layout_cols:
+                db.session.execute(text(
+                    'ALTER TABLE department_dashboard_layout '
+                    'ADD COLUMN last_dept_id INTEGER'
+                ))
+                db.session.commit()
+            if 'last_band' in layout_cols:
+                try:
+                    db.session.execute(text(
+                        'ALTER TABLE department_dashboard_layout '
+                        'DROP COLUMN last_band'
+                    ))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                    logger.info(
+                        'Could not DROP COLUMN last_band on this dialect; '
+                        'leaving it in place (unread).'
+                    )
+
+        db.session.add(MigrationFlag(name=_DEPT_GOAL_MIGRATION_NAME))
+        db.session.commit()
+        logger.info(
+            'department_goal migration: wiped %d existing rows; '
+            'added target_level + department_id columns; '
+            'renamed dashboard_layout.last_band → last_level + last_dept_id',
+            deleted,
+        )
+
+
 _CALIBRATION_RUNTIME_MIGRATION_NAME = 'calibration_runtime_2026_05_13'
 
 
@@ -769,6 +883,7 @@ def init_db(app):
         try:
             db.create_all()
             _migrate_add_columns(app)
+            _migrate_department_goal_to_dept_level(app)
             from subject_standards import seed_subject_topic_vocabulary
             seed_subject_topic_vocabulary()
             _migrate_calibration_runtime(app)
@@ -1506,15 +1621,17 @@ class ExemplarAnalysisLog(db.Model):
 class DepartmentDashboardLayout(db.Model):
     """One layout per viewer for the department insights dashboard.
 
-    The same layout is reused across every band tab (Sec 1 / Sec 2 / Sec 3 /
-    Sec 4-5 / All) — only the data swaps when the tab changes. `last_band`
-    is the band the viewer was last looking at; restored on next visit so
+    The same layout is reused across every (dept × level) tab — only the
+    data swaps when the tab changes. `last_level` is the level tab the
+    viewer was last on (Sec 1 / 2 / 3 / 4-5 / All); `last_dept_id` is
+    the department tab (None = "All"). Both restored on next visit so
     they don't have to re-click."""
     __tablename__ = 'department_dashboard_layout'
     teacher_id = db.Column(db.String(36), db.ForeignKey('teachers.id'),
                            primary_key=True)
     layout_json = db.Column(db.Text, nullable=False, default='[]')
-    last_band = db.Column(db.String(20), default='sec1')
+    last_level = db.Column(db.String(20), default='sec1')
+    last_dept_id = db.Column(db.Integer, nullable=True)
     updated_at = db.Column(
         db.DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -1525,18 +1642,23 @@ class DepartmentDashboardLayout(db.Model):
 class DepartmentGoal(db.Model):
     """HOD / Subject Head / Lead-set goals shown in the dept_goals widget.
 
-    Soft-deleted via `deleted_at`. `target_band` and `target_subject` are
-    both nullable: NULL means "all bands" / "all subjects". Subject Heads
-    can only create goals whose `target_subject` is one of their teaching
-    subjects (enforced at the route layer)."""
+    Soft-deleted via `deleted_at`. `department_id`, `target_level`, and
+    `target_subject` are all nullable: NULL means "applies to all
+    departments / all levels / all subjects" respectively. The widget's
+    query keeps a row when each nullable matches the current tab (or is
+    NULL = wildcard). Subject Heads can only create goals whose
+    `target_subject` is one of their teaching subjects (route-level)."""
     __tablename__ = 'department_goal'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     title = db.Column(db.String(200), nullable=False)
     # one of: pass_rate, avg_score, submission_rate
     metric_type = db.Column(db.String(40), nullable=False)
     target_value = db.Column(db.Float, nullable=False)
-    target_band = db.Column(db.String(20), nullable=True)
+    target_level = db.Column(db.String(20), nullable=True)
     target_subject = db.Column(db.String(200), nullable=True)
+    department_id = db.Column(db.Integer,
+                              db.ForeignKey('departments.id', ondelete='SET NULL'),
+                              nullable=True)
     created_by_id = db.Column(db.String(36), db.ForeignKey('teachers.id'),
                               nullable=False)
     created_at = db.Column(
