@@ -26,23 +26,6 @@
   }
   .td-skel-bar.short { width: 70%; }
   .td-skel-bar.shorter { width: 45%; }
-  /* Save-acknowledgement chip for the topic-tags inputs. Floats next to
-     the input, fades in green on success, slides away. */
-  .tt-save-chip {
-    display: inline-block;
-    margin-left: 8px;
-    padding: 1px 6px;
-    font-size: 11px;
-    border-radius: 10px;
-    background: #e8f5ec;
-    color: #28a745;
-    opacity: 0;
-    transform: translateX(-4px);
-    transition: opacity 200ms ease, transform 200ms ease;
-    pointer-events: none;
-  }
-  .tt-save-chip.visible { opacity: 1; transform: translateX(0); }
-  .tt-save-chip.error { background: #fdecea; color: #c0392b; }
   /* Tiny inline spinner for fetch-in-progress buttons. */
   .td-spinner {
     display: inline-block;
@@ -123,36 +106,16 @@
             </div>
         </div>
 
-        {% if assignment.topic_keys_status != 'legacy' %}
-        <div style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-                <span class="info-label" style="margin-bottom:0;">Topic tags</span>
-                {% if assignment.topic_keys_status == 'pending' %}
-                    <span style="font-size:12px;font-weight:400;color:#e68a00;">tagging…</span>
-                {% endif %}
-            </div>
-            <input id="topic-tag-input"
-                   class="topic-tag-input"
-                   value="{{ topic_keys_flat | join(', ') }}"
-                   placeholder="comma-separated topic keys (e.g. enzymes, terminology_precision)"
-                   style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px;box-sizing:border-box;" />
-            <p style="color:#888;font-size:11px;margin:4px 0 0;">Subject standards retrieval matches on these tags when marking. Click away to save.</p>
-            <p id="topic-tag-status" class="topic-tag-status" hidden style="margin:6px 0 0;font-size:12px;color:#888;"></p>
-        </div>
-        {% endif %}
-
         <div class="details-actions" style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;display:flex;gap:12px 16px;flex-wrap:wrap;align-items:flex-start;">
             <div style="display:flex;flex-direction:column;gap:8px;">
                 <button class="upload-btn" onclick="openEditModal()" style="padding:8px 20px;font-size:13px;">Edit Assignment</button>
-                {% if assignment.topic_keys_status != 'legacy' %}
                 <button type="button" class="upload-btn" data-action="toggle-answer-key-amendments"
                         aria-expanded="false" aria-controls="answer-key-amendments-panel"
                         style="padding:8px 20px;font-size:13px;">Answer key amendments</button>
-                {% endif %}
             </div>
             <div style="display:flex;flex-direction:column;gap:8px;">
                 <button class="upload-btn" onclick="openShareModal()" style="padding:8px 20px;font-size:13px;">Share to Assignment Bank</button>
-                {% if linked_bank_id and assignment.topic_keys_status != 'legacy' %}
+                {% if linked_bank_id %}
                 <button type="button" class="upload-btn" data-action="push-amendments-to-bank"
                         style="padding:8px 20px;font-size:13px;">Update bank version with my amendments</button>
                 <p id="bank-push-status" hidden style="color:#888;font-size:12px;margin:0;"></p>
@@ -168,7 +131,6 @@
             </div>
         </div>
 
-        {% if assignment.topic_keys_status != 'legacy' %}
         <div id="answer-key-amendments-panel" hidden style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;">
             <p style="color:#666;font-size:12px;margin:0 0 10px;">
                 The answer key the AI sees during marking: the uploaded original (if it&rsquo;s text)
@@ -180,7 +142,6 @@
                 Note: the original answer key is a PDF/binary file and is not shown here &mdash; only your text amendments appear above. The AI consumes the PDF natively at marking time.
             </p>
         </div>
-        {% endif %}
     </div>
 
     <!-- Summary Stats -->
@@ -570,8 +531,7 @@
                    entity_id=assignment.id,
                    entity_assign_type=assignment.assign_type,
                    inline_url_prefix='/teacher/assignment/' ~ assignment.id ~ '/file-inline',
-                   canonical_subjects=canonical_subjects,
-                   topic_keys_flat=topic_keys_flat %}
+                   canonical_subjects=canonical_subjects %}
                 {% include '_assignment_form_fields.html' %}
             {% endwith %}
         </div>
@@ -1247,8 +1207,6 @@ var REMARK_ASSIGNMENT_ID = ASSIGNMENT_ID;
 // Per-criterion band lists for the rubrics modal's editable band dropdown.
 // Empty {} for short_answer assignments — feedback_render.js falls back to
 // a free-text input in that case (no canonical band list to populate).
-window.ASSIGNMENT_HAS_CANONICAL_SUBJECT = {{ (assignment_has_canonical_subject|default(false))|tojson }};
-window.ASSIGNMENT_TOPIC_KEYS_STATUS = {{ (assignment.topic_keys_status|default('pending'))|tojson }};
 window.__rubricBandsByCriterion = {{ rubric_bands_by_criterion | default({}) | tojson }};
 var remarkPollTimers = {};
 
@@ -1721,22 +1679,6 @@ async function submitEdit() {
             btn.textContent = 'Save Changes';
             return;
         }
-        // Topic tags — saved through the dedicated endpoint after the main edit
-        // succeeds so subject changes (which can shift the vocabulary) apply
-        // before validation. Best-effort; the reload below shows final state
-        // including any dropped keys.
-        const topicEl = document.getElementById('editTopicTags');
-        if (topicEl) {
-            const keys = topicEl.value
-                .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
-            try {
-                await fetch('/teacher/assignment/{{ assignment.id }}/topic-tags', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ topic_keys: keys }),
-                });
-            } catch (e) { /* non-fatal */ }
-        }
         // Strip ?edit=1 (if present) before reload so the modal doesn't auto-reopen
         const url = new URL(window.location);
         if (url.searchParams.has('edit')) {
@@ -1760,76 +1702,6 @@ window.addEventListener('DOMContentLoaded', () => {
         openEditModal();
     }
 });
-
-// Topic tags — single assignment-level input, autosave on blur.
-(function () {
-    var input = document.getElementById('topic-tag-input');
-    if (!input) return;
-    var status = document.getElementById('topic-tag-status');
-
-    function gatherKeys() {
-        return input.value
-            .split(',')
-            .map(function (s) { return s.trim(); })
-            .filter(Boolean);
-    }
-
-    function showStatus(kind, msg) {
-        if (!status) return;
-        status.hidden = false;
-        status.textContent = msg;
-        // Colors: success neutral grey, warning amber, error red.
-        status.style.color = kind === 'success' ? '#5b8c5a' :
-                              kind === 'warning' ? '#b07a13' :
-                              kind === 'error' ? '#b94a48' : '#888';
-        clearTimeout(status._hideTimer);
-        if (kind === 'success') {
-            status._hideTimer = setTimeout(function () { status.hidden = true; }, 2000);
-        }
-    }
-
-    var blurTimer = null;
-    input.addEventListener('blur', function () {
-        clearTimeout(blurTimer);
-        blurTimer = setTimeout(save, 80);
-    });
-
-    function save() {
-        showStatus('info', 'Saving…');
-        fetch('/teacher/assignment/{{ assignment.id }}/topic-tags', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ topic_keys: gatherKeys() }),
-        }).then(function (r) {
-            if (!r.ok) throw new Error('http ' + r.status);
-            return r.json();
-        }).then(function (data) {
-            if (!data || !data.success) {
-                showStatus('error', '⚠ ' + ((data && data.error) || 'Save failed'));
-                return;
-            }
-            // Don't overwrite the user's typed text — they might want to fix
-            // a dropped key. Show the server-cleaned list as the canonical
-            // saved state, and surface any dropped keys explicitly.
-            var saved = (data.topic_keys || []);
-            var dropped = (data.dropped || []);
-            if (dropped.length) {
-                showStatus(
-                    'warning',
-                    '⚠ Saved ' + saved.length + ' tag' + (saved.length === 1 ? '' : 's') +
-                    '. Dropped (not in subject vocabulary): ' + dropped.join(', ')
-                );
-            } else {
-                showStatus('success', '✓ Saved ' + saved.length + ' tag' + (saved.length === 1 ? '' : 's'));
-                // When everything was accepted, normalize the display to the
-                // canonical comma-spaced form returned by the server.
-                input.value = saved.join(', ');
-            }
-        }).catch(function () {
-            showStatus('error', '⚠ Save failed');
-        });
-    }
-})();
 
 // Answer key amendments — inline expandable panel inside the details card.
 // Click button to open/close. Click outside the details card to close.

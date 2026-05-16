@@ -163,8 +163,6 @@
     window.dispatchEvent(new Event('pdfjs-ready'));
 </script>
 <script>
-window.ASSIGNMENT_HAS_CANONICAL_SUBJECT = {{ (assignment_has_canonical_subject|default(false))|tojson }};
-window.ASSIGNMENT_TOPIC_KEYS_STATUS = {{ (assignment.topic_keys_status|default('pending'))|tojson }};
 </script>
 <script src="{{ url_for('static', filename='js/feedback_render.js') }}?v={{ static_version }}"></script>
 <script src="{{ url_for('static', filename='js/document_viewer.js') }}?v={{ static_version }}"></script>

@@ -69,18 +69,6 @@
     </select>
 </div>
 
-{# Topic tags — class mode only. Bank entries don't carry teacher-edited
-   topic tags (the bank's are derived from the original assignment). #}
-{% if mode != 'bank' and (entity.topic_keys_status or 'pending') != 'legacy' %}
-<div class="edit-form-group">
-    <label for="editTopicTags">Topic Tags</label>
-    <input type="text" id="editTopicTags"
-           value="{{ (topic_keys_flat | default([])) | join(', ') }}"
-           placeholder="comma-separated topic keys (e.g. enzymes, terminology_precision)">
-    <div class="edit-disabled-hint">Subject standards retrieval matches on these tags when marking. Unknown keys for the chosen subject are dropped on save.</div>
-</div>
-{% endif %}
-
 <div class="edit-form-row">
     <div class="edit-form-group">
         <label for="editProvider">AI Provider</label>
