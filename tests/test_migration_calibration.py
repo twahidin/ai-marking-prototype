@@ -5,7 +5,7 @@ deleted). topic_keys_status classification tests removed (logic removed from
 _migrate_calibration_runtime).
 """
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from db import db
 
 
@@ -15,17 +15,17 @@ def test_feedback_edit_has_amend_answer_key_column(app):
         assert 'amend_answer_key' in cols
 
 
-def test_assignment_has_topic_keys_columns(app):
-    """topic_keys and topic_keys_status columns survive until commit 4 (DROP COLUMN)."""
+def test_assignment_has_bank_pushed_at_column(app):
+    """bank_pushed_at survives; topic_keys/topic_keys_status are dropped in commit 4."""
     with app.app_context():
         cols = [c['name'] for c in inspect(db.engine).get_columns('assignments')]
-        assert 'topic_keys' in cols
-        assert 'topic_keys_status' in cols
         assert 'bank_pushed_at' in cols
+        assert 'topic_keys' not in cols
+        assert 'topic_keys_status' not in cols
 
 
 def test_feedback_edits_get_amendment_scope_on_migration(app, db_session):
-    """_migrate_calibration_runtime now sets amend_answer_key=True and scope='amendment'
+    """_migrate_calibration_runtime now sets amend_answer_key=True
     on all active FeedbackEdits whose parent assignment exists, regardless of assignment age.
     """
     from datetime import datetime, timezone, timedelta
@@ -50,11 +50,11 @@ def test_feedback_edits_get_amendment_scope_on_migration(app, db_session):
     old_fe = FeedbackEdit(submission_id=placeholder_sid_a, criterion_id='1', field='feedback',
                           original_text='x', edited_text='y',
                           edited_by=t.id, assignment_id=old_asn.id,
-                          rubric_version='v1', scope='individual', active=True)
+                          rubric_version='v1', active=True)
     new_fe = FeedbackEdit(submission_id=placeholder_sid_b, criterion_id='1', field='feedback',
                           original_text='x', edited_text='y',
                           edited_by=t.id, assignment_id=new_asn.id,
-                          rubric_version='v1', scope='individual', active=True)
+                          rubric_version='v1', active=True)
     db_session.add_all([old_fe, new_fe])
     db_session.commit()
 
@@ -65,7 +65,70 @@ def test_feedback_edits_get_amendment_scope_on_migration(app, db_session):
     # Both get amend_answer_key=True since the topic_keys_status legacy check is gone.
     assert old_fe.active is True
     assert old_fe.amend_answer_key is True
-    assert old_fe.scope == 'amendment'
     assert new_fe.active is True
     assert new_fe.amend_answer_key is True
-    assert new_fe.scope == 'amendment'
+
+
+# --- 2026-05-16: drop_subject_standards migration -------------------------
+
+
+def test_drop_migration_removes_subject_standards_table(app, db_session):
+    """After migration, subject_standards table is absent."""
+    from db import _migrate_drop_subject_standards
+    db.session.execute(text(
+        "CREATE TABLE IF NOT EXISTS subject_standards (id INTEGER PRIMARY KEY)"
+    ))
+    db.session.commit()
+    _migrate_drop_subject_standards(app, force=True)
+    rows = db.session.execute(text(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='subject_standards'"
+    )).fetchall()
+    assert rows == [], 'subject_standards table should be dropped'
+
+
+def test_drop_migration_removes_subject_topic_vocabulary_table(app, db_session):
+    """After migration, subject_topic_vocabulary table is absent."""
+    from db import _migrate_drop_subject_standards
+    db.session.execute(text(
+        "CREATE TABLE IF NOT EXISTS subject_topic_vocabulary (subject TEXT, topic_key TEXT)"
+    ))
+    db.session.commit()
+    _migrate_drop_subject_standards(app, force=True)
+    rows = db.session.execute(text(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='subject_topic_vocabulary'"
+    )).fetchall()
+    assert rows == [], 'subject_topic_vocabulary table should be dropped'
+
+
+def test_drop_migration_removes_feedback_edits_dead_columns(app, db_session):
+    """After migration, the obsolete FeedbackEdit columns are gone."""
+    from db import _migrate_drop_subject_standards
+    _migrate_drop_subject_standards(app, force=True)
+    cols = [
+        r[1] for r in db.session.execute(text("PRAGMA table_info(feedback_edit)")).fetchall()
+    ]
+    for dead in ('scope', 'promoted_to_subject_standard_id',
+                 'promoted_by', 'promoted_at'):
+        assert dead not in cols, f'feedback_edits.{dead} should be dropped'
+
+
+def test_drop_migration_removes_assignments_dead_columns(app, db_session):
+    """After migration, the obsolete Assignment columns are gone."""
+    from db import _migrate_drop_subject_standards
+    _migrate_drop_subject_standards(app, force=True)
+    cols = [
+        r[1] for r in db.session.execute(text("PRAGMA table_info(assignments)")).fetchall()
+    ]
+    for dead in ('topic_keys', 'topic_keys_status'):
+        assert dead not in cols, f'assignments.{dead} should be dropped'
+
+
+def test_drop_migration_is_idempotent(app, db_session):
+    """Running the migration twice is safe — second call no-ops."""
+    from db import _migrate_drop_subject_standards
+    _migrate_drop_subject_standards(app, force=True)
+    _migrate_drop_subject_standards(app)
+    rows = db.session.execute(text(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('subject_standards', 'subject_topic_vocabulary')"
+    )).fetchall()
+    assert rows == []

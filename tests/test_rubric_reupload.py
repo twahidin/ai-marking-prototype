@@ -21,7 +21,6 @@ def test_reupload_carries_amendments_to_new_rubric_version(app, db_session, clie
                      subject='biology', title='Bio', teacher_id=t.id,
                      assign_type='rubrics',
                      rubrics=_PDF_OLD,
-                     topic_keys_status='tagged',
                      provider='anthropic', model='claude-sonnet-4-6')
     asn.set_api_keys({'anthropic': 'sk-fake'})
     db_session.add_all([t, asn])
@@ -32,7 +31,7 @@ def test_reupload_carries_amendments_to_new_rubric_version(app, db_session, clie
         submission_id=placeholder_sid, criterion_id='3', field='feedback',
         original_text='X', edited_text='Accept powerhouse',
         edited_by=t.id, assignment_id=asn.id,
-        rubric_version=old_rv, scope='amendment',
+        rubric_version=old_rv,
         amend_answer_key=True, active=True,
     ))
     db_session.commit()
@@ -77,7 +76,6 @@ def test_no_amendments_no_carryover(app, db_session, client):
                      subject='biology', title='Bio', teacher_id=t.id,
                      assign_type='rubrics',
                      rubrics=_PDF_PLAIN,
-                     topic_keys_status='tagged',
                      provider='anthropic', model='claude-sonnet-4-6')
     asn.set_api_keys({'anthropic': 'sk-fake'})
     db_session.add_all([t, asn])

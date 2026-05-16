@@ -7,11 +7,11 @@ from unittest.mock import patch
 from db import db, Teacher, Assignment, Student, Submission, FeedbackEdit
 
 
-def _make_chain(db_session, *, subject='biology', role='owner', topic_keys_status='tagged'):
+def _make_chain(db_session, *, subject='biology', role='owner'):
     """Build Teacher → Assignment → Student → Submission chain.
 
-    Defaults to a canonical subject, owner role, tagged status so that
-    the amend checkbox is accepted. Override per-test as needed.
+    Defaults to a canonical subject and owner role so that the amend
+    checkbox is accepted. Override per-test as needed.
     """
     tid = 't-' + _uuid.uuid4().hex[:8]
     aid = 'a-' + _uuid.uuid4().hex[:8]
@@ -23,8 +23,6 @@ def _make_chain(db_session, *, subject='biology', role='owner', topic_keys_statu
         subject=subject,
         title='Test',
         teacher_id=t.id,
-        topic_keys=json.dumps([['enzymes']]),
-        topic_keys_status=topic_keys_status,
         provider='anthropic',
         model='claude-sonnet-4-6',
     )
@@ -83,7 +81,6 @@ def test_amend_answer_key_only_writes_feedback_edit_with_flag(app, db_session, c
     fe = FeedbackEdit.query.filter_by(submission_id=sub.id).first()
     assert fe is not None
     assert fe.amend_answer_key is True
-    assert fe.scope == 'amendment'
 
 
 def test_uncheck_both_without_text_edit_deactivates_prior(app, db_session, client):
@@ -137,13 +134,13 @@ def test_effective_answer_key_appends_amendments(app, db_session):
             submission_id=1, criterion_id='3', field='feedback',
             original_text='X', edited_text='Accept "powerhouse of the cell"',
             edited_by=t.id, assignment_id=asn.id, rubric_version=rv,
-            scope='amendment', amend_answer_key=True, active=True,
+            amend_answer_key=True, active=True,
         ),
         FeedbackEdit(
             submission_id=1, criterion_id='5', field='feedback',
             original_text='X', edited_text='Diagram is a fish, not a bird',
             edited_by=t.id, assignment_id=asn.id, rubric_version=rv,
-            scope='amendment', amend_answer_key=True, active=True,
+            amend_answer_key=True, active=True,
         ),
     ])
     db_session.commit()
@@ -195,17 +192,17 @@ def test_effective_answer_key_only_active_amend_edits_included(app, db_session):
         FeedbackEdit(submission_id=1, criterion_id='1', field='feedback',
                      original_text='X', edited_text='AMEND TEXT INCLUDED',
                      edited_by=t.id, assignment_id=asn.id, rubric_version=rv,
-                     scope='amendment', amend_answer_key=True, active=True),
+                     amend_answer_key=True, active=True),
         # Inactive → excluded
         FeedbackEdit(submission_id=1, criterion_id='2', field='feedback',
                      original_text='X', edited_text='INACTIVE TEXT EXCLUDED',
                      edited_by=t.id, assignment_id=asn.id, rubric_version=rv,
-                     scope='amendment', amend_answer_key=True, active=False),
+                     amend_answer_key=True, active=False),
         # Promotion-only (not an amendment) → excluded
         FeedbackEdit(submission_id=1, criterion_id='3', field='feedback',
                      original_text='X', edited_text='PROMOTION ONLY TEXT EXCLUDED',
                      edited_by=t.id, assignment_id=asn.id, rubric_version=rv,
-                     scope='promoted', amend_answer_key=False, active=True),
+                     amend_answer_key=False, active=True),
     ])
     db_session.commit()
 

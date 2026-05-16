@@ -388,13 +388,12 @@ def _migrate_add_columns(app):
 
             ensure_fe = [
                 ('mistake_type', 'VARCHAR(64)'),
-                ('promoted_by', 'VARCHAR(36)'),
-                ('promoted_at', 'TIMESTAMP'),
+                # promoted_by, promoted_at, scope removed from ORM and dropped by
+                # _migrate_drop_subject_standards. Do NOT re-add them here.
                 ('propagation_status', "VARCHAR(20) DEFAULT 'none' NOT NULL"),
                 ('propagated_to', "TEXT DEFAULT '[]' NOT NULL"),
                 ('propagated_at', 'TIMESTAMP'),
                 ('rubric_version', "VARCHAR(64) DEFAULT '' NOT NULL"),
-                ('scope', "VARCHAR(20) DEFAULT 'individual' NOT NULL"),
                 ('mistake_pattern', 'VARCHAR(80)'),
                 ('correction_principle', 'VARCHAR(300)'),
                 ('transferability', 'VARCHAR(10)'),
@@ -630,21 +629,14 @@ def _migrate_add_columns(app):
                 db.session.execute(text('ALTER TABLE feedback_edit ADD COLUMN amend_answer_key BOOLEAN DEFAULT FALSE NOT NULL'))
                 db.session.commit()
                 logger.info('Added amend_answer_key column to feedback_edit table')
-            if 'promoted_to_subject_standard_id' not in columns:
-                db.session.execute(text('ALTER TABLE feedback_edit ADD COLUMN promoted_to_subject_standard_id INTEGER'))
-                db.session.commit()
-                logger.info('Added promoted_to_subject_standard_id column to feedback_edit table')
+            # promoted_to_subject_standard_id, scope, promoted_by, promoted_at:
+            # removed from ORM and dropped by _migrate_drop_subject_standards.
+            # Do NOT re-add them here.
 
         if 'assignments' in inspector.get_table_names():
             columns = [c['name'] for c in inspector.get_columns('assignments')]
-            if 'topic_keys' not in columns:
-                db.session.execute(text("ALTER TABLE assignments ADD COLUMN topic_keys TEXT DEFAULT '[]' NOT NULL"))
-                db.session.commit()
-                logger.info('Added topic_keys column to assignments table')
-            if 'topic_keys_status' not in columns:
-                db.session.execute(text("ALTER TABLE assignments ADD COLUMN topic_keys_status VARCHAR(20) DEFAULT 'pending' NOT NULL"))
-                db.session.commit()
-                logger.info('Added topic_keys_status column to assignments table')
+            # topic_keys and topic_keys_status removed from ORM and dropped by
+            # _migrate_drop_subject_standards. Do NOT re-add them here.
             if 'bank_pushed_at' not in columns:
                 db.session.execute(text("ALTER TABLE assignments ADD COLUMN bank_pushed_at TIMESTAMP"))
                 db.session.commit()
@@ -765,27 +757,171 @@ def _migrate_department_goal_to_dept_level(app):
         )
 
 
+def _drop_columns(table_name, columns_to_drop):
+    """Drop columns from a table on both SQLite and Postgres.
+
+    SQLite (pre-3.35) had no DROP COLUMN, so we use the table-rebuild
+    dance. Portable, and lets us drop multiple columns in one pass.
+
+    Postgres supports native ALTER TABLE ... DROP COLUMN.
+
+    Idempotent: silently ignores columns that don't exist.
+    Uses db.session.execute(text(...)) for SQLAlchemy 2.0 compatibility.
+    """
+    from sqlalchemy import text, inspect as sa_inspect
+    dialect = db.engine.dialect.name
+
+    if dialect == 'postgresql':
+        inspector = sa_inspect(db.engine)
+        existing = {c['name'] for c in inspector.get_columns(table_name)}
+        for col in columns_to_drop:
+            if col not in existing:
+                continue
+            db.session.execute(text(f'ALTER TABLE {table_name} DROP COLUMN {col}'))
+            db.session.commit()
+        db.session.commit()
+        return
+
+    # SQLite path: table rebuild.
+    inspector = sa_inspect(db.engine)
+    try:
+        cols_info = inspector.get_columns(table_name)
+    except Exception:
+        return  # table doesn't exist
+    if not cols_info:
+        return
+    existing_cols = [c['name'] for c in cols_info]
+    to_drop = set(c for c in columns_to_drop if c in existing_cols)
+    if not to_drop:
+        return  # idempotent no-op
+
+    # We need raw PRAGMA info for type/notnull/default/pk details.
+    info = db.session.execute(text(f'PRAGMA table_info({table_name})')).fetchall()
+
+    kept_cols = [c for c in existing_cols if c not in to_drop]
+    kept_cols_csv = ', '.join(kept_cols)
+
+    new_table = f'__new__{table_name}'
+    db.session.execute(text(f'DROP TABLE IF EXISTS {new_table}'))
+
+    col_defs = []
+    pk_cols = []
+    for r in info:
+        cid, name, ctype, notnull, dflt, pk = r
+        if name in to_drop:
+            continue
+        line = f'{name} {ctype}'
+        if notnull:
+            line += ' NOT NULL'
+        if dflt is not None:
+            line += f' DEFAULT {dflt}'
+        if pk:
+            pk_cols.append(name)
+        col_defs.append(line)
+    if pk_cols:
+        col_defs.append(f'PRIMARY KEY ({", ".join(pk_cols)})')
+
+    db.session.execute(text(
+        f'CREATE TABLE {new_table} ({", ".join(col_defs)})'
+    ))
+    db.session.execute(text(
+        f'INSERT INTO {new_table} ({kept_cols_csv}) '
+        f'SELECT {kept_cols_csv} FROM {table_name}'
+    ))
+    db.session.execute(text(f'DROP TABLE {table_name}'))
+    db.session.execute(text(f'ALTER TABLE {new_table} RENAME TO {table_name}'))
+
+    # Recreate indexes that existed on the old table.
+    indexes = db.session.execute(text(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=:t "
+        "AND sql IS NOT NULL"
+    ), {'t': table_name}).fetchall()
+    for (sql,) in indexes:
+        try:
+            db.session.execute(text(sql))
+        except Exception:
+            pass  # index already created during table rebuild
+    db.session.commit()
+
+
+_DROP_SUBJECT_STANDARDS_MIGRATION_NAME = 'drop_subject_standards_2026_05_16'
+
+
+def _migrate_drop_subject_standards(_app, force=False):
+    """Drop subject_standards + subject_topic_vocabulary tables and the
+    obsolete FeedbackEdit + Assignment columns. Idempotent via
+    MigrationFlag. force=True bypasses idempotency (tests only).
+
+    Uses raw SQL throughout: by this commit, the ORM no longer maps the
+    affected columns, so SQLAlchemy queries would fail at parse time.
+    """
+    with _app.app_context():
+        marker = MigrationFlag.query.filter_by(
+            name=_DROP_SUBJECT_STANDARDS_MIGRATION_NAME
+        ).first()
+        if marker is not None and not force:
+            logger.debug(
+                'drop_subject_standards migration already applied at %s',
+                marker.applied_at,
+            )
+            return
+        if force:
+            logger.info('drop_subject_standards: forced re-run (tests only)')
+        else:
+            logger.info('drop_subject_standards: first run on this DB')
+
+        from sqlalchemy import text as _text
+
+        # 1. Deactivate legacy promoted-only FeedbackEdits.
+        try:
+            db.session.execute(_text(
+                "UPDATE feedback_edit "
+                "SET active = 0 "
+                "WHERE scope = 'promoted' AND amend_answer_key = 0 AND active = 1"
+            ))
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f'legacy-promoted deactivation skipped: {e}')
+
+        # 2. Drop tables.
+        try:
+            db.session.execute(_text('DROP TABLE IF EXISTS subject_standards'))
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f'DROP TABLE subject_standards skipped: {e}')
+        try:
+            db.session.execute(_text('DROP TABLE IF EXISTS subject_topic_vocabulary'))
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f'DROP TABLE subject_topic_vocabulary skipped: {e}')
+
+        # 3. Drop columns.
+        _drop_columns('feedback_edit', [
+            'scope', 'promoted_to_subject_standard_id',
+            'promoted_by', 'promoted_at',
+        ])
+        _drop_columns('assignments', ['topic_keys', 'topic_keys_status'])
+
+        if marker is None:
+            db.session.add(MigrationFlag(name=_DROP_SUBJECT_STANDARDS_MIGRATION_NAME))
+            db.session.commit()
+
+
 _CALIBRATION_RUNTIME_MIGRATION_NAME = 'calibration_runtime_2026_05_13'
 
 
 def _migrate_calibration_runtime(_app, force=False):
-    """One-shot migration applying the 5-day cutoff classification rules.
-    Spec: docs/superpowers/specs/2026-05-13-calibration-edit-intent-design.md §7
+    """Backfills amend_answer_key=1 on every active FeedbackEdit except
+    promoted-only rows (scope='promoted', amend_answer_key=0), which are
+    left for _migrate_drop_subject_standards to deactivate. Also deactivates
+    orphan FeedbackEdits whose parent assignment no longer exists, and marks
+    all MarkingPrinciplesCache rows stale. Uses a column-existence check so
+    it works on both pre-drop and post-drop schemas.
 
-    - Assignments older than 5 days → topic_keys_status='legacy'
-    - Assignments newer than 5 days → topic_keys_status='pending'
-    - FeedbackEdits on legacy assignments → active=False
-    - FeedbackEdits on pending/newer assignments → amend_answer_key=True, scope='amendment'
-    - MarkingPrinciplesCache rows → is_stale=True
-
-    Idempotent via MigrationFlag row. force=True bypasses idempotency (tests only).
-
-    Lifecycle:
-      • Initial deploy (no marker row) → runs the classification, writes the marker.
-      • Subsequent redeploys (marker present) → returns immediately, no work done.
-      • Fresh DB / dropped migration_flag table → marker absent again, re-runs as
-        if it were the initial deploy. This is the intended behaviour for a
-        clean-slate environment.
+    Idempotent via MigrationFlag. force=True bypasses idempotency (tests only).
     """
     with _app.app_context():
         marker = MigrationFlag.query.filter_by(name=_CALIBRATION_RUNTIME_MIGRATION_NAME).first()
@@ -803,27 +939,43 @@ def _migrate_calibration_runtime(_app, force=False):
                 'classifying assignments by 5-day cutoff'
             )
 
-        # (Topic-tagging assignment classification removed 2026-05-16.
-        # The column itself is dropped in _migrate_drop_subject_standards
-        # in the next commit.)
+        # FeedbackEdit calibration intent backfill: flip amend_answer_key=True
+        # on every still-active row, EXCEPT promoted-only rows (those get
+        # deactivated by _migrate_drop_subject_standards below). Uses raw SQL
+        # because the `scope` column is no longer mapped by the ORM after
+        # commit 4, but is still present in the schema at this point in the
+        # boot sequence (the column drop happens in the next migration).
+        from sqlalchemy import text as _text_cal, inspect as _inspect_cal
+        _fe_cols = {c['name'] for c in _inspect_cal(db.engine).get_columns('feedback_edit')}
+        _scope_exists = 'scope' in _fe_cols
+        try:
+            if _scope_exists:
+                db.session.execute(_text_cal(
+                    "UPDATE feedback_edit "
+                    "SET amend_answer_key = 1 "
+                    "WHERE active = 1 "
+                    "AND NOT (scope = 'promoted' AND amend_answer_key = 0)"
+                ))
+            else:
+                # scope column already dropped (e.g. after _migrate_drop_subject_standards
+                # ran on this DB); safe to set all active rows as amendments.
+                db.session.execute(_text_cal(
+                    "UPDATE feedback_edit SET amend_answer_key = 1 WHERE active = 1"
+                ))
+        except Exception as e:
+            logger.warning(f'amend_answer_key backfill skipped: {e}')
 
-        # FeedbackEdit calibration intent backfill: anything still active
-        # is treated as an amendment. Promoted-only rows (scope='promoted',
-        # amend_answer_key=False) are LEFT ALONE here so that
-        # _migrate_drop_subject_standards (next commit) can still find them
-        # via WHERE amend_answer_key = 0 and deactivate them before the
-        # scope column is dropped.
-        for fe in FeedbackEdit.query.filter_by(active=True).all():
-            parent = Assignment.query.get(fe.assignment_id)
-            if parent is None:
-                fe.active = False
-                continue
-            # Preserve promoted-only rows so commit 4's deactivation
-            # WHERE clause can still match them.
-            if fe.scope == 'promoted' and not fe.amend_answer_key:
-                continue
-            fe.amend_answer_key = True
-            fe.scope = 'amendment'
+        # Orphan-assignment cleanup: deactivate edits whose parent
+        # assignment is gone.
+        try:
+            db.session.execute(_text_cal(
+                "UPDATE feedback_edit "
+                "SET active = 0 "
+                "WHERE active = 1 "
+                "AND assignment_id NOT IN (SELECT id FROM assignments)"
+            ))
+        except Exception as e:
+            logger.warning(f'orphan FeedbackEdit deactivation skipped: {e}')
 
         # Deactivate MarkingPrinciplesCache — mark all stale so the old
         # principles file stops being applied.
@@ -1037,6 +1189,7 @@ def init_db(app):
             _migrate_department_goal_to_dept_level(app)
             _migrate_calibration_runtime(app)
             _migrate_result_json_theme_to_mistake_type(app)
+            _migrate_drop_subject_standards(app)
             if os.getenv('DEPT_MODE', 'FALSE').upper() == 'TRUE':
                 seed_departments()
                 backfill_teacher_departments()
@@ -1335,8 +1488,6 @@ class Assignment(db.Model):
     #   'full'  — annotate every CJK character
     pinyin_mode = db.Column(db.String(10), default='off', nullable=False)
     # New (calibration intent design 2026-05-13)
-    topic_keys = db.Column(db.Text, default='[]', nullable=False)
-    topic_keys_status = db.Column(db.String(20), default='pending', nullable=False)
     bank_pushed_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     students = db.relationship('Student', backref='assignment', lazy=True, cascade='all, delete-orphan')
@@ -1582,9 +1733,6 @@ class FeedbackEdit(db.Model):
     mistake_type = db.Column(db.String(64), nullable=True)
     assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)
     rubric_version = db.Column(db.String(64), nullable=False, default='')
-    scope = db.Column(db.String(20), nullable=False, default='individual')
-    promoted_by = db.Column(db.String(36), nullable=True)
-    promoted_at = db.Column(db.DateTime(timezone=True), nullable=True)
     active = db.Column(db.Boolean, nullable=False, default=True)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     propagation_status = db.Column(db.String(20), nullable=False, default='none')
@@ -1595,7 +1743,6 @@ class FeedbackEdit(db.Model):
     transferability = db.Column(db.String(10), nullable=True)
     # New (calibration intent design 2026-05-13)
     amend_answer_key = db.Column(db.Boolean, nullable=False, default=False)
-    promoted_to_subject_standard_id = db.Column(db.Integer, nullable=True, index=True)
 
     __table_args__ = (
         db.Index('ix_feedback_edit_lookup', 'edited_by', 'active', 'mistake_type'),

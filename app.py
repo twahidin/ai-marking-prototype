@@ -8410,9 +8410,6 @@ def _process_text_edit(submission, criterion_id, field, edited_text,
             mistake_type=mistake_type,
             assignment_id=assignment.id,
             rubric_version=_rubric_version_hash(assignment),
-            scope='individual',  # FUTURE: department-level promotion logic goes here
-            promoted_by=None,
-            promoted_at=None,
             active=True,
         ))
         calibrated = True
@@ -8696,7 +8693,6 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                             assignment_id=asn.id,
                             rubric_version=rubric_hash,
                             mistake_type=target.get('mistake_type'),
-                            scope='amendment',  # column dropped in commit 4
                             amend_answer_key=amend_flag,
                             active=True,
                             propagation_status='none',

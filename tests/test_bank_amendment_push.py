@@ -47,7 +47,7 @@ def test_push_writes_merged_answer_key_to_bank(app, db_session, client):
         submission_id=placeholder_sid, criterion_id='1', field='feedback',
         original_text='X', edited_text='Accept "powerhouse of the cell"',
         edited_by=t.id, assignment_id=asn.id, rubric_version=rv,
-        scope='amendment', amend_answer_key=True, active=True,
+        amend_answer_key=True, active=True,
     ))
     db_session.commit()
 
