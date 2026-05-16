@@ -1770,11 +1770,10 @@
             textarea.removeEventListener('blur', commit);
             var newVal = textarea.value;
             var amend = !!(amendCb && amendCb.checked);
-            var promote = !!(promoteCb && promoteCb.checked);
-            var changed = (amend !== initialAmend) || (promote !== initialPromote);
+            var changed = (amend !== initialAmend);
             try {
                 if (newVal !== currentValue || changed) {
-                    await saveTextField(state, field, newVal, amend, promote);
+                    await saveTextField(state, field, newVal, amend);
                 } else {
                     if (field === 'overall') renderShell(state); else renderQuestion(state);
                 }
@@ -1795,26 +1794,17 @@
             });
         });
 
-        // Two-checkbox intent (spec 2026-05-13 §4.1) — only on feedback / improvement.
-        // First box: "Amend answer key for this assignment" (always visible).
-        // Second box: "Update subject standards" (hidden on legacy assignments or
-        // freeform subjects since server-side enforcement drops it anyway).
+        // Single-checkbox calibration intent — only on feedback / improvement.
+        // When ticked, the edit is merged into the assignment's effective
+        // answer key AND triggers auto-propagation to similar submissions.
         var amendCb = null;
-        var promoteCb = null;
         var initialAmend = false;
-        var initialPromote = false;
         if (field === 'feedback' || field === 'improvement') {
-            var subjectStandardsEnabled = (
-                global.ASSIGNMENT_HAS_CANONICAL_SUBJECT === true &&
-                global.ASSIGNMENT_TOPIC_KEYS_STATUS !== 'legacy'
-            );
-
             var qNow2 = state.questions[state.currentQ];
             var qKey2 = qNow2 ? String(qNow2.question_num != null ? qNow2.question_num : (state.currentQ + 1)) : null;
             var existingMeta2 = (qKey2 && state.textEditMeta && state.textEditMeta[qKey2] && state.textEditMeta[qKey2][field]) || null;
             if (existingMeta2) {
                 initialAmend = !!existingMeta2.amend_answer_key;
-                initialPromote = !!existingMeta2.update_subject_standards;
                 // Legacy single-toggle back-compat: if only old shape present, treat as amend.
                 if (!('amend_answer_key' in existingMeta2) && existingMeta2.calibrated) {
                     initialAmend = true;
@@ -1841,12 +1831,8 @@
                 return cb;
             }
 
-            amendCb = makeIntentRow('Amend answer key for this assignment', initialAmend);
+            amendCb = makeIntentRow('Amend answer key/rubric for this assignment', initialAmend);
             amendCb.className = 'fb-cal-cb fv-amend-answer-key';
-            if (subjectStandardsEnabled) {
-                promoteCb = makeIntentRow('Update subject standards', initialPromote);
-                promoteCb.className = 'fb-cal-cb fv-update-subject-standards';
-            }
         }
 
         textarea.focus();
@@ -1865,18 +1851,13 @@
             submitted = true;
             var newVal = textarea.value;
             var amend = !!(amendCb && amendCb.checked);
-            var promote = !!(promoteCb && promoteCb.checked);
-            var changed = (amend !== initialAmend) || (promote !== initialPromote);
-            // Skip the round-trip only when nothing changed: same text AND
-            // same intent state. If the teacher changed either checkbox (or
-            // changed the text), we need to round-trip so the server can
-            // write/deactivate the bank row.
+            var changed = (amend !== initialAmend);
             if (newVal === currentValue && !changed) {
                 if (field === 'overall') renderShell(state);
                 else renderQuestion(state);
                 return;
             }
-            saveTextField(state, field, newVal, amend, promote);
+            saveTextField(state, field, newVal, amend);
         }
         function cancel() {
             if (submitted) return;
@@ -1997,9 +1978,8 @@
         state.recommended = newResult.recommended_actions || [];
     }
 
-    async function saveTextField(state, field, newValue, amendAnswerKey, updateSubjectStandards) {
+    async function saveTextField(state, field, newValue, amendAnswerKey) {
         if (amendAnswerKey === undefined) amendAnswerKey = false;
-        if (updateSubjectStandards === undefined) updateSubjectStandards = false;
         var payload;
         var savedQNum = null;
         if (field === 'overall') {
@@ -2011,7 +1991,6 @@
             qEdit[field] = newValue;
             if (field === 'feedback' || field === 'improvement') {
                 qEdit.amend_answer_key = !!amendAnswerKey;
-                qEdit.update_subject_standards = !!updateSubjectStandards;
             }
             payload = { questions: [qEdit] };
         }
@@ -2029,9 +2008,7 @@
                 var qKey = String(savedQNum);
                 var fieldMeta = (data.edit_meta[qKey] || {})[field];
                 if (fieldMeta) {
-                    var isActive = !!(fieldMeta.amend_answer_key || fieldMeta.update_subject_standards);
-                    // Back-compat: if the server didn't return the new flags but the old `calibrated`,
-                    // fall back to that.
+                    var isActive = !!(fieldMeta.amend_answer_key);
                     if (!('amend_answer_key' in fieldMeta) && fieldMeta.calibrated) {
                         isActive = true;
                     }
@@ -2159,7 +2136,7 @@
     function renderEditTag(state, idx, field, meta) {
         // Only render for active calibration rows. Anything else (uncheck,
         // retire, no meta) routes through removeEditTag.
-        var isActive = !!(meta && (meta.amend_answer_key || meta.update_subject_standards || meta.calibrated));
+        var isActive = !!(meta && (meta.amend_answer_key || meta.calibrated));
         if (!isActive) {
             removeEditTag(state, idx, field);
             return;
@@ -2179,15 +2156,10 @@
         var tag = document.createElement('span');
         tag.className = 'fb-edit-tag fb-tag-cal';
         var amend = !!(meta && meta.amend_answer_key);
-        var promote = !!(meta && meta.update_subject_standards);
-        if (amend && promote) {
-            tag.textContent = '✓ Amended answer key and promoted to subject standards';
-        } else if (promote) {
-            tag.textContent = '✓ Promoted to subject standards';
-        } else if (amend) {
+        if (amend) {
             tag.textContent = '✓ Amended answer key for this assignment';
         } else {
-            // Old-shape back-compat
+            // Old-shape back-compat (pre-2026-05-13 rows)
             tag.textContent = '✓ Saved to calibration bank — your edit will help calibrate similar answers';
         }
         row.appendChild(tag);
