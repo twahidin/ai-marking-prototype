@@ -90,27 +90,17 @@ At least one AI provider API key must be set. Providers only appear in the UI if
 - **`templates/`** — 16 Jinja2 templates extending `base.html`. Key pages: `hub.html` (teacher home), `class.html` (class/assignment/marking view), `dashboard.html` (HOD dashboard), `submit.html` (student submission portal), `setup_wizard.html` (first-run setup), `settings.html` (teacher settings). Department pages: `department*.html`. Auth: `_gate.html`, `index.html`.
 - **`docs/plans/`** — Design documents for features (student submission portal, algorithm flow, setup wizard).
 
-### Calibration system (subject standards)
+### Calibration system (amend answer key)
 
-Calibration edits split by intent at save time:
-- **Amend answer key** — `FeedbackEdit.amend_answer_key=true`, scoped to the assignment. Merged into the effective answer key on every marking job for that assignment via `subject_standards.build_effective_answer_key`. Local-only — does not generalise.
-- **Update subject standards** — promoted to `SubjectStandard` via `subject_standards.promote_to_subject_standard`. AI-tagged with topic_keys from `config/subject_topics/<subject>.py`. Requires HOD / subject-lead approval before going active. Edit rights granted to `Teacher.role in ('hod','subject_head','lead','owner')`.
+Per-assignment calibration only. When a teacher edits a feedback line on a marked submission and ticks "Amend answer key/rubric for this assignment":
 
-Marking-time retrieval is `subject_standards.retrieve_subject_standards` — topic overlap with the assignment's per-question topic_keys, per-topic quota of 3, hard cap of 30. Bank size is effectively unbounded; prompt size stays constant. Assembly into the marking prompt happens at `app._build_calibration_block_for(asn)`; the prompt builders in `ai_marking.py` continue to consume a single `calibration_block` string.
+- A `FeedbackEdit` row is written with `amend_answer_key=True`.
+- The edit is merged into the marking prompt's effective answer key for that assignment via `subject_standards.build_effective_answer_key`.
+- A background propagation worker runs the same correction across other submissions on the same assignment whose criterion lost marks. The Haiku re-mark is field-aware (rewrites only the field the teacher edited: `feedback` or `improvement`) and may update `marks_awarded` if the new standard justifies a different score.
 
-Topic tagging:
-- New assignments start with `topic_keys_status='pending'`. First open in `teacher_assignment_detail` triggers `_kick_off_topic_tagging` (synchronous Haiku call via `extract_assignment_topic_keys`). Marking is never blocked — failures swallowed, status stays `pending`, retrieval skipped.
-- `SubjectTopicVocabulary` is seeded from `config/subject_topics/*.py` on boot (`seed_subject_topic_vocabulary`).
+Cross-assignment, cross-teacher, and cross-class learning are intentionally NOT supported — each assignment is calibrated only by edits on its own submissions.
 
-Migration (one-shot at boot, see `db._migrate_calibration_runtime` guarded by `MigrationFlag`):
-- Assignments older than 5 days at deploy → `topic_keys_status='legacy'`; FeedbackEdits on them set `active=False`.
-- Assignments within 5 days → `topic_keys_status='pending'`; lazy AI tagging on first open; FeedbackEdits converted to `amend_answer_key=true` amendments (`scope='amendment'`).
-- All `MarkingPrinciplesCache` rows marked `is_stale=True`.
-- The standards bank always starts empty.
-
-`MarkingPrinciplesCache` is deprecated — table preserved for audit but no longer regenerated or applied. `ai_marking.build_calibration_block` is a no-op stub.
-
-Spec: `docs/superpowers/specs/2026-05-13-calibration-edit-intent-design.md`. Plan: `docs/superpowers/plans/2026-05-13-calibration-edit-intent-plan.md`.
+Spec: `docs/superpowers/specs/2026-05-16-calibration-simplification-design.md`.
 
 ## Key Data Model
 

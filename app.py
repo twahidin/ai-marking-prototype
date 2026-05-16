@@ -848,19 +848,6 @@ def _can_reset_code(viewer, target):
     return False
 
 
-def _can_edit_subject_standards(teacher, subject=None):
-    """ACL for the Subject Standards page and CRUD endpoints.
-
-    Per the calibration-intent design (2026-05-13): edit rights granted to
-    teachers with role in {'hod', 'subject_head', 'lead', 'owner'}. The
-    `subject` kwarg is reserved for forward-compatibility with per-subject
-    scoping; currently ignored — all four roles can edit any subject's
-    standards.
-    """
-    if teacher is None:
-        return False
-    return (teacher.role or '').lower() in ('hod', 'subject_head', 'lead', 'owner')
-
 
 def _check_assignment_ownership(asn):
     """Authorise the current teacher for this assignment.
@@ -1091,233 +1078,28 @@ def _get_dept_keys():
     return keys
 
 
-def _normalize_topic_keys(raw):
-    """Coerce stored `asn.topic_keys` (any historical shape) into a flat
-    de-duplicated list of topic keys for the whole assignment. The original
-    per-question structure was never actually used downstream — retrieval
-    collapses everything into a set anyway — so we now persist a single
-    flat list of keys per assignment.
-
-    Accepts:
-    - `None` or empty → `[]`
-    - new flat list `["k1", "k2"]` → as-is, de-duped, order preserved
-    - legacy per-question flat list `[["k1"], ["k1", "k2"]]` → union
-    - sparse list `[{"q": N, "keys": [...]}]` → union
-    - dict `{"N": [...]}` → union
-    """
-    if not raw:
-        return []
-    seen = set()
-    out = []
-
-    def _add(k):
-        if isinstance(k, str) and k and k not in seen:
-            seen.add(k)
-            out.append(k)
-
-    if isinstance(raw, dict):
-        for v in raw.values():
-            for k in (v or []):
-                _add(k)
-        return out
-    if isinstance(raw, list):
-        for entry in raw:
-            if isinstance(entry, str):
-                _add(entry)
-            elif isinstance(entry, list):
-                for k in entry:
-                    _add(k)
-            elif isinstance(entry, dict):
-                for k in (entry.get('keys') or []):
-                    _add(k)
-        return out
-    return []
-
-
-def _split_into_questions(qp_text, ak_text):
-    """Cheap regex split on Q1/Q2/... markers. Returns list of
-    {'question_num', 'text', 'answer_key'} dicts. Returns [] if no markers
-    found — caller should gracefully skip tagging."""
-    import re
-    if not qp_text and not ak_text:
-        return []
-    qp_blocks = re.split(r'(?im)^\s*Q\s*(\d+)\b[:.)\s]', qp_text or '')
-    ak_blocks = re.split(r'(?im)^\s*Q\s*(\d+)\b[:.)\s]', ak_text or '')
-
-    def _to_dict(blocks):
-        # re.split returns [leading, num1, body1, num2, body2, ...]
-        out = {}
-        for i in range(1, len(blocks), 2):
-            try:
-                num = int(blocks[i])
-            except (ValueError, TypeError):
-                continue
-            out[num] = (blocks[i + 1] if i + 1 < len(blocks) else '').strip()
-        return out
-
-    qp_map = _to_dict(qp_blocks)
-    ak_map = _to_dict(ak_blocks)
-    all_qs = sorted(set(qp_map) | set(ak_map))
-    return [
-        {'question_num': qn, 'text': qp_map.get(qn, ''), 'answer_key': ak_map.get(qn, '')}
-        for qn in all_qs
-    ]
-
-
-def _kick_off_topic_tagging(asn):
-    """Synchronous topic tagging using a Haiku-tier model. Exceptions are
-    propagated to the caller, which swallows them so marking is never
-    blocked by tagging (spec §2 Additive, not gating).
-
-    Strategy:
-    1. Try the cheap text path first via `_split_into_questions`. Works on
-       text-typed assignments and any answer key that was uploaded as text.
-    2. If text decoding yields zero questions (the common case — most real
-       assignments are PDF-only), fall back to vision-based tagging via
-       `extract_assignment_topic_keys_from_pdf`, which sends the actual PDF
-       bytes to the helper model. The model enumerates questions from the
-       document and tags each one.
-    3. Only flip `topic_keys_status='tagged'` when at least one path
-       produces a non-empty per-question list. Failure leaves the status at
-       'pending' so the next open auto-retries.
-    """
-    import json as _json
-    from ai_marking import (
-        extract_assignment_topic_keys, extract_assignment_topic_keys_from_pdf,
-        _helper_model_for, _decode_answer_key_text,
-    )
-
-    qp_text = ''
-    ak_text = ''
-    try:
-        if asn.question_paper:
-            qp_text = _decode_answer_key_text(asn.question_paper) or ''
-        if asn.answer_key:
-            ak_text = _decode_answer_key_text(asn.answer_key) or ''
-    except Exception:
-        pass
-
-    provider = asn.provider or 'anthropic'
-    helper_model = _helper_model_for(provider, fallback=asn.model)
-    subject = (asn.subject or '').strip().lower()
-    session_keys = asn.get_api_keys() or {}
-
-    keys = []
-    questions = _split_into_questions(qp_text, ak_text)
-    if questions:
-        keys = extract_assignment_topic_keys(
-            provider=provider, model=helper_model,
-            session_keys=session_keys, subject=subject,
-            questions=questions,
-        )
-    # Text path empty — fall back to vision tagging on the original PDF bytes.
-    if not keys and asn.question_paper:
-        logger.info('topic tagging: text path empty for %s, falling back to PDF', asn.id)
-        keys = extract_assignment_topic_keys_from_pdf(
-            provider=provider, model=helper_model,
-            session_keys=session_keys, subject=subject,
-            question_paper_bytes=asn.question_paper,
-            answer_key_bytes=asn.answer_key,
-        )
-
-    if not keys:
-        # Both paths returned nothing. Leave status pending so the next
-        # teacher_assignment_detail open auto-retries (e.g. transient API
-        # error, key not configured yet). The UI keeps showing "tagging…".
-        logger.warning('topic tagging produced no keys for assignment %s', asn.id)
-        return
-
-    asn.topic_keys = _json.dumps(list(keys))
-    asn.topic_keys_status = 'tagged'
-    db.session.commit()
-
-
 def _build_calibration_block_for(asn, sub=None):
-    """Build the marking-prompt 'calibration_block' string from:
-    - Teacher clarifications (active amend_answer_key FeedbackEdits at this
-      assignment's current rubric_version).
-    - Subject standards relevant to this assignment's per-question topic_keys.
-
-    Returns '' if neither section has content (e.g. legacy assignment with
-    no post-deploy amendments and no matching standards) so the marking
-    prompt falls back to today's behaviour. Never raises — exceptions are
-    swallowed and a warning logged; marking is never blocked.
+    """Assemble the marking-prompt calibration block from active
+    amend_answer_key FeedbackEdits on this assignment. Returns '' if
+    there are no amendments. Never raises — exceptions are swallowed
+    and a warning logged; marking is never blocked.
     """
     try:
-        import json as _json
-        from subject_standards import build_effective_answer_key, retrieve_subject_standards
-        from ai_marking import _decode_answer_key_text
-        from subjects import resolve_subject_key as _resolve_subj
-
-        sections = []
-
-        # 1. Teacher clarifications (amendments)
-        original_ak_text = ''
-        try:
-            if asn.answer_key:
-                original_ak_text = _decode_answer_key_text(asn.answer_key) or ''
-        except Exception:
-            original_ak_text = ''
-        # Use an empty string base so build_effective_answer_key returns just
-        # the 'Teacher clarifications' section (prefixed with \n) or '' when no
-        # amendments exist.
+        from subject_standards import build_effective_answer_key
         merged = build_effective_answer_key(asn, '')
         marker = '── Teacher clarifications'
         if marker in merged:
             idx = merged.find(marker)
             amendments_text = merged[idx:].rstrip()
             if amendments_text:
-                sections.append(amendments_text)
-
-        # 2. Subject standards retrieval (only on tagged + canonical-subject
-        # assignments; legacy and freeform skip silently).
-        if asn.topic_keys_status != 'legacy' and asn.subject:
-            subj_key = _resolve_subj(asn.subject) or (asn.subject or '').strip().lower()
-            try:
-                raw_keys = _json.loads(asn.topic_keys or '[]')
-            except Exception:
-                raw_keys = []
-            # Coerce any historical shape (flat list of lists, sparse
-            # list-of-dicts, dict) into a single flat list of topic keys.
-            flat_keys = _normalize_topic_keys(raw_keys)
-            if flat_keys:
-                # retrieve_subject_standards keeps its legacy per-question
-                # signature for back-compat; wrap as a single "question" so
-                # the union it builds includes our flat list.
-                standards = retrieve_subject_standards(
-                    subject=subj_key,
-                    per_question_topic_keys=[flat_keys],
+                logger.info(
+                    f"Calibration block resolved for asn={getattr(asn,'id',None)}: "
+                    f"{len(amendments_text)} chars"
                 )
-                if standards:
-                    lines = ['── Subject standards relevant to this assignment ──', '']
-                    for s in standards:
-                        try:
-                            tk = _json.loads(s.topic_keys or '[]')
-                        except Exception:
-                            tk = []
-                        tk_label = ', '.join(tk) or '(general)'
-                        lines.append(f'For {tk_label}:')
-                        lines.append(f'  - {s.text}')
-                        lines.append('')
-                    sections.append('\n'.join(lines).rstrip())
-
-        if not sections:
-            return ''
-        block = '\n\n'.join(sections)
-        logger.info(
-            f"Calibration block (new style) resolved for asn={getattr(asn,'id',None)}: "
-            f"{len(block)} chars across {len(sections)} section(s)"
-        )
-        return block
-    except Exception as cal_err:
-        logger.warning(
-            f"Calibration block assembly failed for asn={getattr(asn,'id',None)}, "
-            f"marking without it: {cal_err}"
-        )
-        try:
-            db.session.rollback()
-        except Exception:
-            pass
+                return amendments_text
+        return ''
+    except Exception as e:
+        logger.warning(f"_build_calibration_block_for failed: {e}")
         return ''
 
 
@@ -7497,74 +7279,6 @@ def _rubric_pills_for_questions(questions):
     return pills
 
 
-@app.route('/teacher/assignment/<assignment_id>/topic-tags', methods=['PUT'])
-def teacher_assignment_topic_tags_update(assignment_id):
-    """Save assignment-level topic tags. Accepts a flat list of strings
-    (canonical) or legacy per-question shapes (list-of-lists, list-of-dicts).
-
-    Validates each tag against the subject's controlled vocabulary, drops
-    unknown / blank / duplicate tags, and caps at the same limit the tagger
-    uses. Returns the cleaned list AND a list of dropped keys so the UI can
-    show "⚠ dropped: foo, bar" instead of silently wiping the user's input.
-    """
-    asn = Assignment.query.get_or_404(assignment_id)
-    err = _check_assignment_ownership(asn)
-    if err:
-        return err
-    data = request.get_json(silent=True) or {}
-    raw = data.get('topic_keys')
-    if raw is None:
-        return jsonify({'success': False, 'error': 'topic_keys required'}), 400
-
-    from config.subject_topics import is_known_topic_key
-    from subjects import resolve_subject_key as _resolve_subj
-    subj_key = _resolve_subj(asn.subject or '') or (asn.subject or '').strip().lower()
-
-    # Coerce any incoming shape (flat list, legacy list-of-lists, list-of-dicts)
-    # into a single de-duplicated flat list of candidate strings.
-    candidates = []
-    if isinstance(raw, str):
-        candidates = [s.strip() for s in raw.split(',')]
-    elif isinstance(raw, list):
-        for entry in raw:
-            if isinstance(entry, str):
-                candidates.append(entry.strip())
-            elif isinstance(entry, list):
-                for k in entry:
-                    if isinstance(k, str):
-                        candidates.append(k.strip())
-            elif isinstance(entry, dict):
-                for k in (entry.get('keys') or []):
-                    if isinstance(k, str):
-                        candidates.append(k.strip())
-    else:
-        return jsonify({'success': False, 'error': 'topic_keys must be a list'}), 400
-
-    from ai_marking import _TOPIC_KEYS_MAX
-    cleaned = []
-    dropped = []
-    seen = set()
-    for k in candidates:
-        if not k:
-            continue
-        if not is_known_topic_key(subj_key, k):
-            if k not in dropped:
-                dropped.append(k)
-            continue
-        if k in seen:
-            continue
-        seen.add(k)
-        cleaned.append(k)
-        if len(cleaned) >= _TOPIC_KEYS_MAX:
-            break
-
-    import json as _json
-    asn.topic_keys = _json.dumps(cleaned)
-    asn.topic_keys_status = 'tagged'
-    db.session.commit()
-    return jsonify({'success': True, 'topic_keys': cleaned, 'dropped': dropped})
-
-
 @app.route('/teacher/assignment/<assignment_id>/answer-key-preview')
 def teacher_assignment_answer_key_preview(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)
@@ -7648,178 +7362,6 @@ def teacher_push_amendments_to_bank(assignment_id):
     return jsonify({'success': True, 'bank_pushed_at': now.isoformat()})
 
 
-@app.route('/teacher/subject-standards')
-def teacher_subject_standards_page():
-    teacher = _current_teacher()
-    if not _can_edit_subject_standards(teacher):
-        return jsonify({'error': 'forbidden'}), 403
-    return render_template('subject_standards.html', teacher=teacher)
-
-
-@app.route('/api/subject_standards', methods=['GET'])
-def api_subject_standards_list():
-    from db import SubjectStandard
-    teacher = _current_teacher()
-    if not _can_edit_subject_standards(teacher):
-        return jsonify({'error': 'forbidden'}), 403
-    status = request.args.get('status', 'active')
-    subject_filter = request.args.get('subject')
-    q = SubjectStandard.query.filter_by(status=status)
-    if subject_filter:
-        q = q.filter_by(subject=subject_filter)
-    rows = q.order_by(SubjectStandard.reinforcement_count.desc()).all()
-    import json as _json
-    return jsonify({
-        'standards': [
-            {
-                'id': r.id,
-                'uuid': r.uuid,
-                'subject': r.subject,
-                'text': r.text,
-                'topic_keys': _json.loads(r.topic_keys or '[]'),
-                'mistake_type': r.mistake_type,
-                'reinforcement_count': r.reinforcement_count,
-                'status': r.status,
-                'created_at': r.created_at.isoformat() if r.created_at else None,
-                'updated_at': r.updated_at.isoformat() if r.updated_at else None,
-            }
-            for r in rows
-        ],
-    })
-
-
-def _load_standard_or_404(standard_id):
-    from db import SubjectStandard
-    s = SubjectStandard.query.get(standard_id)
-    if s is None:
-        return None, (jsonify({'error': 'not_found'}), 404)
-    return s, None
-
-
-@app.route('/api/subject_standards/<int:standard_id>/approve', methods=['POST'])
-def api_subject_standards_approve(standard_id):
-    s, err = _load_standard_or_404(standard_id)
-    if err:
-        return err
-    teacher = _current_teacher()
-    if not _can_edit_subject_standards(teacher, subject=s.subject):
-        return jsonify({'error': 'forbidden'}), 403
-    s.status = 'active'
-    s.reviewed_by = teacher.id
-    s.reviewed_at = datetime.now(timezone.utc)
-    s.updated_at = datetime.now(timezone.utc)
-    db.session.commit()
-    return jsonify({'success': True})
-
-
-@app.route('/api/subject_standards/<int:standard_id>/edit', methods=['POST'])
-def api_subject_standards_edit(standard_id):
-    s, err = _load_standard_or_404(standard_id)
-    if err:
-        return err
-    teacher = _current_teacher()
-    if not _can_edit_subject_standards(teacher, subject=s.subject):
-        return jsonify({'error': 'forbidden'}), 403
-    data = request.get_json(silent=True) or {}
-    new_text = (data.get('text') or '').strip()
-    if not new_text:
-        return jsonify({'error': 'text required'}), 400
-    s.text = new_text
-    s.reviewed_by = teacher.id
-    s.reviewed_at = datetime.now(timezone.utc)
-    s.updated_at = datetime.now(timezone.utc)
-    db.session.commit()
-    return jsonify({'success': True, 'text': new_text})
-
-
-@app.route('/api/subject_standards/<int:standard_id>/reject', methods=['POST'])
-def api_subject_standards_reject(standard_id):
-    s, err = _load_standard_or_404(standard_id)
-    if err:
-        return err
-    teacher = _current_teacher()
-    if not _can_edit_subject_standards(teacher, subject=s.subject):
-        return jsonify({'error': 'forbidden'}), 403
-    s.status = 'archived'
-    s.reviewed_by = teacher.id
-    s.reviewed_at = datetime.now(timezone.utc)
-    s.updated_at = datetime.now(timezone.utc)
-    db.session.commit()
-    return jsonify({'success': True})
-
-
-@app.route('/api/subject_standards/<int:standard_id>/related', methods=['GET'])
-def api_subject_standards_related(standard_id):
-    s, err = _load_standard_or_404(standard_id)
-    if err:
-        return err
-    teacher = _current_teacher()
-    if not _can_edit_subject_standards(teacher, subject=s.subject):
-        return jsonify({'error': 'forbidden'}), 403
-    from subject_standards import find_related_standards
-    import json as _json
-    related = find_related_standards(s)
-    return jsonify({
-        'related': [
-            {
-                'id': r.id, 'text': r.text,
-                'topic_keys': _json.loads(r.topic_keys or '[]'),
-                'reinforcement_count': r.reinforcement_count,
-                'status': r.status,
-            }
-            for r in related
-        ],
-    })
-
-
-@app.route('/api/subject_standards/export', methods=['GET'])
-def api_subject_standards_export():
-    from db import SubjectStandard, Teacher as _T
-    teacher = _current_teacher()
-    subject = (request.args.get('subject') or '').strip().lower()
-    if not subject:
-        return jsonify({'error': 'subject required'}), 400
-    if not _can_edit_subject_standards(teacher, subject=subject):
-        return jsonify({'error': 'forbidden'}), 403
-    updated_since_raw = request.args.get('updated_since')
-    updated_since = None
-    if updated_since_raw:
-        try:
-            # URL query strings decode '+' as space; restore it for timezone offsets.
-            normalised = updated_since_raw.replace('Z', '+00:00').replace(' ', '+')
-            updated_since = datetime.fromisoformat(normalised)
-        except ValueError:
-            return jsonify({'error': 'invalid updated_since'}), 400
-
-    def generate():
-        import json as _json
-        q = SubjectStandard.query.filter_by(subject=subject, status='active')
-        if updated_since:
-            q = q.filter(SubjectStandard.updated_at >= updated_since)
-        for r in q.yield_per(100):
-            creator = _T.query.get(r.created_by) if r.created_by else None
-            reviewer = _T.query.get(r.reviewed_by) if r.reviewed_by else None
-            row = {
-                'id': r.uuid,
-                'content': r.text,
-                'metadata': {
-                    'subject_key': r.subject,
-                    'subject_display': r.subject.title() if r.subject else '',
-                    'topic_keys': _json.loads(r.topic_keys or '[]'),
-                    'mistake_type': r.mistake_type,
-                    'reinforcement_count': r.reinforcement_count,
-                    'status': r.status,
-                    'created_at': r.created_at.isoformat() if r.created_at else None,
-                    'updated_at': r.updated_at.isoformat() if r.updated_at else None,
-                    'created_by': {'name': creator.name, 'role': creator.role} if creator else None,
-                    'reviewed_by': {'name': reviewer.name, 'role': reviewer.role} if reviewer else None,
-                },
-            }
-            yield _json.dumps(row) + '\n'
-
-    return Response(generate(), mimetype='application/x-ndjson')
-
-
 @app.route('/teacher/assignment/<assignment_id>')
 def teacher_assignment_detail(assignment_id):
     # Defer the four LargeBinary file blobs — the assignment-detail page
@@ -7840,13 +7382,6 @@ def teacher_assignment_detail(assignment_id):
     err = _check_assignment_ownership(asn)
     if err:
         return err
-    # Lazy topic tagging on first open. Wrapped in broad try because marking
-    # must NEVER be blocked by tagging (spec §2 Additive, not gating).
-    if asn.topic_keys_status == 'pending':
-        try:
-            _kick_off_topic_tagging(asn)
-        except Exception as tag_err:
-            logger.warning(f'lazy topic tagging failed for {asn.id}: {tag_err}')
     students = _sort_by_index(Student.query.filter_by(class_id=asn.class_id).all()) if asn.class_id else _sort_by_index(Student.query.filter_by(assignment_id=assignment_id).all())
     is_rubrics = (getattr(asn, 'assign_type', 'short_answer') == 'rubrics')
     eligible_remark_count = 0
@@ -7984,14 +7519,6 @@ def teacher_assignment_detail(assignment_id):
     except Exception:
         linked_bank_id = None
 
-    # Normalize any historical topic_keys shape (per-question list, list of
-    # dicts, dict) to a single flat list so the template can render one
-    # input box with comma-separated tags.
-    try:
-        topic_keys_flat = _normalize_topic_keys(json.loads(asn.topic_keys or '[]'))
-    except Exception:
-        topic_keys_flat = []
-
     resp = make_response(render_template('teacher_detail.html',
                            assignment=asn,
                            students=student_data,
@@ -8003,8 +7530,7 @@ def teacher_assignment_detail(assignment_id):
                            rubric_bands_by_criterion=rubric_bands_by_criterion,
                            assignment_has_canonical_subject=assignment_has_canonical_subject,
                            linked_bank_id=linked_bank_id,
-                           bank_pushed_at_iso=(asn.bank_pushed_at.isoformat() if asn.bank_pushed_at else None),
-                           topic_keys_flat=topic_keys_flat))
+                           bank_pushed_at_iso=(asn.bank_pushed_at.isoformat() if asn.bank_pushed_at else None)))
     # Prevent the browser/proxy from caching the score cells — a stale cache here
     # makes post-remark reloads show old marks even though the DB is fresh.
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'

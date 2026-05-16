@@ -803,33 +803,27 @@ def _migrate_calibration_runtime(_app, force=False):
                 'classifying assignments by 5-day cutoff'
             )
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=5)
+        # (Topic-tagging assignment classification removed 2026-05-16.
+        # The column itself is dropped in _migrate_drop_subject_standards
+        # in the next commit.)
 
-        # Classify assignments
-        for asn in Assignment.query.all():
-            if asn.topic_keys_status == 'tagged':
-                continue  # already onboarded post-deploy
-            asn_created = asn.created_at
-            if asn_created is None:
-                asn.topic_keys_status = 'legacy'
-                continue
-            if asn_created.tzinfo is None:
-                asn_created = asn_created.replace(tzinfo=timezone.utc)
-            asn.topic_keys_status = 'pending' if asn_created >= cutoff else 'legacy'
-
-        db.session.commit()
-
-        # Classify FeedbackEdits
+        # FeedbackEdit calibration intent backfill: anything still active
+        # is treated as an amendment. Promoted-only rows (scope='promoted',
+        # amend_answer_key=False) are LEFT ALONE here so that
+        # _migrate_drop_subject_standards (next commit) can still find them
+        # via WHERE amend_answer_key = 0 and deactivate them before the
+        # scope column is dropped.
         for fe in FeedbackEdit.query.filter_by(active=True).all():
             parent = Assignment.query.get(fe.assignment_id)
             if parent is None:
                 fe.active = False
                 continue
-            if parent.topic_keys_status == 'legacy':
-                fe.active = False
-            else:
-                fe.amend_answer_key = True
-                fe.scope = 'amendment'
+            # Preserve promoted-only rows so commit 4's deactivation
+            # WHERE clause can still match them.
+            if fe.scope == 'promoted' and not fe.amend_answer_key:
+                continue
+            fe.amend_answer_key = True
+            fe.scope = 'amendment'
 
         # Deactivate MarkingPrinciplesCache — mark all stale so the old
         # principles file stops being applied.
@@ -1041,8 +1035,6 @@ def init_db(app):
             db.create_all()
             _migrate_add_columns(app)
             _migrate_department_goal_to_dept_level(app)
-            from subject_standards import seed_subject_topic_vocabulary
-            seed_subject_topic_vocabulary()
             _migrate_calibration_runtime(app)
             _migrate_result_json_theme_to_mistake_type(app)
             if os.getenv('DEPT_MODE', 'FALSE').upper() == 'TRUE':
@@ -1609,50 +1601,6 @@ class FeedbackEdit(db.Model):
         db.Index('ix_feedback_edit_lookup', 'edited_by', 'active', 'mistake_type'),
         db.Index('ix_feedback_edit_assignment', 'assignment_id', 'rubric_version'),
     )
-
-
-class SubjectStandard(db.Model):
-    """Subject-wide marking standard, promoted from a teacher's FeedbackEdit
-    with the "Update subject standards" intent. Topic-scoped retrieval pulls
-    these into the marking prompt when the assignment's topics overlap.
-    See docs/superpowers/specs/2026-05-13-calibration-edit-intent-design.md.
-    """
-    __tablename__ = 'subject_standard'
-    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    uuid = db.Column(
-        db.String(40),
-        unique=True,
-        nullable=False,
-        default=lambda: 'ss_' + str(__import__('uuid').uuid4()),
-    )
-    subject = db.Column(db.String(80), nullable=False, index=True)
-    text = db.Column(db.Text, nullable=False)
-    topic_keys = db.Column(db.Text, nullable=False, default='[]')
-    mistake_type = db.Column(db.String(64), nullable=True)
-    reinforcement_count = db.Column(db.Integer, nullable=False, default=1)
-    status = db.Column(db.String(20), nullable=False, default='pending_review')
-    created_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=False)
-    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
-    updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
-    last_seen_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
-    reviewed_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=True)
-    reviewed_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    source_feedback_edit_ids = db.Column(db.Text, nullable=False, default='[]')
-    metadata_json = db.Column(db.Text, nullable=False, default='{}')
-
-    __table_args__ = (
-        db.Index('ix_subject_standard_subject_status', 'subject', 'status'),
-    )
-
-
-class SubjectTopicVocabulary(db.Model):
-    """Allowed topic keys per subject. Seeded from config/subject_topics/<subject>.py
-    on first boot, mutable thereafter by HOD/subject leads via the UI."""
-    __tablename__ = 'subject_topic_vocabulary'
-    subject = db.Column(db.String(80), primary_key=True)
-    topic_key = db.Column(db.String(64), primary_key=True)
-    display_name = db.Column(db.String(200), nullable=False, default='')
-    active = db.Column(db.Boolean, nullable=False, default=True)
 
 
 class MigrationFlag(db.Model):
