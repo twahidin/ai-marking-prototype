@@ -890,6 +890,7 @@ def init_db(app):
             if os.getenv('DEPT_MODE', 'FALSE').upper() == 'TRUE':
                 seed_departments()
                 backfill_teacher_departments()
+                sync_dept_subjects()
             _sweep_stuck_submissions(app)
             _sweep_stuck_bulk_jobs(app)
         finally:
@@ -1019,9 +1020,53 @@ _DEFAULT_DEPARTMENTS = [
     (50, 'Mother Tongue Language', 'MTL',
      ['chinese', 'malay', 'tamil']),
     (60, 'Science', 'Science',
-     ['chemistry', 'biology', 'computing', 'physics',
-      'lower_secondary_science', 'science']),
+     ['chemistry', 'biology', 'computing', 'computer_applications',
+      'physics', 'lower_secondary_science', 'science']),
 ]
+
+
+# Bump this when you add subjects to _DEFAULT_DEPARTMENTS for an
+# existing deployment. The sync migration is named after the version
+# so each addition gets a fresh idempotency flag.
+_DEPT_SUBJECTS_SYNC_MIGRATION_NAME = 'dept_subjects_sync_v1'
+
+
+def sync_dept_subjects():
+    """Ensure every (department, subject_key) pair in
+    _DEFAULT_DEPARTMENTS exists in `department_subjects`.
+
+    `seed_departments` only runs on an empty Department table, so when
+    we add a new subject to an existing deployment its mapping never
+    lands. This migration walks the canonical list and inserts any
+    missing rows. Idempotent via MigrationFlag — bump the flag name
+    when you add another subject.
+    """
+    marker = MigrationFlag.query.filter_by(
+        name=_DEPT_SUBJECTS_SYNC_MIGRATION_NAME).first()
+    if marker is not None:
+        return
+    if Department.query.first() is None:
+        # Fresh DB — seed_departments will handle it. Still mark done so
+        # we don't keep checking on every boot.
+        db.session.add(MigrationFlag(name=_DEPT_SUBJECTS_SYNC_MIGRATION_NAME))
+        db.session.commit()
+        return
+    inserted = 0
+    for _sort, name, _short, subject_keys in _DEFAULT_DEPARTMENTS:
+        dept = Department.query.filter_by(name=name).first()
+        if dept is None:
+            continue
+        existing = {ds.subject_key for ds in DepartmentSubject.query
+                    .filter_by(department_id=dept.id).all()}
+        for sk in subject_keys:
+            if sk in existing:
+                continue
+            db.session.add(DepartmentSubject(department_id=dept.id, subject_key=sk))
+            inserted += 1
+    db.session.add(MigrationFlag(name=_DEPT_SUBJECTS_SYNC_MIGRATION_NAME))
+    db.session.commit()
+    if inserted:
+        logger.info('sync_dept_subjects: inserted %d missing DepartmentSubject rows', inserted)
 
 
 def seed_departments():
