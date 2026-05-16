@@ -215,6 +215,45 @@ Anything stored in module-level globals (e.g. `pdf_generator._PDF_CACHE`, `ai_ma
 
 The PDF generator's "Assignment" header row reads `Assignment.title`. The boot-time backfill (`_migrate_add_columns`) fills empty titles with `subject` (or `Assignment <classroom_code>` if both are empty). When adding new code that creates assignments, populate `title` at write time — don't rely on the backfill to catch you on the next boot.
 
+## Page-load performance
+
+Every listing page we've ever shipped started slow and got optimised after a user complained. The root cause is always the same three patterns, and we now have helpers in `perf.py` so new pages start optimised. **Apply this checklist before declaring any listing route done — don't wait for the page to feel slow.**
+
+### Why this matters
+
+- `Assignment` has four `LargeBinary` columns (`question_paper`, `answer_key`, `rubrics`, `reference`). A typical question paper is 500 KB–5 MB. `Assignment.query.all()` loads every byte of every blob for every row.
+- `Submission` has `script_bytes` (the original upload) plus three large JSON-text columns (`script_pages_json`, `extracted_text_json`, `student_text_json`). Same problem at scale.
+- Jinja's `{{ obj.relationship | length }}` triggers a fresh SQL query per row. With deferred-elsewhere blobs, that lazy-load drags them back into memory.
+- Post-paint XHR calls (`fetch('/api/classes')` in `DOMContentLoaded`) feel like an extra "loading…" state. If the data is small and the route already runs a session check, pass it inline.
+
+### The checklist (every new route that renders ≥1 DB row of metadata)
+
+1. **List queries go through `perf.py`.**
+   - `light_assignment_query()` → use this instead of `Assignment.query` for any listing/detail page that doesn't display the raw file bytes.
+   - `light_submission_query()` → use this instead of `Submission.query` for any page that reads `status` / `result_json` / `submitted_at` without rendering `script_bytes` or the per-page image dump. `result_json` stays eager — it's what most pages need.
+   - If a deferred column is actually needed downstream, SQLAlchemy lazy-loads it on first attribute access. You don't have to pre-empt that — but if you know you need it, drop the helper and write an explicit `Assignment.query.options(...)` with a narrower defer set.
+2. **Counts come from `perf.py`, not from Jinja `| length`.**
+   - `submission_counts(asn_ids)` → `{assignment_id: int}` in one `GROUP BY`.
+   - `student_counts_for_assignments(assignments)` → `{assignment_id: int}` handling both dept-mode (`Student.class_id`) and legacy (`Student.assignment_id`) shapes.
+   - `student_counts_for_classes(class_ids)` → `{class_id: int}` for class-dropdown payloads.
+   - In the template: `{{ submission_counts.get(asn.id, 0) }}`, NOT `{{ asn.submissions | length }}`. The `| length` form re-introduces N+1 even when the query was deferred.
+3. **Inline first-paint payloads.** If the page makes an XHR to `/api/foo` immediately on `DOMContentLoaded` and `/api/foo` only needs the session that's already established, render the result as a JS constant in the template (`const PRELOADED_FOO = {{ payload | tojson }};`) and treat the XHR as a fallback. Saves one round trip.
+4. **Bulk-resolve names by ID once.** When the page renders `Created by {{ name }}` per row, do not lazy-load the related model. Collect IDs, do one `Teacher.query.filter(Teacher.id.in_(ids))`, then dict-lookup in the loop.
+
+### Anti-patterns to grep for before committing
+
+- `Assignment.query.all()` / `Assignment.query.order_by(...).all()` without `.options(defer(...))` → use `light_assignment_query()`.
+- `Submission.query.filter_by(...).all()` (returning many rows) without defers → use `light_submission_query()`.
+- `obj.relationship | length` inside a Jinja `{% for %}` loop → batch with one of the count helpers.
+- `Model.query.filter_by(...).first()` *inside* a Python `for` loop → batch outside the loop into a dict.
+- `fetch('/api/...').then(render)` inside `DOMContentLoaded` for data the server already has → inline as render context.
+
+### When the helpers don't fit
+
+`teacher_assignment_detail` defers only the four `LargeBinary` blobs and intentionally keeps `api_keys_json` + the review/marking instructions eager (the edit form + `_resolve_api_keys` read them). That's a valid narrower variant — write the explicit `defer(...)` inline with a one-line comment, don't bend the helper to accept opt-outs.
+
+If you find a fourth pattern recurring across routes, add it to `perf.py` and update this section.
+
 ## Canonical subjects
 
 `subjects.py` is the single source of truth for the subject taxonomy. It defines:

@@ -1563,27 +1563,17 @@ def class_page():
     providers = get_available_providers(session_keys=sk)
     assignments = []
     teacher = None
-    # The listing only needs metadata — defer the multi-MB blob and
-    # heavy-text columns so the SELECT doesn't drag the entire question
-    # paper / answer key / rubric files into memory for every row.
-    from sqlalchemy.orm import defer as _defer
-    _heavy_cols = (
-        Assignment.question_paper,
-        Assignment.answer_key,
-        Assignment.rubrics,
-        Assignment.reference,
-        Assignment.exemplar_analysis_json,
-        Assignment.api_keys_json,
-        Assignment.review_instructions,
-        Assignment.marking_instructions,
-    )
-    def _light_query():
-        return Assignment.query.options(*(_defer(c) for c in _heavy_cols))
+    # See perf.py + CLAUDE.md ("Page-load performance"). Listing pages
+    # must go through light_assignment_query so the multi-MB blob /
+    # heavy-text columns stay on the server.
+    from perf import (light_assignment_query, submission_counts as _perf_sub_counts,
+                      student_counts_for_assignments as _perf_student_counts,
+                      student_counts_for_classes as _perf_class_counts)
     if authenticated:
         if _dept:
             teacher = _current_teacher()
             if teacher and teacher.role in ('hod', 'subject_head', 'lead'):
-                assignments = _light_query().order_by(Assignment.created_at.desc()).all()
+                assignments = light_assignment_query().order_by(Assignment.created_at.desc()).all()
             elif teacher:
                 # Co-teaching: a teacher sees every assignment for any class
                 # they're on the TeacherClass roster for, not just the ones
@@ -1591,7 +1581,7 @@ def class_page():
                 # authored (covers legacy rows with no class_id).
                 class_ids = [tc.class_id for tc in TeacherClass.query
                              .filter_by(teacher_id=teacher.id).all()]
-                q = _light_query()
+                q = light_assignment_query()
                 if class_ids:
                     q = q.filter(db.or_(
                         Assignment.class_id.in_(class_ids),
@@ -1601,7 +1591,7 @@ def class_page():
                     q = q.filter(Assignment.teacher_id == teacher.id)
                 assignments = q.order_by(Assignment.created_at.desc()).all()
         else:
-            assignments = _light_query().order_by(Assignment.created_at.desc()).all()
+            assignments = light_assignment_query().order_by(Assignment.created_at.desc()).all()
     # Resolve author names for the "Created by …" label so co-teachers can
     # see at a glance which assignments their teammates added.
     teacher_name_by_id = {}
@@ -1610,41 +1600,10 @@ def class_page():
         teacher_name_by_id = {t.id: t.name for t in
                               Teacher.query.filter(Teacher.id.in_(author_ids)).all()}
 
-    # Precompute counts in two batched GROUP BY queries instead of
-    # letting Jinja trigger a lazy-load per row (which would pull
-    # Submission.script_bytes blobs for every submission).
-    from sqlalchemy import func as _func
-    submission_counts = {}
-    student_counts = {}
-    asn_ids = [a.id for a in assignments]
-    if asn_ids:
-        sub_rows = (db.session.query(Submission.assignment_id,
-                                      _func.count(Submission.id))
-                    .filter(Submission.assignment_id.in_(asn_ids))
-                    .group_by(Submission.assignment_id).all())
-        submission_counts = {aid: n for aid, n in sub_rows}
-
-        # Student rosters live on Class for dept-mode assignments and
-        # on the (legacy) Student.assignment_id link for older rows.
-        class_ids_for_counts = list({a.class_id for a in assignments if a.class_id})
-        class_student_counts = {}
-        if class_ids_for_counts:
-            rows = (db.session.query(Student.class_id, _func.count(Student.id))
-                    .filter(Student.class_id.in_(class_ids_for_counts))
-                    .group_by(Student.class_id).all())
-            class_student_counts = {cid: n for cid, n in rows}
-        legacy_ids = [a.id for a in assignments if not a.class_id]
-        legacy_counts = {}
-        if legacy_ids:
-            rows = (db.session.query(Student.assignment_id, _func.count(Student.id))
-                    .filter(Student.assignment_id.in_(legacy_ids))
-                    .group_by(Student.assignment_id).all())
-            legacy_counts = {aid: n for aid, n in rows}
-        for a in assignments:
-            if a.class_id:
-                student_counts[a.id] = class_student_counts.get(a.class_id, 0)
-            else:
-                student_counts[a.id] = legacy_counts.get(a.id, 0)
+    # Counts come from perf.py — one GROUP BY per axis, no Jinja
+    # `| length` lazy-loads.
+    submission_counts = _perf_sub_counts([a.id for a in assignments])
+    student_counts = _perf_student_counts(assignments)
 
     # Preload the class dropdown payload so the form is interactive on
     # first paint — saves a /api/classes round-trip after page load.
@@ -1655,11 +1614,7 @@ def class_page():
         else:
             classes_list = Class.query.order_by(Class.name).all()
         if classes_list:
-            cls_ids = [c.id for c in classes_list]
-            count_rows = (db.session.query(Student.class_id, _func.count(Student.id))
-                          .filter(Student.class_id.in_(cls_ids))
-                          .group_by(Student.class_id).all())
-            cls_student_counts = {cid: n for cid, n in count_rows}
+            cls_student_counts = _perf_class_counts([c.id for c in classes_list])
             preloaded_classes = [{
                 'id': c.id,
                 'name': c.name,
@@ -5446,24 +5401,8 @@ def teacher_dashboard():
 
     teacher_class_ids = [cls.id for cls in teacher_classes]
     if teacher_class_ids:
-        # Defer the LargeBinary + heavy-text columns — the dashboard
-        # listing reads only id/title/subject/classroom_code/teacher_id,
-        # so we leave many MB of question paper / answer key bytes on
-        # the server.
-        from sqlalchemy.orm import defer as _defer_asn
-        _asn_heavy = (
-            Assignment.question_paper,
-            Assignment.answer_key,
-            Assignment.rubrics,
-            Assignment.reference,
-            Assignment.exemplar_analysis_json,
-            Assignment.api_keys_json,
-            Assignment.review_instructions,
-            Assignment.marking_instructions,
-        )
-        q = (Assignment.query
-             .filter(Assignment.class_id.in_(teacher_class_ids))
-             .options(*(_defer_asn(c) for c in _asn_heavy)))
+        from perf import light_assignment_query
+        q = light_assignment_query().filter(Assignment.class_id.in_(teacher_class_ids))
         # Co-teaching: a teacher viewing their own roster sees every
         # assignment in those classes, not just the ones they authored.
         # The creator filter only kicks in when a senior uses the dropdown
@@ -5500,26 +5439,15 @@ def teacher_dashboard():
         for cid, n in rows:
             student_counts_by_class[cid] = n
 
-    # Bulk load all submissions for these assignments. Defer the heavy
-    # blob columns (`script_bytes`, the per-page image base64 dump,
-    # extracted/student answer text) — none are read on this page, and
-    # for a teacher with hundreds of submissions they account for the
-    # bulk of the DB transfer (typically MB per row). result_json stays
-    # eagerly loaded because the avg-score loop below reads it via
-    # s.get_result(). Lazy-load fires automatically if any of the
-    # deferred columns is accessed later, so this is safe even if
-    # downstream code starts touching them.
-    from sqlalchemy.orm import defer as _defer
+    # Bulk load all submissions for these assignments via the perf
+    # helper — defers script_bytes / per-page image base64 / extracted
+    # + student text JSON (none read here). result_json stays eager
+    # because the avg-score loop below reads it via s.get_result().
+    from perf import light_submission_query
     all_asn_ids = [a.id for a in all_assignments]
     all_subs = (
-        Submission.query
+        light_submission_query()
         .filter(Submission.assignment_id.in_(all_asn_ids))
-        .options(
-            _defer(Submission.script_bytes),
-            _defer(Submission.script_pages_json),
-            _defer(Submission.extracted_text_json),
-            _defer(Submission.student_text_json),
-        )
         .all()
     ) if all_asn_ids else []
     subs_by_assignment = {}
@@ -7904,23 +7832,16 @@ def teacher_assignment_detail(assignment_id):
     IN_PROGRESS = ('pending', 'processing', 'extracting', 'preview')
     now_utc = datetime.now(timezone.utc)
 
-    # UP-49: batch-load every final Submission for this assignment in ONE
-    # query, then dict-lookup inside the per-student loop. The previous
-    # `Submission.query.filter_by(...).first()` inside the loop was one
-    # round trip per student — 40 students = 40 SELECTs + ~3 s render
-    # time. Heavy blob columns are deferred per UP-10 since none are
-    # read on this page; `result_json` stays eagerly loaded because the
-    # loop calls `sub.get_result()` below.
-    from sqlalchemy.orm import defer as _defer
+    # UP-49: batch-load every final Submission for this assignment in
+    # ONE query, then dict-lookup inside the per-student loop. The
+    # previous `.first()` inside the loop was one round trip per
+    # student (40 students = 40 SELECTs). The perf helper defers heavy
+    # cols; `result_json` stays eager since `sub.get_result()` below
+    # reads it.
+    from perf import light_submission_query
     _final_subs = (
-        Submission.query
+        light_submission_query()
         .filter_by(assignment_id=assignment_id, is_final=True)
-        .options(
-            _defer(Submission.script_bytes),
-            _defer(Submission.script_pages_json),
-            _defer(Submission.extracted_text_json),
-            _defer(Submission.student_text_json),
-        )
         .all()
     )
     subs_by_student_id = {s.student_id: s for s in _final_subs}
