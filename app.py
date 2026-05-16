@@ -8715,11 +8715,7 @@ def _build_text_edit_meta(submission_id, teacher_id=None):
             }
             if ed:
                 entry['edit_id'] = ed.id
-                # §4.1 two-checkbox intent: surface flags so the edit modal
-                # can restore both checkboxes correctly on reopen. scope
-                # values: 'individual'|'amendment'|'promoted'|'both'.
                 entry['amend_answer_key'] = bool(ed.amend_answer_key)
-                entry['update_subject_standards'] = ed.scope in ('promoted', 'both')
             out.setdefault(row.criterion_id, {})[row.field] = entry
 
         # Calibration rows without a corresponding FeedbackLog (e.g. legacy
@@ -8733,7 +8729,6 @@ def _build_text_edit_meta(submission_id, teacher_id=None):
                 'calibrated': True,
                 'edit_id': ed.id,
                 'amend_answer_key': bool(ed.amend_answer_key),
-                'update_subject_standards': ed.scope in ('promoted', 'both'),
             }
     except Exception as _meta_err:
         logger.warning(f"text_edit_meta lookup failed for sub {submission_id}: {_meta_err}")
