@@ -327,7 +327,7 @@
                     </div>
                     <div class="assignment-stats">
                         <span class="stat-chip submissions">
-                            {{ asn.submissions | length }} / {{ asn.students | length }} submitted
+                            {{ submission_counts.get(asn.id, 0) }} / {{ student_counts.get(asn.id, 0) }} submitted
                         </span>
                         {% if asn.show_results %}
                         <span class="stat-chip results-on">Results visible</span>
@@ -376,6 +376,7 @@
 const ALL_PROVIDERS = {{ all_providers | tojson }};
 let BULK_PROVIDER_MODELS = {{ providers | tojson }};
 const DEMO_MODE = {{ demo_mode | tojson }};
+const PRELOADED_CLASSES = {{ preloaded_classes | tojson }};
 const savedKeys = {};
 
 /* =====================================================================
@@ -686,18 +687,29 @@ async function deleteAssignment(id, subject) {
 /* =====================================================================
 Class selection
    ===================================================================== */
+function _fillClassesDropdown(classes) {
+    const sel = document.getElementById('teacherClassId');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">Select a class...</option>';
+    classes.forEach(function(c) {
+        const o = document.createElement('option');
+        o.value = c.id;
+        o.textContent = (c.level ? c.level + ' - ' : '') + c.name + ' (' + c.student_count + ' students)';
+        sel.appendChild(o);
+    });
+}
+
 async function loadTeacherClasses() {
+    // Server preloaded the list into PRELOADED_CLASSES — fill immediately
+    // so the dropdown is interactive on first paint.
+    if (Array.isArray(PRELOADED_CLASSES) && PRELOADED_CLASSES.length) {
+        _fillClassesDropdown(PRELOADED_CLASSES);
+        return;
+    }
     try {
         const res = await fetch('/api/classes');
         const classes = await res.json();
-        const sel = document.getElementById('teacherClassId');
-        sel.innerHTML = '<option value="">Select a class...</option>';
-        classes.forEach(function(c) {
-            const o = document.createElement('option');
-            o.value = c.id;
-            o.textContent = (c.level ? c.level + ' - ' : '') + c.name + ' (' + c.student_count + ' students)';
-            sel.appendChild(o);
-        });
+        _fillClassesDropdown(classes);
     } catch(e) { console.error('Failed to load classes', e); }
 }
 

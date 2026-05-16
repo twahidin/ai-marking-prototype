@@ -1554,17 +1554,36 @@ def class_page():
                                dept_mode=False,
                                teacher=None,
                                all_providers=DEMO_MODELS,
-                               assignments=[])
+                               assignments=[],
+                               submission_counts={},
+                               student_counts={},
+                               preloaded_classes=[])
     authenticated = _is_authenticated()
     sk = _get_session_keys()
     providers = get_available_providers(session_keys=sk)
     assignments = []
     teacher = None
+    # The listing only needs metadata — defer the multi-MB blob and
+    # heavy-text columns so the SELECT doesn't drag the entire question
+    # paper / answer key / rubric files into memory for every row.
+    from sqlalchemy.orm import defer as _defer
+    _heavy_cols = (
+        Assignment.question_paper,
+        Assignment.answer_key,
+        Assignment.rubrics,
+        Assignment.reference,
+        Assignment.exemplar_analysis_json,
+        Assignment.api_keys_json,
+        Assignment.review_instructions,
+        Assignment.marking_instructions,
+    )
+    def _light_query():
+        return Assignment.query.options(*(_defer(c) for c in _heavy_cols))
     if authenticated:
         if _dept:
             teacher = _current_teacher()
             if teacher and teacher.role in ('hod', 'subject_head', 'lead'):
-                assignments = Assignment.query.order_by(Assignment.created_at.desc()).all()
+                assignments = _light_query().order_by(Assignment.created_at.desc()).all()
             elif teacher:
                 # Co-teaching: a teacher sees every assignment for any class
                 # they're on the TeacherClass roster for, not just the ones
@@ -1572,7 +1591,7 @@ def class_page():
                 # authored (covers legacy rows with no class_id).
                 class_ids = [tc.class_id for tc in TeacherClass.query
                              .filter_by(teacher_id=teacher.id).all()]
-                q = Assignment.query
+                q = _light_query()
                 if class_ids:
                     q = q.filter(db.or_(
                         Assignment.class_id.in_(class_ids),
@@ -1582,7 +1601,7 @@ def class_page():
                     q = q.filter(Assignment.teacher_id == teacher.id)
                 assignments = q.order_by(Assignment.created_at.desc()).all()
         else:
-            assignments = Assignment.query.order_by(Assignment.created_at.desc()).all()
+            assignments = _light_query().order_by(Assignment.created_at.desc()).all()
     # Resolve author names for the "Created by …" label so co-teachers can
     # see at a glance which assignments their teammates added.
     teacher_name_by_id = {}
@@ -1590,6 +1609,64 @@ def class_page():
     if author_ids:
         teacher_name_by_id = {t.id: t.name for t in
                               Teacher.query.filter(Teacher.id.in_(author_ids)).all()}
+
+    # Precompute counts in two batched GROUP BY queries instead of
+    # letting Jinja trigger a lazy-load per row (which would pull
+    # Submission.script_bytes blobs for every submission).
+    from sqlalchemy import func as _func
+    submission_counts = {}
+    student_counts = {}
+    asn_ids = [a.id for a in assignments]
+    if asn_ids:
+        sub_rows = (db.session.query(Submission.assignment_id,
+                                      _func.count(Submission.id))
+                    .filter(Submission.assignment_id.in_(asn_ids))
+                    .group_by(Submission.assignment_id).all())
+        submission_counts = {aid: n for aid, n in sub_rows}
+
+        # Student rosters live on Class for dept-mode assignments and
+        # on the (legacy) Student.assignment_id link for older rows.
+        class_ids_for_counts = list({a.class_id for a in assignments if a.class_id})
+        class_student_counts = {}
+        if class_ids_for_counts:
+            rows = (db.session.query(Student.class_id, _func.count(Student.id))
+                    .filter(Student.class_id.in_(class_ids_for_counts))
+                    .group_by(Student.class_id).all())
+            class_student_counts = {cid: n for cid, n in rows}
+        legacy_ids = [a.id for a in assignments if not a.class_id]
+        legacy_counts = {}
+        if legacy_ids:
+            rows = (db.session.query(Student.assignment_id, _func.count(Student.id))
+                    .filter(Student.assignment_id.in_(legacy_ids))
+                    .group_by(Student.assignment_id).all())
+            legacy_counts = {aid: n for aid, n in rows}
+        for a in assignments:
+            if a.class_id:
+                student_counts[a.id] = class_student_counts.get(a.class_id, 0)
+            else:
+                student_counts[a.id] = legacy_counts.get(a.id, 0)
+
+    # Preload the class dropdown payload so the form is interactive on
+    # first paint — saves a /api/classes round-trip after page load.
+    preloaded_classes = []
+    if authenticated:
+        if _dept and teacher and teacher.role not in ('hod', 'subject_head', 'lead'):
+            classes_list = list(teacher.classes) if teacher else []
+        else:
+            classes_list = Class.query.order_by(Class.name).all()
+        if classes_list:
+            cls_ids = [c.id for c in classes_list]
+            count_rows = (db.session.query(Student.class_id, _func.count(Student.id))
+                          .filter(Student.class_id.in_(cls_ids))
+                          .group_by(Student.class_id).all())
+            cls_student_counts = {cid: n for cid, n in count_rows}
+            preloaded_classes = [{
+                'id': c.id,
+                'name': c.name,
+                'level': c.level,
+                'student_count': cls_student_counts.get(c.id, 0),
+            } for c in classes_list]
+
     return render_template('class.html',
                            authenticated=authenticated,
                            providers=providers,
@@ -1598,7 +1675,10 @@ def class_page():
                            teacher=teacher,
                            all_providers=PROVIDERS,
                            assignments=assignments,
-                           teacher_name_by_id=teacher_name_by_id)
+                           teacher_name_by_id=teacher_name_by_id,
+                           submission_counts=submission_counts,
+                           student_counts=student_counts,
+                           preloaded_classes=preloaded_classes)
 
 
 @app.route('/verify-code', methods=['POST'])
