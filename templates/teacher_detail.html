@@ -106,28 +106,82 @@
             </div>
         </div>
 
-        <div class="details-actions" style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;display:flex;gap:12px 16px;flex-wrap:wrap;align-items:flex-start;">
-            <div style="display:flex;flex-direction:column;gap:8px;">
-                <button class="upload-btn" onclick="openEditModal()" style="padding:8px 20px;font-size:13px;">Edit Assignment</button>
+        <style>
+            .details-actions { margin-top:14px; padding-top:14px; border-top:1px solid #eee;
+                display:flex; flex-wrap:wrap; gap:8px 12px; align-items:flex-start; }
+            .details-actions .action-col { display:flex; flex-direction:column; gap:6px; min-width:0; }
+            .details-actions .action-col.right { margin-left:auto; align-items:flex-end; }
+            .details-actions .upload-btn { padding:6px 14px; font-size:12.5px; line-height:1.2; white-space:nowrap; }
+            .details-actions .danger-btn { background:#fff; color:#c0392b; border-color:#c0392b; }
+            .details-actions .success-btn { background:#28a745; color:#fff; border-color:#28a745; }
+            /* Inline pair: Share button + view-mode toggle ride the same row. */
+            .share-pair { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+            /* Segmented toggle — large hit area, clearly two clickable halves. */
+            .view-mode-toggle {
+                display:inline-flex; border:1px solid #d0d4dc; border-radius:8px;
+                overflow:hidden; background:#f6f7fb;
+            }
+            .view-mode-toggle button {
+                appearance:none; -webkit-appearance:none; border:0; background:transparent;
+                padding:6px 14px; font-size:12.5px; line-height:1.2; color:#4a4f5a;
+                cursor:pointer; font-weight:500;
+            }
+            .view-mode-toggle button + button { border-left:1px solid #d0d4dc; }
+            .view-mode-toggle button:hover { background:#e9ecf3; }
+            .view-mode-toggle button.active { background:#667eea; color:#fff; }
+            .view-mode-toggle button.active:hover { background:#5a6fd6; }
+            .view-mode-toggle button[disabled] { opacity:0.6; cursor:wait; }
+            .view-mode-label {
+                font-size:11px; color:#888; margin-right:2px; align-self:center; white-space:nowrap;
+            }
+        </style>
+        <div class="details-actions">
+            <div class="action-col">
+                <button class="upload-btn" onclick="openEditModal()">Edit Assignment</button>
                 <button type="button" class="upload-btn" data-action="toggle-answer-key-amendments"
-                        aria-expanded="false" aria-controls="answer-key-amendments-panel"
-                        style="padding:8px 20px;font-size:13px;">Answer key amendments</button>
+                        aria-expanded="false" aria-controls="answer-key-amendments-panel">Answer key amendments</button>
             </div>
-            <div style="display:flex;flex-direction:column;gap:8px;">
-                <button class="upload-btn" onclick="openShareModal()" style="padding:8px 20px;font-size:13px;">Share to Assignment Bank</button>
+            <div class="action-col">
+                <div class="share-pair">
+                    <button class="upload-btn" onclick="openShareModal()">Share to Assignment Bank</button>
+                    {% if assignment.assign_type != 'rubrics' %}
+                    <span class="view-mode-label">Student view:</span>
+                    <div class="view-mode-toggle"
+                         id="studentViewToggle"
+                         role="tablist"
+                         aria-label="Student feedback layout"
+                         data-current-mode="{{ assignment.student_view_mode or 'breakdown' }}">
+                        <button type="button"
+                                role="tab"
+                                data-mode="breakdown"
+                                aria-selected="{{ 'true' if (assignment.student_view_mode or 'breakdown') == 'breakdown' else 'false' }}"
+                                class="{% if (assignment.student_view_mode or 'breakdown') == 'breakdown' %}active{% endif %}"
+                                title="Question-by-question breakdown with practice corrections (current view)">
+                            Breakdown + corrections
+                        </button>
+                        <button type="button"
+                                role="tab"
+                                data-mode="modal"
+                                aria-selected="{{ 'true' if (assignment.student_view_mode or 'breakdown') == 'modal' else 'false' }}"
+                                class="{% if (assignment.student_view_mode or 'breakdown') == 'modal' %}active{% endif %}"
+                                title="Single-page view identical to the teacher feedback modal">
+                            Feedback only
+                        </button>
+                    </div>
+                    <span id="studentViewToggleStatus" aria-live="polite"
+                          style="font-size:11px;color:#888;"></span>
+                    {% endif %}
+                </div>
                 {% if linked_bank_id %}
-                <button type="button" class="upload-btn" data-action="push-amendments-to-bank"
-                        style="padding:8px 20px;font-size:13px;">Update bank version with my amendments</button>
+                <button type="button" class="upload-btn" data-action="push-amendments-to-bank">Update bank answer key</button>
                 <p id="bank-push-status" hidden style="color:#888;font-size:12px;margin:0;"></p>
                 {% endif %}
             </div>
-            {% if not assignment.show_results %}
-            <div style="display:flex;flex-direction:column;gap:8px;">
-                <button class="upload-btn" type="button" onclick="issueAiFeedback()" style="padding:8px 20px;font-size:13px;background:#28a745;color:#fff;border-color:#28a745;">Issue AI Feedback</button>
-            </div>
-            {% endif %}
-            <div style="display:flex;flex-direction:column;gap:8px;margin-left:auto;">
-                <button class="upload-btn" type="button" onclick="deleteAssignment()" style="padding:8px 20px;font-size:13px;background:#fff;color:#c0392b;border-color:#c0392b;">Delete Assignment</button>
+            <div class="action-col right">
+                <button class="upload-btn danger-btn" type="button" onclick="deleteAssignment()">Delete Assignment</button>
+                {% if not assignment.show_results %}
+                <button class="upload-btn success-btn" type="button" onclick="issueAiFeedback()">Issue AI Feedback</button>
+                {% endif %}
             </div>
         </div>
 
@@ -689,6 +743,62 @@ async function issueAiFeedback() {
         alert('Failed to issue feedback: ' + e.message);
     }
 }
+
+// Student-view-mode toggle (short-answer assignments only). Delegated
+// click handler so both buttons in the segmented control share one
+// network round-trip path. Optimistically updates the visible "active"
+// state, then reverts on server failure.
+(function setupStudentViewToggle() {
+    var toggle = document.getElementById('studentViewToggle');
+    if (!toggle) return;
+    var status = document.getElementById('studentViewToggleStatus');
+    toggle.addEventListener('click', async function (e) {
+        var btn = e.target.closest('button[data-mode]');
+        if (!btn || btn.disabled) return;
+        var mode = btn.getAttribute('data-mode');
+        var current = toggle.getAttribute('data-current-mode') || 'breakdown';
+        if (mode === current) return;
+        var btns = toggle.querySelectorAll('button[data-mode]');
+        btns.forEach(function (b) {
+            b.disabled = true;
+            var isMe = b === btn;
+            b.classList.toggle('active', isMe);
+            b.setAttribute('aria-selected', isMe ? 'true' : 'false');
+        });
+        if (status) status.textContent = 'Saving…';
+        try {
+            var res = await fetch(
+                '/teacher/assignment/{{ assignment.id }}/set-view-mode',
+                {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({mode: mode}),
+                }
+            );
+            var data = await res.json();
+            if (!res.ok || !data || !data.success) {
+                throw new Error((data && data.error) || ('HTTP ' + res.status));
+            }
+            toggle.setAttribute('data-current-mode', mode);
+            if (status) {
+                status.textContent = 'Saved';
+                setTimeout(function () { status.textContent = ''; }, 1500);
+            }
+        } catch (err) {
+            // Revert UI to the previous mode.
+            btns.forEach(function (b) {
+                var prev = b.getAttribute('data-mode') === current;
+                b.classList.toggle('active', prev);
+                b.setAttribute('aria-selected', prev ? 'true' : 'false');
+            });
+            if (status) status.textContent = 'Save failed';
+            alert('Failed to update student view: ' + err.message);
+        } finally {
+            btns.forEach(function (b) { b.disabled = false; });
+        }
+    });
+})();
 
 async function forceRetryStuck(btn, submissionId) {
     if (!await uiConfirm('Retry this stuck submission? The marking worker will be re-kicked.', {okLabel: 'Retry'})) return;

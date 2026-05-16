@@ -6997,6 +6997,27 @@ def teacher_assignment_issue_feedback(assignment_id):
     return jsonify({'success': True, 'show_results': True})
 
 
+@app.route('/teacher/assignment/<assignment_id>/set-view-mode', methods=['POST'])
+def teacher_assignment_set_view_mode(assignment_id):
+    """Toggle the student-facing feedback layout between the
+    question-by-question breakdown (with corrections) and the
+    feedback-modal single-card view. Short-answer assignments only —
+    rubrics assignments always use the band-first modal regardless."""
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+    payload = request.get_json(silent=True) or {}
+    mode = (payload.get('mode') or '').strip().lower()
+    if mode not in ('breakdown', 'modal'):
+        return jsonify({'success': False, 'error': 'invalid mode'}), 400
+    if asn.student_view_mode != mode:
+        asn.student_view_mode = mode
+        db.session.commit()
+        logger.info(f"Set student_view_mode={mode} for assignment {assignment_id}")
+    return jsonify({'success': True, 'student_view_mode': mode})
+
+
 def _bands_for_assignment(asn):
     """Build a {criterion_name: [band_label, ...]} dict for the modal's
     band-edit dropdown.
@@ -9295,7 +9316,13 @@ def student_feedback_page(assignment_id, submission_id):
     # band-first cards, improvement examples, etc. — rendered read-only via
     # FeedbackRender. The Layer 1/2/3 + Corrections layout below is
     # short-answer-only.
-    if getattr(asn, 'assign_type', 'short_answer') == 'rubrics':
+    #
+    # Short-answer teachers can opt their cohort into the same modal-style
+    # render via `Assignment.student_view_mode == 'modal'`. Default
+    # 'breakdown' keeps the existing Layer1/2/3 + corrections experience.
+    is_rubrics = getattr(asn, 'assign_type', 'short_answer') == 'rubrics'
+    teacher_picked_modal = getattr(asn, 'student_view_mode', 'breakdown') == 'modal'
+    if is_rubrics or teacher_picked_modal:
         return render_template(
             'feedback_view_rubrics.html',
             assignment=asn,

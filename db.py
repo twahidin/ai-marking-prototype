@@ -250,6 +250,15 @@ def _migrate_add_columns(app):
                 ))
                 db.session.commit()
                 logger.info('Added pinyin_mode column to assignments table')
+            if 'student_view_mode' not in columns:
+                # Legacy assignments stay on the breakdown view by default
+                # so existing student bookmarks render unchanged.
+                db.session.execute(text(
+                    "ALTER TABLE assignments ADD COLUMN student_view_mode VARCHAR(20) "
+                    "DEFAULT 'breakdown' NOT NULL"
+                ))
+                db.session.commit()
+                logger.info('Added student_view_mode column to assignments table')
 
         if 'assignment_bank' in inspector.get_table_names():
             ab_cols = {c['name'] for c in inspector.get_columns('assignment_bank')}
@@ -1489,6 +1498,11 @@ class Assignment(db.Model):
     #   'vocab' — annotate HSK 4+ words only
     #   'full'  — annotate every CJK character
     pinyin_mode = db.Column(db.String(10), default='off', nullable=False)
+    # Student-facing feedback layout for short_answer assignments.
+    #   'breakdown' — question-by-question Layer1/2/3 + corrections (default)
+    #   'modal'     — single-card view identical to the teacher feedback modal
+    # Ignored for rubrics assignments (those always use the band-first modal).
+    student_view_mode = db.Column(db.String(20), default='breakdown', nullable=False)
     # New (calibration intent design 2026-05-13)
     bank_pushed_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
