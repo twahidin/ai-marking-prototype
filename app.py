@@ -7714,6 +7714,231 @@ def teacher_overview(assignment_id):
     )
 
 
+@app.route('/teacher/assignment/<assignment_id>/item-analysis')
+def teacher_item_analysis(assignment_id):
+    """Visual per-criterion item analysis for rubrics assignments.
+
+    Aggregates band counts, lowest-band student names, and common-gap
+    feedback so a teacher can see at a glance where the class struggles.
+
+    Short-answer assignments fall through to the existing PDF overview
+    — the visual treatment is rubrics-specific.
+    """
+    asn = Assignment.query.get_or_404(assignment_id)
+    err = _check_assignment_ownership(asn)
+    if err:
+        return err
+
+    if getattr(asn, 'assign_type', 'short_answer') != 'rubrics':
+        return redirect(url_for('teacher_overview', assignment_id=assignment_id))
+
+    from perf import light_submission_query
+    subs = (
+        light_submission_query()
+        .filter_by(assignment_id=assignment_id, status='done', is_final=True)
+        .all()
+    )
+    student_ids = {s.student_id for s in subs if s.student_id}
+    students = {
+        st.id: st for st in Student.query.filter(Student.id.in_(student_ids)).all()
+    } if student_ids else {}
+
+    total_students = (
+        Student.query.filter_by(class_id=asn.class_id).count()
+        if asn.class_id else
+        Student.query.filter_by(assignment_id=assignment_id).count()
+    )
+    done_count = len(subs)
+
+    # Aggregate per-criterion data. The keyed dict preserves criterion
+    # ordering by first appearance across submissions; rubrics keep the
+    # same criterion ordering across all marked scripts, so this is
+    # stable.
+    from collections import OrderedDict
+    crit_data = OrderedDict()
+    total_awarded = 0
+    total_possible = 0
+
+    band_re = re.compile(r'Band\s+(\d+)', re.IGNORECASE)
+
+    for sub in subs:
+        result = sub.get_result() or {}
+        if result.get('error'):
+            continue
+        student = students.get(sub.student_id)
+        student_name = student.name if student else 'Unknown'
+        student_index = student.index_number if student else ''
+
+        for q in result.get('questions') or []:
+            crit = (q.get('criterion_name') or '').strip()
+            if not crit:
+                continue
+            band_raw = (q.get('band') or '').strip()
+            m = band_re.search(band_raw)
+            if not m:
+                continue
+            band_num = int(m.group(1))
+            marks_awarded = q.get('marks_awarded')
+            marks_total = q.get('marks_total')
+            feedback = (q.get('feedback') or '').strip()
+
+            data = crit_data.setdefault(crit, {
+                'name': crit,
+                # Bands populated on demand — rubrics range from 3 to 6
+                # bands in practice, so the global max is computed once
+                # below rather than hard-coded.
+                'band_counts': {},
+                'band_students': {},
+                'feedback_by_band': {},
+                'marks_awarded_sum': 0,
+                'marks_awarded_count': 0,
+                'marks_total': None,
+                'band_sum': 0,
+                'total': 0,
+            })
+            data['band_counts'][band_num] = data['band_counts'].get(band_num, 0) + 1
+            data['band_students'].setdefault(band_num, [])
+            data['feedback_by_band'].setdefault(band_num, [])
+            data['band_students'][band_num].append({
+                'name': student_name,
+                'index': student_index,
+                'submission_id': sub.id,
+            })
+            if feedback:
+                data['feedback_by_band'][band_num].append(feedback)
+            if marks_awarded is not None:
+                data['marks_awarded_sum'] += marks_awarded
+                data['marks_awarded_count'] += 1
+                total_awarded += marks_awarded
+            if marks_total is not None:
+                data['marks_total'] = marks_total
+                total_possible += marks_total
+            data['band_sum'] += band_num
+            data['total'] += 1
+
+    # Cluster feedback by a normalized 50-char prefix so paraphrased
+    # variants of the same complaint collapse into one row.
+    def _norm(s):
+        s = re.sub(r'\s+', ' ', s.lower()).strip()
+        s = re.sub(r'[^a-z0-9 ]', '', s)
+        return s[:50]
+
+    # Detect the band scale this assignment actually uses. Rubrics in
+    # real use range from 3 to 6 bands; one fixed scale across the
+    # whole page keeps every criterion's bar the same length so the
+    # eye can compare them at a glance.
+    global_max_band = 1
+    for data in crit_data.values():
+        if data['band_counts']:
+            global_max_band = max(global_max_band, max(data['band_counts'].keys()))
+
+    def _ramp_slot(band_num, max_band):
+        """1-indexed slot on the red→green ramp (1=red, 5+=green).
+
+        Spreads the ramp across whatever band scale the rubric uses so
+        a 4-band rubric still reads red→green end-to-end. Identity for
+        a 5-band rubric.
+        """
+        if max_band <= 1:
+            return 5
+        target = max(5, max_band)
+        return 1 + round((band_num - 1) / (max_band - 1) * (target - 1))
+
+    criteria = []
+    for crit_name, data in crit_data.items():
+        # Show the full ramp 1..global_max_band even if a band is empty
+        # so the teacher can see "no one reached the top band" at a
+        # glance — and every criterion's bar has the same number of
+        # segments for easy side-by-side comparison.
+        segments = []
+        for bn in range(1, global_max_band + 1):
+            count = data['band_counts'].get(bn, 0)
+            names = [s['name'] for s in data['band_students'].get(bn, [])]
+            segments.append({
+                'num': bn,
+                'count': count,
+                'names': names,
+                'slot': _ramp_slot(bn, global_max_band),
+            })
+
+        lowest_band_num = None
+        for bn in range(1, global_max_band + 1):
+            if data['band_counts'].get(bn, 0) > 0:
+                lowest_band_num = bn
+                break
+
+        # Surface a "needs attention" block whenever the lowest occupied
+        # band sits in the bottom 40% of the scale. For a 5-band rubric
+        # this is B1–B2; for a 4-band rubric it's B1; for 6 it's B1–B2.
+        attention_threshold = max(2, round(global_max_band * 0.4))
+        lowest_band_students = []
+        lowest_band_slot = None
+        if lowest_band_num is not None and lowest_band_num <= attention_threshold:
+            lowest_band_students = data['band_students'].get(lowest_band_num, [])
+            lowest_band_slot = _ramp_slot(lowest_band_num, global_max_band)
+
+        # Common gaps: pool feedback from bands in the bottom 40% of the
+        # scale, then cluster by 50-char prefix.
+        gap_pool = []
+        for bn in range(1, attention_threshold + 1):
+            gap_pool.extend(data['feedback_by_band'].get(bn, []))
+        clusters = {}
+        for fb in gap_pool:
+            key = _norm(fb)
+            if not key:
+                continue
+            entry = clusters.setdefault(key, {'text': fb, 'count': 0})
+            entry['count'] += 1
+            if len(fb) > len(entry['text']):
+                entry['text'] = fb
+        gaps_sorted = sorted(clusters.values(), key=lambda g: -g['count'])
+        common_gaps = [g for g in gaps_sorted if g['count'] >= 2][:4]
+        if not common_gaps:
+            common_gaps = gaps_sorted[:3]
+
+        total = data['total'] or 1
+        avg_band = round(data['band_sum'] / total, 1)
+        avg_marks = (
+            round(data['marks_awarded_sum'] / data['marks_awarded_count'], 1)
+            if data['marks_awarded_count'] > 0 else None
+        )
+
+        criteria.append({
+            'name': crit_name,
+            'total': data['total'],
+            'avg_band': avg_band,
+            'avg_marks': avg_marks,
+            'marks_total': data['marks_total'],
+            'band_segments': segments,
+            'max_band': global_max_band,
+            'lowest_band_num': lowest_band_num,
+            'lowest_band_slot': lowest_band_slot,
+            'lowest_band_students': lowest_band_students,
+            'common_gaps': common_gaps,
+        })
+
+    criteria.sort(key=lambda c: (c['avg_band'], c['name']))
+
+    avg_pct = round(total_awarded / total_possible * 100, 1) if total_possible > 0 else None
+    low_band_student_ids = set()
+    for c in criteria:
+        if c['lowest_band_num'] is not None and c['lowest_band_students']:
+            for s in c['lowest_band_students']:
+                low_band_student_ids.add(s['submission_id'])
+    low_band_count = len(low_band_student_ids)
+
+    return render_template(
+        'item_analysis.html',
+        assignment=asn,
+        total_students=total_students,
+        done_count=done_count,
+        avg_pct=avg_pct,
+        low_band_count=low_band_count,
+        num_criteria=len(criteria),
+        criteria=criteria,
+    )
+
+
 @app.route('/teacher/assignment/<assignment_id>/exemplars')
 def teacher_exemplars_page(assignment_id):
     asn = Assignment.query.get_or_404(assignment_id)

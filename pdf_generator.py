@@ -368,6 +368,23 @@ _PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 \definecolor{bordergrey}{HTML}{D6D6E0}
 \definecolor{textmuted}{HTML}{666666}
 
+% Band-ramp colours — red to green across 5 bands, matching the web
+% palette so the printed Item Analysis reads the same way as the
+% on-screen page. `bandN` is the saturated bar fill; `bandbgN` is the
+% light tint used for the "needs attention" block backgrounds.
+\definecolor{bandone}{HTML}{D32F2F}
+\definecolor{bandtwo}{HTML}{F57C00}
+\definecolor{bandthree}{HTML}{F9A825}
+\definecolor{bandfour}{HTML}{689F38}
+\definecolor{bandfive}{HTML}{2E7D32}
+\definecolor{bandsix}{HTML}{1B5E20}
+\definecolor{bandbgone}{HTML}{FCE4E4}
+\definecolor{bandbgtwo}{HTML}{FDEBD0}
+\definecolor{bandbgthree}{HTML}{FDF6C8}
+\definecolor{bandbgfour}{HTML}{E7F5D6}
+\definecolor{bandbgfive}{HTML}{D4F1D4}
+\definecolor{bandbgsix}{HTML}{C8E6C9}
+
 % Tight spacing — explicit goal: minimise empty space between blocks.
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{3pt}
@@ -740,6 +757,333 @@ def generate_overview_pdf(student_results, subject='', app_title='AI Feedback Sy
     return pdf
 
 
+_BAND_BG_COLORS = {
+    1: 'bandbgone',
+    2: 'bandbgtwo',
+    3: 'bandbgthree',
+    4: 'bandbgfour',
+    5: 'bandbgfive',
+    6: 'bandbgsix',
+}
+
+_BAND_FILL_COLORS = {
+    1: 'bandone',
+    2: 'bandtwo',
+    3: 'bandthree',
+    4: 'bandfour',
+    5: 'bandfive',
+    6: 'bandsix',
+}
+
+
+def _band_ramp_slot(band_num, max_band):
+    """Map a 1-indexed band to a 1-indexed slot on the colour ramp.
+
+    Spreads the red→green ramp across whatever band count the rubric
+    actually uses, so a 4-band rubric still goes red→green (no muddy
+    "best band but only lime" issue) and a 6-band rubric uses the
+    extra dark-green slot at the top. For 5-band rubrics this is the
+    identity mapping.
+    """
+    if max_band <= 1:
+        return 5
+    target = max(5, max_band)
+    return 1 + round((band_num - 1) / (max_band - 1) * (target - 1))
+
+
+def _render_short_answer_item_analysis(question_stats, has_marks):
+    """Render the legacy Q# × Correct/Partial/Incorrect table.
+
+    Returns (item_block_tex, weak_block_tex).
+    """
+    sorted_qs = sorted(
+        question_stats.values(),
+        key=lambda x: (int(x['num']) if str(x['num']).isdigit() else 999, str(x['num'])),
+    )
+    rows = []
+    for qs in sorted_qs:
+        n = qs['total'] or 1
+        pct_correct = round(qs['correct'] / n * 100)
+        difficulty = pct_correct
+        diff_label = 'Easy' if difficulty >= 70 else ('Moderate' if difficulty >= 40 else 'Hard')
+        diff_color = 'brandgreen' if difficulty >= 70 else ('brandorange' if difficulty >= 40 else 'brandred')
+
+        q_name = str(qs['num'])
+        cells = [
+            _tex_inline(q_name),
+            f'{qs["correct"]} ({pct_correct}\\%)',
+            f'{qs["partial"]} ({round(qs["partial"]/n*100)}\\%)',
+            f'{qs["incorrect"]} ({round(qs["incorrect"]/n*100)}\\%)',
+        ]
+        if has_marks:
+            cells.append(str(round(qs['marks_sum'] / n, 1)))
+            cells.append(str(qs['marks_max']))
+        cells.append(rf'\textcolor{{{diff_color}}}{{\textbf{{{diff_label}}} ({difficulty}\%)}}')
+        rows.append(' & '.join(cells) + r' \\')
+
+    if has_marks:
+        cols = r'@{}>{\bfseries}p{3cm} >{\centering\arraybackslash}p{1.6cm} >{\centering\arraybackslash}p{1.6cm} >{\centering\arraybackslash}p{1.6cm} >{\centering\arraybackslash}p{1.5cm} >{\centering\arraybackslash}p{1.2cm} >{\centering\arraybackslash}X@{}'
+        head = (
+            r'\rowcolor{brandblue}'
+            r'\color{white}\textbf{Q\#} & '
+            r'\color{white}\textbf{Correct} & '
+            r'\color{white}\textbf{Partial} & '
+            r'\color{white}\textbf{Incorrect} & '
+            r'\color{white}\textbf{Avg} & '
+            r'\color{white}\textbf{Max} & '
+            r'\color{white}\textbf{Difficulty} \\'
+        )
+    else:
+        cols = r'@{}>{\bfseries}p{3.5cm} >{\centering\arraybackslash}p{2cm} >{\centering\arraybackslash}p{2cm} >{\centering\arraybackslash}p{2cm} >{\centering\arraybackslash}X@{}'
+        head = (
+            r'\rowcolor{brandblue}'
+            r'\color{white}\textbf{Q\#} & '
+            r'\color{white}\textbf{Correct} & '
+            r'\color{white}\textbf{Partial} & '
+            r'\color{white}\textbf{Incorrect} & '
+            r'\color{white}\textbf{Difficulty} \\'
+        )
+
+    item_block = (
+        r'\section*{Item Analysis}' + '\n'
+        r'\rowcolors{2}{bggrey}{white}' + '\n'
+        rf'\begin{{tabularx}}{{\linewidth}}{{{cols}}}' + '\n'
+        + head + '\n' + '\n'.join(rows) + '\n'
+        r'\end{tabularx}'
+    )
+
+    weak = [qs for qs in sorted_qs if (qs['correct'] / max(qs['total'], 1) * 100) < 40]
+    weak_block = ''
+    if weak:
+        lines = []
+        for qs in weak:
+            q_name = f'Question {qs["num"]}'
+            pct = round(qs['correct'] / max(qs['total'], 1) * 100)
+            lines.append(
+                rf'\item \textbf{{{_tex_inline(q_name)}}} — only {pct}\% correct '
+                rf'({qs["incorrect"]} incorrect, {qs["partial"]} partial of {qs["total"]})'
+            )
+        weak_block = (
+            r'\subsection*{Areas Needing Attention}' + '\n'
+            r'\begin{itemize}' + '\n' + '\n'.join(lines) + '\n' + r'\end{itemize}'
+        )
+    return item_block, weak_block
+
+
+def _proportional_band_bar_tex(band_counts, max_band, bar_width_cm=16.0):
+    """Single-row tabular acting as a stacked horizontal bar — each
+    cell's width is proportional to its band's student count. Empty
+    bands get a tiny sliver so the red→green ramp stays visible even
+    when one band is unoccupied. Returns a complete tabular block.
+    """
+    total = sum(band_counts.values())
+    if total == 0:
+        return ''
+    SLIVER_CM = 0.18
+    empty_bands = sum(1 for b in range(1, max_band + 1) if band_counts.get(b, 0) == 0)
+    available_cm = max(bar_width_cm - empty_bands * SLIVER_CM, 1.0)
+
+    parts = []
+    for bn in range(1, max_band + 1):
+        count = band_counts.get(bn, 0)
+        if count > 0:
+            width = max((count / total) * available_cm, 0.6)
+        else:
+            width = SLIVER_CM
+        slot = _band_ramp_slot(bn, max_band)
+        parts.append((bn, count, width, slot))
+
+    col_spec = ' '.join(
+        f'>{{\\centering\\arraybackslash}}m{{{w:.2f}cm}}' for _, _, w, _ in parts
+    )
+    cells = []
+    for bn, count, _w, slot in parts:
+        fill = _BAND_FILL_COLORS.get(slot, 'bandone')
+        if count > 0:
+            # Slot 3 (amber) needs dark text for contrast; every other
+            # slot reads cleanly on white.
+            text_color = 'black' if slot == 3 else 'white'
+            cells.append(
+                rf'\cellcolor{{{fill}}}'
+                rf'\rule{{0pt}}{{20pt}}'  # strut to give the bar real height
+                rf'{{\color{{{text_color}}}\bfseries\large {count}}}'
+            )
+        else:
+            bg = _BAND_BG_COLORS.get(slot, 'bggrey')
+            cells.append(
+                rf'\cellcolor{{{bg}}}\rule{{0pt}}{{20pt}}~'
+            )
+    return (
+        # `arraystretch` shrinks back to 1.0 inside the bar so the
+        # row height is driven entirely by the strut, not by
+        # accumulated padding from the document default (1.18).
+        r'\noindent{\renewcommand{\arraystretch}{1.0}\setlength{\tabcolsep}{0pt}%' + '\n'
+        + r'\begin{tabular}{@{}' + col_spec + r'@{}}' + '\n'
+        + ' & '.join(cells) + r' \\' + '\n'
+        + r'\end{tabular}}'
+    )
+
+
+def _render_rubrics_item_analysis(question_stats):
+    """Render the rubrics Item Analysis as a stack of per-criterion
+    cards. Each card carries: criterion name + summary, a proportional
+    stacked band bar where each segment's width = (students in that
+    band) / (total students), a band legend, the "needs attention"
+    block listing lowest-band students, and clustered common gaps.
+
+    Returns (item_block_tex, weak_block_tex). The weak block is
+    intentionally empty for rubrics — every criterion card already
+    surfaces its own "needs attention" panel inline, so a separate
+    section would just repeat the names.
+    """
+    rows_data = list(question_stats.values())
+    rows_data = [r for r in rows_data if r['band_count'] > 0]
+    if not rows_data:
+        return '', ''
+
+    # Use whatever band scale this assignment actually uses. Rubrics
+    # in real use range from 3 to 6 bands; hard-coding 5 leaves an empty
+    # slot (or worse, clips the top band) for everything else.
+    max_band = 1
+    for r in rows_data:
+        if r['band_counts']:
+            max_band = max(max_band, max(r['band_counts'].keys()))
+
+    def _avg_band(r):
+        return r['band_sum'] / r['band_count'] if r['band_count'] else 99
+    rows_data.sort(key=lambda r: (_avg_band(r), str(r['num'])))
+
+    def _normalize_gap(s):
+        s = re.sub(r'\s+', ' ', s.lower()).strip()
+        s = re.sub(r'[^a-z0-9 ]', '', s)
+        return s[:50]
+
+    cards = []
+    for r in rows_data:
+        crit_name = _tex_inline(r['criterion_name'] or f"Q{r['num']}")
+        avg = _avg_band(r)
+        total = r['band_count']
+        has_marks = bool(r['marks_max'])
+        marks_summary = ''
+        if has_marks and r['total']:
+            marks_summary = rf' \quad\textbullet\quad {r["marks_sum"]/r["total"]:.1f} / {r["marks_max"]} avg'
+
+        header = (
+            rf'{{\large\bfseries {crit_name}}} \hfill '
+            rf'{{\color{{textmuted}}\small Avg \textbf{{Band {avg:.1f}}} '
+            rf'\quad\textbullet\quad {total} student{"" if total == 1 else "s"}'
+            rf'{marks_summary}}}'
+        )
+
+        bar = _proportional_band_bar_tex(r['band_counts'], max_band)
+
+        # Legend: small inline list of "Band N: count" with a coloured
+        # square swatch in front of each entry. Swatch colour comes
+        # from the ramp slot so it matches the bar segment above.
+        legend_parts = []
+        for bn in range(1, max_band + 1):
+            count = r['band_counts'].get(bn, 0)
+            slot = _band_ramp_slot(bn, max_band)
+            fill = _BAND_FILL_COLORS.get(slot, 'bandone')
+            legend_parts.append(
+                rf'{{\color{{{fill}}}\rule[-0.5pt]{{8pt}}{{8pt}}}}~Band~{bn}:~\textbf{{{count}}}'
+            )
+        legend = (
+            r'{\small\color{textmuted}' + ' \\quad '.join(legend_parts) + r'}'
+        )
+
+        # Lowest occupied band students — surface only when the low
+        # band sits in the bottom 40% of the rubric scale (so a
+        # 4-band rubric flags B1, a 6-band rubric flags B1/B2).
+        low_bn = min(r['band_counts'].keys())
+        attention_threshold = max(2, round(max_band * 0.4))
+        attention_block = ''
+        if low_bn <= attention_threshold:
+            names = r['band_students'].get(low_bn, [])
+            if names:
+                names_tex = ', '.join(_tex_inline(n) for n in names)
+                plural = '' if len(names) == 1 else 's'
+                low_slot = _band_ramp_slot(low_bn, max_band)
+                bg = _BAND_BG_COLORS.get(low_slot, 'bandbgone')
+                accent = _BAND_FILL_COLORS.get(low_slot, 'bandone')
+                # \fcolorbox with the saturated band colour as frame +
+                # light tint as fill gives a tinted block with a coloured
+                # left accent feel (the frame is uniform but the
+                # background draws the eye to the red side first).
+                attention_block = (
+                    r'\par\vspace{4pt}' + '\n'
+                    + rf'\noindent\setlength{{\fboxsep}}{{6pt}}'
+                    + rf'\fcolorbox{{{accent}}}{{{bg}}}{{'
+                    + rf'\begin{{minipage}}{{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}}'
+                    + rf'{{\small\bfseries\color{{textmuted}}{len(names)} STUDENT{plural.upper()} AT BAND {low_bn} \textemdash{{}} NEEDS ATTENTION}}\par'
+                    + r'\vspace{2pt}'
+                    + rf'{{\small {names_tex}}}'
+                    + r'\end{minipage}}'
+                    + r'\setlength{\fboxsep}{3pt}'  # restore default
+                )
+
+        # Common gaps: cluster bottom-two-occupied-band feedback.
+        gap_pool = []
+        for bn in sorted(r['band_counts'].keys())[:2]:
+            gap_pool.extend(r['band_feedback'].get(bn, []))
+        clusters = {}
+        for fb in gap_pool:
+            k = _normalize_gap(fb)
+            if not k:
+                continue
+            e = clusters.setdefault(k, {'text': fb, 'count': 0})
+            e['count'] += 1
+            if len(fb) > len(e['text']):
+                e['text'] = fb
+        gaps = sorted(clusters.values(), key=lambda g: -g['count'])
+        gaps = [g for g in gaps if g['count'] >= 2][:3] or gaps[:3]
+
+        gaps_block = ''
+        if gaps:
+            gap_items = '\n'.join(
+                rf'\item {_tex_inline(g["text"])} \hfill '
+                rf'\textcolor{{textmuted}}{{{g["count"]}$\times$}}'
+                for g in gaps
+            )
+            gaps_block = (
+                r'\par\vspace{4pt}' + '\n'
+                + r'{\small\bfseries\color{textmuted}COMMON GAPS FROM MARKED FEEDBACK}\par' + '\n'
+                + r'\vspace{1pt}' + '\n'
+                + r'\begin{itemize}[leftmargin=14pt,itemsep=1pt]' + '\n'
+                + gap_items + '\n'
+                + r'\end{itemize}'
+            )
+
+        # Wrap everything in a bordered card. The minipage width is
+        # \linewidth minus the fcolorbox padding so the card lines up
+        # flush with the section heading.
+        card = (
+            r'\noindent\setlength{\fboxsep}{8pt}' + '\n'
+            + r'\fcolorbox{bordergrey}{white}{%' + '\n'
+            + r'\begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}' + '\n'
+            + header + r'\par' + '\n'
+            + r'\vspace{6pt}' + '\n'
+            + bar + r'\par' + '\n'
+            + r'\vspace{2pt}' + '\n'
+            + legend + '\n'
+            + attention_block + '\n'
+            + gaps_block + '\n'
+            + r'\end{minipage}}' + '\n'
+            + r'\setlength{\fboxsep}{3pt}\par\vspace{8pt}'
+        )
+        cards.append(card)
+
+    item_block = (
+        r'\section*{Item Analysis}' + '\n'
+        + r'{\small\color{textmuted}Bar widths show how many students landed in each band. Wider red = bigger problem.}\par' + '\n'
+        + r'\vspace{6pt}' + '\n'
+        + '\n'.join(cards)
+    )
+    # Rubrics surface their "needs attention" inline per card, so the
+    # separate Areas Needing Attention section is intentionally empty.
+    return item_block, ''
+
+
 def _generate_overview_pdf_impl(student_results, subject, app_title, assignment_name):
     valid = [sr for sr in student_results if sr.get('result') and not sr['result'].get('error')]
 
@@ -818,9 +1162,14 @@ def _generate_overview_pdf_impl(student_results, subject, app_title, assignment_
     else:
         summary_block = r'\section*{Class Summary}' + '\nNo scored results available.'
 
-    # Item analysis
+    # Item analysis — collects both short-answer status counts AND
+    # rubrics band counts; whichever has signal drives the rendering.
+    # Rubrics submissions don't populate `status`, so the short-answer
+    # path would otherwise mislabel every criterion as 100% incorrect.
+    _band_re = re.compile(r'Band\s+(\d+)', re.IGNORECASE)
     question_stats = {}
     for sr in valid:
+        student_name = sr.get('name', '')
         for q in sr['result'].get('questions', []) or []:
             qn = q.get('question_num', '?')
             key = str(qn)
@@ -828,6 +1177,11 @@ def _generate_overview_pdf_impl(student_results, subject, app_title, assignment_
                 'num': qn, 'criterion_name': q.get('criterion_name', ''),
                 'correct': 0, 'partial': 0, 'incorrect': 0, 'total': 0,
                 'marks_sum': 0, 'marks_max': 0,
+                # Rubrics-only fields. `band_counts` keys are the band
+                # numbers we've actually seen so we can size the table
+                # to the rubric (some use 4 bands, some use 5+).
+                'band_counts': {}, 'band_students': {}, 'band_feedback': {},
+                'band_sum': 0, 'band_count': 0,
             })
             qs['total'] += 1
             status = q.get('status', 'incorrect')
@@ -841,80 +1195,31 @@ def _generate_overview_pdf_impl(student_results, subject, app_title, assignment_
                 qs['marks_sum'] += q.get('marks_awarded') or 0
                 qs['marks_max'] = max(qs['marks_max'], q.get('marks_total') or 0)
 
+            band_raw = (q.get('band') or '').strip()
+            m = _band_re.search(band_raw)
+            if m:
+                bn = int(m.group(1))
+                qs['band_counts'][bn] = qs['band_counts'].get(bn, 0) + 1
+                qs['band_students'].setdefault(bn, []).append(student_name)
+                fb = (q.get('feedback') or '').strip()
+                if fb:
+                    qs['band_feedback'].setdefault(bn, []).append(fb)
+                qs['band_sum'] += bn
+                qs['band_count'] += 1
+
     item_block = ''
     weak_block = ''
     if question_stats:
-        sorted_qs = sorted(
-            question_stats.values(),
-            key=lambda x: (int(x['num']) if str(x['num']).isdigit() else 999, str(x['num'])),
-        )
-        is_rubrics = any(qs['criterion_name'] for qs in sorted_qs)
-        q_label = 'Criterion' if is_rubrics else 'Q\\#'
+        # Detect rubrics by the presence of band data on at least one
+        # row — `criterion_name` alone isn't enough (some short-answer
+        # AIs populate it too).
+        is_rubrics = any(qs['band_count'] > 0 for qs in question_stats.values())
 
-        rows = []
-        for qs in sorted_qs:
-            n = qs['total'] or 1
-            pct_correct = round(qs['correct'] / n * 100)
-            difficulty = pct_correct
-            diff_label = 'Easy' if difficulty >= 70 else ('Moderate' if difficulty >= 40 else 'Hard')
-            diff_color = 'brandgreen' if difficulty >= 70 else ('brandorange' if difficulty >= 40 else 'brandred')
-
-            q_name = qs['criterion_name'] if (is_rubrics and qs['criterion_name']) else str(qs['num'])
-            cells = [
-                _tex_inline(q_name),
-                f'{qs["correct"]} ({pct_correct}\\%)',
-                f'{qs["partial"]} ({round(qs["partial"]/n*100)}\\%)',
-                f'{qs["incorrect"]} ({round(qs["incorrect"]/n*100)}\\%)',
-            ]
-            if has_marks:
-                cells.append(str(round(qs['marks_sum'] / n, 1)))
-                cells.append(str(qs['marks_max']))
-            cells.append(rf'\textcolor{{{diff_color}}}{{\textbf{{{diff_label}}} ({difficulty}\%)}}')
-            rows.append(' & '.join(cells) + r' \\')
-
-        if has_marks:
-            cols = r'@{}>{\bfseries}p{3cm} >{\centering\arraybackslash}p{1.6cm} >{\centering\arraybackslash}p{1.6cm} >{\centering\arraybackslash}p{1.6cm} >{\centering\arraybackslash}p{1.5cm} >{\centering\arraybackslash}p{1.2cm} >{\centering\arraybackslash}X@{}'
-            head = (
-                r'\rowcolor{brandblue}'
-                rf'\color{{white}}\textbf{{{q_label}}} & '
-                r'\color{white}\textbf{Correct} & '
-                r'\color{white}\textbf{Partial} & '
-                r'\color{white}\textbf{Incorrect} & '
-                r'\color{white}\textbf{Avg} & '
-                r'\color{white}\textbf{Max} & '
-                r'\color{white}\textbf{Difficulty} \\'
-            )
+        if is_rubrics:
+            item_block, weak_block = _render_rubrics_item_analysis(question_stats)
         else:
-            cols = r'@{}>{\bfseries}p{3.5cm} >{\centering\arraybackslash}p{2cm} >{\centering\arraybackslash}p{2cm} >{\centering\arraybackslash}p{2cm} >{\centering\arraybackslash}X@{}'
-            head = (
-                r'\rowcolor{brandblue}'
-                rf'\color{{white}}\textbf{{{q_label}}} & '
-                r'\color{white}\textbf{Correct} & '
-                r'\color{white}\textbf{Partial} & '
-                r'\color{white}\textbf{Incorrect} & '
-                r'\color{white}\textbf{Difficulty} \\'
-            )
-        item_block = (
-            r'\section*{Item Analysis}' + '\n'
-            r'\rowcolors{2}{bggrey}{white}' + '\n'
-            rf'\begin{{tabularx}}{{\linewidth}}{{{cols}}}' + '\n'
-            + head + '\n' + '\n'.join(rows) + '\n'
-            r'\end{tabularx}'
-        )
-
-        weak = [qs for qs in sorted_qs if (qs['correct'] / max(qs['total'], 1) * 100) < 40]
-        if weak:
-            lines = []
-            for qs in weak:
-                q_name = qs['criterion_name'] if (is_rubrics and qs['criterion_name']) else f'Question {qs["num"]}'
-                pct = round(qs['correct'] / max(qs['total'], 1) * 100)
-                lines.append(
-                    rf'\item \textbf{{{_tex_inline(q_name)}}} — only {pct}\% correct '
-                    rf'({qs["incorrect"]} incorrect, {qs["partial"]} partial of {qs["total"]})'
-                )
-            weak_block = (
-                r'\subsection*{Areas Needing Attention}' + '\n'
-                r'\begin{itemize}' + '\n' + '\n'.join(lines) + '\n' + r'\end{itemize}'
+            item_block, weak_block = _render_short_answer_item_analysis(
+                question_stats, has_marks,
             )
 
     # Individual scores ranked

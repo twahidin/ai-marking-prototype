@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}Item Analysis — {{ assignment.title or assignment.subject or 'Assignment' }} — {{ app_title }}{% endblock %}
+
+{% block head %}
+<style>
+    .ia-root { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    .ia-back { font-size: 13px; color: #667eea; text-decoration: none; }
+    .ia-back:hover { text-decoration: underline; }
+
+    .ia-header-card { background: white; border-radius: 12px; padding: 16px 22px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); margin: 12px 0 16px; }
+    .ia-header-card h2 { margin: 0 0 4px; font-size: 22px; }
+    .ia-header-meta { color: #888; font-size: 13px; }
+    .ia-summary-row { display: flex; gap: 22px; flex-wrap: wrap; margin-top: 14px; }
+    .ia-summary-stat { min-width: 100px; }
+    .ia-summary-stat b { display: block; font-size: 24px; font-weight: 700; color: #1a1a1a; line-height: 1.1; }
+    .ia-summary-stat span { display: block; font-size: 12px; color: #888; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.4px; }
+    .ia-header-actions { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .ia-section-title { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: #666; margin: 22px 0 4px; font-weight: 700; }
+    .ia-help { font-size: 12.5px; color: #888; margin-bottom: 14px; }
+
+    .ia-crit-card { background: white; border-radius: 12px; padding: 18px 22px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); margin-bottom: 14px; }
+    .ia-crit-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+    .ia-crit-name { font-size: 16.5px; font-weight: 700; color: #1a1a1a; }
+    .ia-crit-stats { font-size: 13px; color: #555; }
+    .ia-crit-stats b { color: #1a1a1a; font-weight: 700; }
+
+    .ia-band-bar { display: flex; height: 38px; border-radius: 8px; overflow: hidden; margin: 6px 0 10px; background: #f0f0f3; }
+    .ia-band-bar-seg {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-weight: 700;
+        font-size: 14px;
+        transition: filter 0.15s, flex-grow 0.2s;
+        cursor: default;
+    }
+    .ia-band-bar-seg:hover { filter: brightness(1.08); }
+    .ia-band-bar-seg.b1 { background: var(--band-1); }
+    .ia-band-bar-seg.b2 { background: var(--band-2); }
+    .ia-band-bar-seg.b3 { background: var(--band-3); color: #1a1a1a; }
+    .ia-band-bar-seg.b4 { background: var(--band-4); }
+    .ia-band-bar-seg.b5 { background: var(--band-5); }
+    .ia-band-bar-seg.b6 { background: #1b5e20; }
+    .ia-band-bar-seg.empty { background: #e5e5e8; flex: 0.05 0 0 !important; min-width: 4px; }
+
+    .ia-band-legend { display: flex; gap: 14px; font-size: 12.5px; color: #555; flex-wrap: wrap; margin-bottom: 6px; }
+    .ia-band-legend-item { display: flex; align-items: center; gap: 6px; }
+    .ia-band-legend-swatch { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
+    .ia-band-legend-swatch.b1 { background: var(--band-1); }
+    .ia-band-legend-swatch.b2 { background: var(--band-2); }
+    .ia-band-legend-swatch.b3 { background: var(--band-3); }
+    .ia-band-legend-swatch.b4 { background: var(--band-4); }
+    .ia-band-legend-swatch.b5 { background: var(--band-5); }
+    .ia-band-legend-swatch.b6 { background: #1b5e20; }
+    .ia-band-legend-item b { color: #1a1a1a; font-weight: 700; }
+
+    .ia-low-block { margin-top: 12px; padding: 10px 14px; background: #fff5f5; border-left: 3px solid var(--band-1); border-radius: 4px; }
+    .ia-low-block.b1 { background: #fff5f5; border-left-color: var(--band-1); }
+    .ia-low-block.b2 { background: #fff8f0; border-left-color: var(--band-2); }
+    .ia-low-block.b3 { background: #fffbeb; border-left-color: var(--band-3); }
+    /* Slot 4/5/6 are higher-good bands — needs-attention shouldn't
+       normally fire for these, but if it does the colour stays neutral
+       so the block doesn't lie by colouring a "good" slot red. */
+    .ia-low-block.b4,
+    .ia-low-block.b5,
+    .ia-low-block.b6 { background: #f7f8fb; border-left-color: #999; }
+    .ia-low-label { font-size: 12px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 6px; }
+    .ia-low-names { display: flex; flex-wrap: wrap; gap: 6px; }
+    .ia-name-chip a {
+        display: inline-block; padding: 3px 10px;
+        background: white; border: 1px solid #ddd; border-radius: 999px;
+        font-size: 12.5px; color: #2d2d2d; text-decoration: none;
+        transition: background 0.12s, border-color 0.12s;
+    }
+    .ia-name-chip a:hover { background: #f5f5f5; border-color: #bbb; }
+
+    .ia-gaps-block { margin-top: 12px; }
+    .ia-gaps-label { font-size: 12px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 6px; }
+    .ia-gaps-list { list-style: none; padding: 0; margin: 0; }
+    .ia-gaps-list li {
+        padding: 7px 12px; background: #f8f9fc; border-radius: 4px; margin-bottom: 4px;
+        font-size: 13px; color: #444; display: flex; justify-content: space-between; gap: 12px; align-items: baseline;
+    }
+    .ia-gap-count { color: #888; font-weight: 600; font-size: 12px; flex-shrink: 0; }
+
+    .ia-empty { padding: 50px 20px; text-align: center; color: #888; font-size: 14px; font-style: italic; background: white; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="ia-root">
+    <a class="ia-back" href="/teacher/assignment/{{ assignment.id }}">&larr; Back to Assignment</a>
+
+    <div class="ia-header-card">
+        <h2>Item Analysis</h2>
+        <div class="ia-header-meta">
+            {{ assignment.title or assignment.subject or 'Assignment' }} —
+            {{ done_count }} of {{ total_students }} student{{ '' if total_students == 1 else 's' }} marked
+        </div>
+        <div class="ia-summary-row">
+            {% if avg_pct is not none %}
+            <div class="ia-summary-stat"><b>{{ avg_pct }}%</b><span>Class average</span></div>
+            {% endif %}
+            <div class="ia-summary-stat"><b>{{ low_band_count }}</b><span>At lowest band (any criterion)</span></div>
+            <div class="ia-summary-stat"><b>{{ num_criteria }}</b><span>Criteria assessed</span></div>
+        </div>
+        <div class="ia-header-actions">
+            <a href="/teacher/assignment/{{ assignment.id }}/overview" target="_blank" rel="noopener" class="action-btn">Download PDF Report</a>
+        </div>
+    </div>
+
+    {% if not criteria %}
+        <div class="ia-empty">No marked submissions yet. Mark some scripts and they'll show up here.</div>
+    {% else %}
+        <div class="ia-section-title">Per criterion — sorted by need (lowest avg band first)</div>
+        <div class="ia-help">Bar widths show how many students land in each band. Wider red = bigger problem.</div>
+
+        {% for c in criteria %}
+        <div class="ia-crit-card">
+            <div class="ia-crit-head">
+                <div class="ia-crit-name">{{ c.name }}</div>
+                <div class="ia-crit-stats">
+                    {% if c.avg_marks is not none and c.marks_total %}
+                        <b>{{ c.avg_marks }} / {{ c.marks_total }}</b> avg
+                    {% else %}
+                        Avg <b>Band {{ c.avg_band }}</b>
+                    {% endif %}
+                    &nbsp;·&nbsp; {{ c.total }} student{{ '' if c.total == 1 else 's' }}
+                </div>
+            </div>
+
+            <div class="ia-band-bar" role="img"
+                 aria-label="Band distribution for {{ c.name }}">
+                {% for b in c.band_segments %}
+                <div class="ia-band-bar-seg b{{ b.slot }}{% if b.count == 0 %} empty{% endif %}"
+                     style="flex: {{ b.count if b.count > 0 else 0.05 }} 0 0;"
+                     title="Band {{ b.num }} — {{ b.count }} student{{ '' if b.count == 1 else 's' }}{% if b.names %}: {{ b.names | join(', ') }}{% endif %}">
+                    {% if b.count > 0 %}{{ b.count }}{% endif %}
+                </div>
+                {% endfor %}
+            </div>
+
+            <div class="ia-band-legend">
+                {% for b in c.band_segments %}
+                <span class="ia-band-legend-item">
+                    <span class="ia-band-legend-swatch b{{ b.slot }}"></span>
+                    Band {{ b.num }}: <b>{{ b.count }}</b>
+                </span>
+                {% endfor %}
+            </div>
+
+            {% if c.lowest_band_students %}
+            <div class="ia-low-block b{{ c.lowest_band_slot }}">
+                <div class="ia-low-label">
+                    {{ c.lowest_band_students | length }} student{{ '' if c.lowest_band_students|length == 1 else 's' }} at Band {{ c.lowest_band_num }} — needs attention
+                </div>
+                <div class="ia-low-names">
+                    {% for s in c.lowest_band_students %}
+                    <span class="ia-name-chip"><a href="/teacher/assignment/{{ assignment.id }}/submission/{{ s.submission_id }}/review" target="_blank" rel="noopener">{{ s.name }}</a></span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
+            {% if c.common_gaps %}
+            <div class="ia-gaps-block">
+                <div class="ia-gaps-label">Common gaps from marked feedback</div>
+                <ul class="ia-gaps-list">
+                    {% for g in c.common_gaps %}
+                    <li><span>{{ g.text }}</span><span class="ia-gap-count">{{ g.count }}&times;</span></li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    {% endif %}
+</div>
+{% endblock %}
