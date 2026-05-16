@@ -6,6 +6,7 @@ import re
 import io
 import hashlib
 import threading as _threading
+from collections import OrderedDict
 import time as _time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -328,7 +329,9 @@ def _resolve_api_key(provider, session_keys=None):
     env_val = os.getenv(env_name) if env_name else None
     if env_val:
         return env_val
-    # Fall back to wizard-stored encrypted keys in DepartmentConfig
+    # Fall back to wizard-stored encrypted keys in DepartmentConfig.
+    # If decrypt fails (wrong/rotated FLASK_SECRET_KEY), treat the provider
+    # as unconfigured rather than handing the ciphertext to the AI SDK.
     try:
         from db import DepartmentConfig, _get_fernet
         cfg = DepartmentConfig.query.filter_by(key=f'api_key_{provider}').first()
@@ -337,11 +340,19 @@ def _resolve_api_key(provider, session_keys=None):
             if f:
                 try:
                     return f.decrypt(cfg.value.encode()).decode()
-                except Exception:
-                    pass
-            return cfg.value
-    except Exception:
-        pass
+                except Exception as decrypt_err:
+                    logger.warning(
+                        f"Fernet decrypt failed for stored api_key_{provider} "
+                        f"(likely FLASK_SECRET_KEY mismatch): {decrypt_err}. "
+                        f"Treating provider as unconfigured."
+                    )
+            else:
+                logger.warning(
+                    f"No Fernet instance available to decrypt api_key_{provider}; "
+                    f"treating provider as unconfigured."
+                )
+    except Exception as e:
+        logger.warning(f"DB lookup for api_key_{provider} failed: {e}")
     return None
 
 
@@ -355,6 +366,41 @@ def get_available_providers(session_keys=None):
     if _resolve_api_key('qwen', session_keys) and OPENAI_AVAILABLE:
         available['qwen'] = PROVIDERS['qwen']
     return available
+
+
+# Provider client cache. Anthropic and OpenAI Python SDKs are thread-safe
+# and intended to be reused — rebuilding them per mark call re-inits the
+# HTTP connection pool and SSL context on every request, which adds latency
+# under concurrent bulk marking. Keyed by (provider, sha256(api_key)) so
+# the raw key never appears in tracebacks/repr.
+_CLIENT_CACHE: dict[tuple[str, str], Any] = {}
+_CLIENT_CACHE_LOCK = _threading.Lock()
+
+
+def _get_cached_client(provider, api_key):
+    """Return a reusable provider client, constructing once per unique key."""
+    cache_key = (provider, hashlib.sha256(api_key.encode('utf-8')).hexdigest())
+    with _CLIENT_CACHE_LOCK:
+        client = _CLIENT_CACHE.get(cache_key)
+        if client is not None:
+            return client
+        if provider == 'anthropic':
+            client = Anthropic(api_key=api_key)
+        elif provider == 'openai':
+            if not OPENAI_AVAILABLE:
+                return None
+            client = OpenAI(api_key=api_key)
+        elif provider == 'qwen':
+            if not OPENAI_AVAILABLE:
+                return None
+            client = OpenAI(
+                api_key=api_key,
+                base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            )
+        else:
+            return None
+        _CLIENT_CACHE[cache_key] = client
+        return client
 
 
 def get_ai_client(provider, model=None, session_keys=None):
@@ -372,27 +418,44 @@ def get_ai_client(provider, model=None, session_keys=None):
     if not api_key:
         return None, None, None
 
-    if provider == 'anthropic':
-        return Anthropic(api_key=api_key), model, 'anthropic'
+    client = _get_cached_client(provider, api_key)
+    if client is None:
+        return None, None, None
+    return client, model, provider
 
-    elif provider == 'openai':
-        if not OPENAI_AVAILABLE:
-            return None, None, None
-        return OpenAI(api_key=api_key), model, 'openai'
 
-    elif provider == 'qwen':
-        if not OPENAI_AVAILABLE:
-            return None, None, None
-        client = OpenAI(api_key=api_key, base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-        return client, model, 'qwen'
-
-    return None, None, None
+# Bounded in-process cache for PDF→image conversion. The hot case is a
+# bulk-mark run where the SAME answer-key PDF gets re-converted once per
+# student (4–40+ calls of the identical bytes). Keyed by sha256 of bytes +
+# max_pages; bounded at 8 entries (an answer key + a few student-script
+# PDFs is enough — student scripts are rarely identical).
+_PDF_IMG_CACHE: OrderedDict[tuple[str, int], list[str]] = OrderedDict()
+_PDF_IMG_CACHE_LOCK = _threading.Lock()
+_PDF_IMG_CACHE_MAX = 8
 
 
 def convert_pdf_to_images(pdf_bytes, max_pages=20):
-    """Convert PDF pages to base64-encoded JPEG images."""
-    if not PDF2IMAGE_AVAILABLE:
+    """Convert PDF pages to base64-encoded JPEG images.
+
+    Memoised by sha256(bytes) so the answer key in a bulk run is converted
+    once, not once per student. Cache resets on container restart.
+    """
+    if not pdf_bytes:
         return []
+    if not PDF2IMAGE_AVAILABLE:
+        raise AIProviderError(
+            "PDF-to-image conversion is unavailable (pdf2image / poppler "
+            "missing). The submission cannot be marked through OpenAI/Qwen; "
+            "switch provider or install the missing dependencies."
+        )
+    cache_key = (hashlib.sha256(pdf_bytes).hexdigest(), max_pages)
+    with _PDF_IMG_CACHE_LOCK:
+        cached = _PDF_IMG_CACHE.get(cache_key)
+        if cached is not None:
+            _PDF_IMG_CACHE.move_to_end(cache_key)
+            return list(cached)
+    # Compute outside the lock — poppler can be slow on large PDFs and we
+    # don't want to block other callers on a cache miss.
     try:
         images = convert_from_bytes(pdf_bytes, first_page=1, last_page=max_pages)
         result = []
@@ -403,10 +466,24 @@ def convert_pdf_to_images(pdf_bytes, max_pages=20):
             img.save(buf, format='JPEG', quality=85)
             buf.seek(0)
             result.append(base64.b64encode(buf.read()).decode('utf-8'))
-        return result
-    except Exception:
+    except Exception as e:
+        # Surface as a MarkingError so the submission lands in status='error'
+        # with a clear message instead of silently marking against a placeholder.
         logger.exception("Error converting PDF to images")
-        return []
+        raise AIProviderError(
+            f"PDF could not be converted to images: {e}. "
+            f"Re-upload a cleaner PDF or use a different provider."
+        ) from e
+    if not result:
+        raise AIProviderError(
+            "PDF converted to zero pages — the file may be empty or corrupt."
+        )
+    with _PDF_IMG_CACHE_LOCK:
+        _PDF_IMG_CACHE[cache_key] = result
+        _PDF_IMG_CACHE.move_to_end(cache_key)
+        while len(_PDF_IMG_CACHE) > _PDF_IMG_CACHE_MAX:
+            _PDF_IMG_CACHE.popitem(last=False)
+    return list(result)
 
 
 def resize_image_for_ai(image_bytes, max_dimension=1200, quality=85):
@@ -456,16 +533,17 @@ def build_content_block(file_bytes):
         b'heic', b'heix', b'hevc', b'heim', b'heis', b'mif1', b'msf1', b'heif'
     ):
         # HEIC / HEIF (iPhone photos). Convert to JPEG so AI APIs accept it.
+        # On failure we surface a MarkingError rather than mis-labelling the
+        # raw HEIC bytes as application/pdf — that fallback would hand the
+        # AI a non-PDF and produce a wrong or zero-score mark with no
+        # diagnostic. Surfacing puts the submission in status='error' with
+        # a clear message instead.
         if not HEIF_AVAILABLE or not PDF2IMAGE_AVAILABLE:
             logger.error("HEIC upload received but pillow-heif or Pillow is not installed")
-            return {
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": "application/pdf",
-                    "data": base64.standard_b64encode(file_bytes).decode('utf-8')
-                }
-            }
+            raise AIProviderError(
+                "HEIC image upload requires pillow-heif + Pillow to be installed; "
+                "re-export the photo as JPEG/PNG or install the missing dependencies."
+            )
         try:
             img = Image.open(io.BytesIO(file_bytes))
             if img.mode in ('RGBA', 'P'):
@@ -476,16 +554,12 @@ def build_content_block(file_bytes):
             img.save(buf, format='JPEG', quality=85)
             file_bytes = buf.getvalue()
             media_type = "image/jpeg"
-        except Exception:
+        except Exception as e:
             logger.exception("Failed to convert HEIC to JPEG")
-            return {
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": "application/pdf",
-                    "data": base64.standard_b64encode(file_bytes).decode('utf-8')
-                }
-            }
+            raise AIProviderError(
+                f"HEIC image could not be decoded: {e}. "
+                f"Re-export the photo as JPEG/PNG and re-upload."
+            ) from e
     else:
         # Default to PDF
         return {
@@ -584,16 +658,18 @@ def make_ai_api_call(client, model_name, provider, system_prompt, messages_conte
                 elif item.get('type') == 'document':
                     pdf_data = item['source']['data']
                     pdf_bytes = base64.b64decode(pdf_data)
+                    # convert_pdf_to_images returns [] only for empty input;
+                    # real conversion failures raise AIProviderError, which
+                    # propagates up to the submission-marking error handler
+                    # rather than silently inserting a "could not convert"
+                    # placeholder that the AI then "marks" against.
                     pdf_images = convert_pdf_to_images(pdf_bytes, max_pages=20)
-                    if pdf_images:
-                        for page_num, img_b64 in enumerate(pdf_images, 1):
-                            user_content.append({
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-                            })
-                            user_content.append({"type": "text", "text": f"(PDF Page {page_num})"})
-                    else:
-                        user_content.append({"type": "text", "text": "[PDF document could not be converted to images]"})
+                    for page_num, img_b64 in enumerate(pdf_images, 1):
+                        user_content.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                        })
+                        user_content.append({"type": "text", "text": f"(PDF Page {page_num})"})
 
         # Combine text and images for OpenAI format
         text_parts = [c.get('text', '') for c in user_content if c.get('type') == 'text']

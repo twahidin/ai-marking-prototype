@@ -626,6 +626,51 @@ def _migrate_add_columns(app):
                 db.session.commit()
                 logger.info('Added bank_pushed_at column to assignments table')
 
+        # Performance indexes for hot query paths. Idempotent via
+        # `CREATE INDEX IF NOT EXISTS` (supported on SQLite + PG); safe to
+        # re-run on every boot. Wrapped in try/except so a partial schema
+        # never blocks app start — the index will be retried on next boot.
+        try:
+            tables = inspector.get_table_names()
+            if 'submissions' in tables:
+                # Analytics/dashboard queries filter on
+                # (assignment_id, is_final, status) — the composite lets PG
+                # find done+final submissions for an assignment without
+                # rescanning the assignment_id leaf.
+                db.session.execute(text(
+                    'CREATE INDEX IF NOT EXISTS ix_submissions_asn_final_status '
+                    'ON submissions (assignment_id, is_final, status)'
+                ))
+                # The categorisation dispatcher filters pending rows; without
+                # an index it sequentially scans the submissions table.
+                db.session.execute(text(
+                    'CREATE INDEX IF NOT EXISTS ix_submissions_categorisation_status '
+                    'ON submissions (categorisation_status)'
+                ))
+            if 'teacher_classes' in tables:
+                # Composite PK only indexes teacher_id as the leading key.
+                # Routes that filter by class_id alone (find all teachers
+                # for a class) need this secondary index.
+                db.session.execute(text(
+                    'CREATE INDEX IF NOT EXISTS ix_teacher_classes_class_id '
+                    'ON teacher_classes (class_id)'
+                ))
+            if 'department_goal' in tables:
+                # Every read on department_goal filters `WHERE deleted_at
+                # IS NULL`; without an index the soft-delete pattern scans
+                # the table on each goal-widget render.
+                db.session.execute(text(
+                    'CREATE INDEX IF NOT EXISTS ix_department_goal_deleted_at '
+                    'ON department_goal (deleted_at)'
+                ))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            logger.warning(
+                'Failed to ensure performance indexes (will retry on next boot)',
+                exc_info=True,
+            )
+
 
 _DEPT_GOAL_MIGRATION_NAME = 'department_goal_dept_level_2026_05_15'
 
@@ -1163,6 +1208,19 @@ def init_db(app):
         db_url = 'sqlite:///marking.db'
     app.config['SQLALCHEMY_DATABASE_URI'] = db_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    # Pool config matters under gunicorn `-w 1 --threads 100`: default
+    # pool_size=5 + max_overflow=10 cannot service 100 threads under
+    # concurrent marking. `pool_pre_ping` recycles dead connections
+    # transparently (Railway's PG sometimes drops idle conns), and
+    # `pool_recycle` rotates conns before PG's idle timeout. SQLite is
+    # file-based and has no pool, so only set these on real network DBs.
+    if db_url.startswith('postgresql'):
+        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+            'pool_size': 20,
+            'max_overflow': 30,
+            'pool_pre_ping': True,
+            'pool_recycle': 300,
+        }
     db.init_app(app)
     with app.app_context():
         # Concurrent gunicorn workers each call init_db() at boot. On

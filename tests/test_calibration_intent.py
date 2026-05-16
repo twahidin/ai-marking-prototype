@@ -59,7 +59,7 @@ def test_neither_box_ticked_writes_no_feedback_edit(app, db_session, client):
     rv = client.patch(
         f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
         json={'questions': [{'question_num': 1, 'feedback': 'New text',
-                              'amend_answer_key': False, 'update_subject_standards': False}]},
+                              'amend_answer_key': False}]},
     )
     assert rv.status_code == 200
     # Scope by assignment_id too — other tests insert placeholder FeedbackEdit
@@ -75,7 +75,7 @@ def test_amend_answer_key_only_writes_feedback_edit_with_flag(app, db_session, c
     rv = client.patch(
         f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
         json={'questions': [{'question_num': 1, 'feedback': 'Accept "powerhouse of the cell"',
-                              'amend_answer_key': True, 'update_subject_standards': False}]},
+                              'amend_answer_key': True}]},
     )
     assert rv.status_code == 200
     fe = FeedbackEdit.query.filter_by(submission_id=sub.id).first()
@@ -93,7 +93,7 @@ def test_uncheck_both_without_text_edit_deactivates_prior(app, db_session, clien
     client.patch(
         f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
         json={'questions': [{'question_num': 1, 'feedback': 'Calibrated text',
-                              'amend_answer_key': True, 'update_subject_standards': False}]},
+                              'amend_answer_key': True}]},
     )
     active_before = FeedbackEdit.query.filter_by(
         submission_id=sub.id, assignment_id=asn.id, active=True).count()
@@ -102,7 +102,7 @@ def test_uncheck_both_without_text_edit_deactivates_prior(app, db_session, clien
     rv = client.patch(
         f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
         json={'questions': [{'question_num': 1, 'feedback': 'Calibrated text',
-                              'amend_answer_key': False, 'update_subject_standards': False}]},
+                              'amend_answer_key': False}]},
     )
     assert rv.status_code == 200
     assert FeedbackEdit.query.filter_by(

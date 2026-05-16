@@ -1059,7 +1059,13 @@ def _require_insights_access():
 
 
 def _get_dept_keys():
-    """Get department-level API keys from DepartmentConfig."""
+    """Get department-level API keys from DepartmentConfig.
+
+    Decrypt failures (wrong/rotated FLASK_SECRET_KEY) skip the provider
+    rather than handing ciphertext to the AI SDK. The provider then
+    appears unconfigured, which matches reality — the stored value is
+    unrecoverable without the original secret.
+    """
     if not is_dept_mode():
         return {}
     from db import _get_fernet
@@ -1071,10 +1077,17 @@ def _get_dept_keys():
             if f:
                 try:
                     keys[prov] = f.decrypt(cfg.value.encode()).decode()
-                    continue
-                except Exception:
-                    pass
-            keys[prov] = cfg.value
+                except Exception as decrypt_err:
+                    logger.warning(
+                        f"Fernet decrypt failed for dept api_key_{prov} "
+                        f"(likely FLASK_SECRET_KEY mismatch): {decrypt_err}. "
+                        f"Treating provider as unconfigured."
+                    )
+            else:
+                logger.warning(
+                    f"No Fernet instance for dept api_key_{prov}; "
+                    f"treating provider as unconfigured."
+                )
     return keys
 
 
@@ -1131,7 +1144,8 @@ def _resolve_api_keys(assignment) -> dict[str, str] | None:
         dept_keys = _get_dept_keys()
         if dept_keys:
             return dept_keys
-    # Also check wizard-stored keys
+    # Also check wizard-stored keys. Skip any provider whose Fernet decrypt
+    # fails (wrong/rotated FLASK_SECRET_KEY) — ciphertext is not a usable key.
     from db import _get_fernet
     wizard_keys = {}
     for prov in ('anthropic', 'openai', 'qwen'):
@@ -1141,10 +1155,17 @@ def _resolve_api_keys(assignment) -> dict[str, str] | None:
             if f:
                 try:
                     wizard_keys[prov] = f.decrypt(cfg.value.encode()).decode()
-                    continue
-                except Exception:
-                    pass
-            wizard_keys[prov] = cfg.value
+                except Exception as decrypt_err:
+                    logger.warning(
+                        f"Fernet decrypt failed for wizard api_key_{prov} "
+                        f"(likely FLASK_SECRET_KEY mismatch): {decrypt_err}. "
+                        f"Treating provider as unconfigured."
+                    )
+            else:
+                logger.warning(
+                    f"No Fernet instance for wizard api_key_{prov}; "
+                    f"treating provider as unconfigured."
+                )
     if wizard_keys:
         return wizard_keys
     return None
@@ -2157,18 +2178,31 @@ def manage_class_students(class_id):
     if len(students_data) > 500:
         return jsonify({'success': False, 'error': 'Maximum 500 students per class'}), 400
 
-    # Remove existing students without submissions
+    # Remove existing students without submissions; preserve those who do.
+    # Pre-batch the "has submission" check into one IN query so we don't
+    # fire N+1 SELECTs across a 40-student class.
     existing = Student.query.filter_by(class_id=class_id).all()
+    existing_ids = [s.id for s in existing]
+    students_with_subs = set()
+    if existing_ids:
+        rows = db.session.query(Submission.student_id).filter(
+            Submission.student_id.in_(existing_ids)
+        ).distinct().all()
+        students_with_subs = {row[0] for row in rows}
+    # Track indexes that will remain after the delete pass so the add
+    # pass can avoid duplicates without firing per-row queries.
+    remaining_indexes = set()
     for s in existing:
-        has_sub = Submission.query.filter_by(student_id=s.id).first()
-        if not has_sub:
+        if s.id in students_with_subs:
+            remaining_indexes.add(s.index_number)
+        else:
             db.session.delete(s)
 
-    # Add new students (skip if already exists by index)
+    # Add new students (skip if index already taken by a surviving row).
     for s in students_data:
-        existing_student = Student.query.filter_by(class_id=class_id, index_number=s['index']).first()
-        if not existing_student:
+        if s['index'] not in remaining_indexes:
             db.session.add(Student(class_id=class_id, index_number=s['index'], name=s['name']))
+            remaining_indexes.add(s['index'])
 
     db.session.commit()
 
@@ -2305,11 +2339,13 @@ def api_classes():
             classes = teacher.classes
     else:
         classes = Class.query.all()
-    result = []
-    for c in classes:
-        student_count = Student.query.filter_by(class_id=c.id).count()
-        result.append({'id': c.id, 'name': c.name, 'level': c.level, 'student_count': student_count})
-    return jsonify(result)
+    from perf import student_counts_for_classes
+    counts = student_counts_for_classes([c.id for c in classes])
+    return jsonify([
+        {'id': c.id, 'name': c.name, 'level': c.level,
+         'student_count': counts.get(c.id, 0)}
+        for c in classes
+    ])
 
 
 @app.route('/department/class/<class_id>/assign', methods=['POST'])
@@ -3538,20 +3574,40 @@ def department_item_analysis():
     if len(assignment_ids) < 2:
         return jsonify({'success': False, 'error': 'Select at least 2 assignments'}), 400
 
-    assignments = Assignment.query.filter(Assignment.id.in_(assignment_ids)).all()
+    from perf import light_assignment_query, light_submission_query
+    assignments = light_assignment_query().filter(
+        Assignment.id.in_(assignment_ids)
+    ).all()
     if len(assignments) < 2:
         return jsonify({'success': False, 'error': 'Assignments not found'}), 404
 
     cls_ids = list(set(a.class_id for a in assignments if a.class_id))
     classes = {c.id: c for c in Class.query.filter(Class.id.in_(cls_ids)).all()} if cls_ids else {}
 
+    # Single IN query for all submissions across the chosen assignments —
+    # avoids one .all() per assignment in the loop below. light_submission_query
+    # also drops script_bytes + page JSON which the per-question stats never touch.
+    asn_ids_set = {a.id for a in assignments}
+    subs_by_asn = {aid: [] for aid in asn_ids_set}
+    if asn_ids_set:
+        all_subs = (
+            light_submission_query()
+            .filter(
+                Submission.assignment_id.in_(asn_ids_set),
+                Submission.status == 'done',
+                Submission.is_final.is_(True),
+            )
+            .all()
+        )
+        for sub in all_subs:
+            subs_by_asn.setdefault(sub.assignment_id, []).append(sub)
+
     result = []
     all_qnums = set()
 
     for asn in assignments:
-        subs = Submission.query.filter_by(assignment_id=asn.id, status='done', is_final=True).all()
         q_stats = {}
-        for sub in subs:
+        for sub in subs_by_asn.get(asn.id, []):
             questions = sub.get_result().get('questions', [])
             for i, q in enumerate(questions):
                 qnum = str(q.get('question_number', i + 1))
@@ -6178,66 +6234,6 @@ def _log_ai_originals(submission_id):
         logger.warning(f"Could not log AI originals for submission {submission_id}: {e}")
 
 
-def _find_propagation_candidates(edit, asn):
-    """Synchronous lookup. Returns the list of submission_ids in the same
-    assignment where the same criterion lost marks AND feedback_source is
-    not yet 'teacher_edit'. Each entry includes student_name, marks, and
-    the current feedback / improvement text so the 'Review individually'
-    panel can render without a second fetch.
-    """
-    from db import Submission, Student
-    out = []
-    submissions = (
-        db.session.query(Submission, Student)
-        .outerjoin(Student, Submission.student_id == Student.id)
-        .filter(
-            Submission.assignment_id == asn.id,
-            Submission.id != edit.submission_id,
-            Submission.status == 'done',
-        )
-        .order_by(Submission.id)
-        .all()
-    )
-    for sub, student in submissions:
-        try:
-            result = sub.get_result() or {}
-        except Exception:
-            continue
-        questions = result.get('questions') or []
-        target_q = None
-        for q in questions:
-            if str(q.get('question_num')) == edit.criterion_id:
-                target_q = q
-                break
-        if not target_q:
-            continue
-        ma = target_q.get('marks_awarded')
-        mt = target_q.get('marks_total')
-        lost_by_marks = (mt and ma is not None and mt > 0 and ma < mt)
-        lost_by_status = (not lost_by_marks
-                          and target_q.get('status')
-                          and target_q.get('status') != 'correct')
-        if not (lost_by_marks or lost_by_status):
-            continue
-        source = target_q.get('feedback_source')
-        if source not in (None, 'original_ai', 'propagated'):
-            continue
-        out.append({
-            'submission_id': sub.id,
-            'student_name': (student.name if student else f"Student #{sub.student_id}"),
-            'marks_awarded': ma,
-            'marks_total': mt,
-            'current_feedback': (target_q.get('feedback') or ''),
-            'current_improvement': (target_q.get('improvement') or ''),
-        })
-    return {
-        'edit_id': edit.id,
-        'criterion_name': edit.criterion_id,
-        'candidate_count': len(out),
-        'candidates': out,
-    }
-
-
 def _run_insight_extraction_worker(app_obj, edit_id):
     """Background thread: extract a structured insight from a calibration
     edit and write the three fields back. Best-effort; never blocks the
@@ -6278,147 +6274,6 @@ def _run_insight_extraction_worker(app_obj, edit_id):
                 db.session.rollback()
             except Exception:
                 pass
-
-
-def _run_propagation_worker(app_obj, edit_id, target_ids):
-    """Background thread: refresh feedback for each candidate submission in
-    sequence (never parallel — avoids DB contention). Updates result_json
-    in place per submission, logs failures, and stamps the originating
-    feedback_edit row with the final propagation_status + propagated_to.
-    """
-    from db import FeedbackEdit, Submission
-    import json as _json
-
-    with app_obj.app_context():
-        try:
-            edit = FeedbackEdit.query.get(edit_id)
-            if not edit:
-                logger.warning(f"propagation worker: edit {edit_id} not found")
-                return
-            asn = Assignment.query.get(edit.assignment_id)
-            if not asn:
-                logger.warning(f"propagation worker: assignment for edit {edit_id} not found")
-                return
-
-            # Seed propagated_to with pending entries so the progress poll
-            # has the full list visible from the very first poll.
-            seeded = [{'submission_id': int(sid), 'status': 'pending'} for sid in target_ids]
-            edit.propagated_to = _json.dumps(seeded, ensure_ascii=False)
-            edit.propagation_status = 'pending'
-            db.session.commit()
-
-            from ai_marking import refresh_criterion_feedback
-            results = []
-            for sid in target_ids:
-                entry = {'submission_id': int(sid), 'status': 'pending'}
-                try:
-                    sub = Submission.query.get(int(sid))
-                    if not sub:
-                        entry = {'submission_id': int(sid), 'status': 'failed', 'error': 'submission not found'}
-                        results.append(entry)
-                        continue
-                    result = sub.get_result() or {}
-                    target_q = None
-                    for q in (result.get('questions') or []):
-                        if str(q.get('question_num')) == edit.criterion_id:
-                            target_q = q
-                            break
-                    if not target_q:
-                        entry = {'submission_id': int(sid), 'status': 'failed', 'error': 'criterion not found on this submission'}
-                        results.append(entry)
-                        continue
-                    # Field-aware re-mark: pass the teacher's edited field
-                    # through; refresh_criterion_feedback returns only that
-                    # field + an optional marks_awarded override.
-                    target_field = edit.field
-                    if target_field not in ('feedback', 'improvement'):
-                        # Defensive: server-side validation should already
-                        # prevent this, but if it slipped through, skip the
-                        # candidate with a clear error rather than corrupting
-                        # the result.
-                        entry = {'submission_id': int(sid), 'status': 'failed',
-                                 'error': f'unsupported field for propagation: {target_field!r}'}
-                        results.append(entry)
-                        continue
-
-                    refreshed = refresh_criterion_feedback(
-                        provider=asn.provider,
-                        model=asn.model,
-                        session_keys=_resolve_api_keys(asn),
-                        subject=asn.subject or '',
-                        criterion_name=edit.criterion_id,
-                        student_answer=target_q.get('student_answer') or '',
-                        correct_answer=target_q.get('correct_answer') or '',
-                        marks_awarded=target_q.get('marks_awarded'),
-                        marks_total=target_q.get('marks_total'),
-                        calibration_edit=edit,
-                        target_field=target_field,
-                    )
-                    new_text = (refreshed.get(target_field) or target_q.get(target_field) or '')
-                    target_q[target_field] = new_text
-                    new_marks = refreshed.get('marks_awarded')
-                    if new_marks is not None:
-                        target_q['marks_awarded'] = new_marks
-                        # Re-derive status to stay consistent with marks.
-                        mt = target_q.get('marks_total')
-                        if mt and mt > 0:
-                            ratio = (new_marks or 0) / mt
-                            if ratio >= 0.99:
-                                target_q['status'] = 'correct'
-                            elif ratio > 0:
-                                target_q['status'] = 'partially_correct'
-                            else:
-                                target_q['status'] = 'incorrect'
-                    target_q['feedback_source'] = 'propagated'
-                    target_q['propagated_from_edit'] = edit.id
-                    sub.set_result(result)
-                    db.session.commit()
-                    entry = {'submission_id': int(sid), 'status': 'done'}
-                    results.append(entry)
-                except Exception as e:
-                    db.session.rollback()
-                    err = str(e)[:200]
-                    logger.warning(f"propagation refresh failed sub={sid} edit={edit_id}: {e}")
-                    entry = {'submission_id': int(sid), 'status': 'failed', 'error': err}
-                    results.append(entry)
-
-                # Persist running state after each iteration so the progress
-                # poll reflects partial progress.
-                try:
-                    edit_fresh = FeedbackEdit.query.get(edit_id)
-                    current = _json.loads(edit_fresh.propagated_to or '[]')
-                    for i, c in enumerate(current):
-                        if int(c.get('submission_id')) == int(sid):
-                            current[i] = entry
-                            break
-                    edit_fresh.propagated_to = _json.dumps(current, ensure_ascii=False)
-                    db.session.commit()
-                except Exception as persist_err:
-                    db.session.rollback()
-                    logger.warning(f"propagation progress persist failed: {persist_err}")
-
-            # Final state.
-            try:
-                failed_n = sum(1 for r in results if r.get('status') == 'failed')
-                final_status = 'complete' if failed_n == 0 else 'partial'
-                edit_final = FeedbackEdit.query.get(edit_id)
-                edit_final.propagation_status = final_status
-                edit_final.propagated_at = datetime.now(timezone.utc)
-                db.session.commit()
-                logger.info(f"propagation finished edit={edit_id} status={final_status} "
-                            f"done={len(results) - failed_n} failed={failed_n}")
-            except Exception:
-                db.session.rollback()
-                logger.exception("propagation final-status persist failed")
-        except Exception:
-            logger.exception("propagation worker crashed for edit %s", edit_id)
-            try:
-                edit_err = FeedbackEdit.query.get(edit_id)
-                if edit_err and edit_err.propagation_status == 'pending':
-                    edit_err.propagation_status = 'partial'
-                    db.session.commit()
-            except Exception:
-                db.session.rollback()
 
 
 def _count_lost_criteria(questions):
@@ -7421,13 +7276,20 @@ def teacher_download_all(assignment_id):
     # `student_id` for the filename — defer all four blob columns.
     submissions = Submission.query_no_blobs().filter_by(assignment_id=assignment_id, status='done', is_final=True).all()
 
+    # Pre-batch student lookups: one IN query instead of N+1 .get() calls
+    # inside the zip loop. Empty filename ('/' etc) is sanitised below.
+    student_ids = {s.student_id for s in submissions if s.student_id}
+    students_by_id = {
+        st.id: st for st in Student.query.filter(Student.id.in_(student_ids)).all()
+    } if student_ids else {}
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
         for sub in submissions:
             result = sub.get_result()
             if result.get('error'):
                 continue
-            student = Student.query.get(sub.student_id)
+            student = students_by_id.get(sub.student_id)
             if not student:
                 continue
             pdf_bytes = generate_report_pdf(
@@ -7685,14 +7547,24 @@ def teacher_overview(assignment_id):
     err = _check_assignment_ownership(asn)
     if err:
         return err
-    submissions = Submission.query.filter_by(assignment_id=assignment_id, status='done', is_final=True).all()
+    # Defer script_bytes + JSON page blobs — this route only needs
+    # result_json (via get_result) and student_id for the overview PDF.
+    submissions = Submission.query_no_blobs().filter_by(
+        assignment_id=assignment_id, status='done', is_final=True
+    ).all()
+
+    # Pre-batch student lookups: one IN query instead of N+1 .get() calls.
+    student_ids = {s.student_id for s in submissions if s.student_id}
+    students_by_id = {
+        st.id: st for st in Student.query.filter(Student.id.in_(student_ids)).all()
+    } if student_ids else {}
 
     student_results = []
     for sub in submissions:
         result = sub.get_result()
         if result.get('error'):
             continue
-        student = Student.query.get(sub.student_id)
+        student = students_by_id.get(sub.student_id)
         if not student:
             continue
         student_results.append({
@@ -8309,7 +8181,10 @@ def _validate_upload_blobs(blobs, label='script'):
     """
     for idx, data in enumerate(blobs or ()):
         if not data:
-            continue
+            return jsonify({
+                'success': False,
+                'error': f'Empty file uploaded for {label} page {idx + 1}. Re-upload a non-empty file.',
+            }), 400
         mime = _detect_mime(data)
         if mime not in _ALLOWED_UPLOAD_MIMES:
             return jsonify({
@@ -9940,24 +9815,6 @@ def feedback_edit_history(assignment_id, submission_id, criterion_id):
             'active': edit.active if edit else None,
         })
     return jsonify(out)
-
-
-def _check_edit_owner(edit_id):
-    """Helper: load FeedbackEdit + verify the current teacher is the
-    original editor. Returns (edit, None) on success or (None, error_response)."""
-    from db import FeedbackEdit
-    if not _is_authenticated():
-        return None, (jsonify({'status': 'error', 'message': 'Not authenticated'}), 401)
-    teacher = _current_teacher()
-    teacher_id = teacher.id if teacher else None
-    if not teacher_id:
-        return None, (jsonify({'status': 'error', 'message': 'Not authenticated'}), 401)
-    edit = FeedbackEdit.query.get(edit_id)
-    if not edit:
-        return None, (jsonify({'status': 'error', 'message': 'Edit not found'}), 404)
-    if edit.edited_by != teacher_id:
-        return None, (jsonify({'status': 'error', 'message': 'Forbidden'}), 403)
-    return edit, None
 
 
 @app.route('/feedback/propagation-candidates/<int:edit_id>')
