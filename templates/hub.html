@@ -65,7 +65,7 @@
                 <span class="tag">Setup</span>
             </a>
             {% endif %}
-            {% if teacher.role in ('hod', 'subject_head', 'lead') %}
+            {% if teacher.role == 'hod' %}
             <a class="hub-card animate__animated animate__fadeInUp" style="animation-delay:0.15s;animation-duration:0.5s;" href="/department/insights">
                 <div class="icon">&#128202;</div>
                 <h2>Insights</h2>

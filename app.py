@@ -755,12 +755,17 @@ def _current_teacher():
 ROLE_HIERARCHY = {'hod': 5, 'subject_head': 4, 'lead': 3, 'manager': 2, 'teacher': 1, 'owner': 5}
 ROLES_CAN_MANAGE = {'hod', 'subject_head', 'manager'}
 ROLES_CAN_VIEW_INSIGHTS = {'hod', 'subject_head', 'lead', 'owner', 'manager'}
-# Department insights are pedagogical, not administrative — managers
-# (account/code-reset specialists) don't need them. Use this set for
-# everything that gates the Department insights surface; keep
-# ROLES_CAN_VIEW_INSIGHTS for the broader "any cross-class role"
-# checks elsewhere.
-ROLES_CAN_VIEW_DEPT_INSIGHTS = {'hod', 'subject_head', 'lead', 'owner'}
+# Department insights are HOD-only — subject heads and leads were dropped
+# (the cohort-wide picture is the HOD's planning surface, not a pedagogical
+# workspace for subject seniors); managers were never in scope (admin role).
+# SH/Lead still get My Class insights for their own roster. `owner` is the
+# normal-mode single teacher and is kept so the link works in normal mode.
+ROLES_CAN_VIEW_DEPT_INSIGHTS = {'hod', 'owner'}
+# Senior pedagogical roles that may address ANY class via the My Class
+# insights API (the dropdown still only lists their own classes; this is
+# the API-level capability for direct calls). Distinct from the dept
+# insights gate above so narrowing one doesn't silently narrow the other.
+ROLES_CAN_ADDRESS_ANY_CLASS = {'hod', 'subject_head', 'lead', 'owner'}
 # Overview lives inside Insights as its own tab; visibility matches the
 # existing management gate (HOD / Subject Head / Manager). Lead/Owner still
 # see Department + My Class but no Overview tab.
@@ -2733,7 +2738,7 @@ def _check_class_access_for_teacher(class_id):
     teacher = _current_teacher()
     if not teacher:
         return None, (jsonify({'success': False, 'error': 'Not authenticated'}), 401)
-    if teacher.role in ROLES_CAN_VIEW_DEPT_INSIGHTS:
+    if teacher.role in ROLES_CAN_ADDRESS_ANY_CLASS:
         return teacher, None
     tc = TeacherClass.query.filter_by(teacher_id=teacher.id, class_id=class_id).first()
     if not tc:
