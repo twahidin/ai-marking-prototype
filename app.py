@@ -6591,6 +6591,20 @@ def _run_propagation_worker(app_obj, edit_id, target_ids):
                         entry = {'submission_id': int(sid), 'status': 'failed', 'error': 'criterion not found on this submission'}
                         results.append(entry)
                         continue
+                    # Field-aware re-mark: pass the teacher's edited field
+                    # through; refresh_criterion_feedback returns only that
+                    # field + an optional marks_awarded override.
+                    target_field = edit.field
+                    if target_field not in ('feedback', 'improvement'):
+                        # Defensive: server-side validation should already
+                        # prevent this, but if it slipped through, skip the
+                        # candidate with a clear error rather than corrupting
+                        # the result.
+                        entry = {'submission_id': int(sid), 'status': 'failed',
+                                 'error': f'unsupported field for propagation: {target_field!r}'}
+                        results.append(entry)
+                        continue
+
                     refreshed = refresh_criterion_feedback(
                         provider=asn.provider,
                         model=asn.model,
@@ -6602,9 +6616,23 @@ def _run_propagation_worker(app_obj, edit_id, target_ids):
                         marks_awarded=target_q.get('marks_awarded'),
                         marks_total=target_q.get('marks_total'),
                         calibration_edit=edit,
+                        target_field=target_field,
                     )
-                    target_q['feedback'] = refreshed['feedback'] or target_q.get('feedback') or ''
-                    target_q['improvement'] = refreshed['improvement'] or target_q.get('improvement') or ''
+                    new_text = (refreshed.get(target_field) or target_q.get(target_field) or '')
+                    target_q[target_field] = new_text
+                    new_marks = refreshed.get('marks_awarded')
+                    if new_marks is not None:
+                        target_q['marks_awarded'] = new_marks
+                        # Re-derive status to stay consistent with marks.
+                        mt = target_q.get('marks_total')
+                        if mt and mt > 0:
+                            ratio = (new_marks or 0) / mt
+                            if ratio >= 0.99:
+                                target_q['status'] = 'correct'
+                            elif ratio > 0:
+                                target_q['status'] = 'partially_correct'
+                            else:
+                                target_q['status'] = 'incorrect'
                     target_q['feedback_source'] = 'propagated'
                     target_q['propagated_from_edit'] = edit.id
                     sub.set_result(result)
@@ -8904,7 +8932,6 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     edit_meta = {}            # per-criterion summary returned to the client
     fresh_calibration_edits = []  # FeedbackEdit rows written this request
     calibration_write_errors = []  # surfaced to client so the toast can warn
-    promotion_pending = []   # list of (FeedbackEdit row, qn_str, field_str) for post-commit promotion
 
     incoming_qs = payload.get('questions')
     if incoming_qs is not None:
@@ -9050,28 +9077,18 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                 except Exception as outer_cat_err:
                     logger.warning(f"categorisation correction handling failed: {outer_cat_err}")
 
-            # Calibration bank + audit log. Combined behavior from both
-            # branches:
+            # Calibration bank + audit log:
             #   • Always log text changes to FeedbackLog (audit trail).
-            #   • amend_answer_key or update_subject_standards + new text →
-            #     write a FeedbackEdit row with scope/amend_answer_key set.
-            #   • idempotent re-affirm: text unchanged + prior matches →
-            #     no new row, but emit edit_meta so the indicator shows.
-            #   • neither box ticked → deactivate any prior FeedbackEdit row
-            #     so unchecking actually removes it from the bank.
+            #   • amend_answer_key + new text → write a FeedbackEdit row.
+            #   • Idempotent re-affirm: text unchanged + prior matches +
+            #     flag unchanged → no new row, but emit edit_meta so the
+            #     indicator still shows.
+            #   • Checkbox unticked → deactivate any prior FeedbackEdit
+            #     row so unchecking actually removes it from the bank.
 
-            # Two-checkbox intent (spec 2026-05-13 §4.1).
+            # Single-intent calibration (spec 2026-05-16): only amend_answer_key.
             amend_flag = bool(edit.get('amend_answer_key'))
-            promote_flag = bool(edit.get('update_subject_standards'))
-            # Server-side suppression: legacy assignments hide 'Update subject
-            # standards'; freeform subjects can't promote; demo mode disables.
-            if promote_flag:
-                from subjects import resolve_subject_key as _resolve_subj
-                if (asn.topic_keys_status == 'legacy'
-                        or _resolve_subj(asn.subject or '') is None
-                        or os.environ.get('DEMO_MODE', 'FALSE').upper() == 'TRUE'):
-                    promote_flag = False
-            cal_flag = amend_flag or promote_flag
+            cal_flag = amend_flag
 
             if editor_id and ('feedback' in edit or 'improvement' in edit):
                 rubric_hash = _rubric_version_hash(asn)
@@ -9113,7 +9130,6 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                                 prior.active = False
                                 db.session.flush()
                             entry = {'amend_answer_key': False,
-                                     'update_subject_standards': False,
                                      'calibrated': False}
                             if log_meta and log_meta.get('version'):
                                 entry['version'] = log_meta['version']
@@ -9122,23 +9138,16 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                             continue
 
                         # Idempotent re-affirm: text unchanged AND prior text
-                        # matches AND the intent flags also match the prior
-                        # row. If the teacher unchecked a box but kept the
-                        # text the same, that's a flag change — not an
-                        # idempotent re-affirm — so we must fall through to
-                        # the "write new row" path below, which deactivates
-                        # the prior row and persists the new flag state.
+                        # matches AND amend_answer_key flag matches the prior
+                        # row. Otherwise fall through to the "write new row"
+                        # path which deactivates the prior row.
                         prior_amend = bool(prior.amend_answer_key) if prior else False
-                        prior_promote = (prior.scope in ('promoted', 'both')) if prior else False
-                        flags_match = (prior_amend == amend_flag and prior_promote == promote_flag)
                         if (new_text == old_text and prior
                                 and (prior.edited_text or '') == new_text
-                                and flags_match):
+                                and prior_amend == amend_flag):
                             entry = {
                                 'edit_id': prior.id,
                                 'amend_answer_key': prior_amend,
-                                'update_subject_standards': prior_promote,
-                                'promoted_standard_id': None,
                                 'calibrated': True,  # back-compat
                             }
                             edit_meta.setdefault(str(qn), {})[_field] = entry
@@ -9151,9 +9160,6 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                         original_text = (prior.original_text if prior else old_text) or old_text
                         if prior:
                             prior.active = False
-                        _scope = ('both' if (amend_flag and promote_flag)
-                                  else 'promoted' if promote_flag
-                                  else 'amendment')
                         new_edit = FeedbackEdit(
                             submission_id=sub.id,
                             criterion_id=str(qn),
@@ -9164,7 +9170,7 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                             assignment_id=asn.id,
                             rubric_version=rubric_hash,
                             mistake_type=target.get('mistake_type'),
-                            scope=_scope,
+                            scope='amendment',  # column dropped in commit 4
                             amend_answer_key=amend_flag,
                             active=True,
                             propagation_status='none',
@@ -9173,13 +9179,9 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                         db.session.flush()
                         sp.commit()
                         fresh_calibration_edits.append(new_edit)
-                        if promote_flag:
-                            promotion_pending.append((new_edit, str(qn), _field))
                         entry = {
                             'edit_id': new_edit.id,
                             'amend_answer_key': amend_flag,
-                            'update_subject_standards': promote_flag,
-                            'promoted_standard_id': None,  # filled in post-loop
                             'calibrated': True,  # back-compat with old JS
                         }
                         if log_meta and log_meta.get('version'):
@@ -9226,28 +9228,6 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     sub.set_result(result)
     db.session.commit()
     logger.info(f"Teacher edited feedback for submission {submission_id} on assignment {assignment_id}")
-
-    # Promote flagged edits AFTER the main commit so FeedbackEdit.id exists durably.
-    if promotion_pending:
-        try:
-            from subject_standards import promote_to_subject_standard
-            session_keys_for_promote = asn.get_api_keys() or {}
-            for fe_row, qn_str, field_str in promotion_pending:
-                try:
-                    ss_id = promote_to_subject_standard(
-                        feedback_edit_id=fe_row.id,
-                        provider=asn.provider,
-                        model=asn.model,
-                        session_keys=session_keys_for_promote,
-                    )
-                    em = edit_meta.setdefault(qn_str, {}).setdefault(field_str, {})
-                    em['promoted_standard_id'] = ss_id
-                except Exception as promote_err:
-                    logger.warning(
-                        f'promote_to_subject_standard failed for edit {fe_row.id}: {promote_err}'
-                    )
-        except Exception as outer_promote_err:
-            logger.exception(f'promotion batch failed: {outer_promote_err}')
 
     # Calibration follow-ups for fresh FeedbackEdit rows written this request:
     #   1) Mark subject's marking-principles cache stale so the next render
@@ -11637,26 +11617,53 @@ def _run_propagation_worker(app_obj, edit_id, target_ids):
                             entry = {'submission_id': int(sid), 'status': 'failed', 'error': 'criterion not found on this submission'}
                             results.append(entry)
                         else:
-                            refreshed = refresh_criterion_feedback(
-                                provider=asn.provider,
-                                model=asn.model,
-                                session_keys=_resolve_api_keys(asn),
-                                subject=asn.subject or '',
-                                criterion_name=edit.criterion_id,
-                                student_answer=target_q.get('student_answer') or '',
-                                correct_answer=target_q.get('correct_answer') or '',
-                                marks_awarded=target_q.get('marks_awarded'),
-                                marks_total=target_q.get('marks_total'),
-                                calibration_edit=edit,
-                            )
-                            target_q['feedback'] = refreshed['feedback'] or target_q.get('feedback') or ''
-                            target_q['improvement'] = refreshed['improvement'] or target_q.get('improvement') or ''
-                            target_q['feedback_source'] = 'propagated'
-                            target_q['propagated_from_edit'] = edit.id
-                            sub.set_result(result)
-                            db.session.commit()
-                            entry = {'submission_id': int(sid), 'status': 'done'}
-                            results.append(entry)
+                            # Field-aware re-mark: pass the teacher's edited field
+                            # through; refresh_criterion_feedback returns only that
+                            # field + an optional marks_awarded override.
+                            target_field = edit.field
+                            if target_field not in ('feedback', 'improvement'):
+                                # Defensive: server-side validation should already
+                                # prevent this, but if it slipped through, skip the
+                                # candidate with a clear error rather than corrupting
+                                # the result.
+                                entry = {'submission_id': int(sid), 'status': 'failed',
+                                         'error': f'unsupported field for propagation: {target_field!r}'}
+                                results.append(entry)
+                            else:
+                                refreshed = refresh_criterion_feedback(
+                                    provider=asn.provider,
+                                    model=asn.model,
+                                    session_keys=_resolve_api_keys(asn),
+                                    subject=asn.subject or '',
+                                    criterion_name=edit.criterion_id,
+                                    student_answer=target_q.get('student_answer') or '',
+                                    correct_answer=target_q.get('correct_answer') or '',
+                                    marks_awarded=target_q.get('marks_awarded'),
+                                    marks_total=target_q.get('marks_total'),
+                                    calibration_edit=edit,
+                                    target_field=target_field,
+                                )
+                                new_text = (refreshed.get(target_field) or target_q.get(target_field) or '')
+                                target_q[target_field] = new_text
+                                new_marks = refreshed.get('marks_awarded')
+                                if new_marks is not None:
+                                    target_q['marks_awarded'] = new_marks
+                                    # Re-derive status to stay consistent with marks.
+                                    mt = target_q.get('marks_total')
+                                    if mt and mt > 0:
+                                        ratio = (new_marks or 0) / mt
+                                        if ratio >= 0.99:
+                                            target_q['status'] = 'correct'
+                                        elif ratio > 0:
+                                            target_q['status'] = 'partially_correct'
+                                        else:
+                                            target_q['status'] = 'incorrect'
+                                target_q['feedback_source'] = 'propagated'
+                                target_q['propagated_from_edit'] = edit.id
+                                sub.set_result(result)
+                                db.session.commit()
+                                entry = {'submission_id': int(sid), 'status': 'done'}
+                                results.append(entry)
                 except Exception as e:
                     db.session.rollback()
                     err = str(e)[:200]

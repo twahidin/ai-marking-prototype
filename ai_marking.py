@@ -1886,50 +1886,82 @@ def extract_correction_insight(provider, model, session_keys,
 
 def refresh_criterion_feedback(provider, model, session_keys, subject,
                                 criterion_name, student_answer, correct_answer,
-                                marks_awarded, marks_total, calibration_edit):
-    """Regenerate feedback + improvement for one criterion on one student,
-    calibrated against a teacher's edit on another student. Text-only call —
-    no images, no full marking pipeline. Cheap-tier model via HELPER_MODELS.
-    Returns {feedback, improvement}.
+                                marks_awarded, marks_total, calibration_edit,
+                                target_field):
+    """Regenerate one field on one criterion on one student, calibrated against
+    a teacher's edit on another student. Text-only Haiku call.
+
+    target_field is one of 'feedback' or 'improvement' — exactly the field the
+    teacher edited on the source submission. Only that field is rewritten on
+    the target. Haiku may also return a revised marks_awarded if the new
+    calibration justifies it; if so, the caller applies it.
+
+    Returns {target_field: str, 'marks_awarded': int|None}. marks_awarded is
+    None when Haiku does not want to change marks; the caller leaves marks
+    untouched in that case.
     """
+    assert target_field in ('feedback', 'improvement'), (
+        f"target_field must be 'feedback' or 'improvement', got {target_field!r}"
+    )
+
     helper_model = _helper_model_for(provider, model)
+    field_label = 'Feedback' if target_field == 'feedback' else 'Suggested Improvement'
+
     system_prompt = (
-        "You are regenerating feedback for one criterion on a student's "
-        "script. A teacher has shown you their marking standard by editing "
-        "another student's feedback on the same type of mistake.\n\n"
-        "Apply the same standard to this student's answer. Do not change "
-        "the marks. Do not re-evaluate correctness. Only rewrite the "
-        "Feedback and Suggested Improvement fields.\n\n"
+        f"You are regenerating the '{field_label}' field for one criterion on a "
+        "student's script. A teacher has shown you their marking standard by "
+        "editing this same field on another student's submission.\n\n"
+        f"Apply the same standard to this student's answer. Rewrite ONLY the "
+        f"{field_label} field. You may also revise the marks if the new "
+        "calibration justifies a different score — increase, decrease, or "
+        "leave unchanged. If marks should not change, return null for "
+        "marks_awarded.\n\n"
         f"{FEEDBACK_GENERATION_RULES}\n\n"
         "Return JSON only:\n"
         "{\n"
-        '  "feedback": "...",\n'
-        '  "improvement": "..."\n'
+        f'  "{target_field}": "...",\n'
+        '  "marks_awarded": <integer or null>\n'
         "}"
     )
+
     orig = (calibration_edit.original_text or '')[:200]
     edited = (calibration_edit.edited_text or '')[:200]
     principle_line = ''
     cp = getattr(calibration_edit, 'correction_principle', None)
     if cp:
         principle_line = f"\nTeacher's principle: \"{cp}\""
+
     user_prompt = (
-        "TEACHER'S CALIBRATION EDIT (apply this standard):\n"
-        f"Original AI feedback: \"{orig}\"\n"
+        f"TEACHER'S CALIBRATION EDIT (apply this standard to {field_label}):\n"
+        f"Original AI {field_label}: \"{orig}\"\n"
         f"Teacher changed it to: \"{edited}\"{principle_line}\n\n"
         "NOW APPLY THE SAME STANDARD TO:\n"
         f"Subject: {subject or 'General'}\n"
         f"Criterion: {criterion_name}\n"
         f"Student's answer: {(student_answer or '')[:600]}\n"
         f"Expected answer: {(correct_answer or '')[:400]}\n"
-        f"Marks: {marks_awarded if marks_awarded is not None else '-'} / {marks_total if marks_total is not None else '-'}\n\n"
+        f"Current marks: {marks_awarded if marks_awarded is not None else '-'} "
+        f"/ {marks_total if marks_total is not None else '-'}\n\n"
         "Return the JSON now."
     )
+
     parsed = _run_feedback_helper(provider, helper_model, session_keys,
                                    system_prompt, user_prompt, max_tokens=300)
-    feedback = (parsed.get('feedback') or '').strip()
-    improvement = (parsed.get('improvement') or '').strip()
-    return {'feedback': feedback, 'improvement': improvement}
+    text = (parsed.get(target_field) or '').strip()
+
+    new_marks = parsed.get('marks_awarded')
+    if new_marks is not None:
+        try:
+            new_marks = int(new_marks)
+            # Sanity clamp: never above marks_total, never below 0.
+            if marks_total is not None and new_marks > marks_total:
+                new_marks = marks_total
+            if new_marks < 0:
+                new_marks = 0
+        except (TypeError, ValueError):
+            new_marks = None
+
+    return {target_field: text, 'marks_awarded': new_marks}
 
 
 def explain_criterion(provider, model, session_keys, subject, criterion_name,
