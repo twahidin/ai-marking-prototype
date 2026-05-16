@@ -5446,7 +5446,24 @@ def teacher_dashboard():
 
     teacher_class_ids = [cls.id for cls in teacher_classes]
     if teacher_class_ids:
-        q = Assignment.query.filter(Assignment.class_id.in_(teacher_class_ids))
+        # Defer the LargeBinary + heavy-text columns — the dashboard
+        # listing reads only id/title/subject/classroom_code/teacher_id,
+        # so we leave many MB of question paper / answer key bytes on
+        # the server.
+        from sqlalchemy.orm import defer as _defer_asn
+        _asn_heavy = (
+            Assignment.question_paper,
+            Assignment.answer_key,
+            Assignment.rubrics,
+            Assignment.reference,
+            Assignment.exemplar_analysis_json,
+            Assignment.api_keys_json,
+            Assignment.review_instructions,
+            Assignment.marking_instructions,
+        )
+        q = (Assignment.query
+             .filter(Assignment.class_id.in_(teacher_class_ids))
+             .options(*(_defer_asn(c) for c in _asn_heavy)))
         # Co-teaching: a teacher viewing their own roster sees every
         # assignment in those classes, not just the ones they authored.
         # The creator filter only kicks in when a senior uses the dropdown
@@ -7849,7 +7866,21 @@ def api_subject_standards_export():
 
 @app.route('/teacher/assignment/<assignment_id>')
 def teacher_assignment_detail(assignment_id):
-    asn = Assignment.query.get_or_404(assignment_id)
+    # Defer the four LargeBinary file blobs — the assignment-detail page
+    # doesn't render the raw bytes (file preview routes load them
+    # separately on demand). Keeps `api_keys_json` and the
+    # review/marking instructions eager since the edit form + AI
+    # client setup need them.
+    from sqlalchemy.orm import defer as _defer_asn_blobs
+    asn = (Assignment.query
+           .options(_defer_asn_blobs(Assignment.question_paper),
+                    _defer_asn_blobs(Assignment.answer_key),
+                    _defer_asn_blobs(Assignment.rubrics),
+                    _defer_asn_blobs(Assignment.reference))
+           .filter_by(id=assignment_id)
+           .first())
+    if asn is None:
+        return abort(404)
     err = _check_assignment_ownership(asn)
     if err:
         return err
