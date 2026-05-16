@@ -25,7 +25,7 @@ def test_subject_standard_table_exists(app):
         assert 'subject_standard' in names
         cols = {c['name'] for c in inspect(db.engine).get_columns('subject_standard')}
         for required in (
-            'id', 'uuid', 'subject', 'text', 'topic_keys', 'theme_key',
+            'id', 'uuid', 'subject', 'text', 'topic_keys', 'mistake_type',
             'reinforcement_count', 'status', 'created_by',
             'created_at', 'updated_at', 'last_seen_at',
             'reviewed_by', 'reviewed_at',
@@ -43,7 +43,7 @@ def test_subject_standard_insert_round_trip(app, db_session):
         subject='biology',
         text='Accept "temperature" but reject "heat".',
         topic_keys='["enzymes", "terminology_precision"]',
-        theme_key='terminology_precision',
+        mistake_type='terminology_precision',
         status='pending_review',
         created_by=t.id,
     )

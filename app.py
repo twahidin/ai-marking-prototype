@@ -112,13 +112,13 @@ _ENV_APP_TITLE = os.getenv('APP_TITLE', 'AI Feedback Systems')
 
 # Hide the student-facing "By mistake type" toggle and grouped view until
 # the categorisation pipeline is judged robust enough. The pipeline still
-# runs (theme_key lands on result_json so calibration Tier 1 + propagation
+# runs (mistake_type lands on result_json so calibration Tier 1 + propagation
 # continue to work) — only the student UI is suppressed. Set the env var
 # to "TRUE" to re-enable the student grouping view.
 _ENV_STUDENT_GROUPING_UI_ENABLED = os.getenv('STUDENT_GROUPING_UI_ENABLED', 'FALSE').upper() == 'TRUE'
 
 # Calibration intent design (2026-05-13) §4.9: teacher-facing inline theme/category
-# dropdown. The categorisation pipeline (theme_key on result_json, FeedbackEdit
+# dropdown. The categorisation pipeline (mistake_type on result_json, FeedbackEdit
 # inheritance, calibration retrieval) runs regardless — this flag only controls
 # the teacher correction UI surface. Set to "TRUE" to re-enable.
 _ENV_TEACHER_THEME_UI_ENABLED = os.getenv('TEACHER_THEME_UI_ENABLED', 'FALSE').upper() == 'TRUE'
@@ -5757,11 +5757,11 @@ def run_bulk_marking_job(job_id, provider, model, question_paper_pages, answer_k
                                         pass
                                 db.session.commit()
                                 # Parity with single-marking: kick categorisation
-                                # so theme_key lands on result_json. Without this,
+                                # so mistake_type lands on result_json. Without this,
                                 # bulk-marked submissions stay categorisation_status='pending'
                                 # until the teacher first opens each one — and any
                                 # FeedbackEdit / SubjectStandard promoted before that
-                                # inherits theme_key=None.
+                                # inherits mistake_type=None.
                                 if sub.status == 'done':
                                     try:
                                         if _count_lost_criteria((result or {}).get('questions')) >= 2:
@@ -6522,7 +6522,7 @@ def _run_insight_extraction_worker(app_obj, edit_id):
                 model=asn.model,
                 session_keys=_resolve_api_keys(asn),
                 subject=(asn.subject or ''),
-                theme_key=edit.theme_key,
+                mistake_type=edit.mistake_type,
                 criterion_name=edit.criterion_id,
                 original_text=edit.original_text,
                 edited_text=edit.edited_text,
@@ -6791,16 +6791,16 @@ def _run_categorisation_worker(app_obj, submission_id):
                 c = cats_by_id.get(cid) if cid else None
                 if not c:
                     continue
-                if q.get('theme_key_corrected'):
-                    # Teacher has already chosen a theme_key for this criterion;
+                if q.get('mistake_type_corrected'):
+                    # Teacher has already chosen a mistake_type for this criterion;
                     # don't let the AI clobber it.
                     continue
-                q['theme_key'] = c['theme_key']
+                q['mistake_type'] = c['mistake_type']
                 q['specific_label'] = c['specific_label']
                 q['low_confidence'] = bool(c.get('low_confidence'))
                 if c.get('themed_correction_prompt'):
                     pmap = q.get('correction_prompts_by_theme') or {}
-                    pmap[c['theme_key']] = c['themed_correction_prompt']
+                    pmap[c['mistake_type']] = c['themed_correction_prompt']
                     q['correction_prompts_by_theme'] = pmap
 
             tiered = result.get('_tiered') or {}
@@ -7649,7 +7649,7 @@ def api_subject_standards_list():
                 'subject': r.subject,
                 'text': r.text,
                 'topic_keys': _json.loads(r.topic_keys or '[]'),
-                'theme_key': r.theme_key,
+                'mistake_type': r.mistake_type,
                 'reinforcement_count': r.reinforcement_count,
                 'status': r.status,
                 'created_at': r.created_at.isoformat() if r.created_at else None,
@@ -7778,7 +7778,7 @@ def api_subject_standards_export():
                     'subject_key': r.subject,
                     'subject_display': r.subject.title() if r.subject else '',
                     'topic_keys': _json.loads(r.topic_keys or '[]'),
-                    'theme_key': r.theme_key,
+                    'mistake_type': r.mistake_type,
                     'reinforcement_count': r.reinforcement_count,
                     'status': r.status,
                     'created_at': r.created_at.isoformat() if r.created_at else None,
@@ -8841,13 +8841,13 @@ def _process_text_edit(submission, criterion_id, field, edited_text,
             active=True,
         ).update({'active': False})
 
-        # Look up the current criterion's theme_key from result_json (may be
+        # Look up the current criterion's mistake_type from result_json (may be
         # NULL if categorisation hasn't run for this submission).
-        theme_key = None
+        mistake_type = None
         result_for_theme = submission.get_result() or {}
         for q in (result_for_theme.get('questions') or []):
             if str(q.get('question_num')) == criterion_id:
-                theme_key = q.get('theme_key')
+                mistake_type = q.get('mistake_type')
                 break
 
         from ai_marking import _rubric_version_hash
@@ -8858,7 +8858,7 @@ def _process_text_edit(submission, criterion_id, field, edited_text,
             original_text=original_text,
             edited_text=edited_text or '',
             edited_by=teacher_id,
-            theme_key=theme_key,
+            mistake_type=mistake_type,
             assignment_id=assignment.id,
             rubric_version=_rubric_version_hash(assignment),
             scope='individual',  # FUTURE: department-level promotion logic goes here
@@ -9007,43 +9007,43 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                     return jsonify({'success': False, 'error': 'status must be correct | partially_correct | incorrect'}), 400
 
             # Categorisation correction — feed_forward_beta inline editable
-            # category line above the feedback textarea. Validate theme_key
+            # category line above the feedback textarea. Validate mistake_type
             # against THEMES; on valid change, update the in-memory result
             # AND write a CategorisationCorrection audit row IF the
             # assignment's subject is a canonical-taxonomy entry. Freeform
             # subjects skip the audit-row write — they're intra-assignment-
             # only, so cross-assignment few-shot learning never sees them.
-            # The corrected theme_key still flows into the FeedbackEdit
+            # The corrected mistake_type still flows into the FeedbackEdit
             # row below if the teacher also calibrates.
-            if 'theme_key' in edit or 'specific_label' in edit:
+            if 'mistake_type' in edit or 'specific_label' in edit:
                 try:
                     from config.mistake_themes import themes_for as _themes_for
                     from db import CategorisationCorrection
                     from subjects import is_canonical_subject as _is_canonical
                     _THEMES = _themes_for(asn.subject or '')
-                    proposed_tk = (edit.get('theme_key') or '').strip() or None
+                    proposed_tk = (edit.get('mistake_type') or '').strip() or None
                     proposed_label_raw = edit.get('specific_label')
                     proposed_label = (proposed_label_raw or '').strip() or None
                     if proposed_label and len(proposed_label) > 80:
                         proposed_label = proposed_label[:80]
-                    current_tk = target.get('theme_key')
+                    current_tk = target.get('mistake_type')
                     current_label = target.get('specific_label')
                     if (proposed_tk
                             and proposed_tk in _THEMES
                             and (proposed_tk != current_tk
                                  or (proposed_label or '') != (current_label or ''))):
-                        target['theme_key'] = proposed_tk
+                        target['mistake_type'] = proposed_tk
                         target['specific_label'] = proposed_label or ''
-                        target['theme_key_corrected'] = True
+                        target['mistake_type_corrected'] = True
                         if _is_canonical(asn.subject or ''):
                             try:
                                 db.session.add(CategorisationCorrection(
                                     submission_id=sub.id,
                                     criterion_id=str(qn),
-                                    field='theme_key',
-                                    original_theme_key=current_tk,
+                                    field='mistake_type',
+                                    original_mistake_type=current_tk,
                                     original_specific_label=current_label,
-                                    corrected_theme_key=proposed_tk,
+                                    corrected_mistake_type=proposed_tk,
                                     corrected_specific_label=proposed_label,
                                     corrected_by=editor_id,
                                     assignment_id=asn.id,
@@ -9168,7 +9168,7 @@ def teacher_submission_result_patch(assignment_id, submission_id):
                             edited_by=editor_id,
                             assignment_id=asn.id,
                             rubric_version=rubric_hash,
-                            theme_key=target.get('theme_key'),
+                            mistake_type=target.get('mistake_type'),
                             scope=_scope,
                             amend_answer_key=amend_flag,
                             active=True,
@@ -10003,12 +10003,12 @@ def _compute_grouping_payload(sub, result, themes):
 
     questions = result.get('questions') or []
     tiered = result.get('_tiered') or {}
-    habits_by_theme = {h.get('theme_key'): h.get('habit') for h in (tiered.get('group_habits') or []) if h.get('theme_key')}
-    reviewed_keys = set(tiered.get('reviewed_theme_keys') or [])
+    habits_by_theme = {h.get('mistake_type'): h.get('habit') for h in (tiered.get('group_habits') or []) if h.get('mistake_type')}
+    reviewed_keys = set(tiered.get('reviewed_mistake_types') or [])
     correction_attempts = tiered.get('corrections') or []
     correction_question_nums = {str(a.get('question_num')) for a in correction_attempts if a.get('question_num') is not None}
 
-    # Collect per-theme criteria (only those with marks lost AND a theme_key).
+    # Collect per-theme criteria (only those with marks lost AND a mistake_type).
     by_theme = {}
     standalone = []
     for q in questions:
@@ -10018,7 +10018,7 @@ def _compute_grouping_payload(sub, result, themes):
         lost_by_status = (not lost_by_marks and q.get('status') and q.get('status') != 'correct')
         if not (lost_by_marks or lost_by_status):
             continue
-        tk = q.get('theme_key')
+        tk = q.get('mistake_type')
         if not tk or tk not in themes:
             continue  # uncategorised (rare) — do not show in grouped view
         marks_lost = max(0, (mt or 0) - (ma or 0)) if (mt and ma is not None) else 0
@@ -10028,7 +10028,7 @@ def _compute_grouping_payload(sub, result, themes):
             'specific_label': q.get('specific_label') or themes[tk].get('label', tk),
             'marks_lost': marks_lost,
             'low_confidence': bool(q.get('low_confidence')),
-            'theme_key': tk,
+            'mistake_type': tk,
         }
         if themes[tk].get('never_group'):
             standalone.append(entry)
@@ -10043,7 +10043,7 @@ def _compute_grouping_payload(sub, result, themes):
             crits_sorted = sorted(crits, key=lambda e: e.get('marks_lost') or 0, reverse=True)
             total = sum((e.get('marks_lost') or 0) for e in crits_sorted)
             groups.append({
-                'theme_key': tk,
+                'mistake_type': tk,
                 'theme_label': themes[tk].get('label', tk),
                 'specific_labels': [e['specific_label'] for e in crits_sorted],
                 'habit': habits_by_theme.get(tk, ''),
@@ -10062,7 +10062,7 @@ def _compute_grouping_payload(sub, result, themes):
     # a "You left off here" label + auto-scroll.
     marked_first = False
     for g in groups:
-        g['reviewed'] = g['theme_key'] in reviewed_keys
+        g['reviewed'] = g['mistake_type'] in reviewed_keys
         g['left_off_here'] = False
         if not g['reviewed'] and not marked_first:
             g['left_off_here'] = True
@@ -10071,7 +10071,7 @@ def _compute_grouping_payload(sub, result, themes):
     return {
         'groups': groups,
         'standalone': standalone_sorted,
-        'reviewed_theme_keys': sorted(reviewed_keys),
+        'reviewed_mistake_types': sorted(reviewed_keys),
         'total_groups': len(groups),
         'reviewed_count': sum(1 for g in groups if g['reviewed']),
         'correction_count': len(correction_question_nums),
@@ -10191,7 +10191,7 @@ def student_feedback_correction(assignment_id, submission_id):
         'text': attempt_text,
         'verdict': verdict['verdict'],
         'message': verdict['message'],
-        'theme_key': (payload.get('theme_key') or None),
+        'mistake_type': (payload.get('mistake_type') or None),
         'submitted_at': datetime.now(timezone.utc).isoformat(),
     })
     sub.set_result(result)
@@ -10211,21 +10211,21 @@ def student_feedback_correction(assignment_id, submission_id):
 @csrf.exempt  # UP-04: student-facing route, auth-gated by classroom code
 def student_feedback_mark_reviewed(assignment_id, submission_id):
     """Record that the student has expanded a group — powers the "Where was I?"
-    return-visit landing. Idempotent: calling twice for the same theme_key is
+    return-visit landing. Idempotent: calling twice for the same mistake_type is
     a no-op."""
     asn, sub, err = _student_feedback_auth(assignment_id, submission_id)
     if err:
         return err
     data = request.get_json(silent=True) or {}
-    tk = (data.get('theme_key') or '').strip()
+    tk = (data.get('mistake_type') or '').strip()
     if not tk:
-        return jsonify({'success': False, 'error': 'theme_key required'}), 400
+        return jsonify({'success': False, 'error': 'mistake_type required'}), 400
     result = sub.get_result() or {}
     tiered = _tiered_bucket(result)
-    reviewed = list(tiered.get('reviewed_theme_keys') or [])
+    reviewed = list(tiered.get('reviewed_mistake_types') or [])
     if tk not in reviewed:
         reviewed.append(tk)
-    tiered['reviewed_theme_keys'] = reviewed
+    tiered['reviewed_mistake_types'] = reviewed
     sub.set_result(result)
     try:
         db.session.commit()
@@ -10233,7 +10233,7 @@ def student_feedback_mark_reviewed(assignment_id, submission_id):
         db.session.rollback()
         logger.warning(f"mark_reviewed failed for sub {submission_id}: {e}")
         return jsonify({'success': False, 'error': 'Could not save'}), 500
-    return jsonify({'success': True, 'reviewed_theme_keys': reviewed})
+    return jsonify({'success': True, 'reviewed_mistake_types': reviewed})
 
 
 @app.route('/feedback/grouping-status/<int:submission_id>')

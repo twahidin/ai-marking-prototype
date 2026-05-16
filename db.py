@@ -352,8 +352,42 @@ def _migrate_add_columns(app):
         # calibration moved to keying on assignments.subject directly.
         if 'feedback_edit' in inspector.get_table_names():
             fe_cols = {c['name'] for c in inspector.get_columns('feedback_edit')}
+            # Rename legacy column theme_key → mistake_type on existing DBs.
+            # Drop the lookup index first; it references the column name and
+            # would prevent the rename on some backends. Recreated below
+            # after the rest of the feedback_edit migration runs.
+            if 'theme_key' in fe_cols and 'mistake_type' not in fe_cols:
+                try:
+                    db.session.execute(text('DROP INDEX IF EXISTS ix_feedback_edit_lookup'))
+                    db.session.execute(text(
+                        'ALTER TABLE feedback_edit RENAME COLUMN theme_key TO mistake_type'
+                    ))
+                    db.session.commit()
+                    logger.info('Renamed feedback_edit.theme_key → mistake_type')
+                    # Re-inspect with a fresh Inspector — SQLAlchemy caches
+                    # column metadata, so reusing `inspector` returns the
+                    # pre-rename column list and the ensure-list below tries
+                    # to ADD a column that already exists.
+                    inspector = inspect(db.engine)
+                    fe_cols = {c['name'] for c in inspector.get_columns('feedback_edit')}
+                except Exception:
+                    db.session.rollback()
+                    logger.exception('feedback_edit RENAME theme_key → mistake_type failed')
+                # Recreate the lookup index against the new column name.
+                # Idempotent — also runs unconditionally if subject_family
+                # purge path below fires, so harmless either way.
+                try:
+                    db.session.execute(text(
+                        'CREATE INDEX IF NOT EXISTS ix_feedback_edit_lookup '
+                        'ON feedback_edit (edited_by, active, mistake_type)'
+                    ))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                    logger.exception('feedback_edit lookup index recreate after rename failed')
+
             ensure_fe = [
-                ('theme_key', 'VARCHAR(64)'),
+                ('mistake_type', 'VARCHAR(64)'),
                 ('promoted_by', 'VARCHAR(36)'),
                 ('promoted_at', 'TIMESTAMP'),
                 ('propagation_status', "VARCHAR(20) DEFAULT 'none' NOT NULL"),
@@ -375,14 +409,14 @@ def _migrate_add_columns(app):
                         db.session.rollback()
                         logger.exception('feedback_edit ALTER ADD %s failed', col)
 
-            # Widen theme_key column for richer per-subject taxonomy keys
+            # Widen mistake_type column for richer per-subject taxonomy keys
             # (longest key is 42 chars; bumped to 64 for headroom).
             for col in inspector.get_columns('feedback_edit'):
-                if col['name'] == 'theme_key' and hasattr(col['type'], 'length') and col['type'].length and col['type'].length < 64:
+                if col['name'] == 'mistake_type' and hasattr(col['type'], 'length') and col['type'].length and col['type'].length < 64:
                     try:
-                        db.session.execute(text('ALTER TABLE feedback_edit ALTER COLUMN theme_key TYPE VARCHAR(64)'))
+                        db.session.execute(text('ALTER TABLE feedback_edit ALTER COLUMN mistake_type TYPE VARCHAR(64)'))
                         db.session.commit()
-                        logger.info('Widened feedback_edit.theme_key to VARCHAR(64)')
+                        logger.info('Widened feedback_edit.mistake_type to VARCHAR(64)')
                     except Exception:
                         db.session.rollback()
                     break
@@ -432,7 +466,7 @@ def _migrate_add_columns(app):
                 try:
                     db.session.execute(text(
                         'CREATE INDEX IF NOT EXISTS ix_feedback_edit_lookup '
-                        'ON feedback_edit (edited_by, active, theme_key)'
+                        'ON feedback_edit (edited_by, active, mistake_type)'
                     ))
                     db.session.commit()
                 except Exception as _e:
@@ -493,8 +527,25 @@ def _migrate_add_columns(app):
                     db.session.rollback()
                     logger.warning(f'categorisation_correction DROP subject_family skipped: {_e}')
 
-            # Widen theme_key columns for richer per-subject taxonomy.
-            for col_name in ('original_theme_key', 'corrected_theme_key'):
+            # Rename legacy theme_key columns → mistake_type on existing DBs.
+            cc_cols = {c['name'] for c in inspector.get_columns('categorisation_correction')}
+            for old, new in (('original_theme_key', 'original_mistake_type'),
+                             ('corrected_theme_key', 'corrected_mistake_type')):
+                if old in cc_cols and new not in cc_cols:
+                    try:
+                        db.session.execute(text(
+                            f'ALTER TABLE categorisation_correction RENAME COLUMN {old} TO {new}'
+                        ))
+                        db.session.commit()
+                        logger.info(f'Renamed categorisation_correction.{old} → {new}')
+                    except Exception:
+                        db.session.rollback()
+                        logger.exception(
+                            'categorisation_correction RENAME %s → %s failed', old, new,
+                        )
+
+            # Widen mistake_type columns for richer per-subject taxonomy.
+            for col_name in ('original_mistake_type', 'corrected_mistake_type'):
                 for col in inspector.get_columns('categorisation_correction'):
                     if col['name'] == col_name and hasattr(col['type'], 'length') and col['type'].length and col['type'].length < 64:
                         try:
@@ -506,6 +557,20 @@ def _migrate_add_columns(app):
                         except Exception:
                             db.session.rollback()
                         break
+
+        # subject_standard: rename legacy theme_key → mistake_type column.
+        if 'subject_standard' in inspector.get_table_names():
+            ss_cols = {c['name'] for c in inspector.get_columns('subject_standard')}
+            if 'theme_key' in ss_cols and 'mistake_type' not in ss_cols:
+                try:
+                    db.session.execute(text(
+                        'ALTER TABLE subject_standard RENAME COLUMN theme_key TO mistake_type'
+                    ))
+                    db.session.commit()
+                    logger.info('Renamed subject_standard.theme_key → mistake_type')
+                except Exception:
+                    db.session.rollback()
+                    logger.exception('subject_standard RENAME theme_key → mistake_type failed')
 
         # exemplar_analysis_log: ensure superseded_at column exists for
         # tables created before the column was added to the model. New
@@ -777,6 +842,98 @@ def _migrate_calibration_runtime(_app, force=False):
             db.session.commit()
 
 
+_THEME_KEY_TO_MISTAKE_TYPE_MIGRATION_NAME = 'rename_theme_key_to_mistake_type_2026_05_16'
+
+
+def _migrate_result_json_theme_to_mistake_type(_app, force=False):
+    """Rewrite legacy 'theme_key' JSON keys to 'mistake_type' across every
+    Submission.result_json blob. One-shot, idempotent via MigrationFlag.
+
+    Touches:
+      questions[].theme_key            → mistake_type
+      questions[].theme_key_corrected  → mistake_type_corrected
+      _tiered.reviewed_theme_keys      → reviewed_mistake_types
+      _tiered.group_habits[].theme_key → mistake_type
+      _tiered.corrections[].theme_key  → mistake_type
+
+    Per-submission errors are swallowed and logged — a single bad row
+    doesn't block the rest of the backfill, and the boot path keeps
+    going either way.
+    """
+    with _app.app_context():
+        marker = MigrationFlag.query.filter_by(
+            name=_THEME_KEY_TO_MISTAKE_TYPE_MIGRATION_NAME,
+        ).first()
+        if marker is not None and not force:
+            logger.debug(
+                'result_json theme_key → mistake_type migration already applied at %s — skipping',
+                marker.applied_at,
+            )
+            return
+        logger.info(
+            'result_json theme_key → mistake_type migration: rewriting JSON keys',
+        )
+
+        rewritten = 0
+        skipped_errors = 0
+        for sub in Submission.query.all():
+            try:
+                raw = sub.result_json
+                if not raw:
+                    continue
+                # Cheap pre-check: if no occurrence of the legacy key,
+                # skip the JSON load entirely.
+                if 'theme_key' not in raw and 'reviewed_theme_keys' not in raw:
+                    continue
+                data = sub.get_result() or {}
+                changed = False
+                for q in (data.get('questions') or []):
+                    if not isinstance(q, dict):
+                        continue
+                    if 'theme_key' in q:
+                        q['mistake_type'] = q.pop('theme_key')
+                        changed = True
+                    if 'theme_key_corrected' in q:
+                        q['mistake_type_corrected'] = q.pop('theme_key_corrected')
+                        changed = True
+                tiered = data.get('_tiered')
+                if isinstance(tiered, dict):
+                    if 'reviewed_theme_keys' in tiered:
+                        tiered['reviewed_mistake_types'] = tiered.pop('reviewed_theme_keys')
+                        changed = True
+                    for h in (tiered.get('group_habits') or []):
+                        if isinstance(h, dict) and 'theme_key' in h:
+                            h['mistake_type'] = h.pop('theme_key')
+                            changed = True
+                    for c in (tiered.get('corrections') or []):
+                        if isinstance(c, dict) and 'theme_key' in c:
+                            c['mistake_type'] = c.pop('theme_key')
+                            changed = True
+                if changed:
+                    sub.set_result(data)
+                    rewritten += 1
+            except Exception:
+                skipped_errors += 1
+                logger.exception(
+                    'result_json theme_key migration: failed for submission %s', sub.id,
+                )
+
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            logger.exception('result_json theme_key migration: commit failed')
+
+        logger.info(
+            'result_json theme_key → mistake_type migration: rewrote %d row(s), %d error(s)',
+            rewritten, skipped_errors,
+        )
+
+        if marker is None:
+            db.session.add(MigrationFlag(name=_THEME_KEY_TO_MISTAKE_TYPE_MIGRATION_NAME))
+            db.session.commit()
+
+
 def _sweep_stuck_submissions(app):
     """UP-06: flip submissions stuck in an in-flight status older than 10
     minutes to 'error'. The job system (`jobs = {}`) is in-memory, so a
@@ -887,6 +1044,7 @@ def init_db(app):
             from subject_standards import seed_subject_topic_vocabulary
             seed_subject_topic_vocabulary()
             _migrate_calibration_runtime(app)
+            _migrate_result_json_theme_to_mistake_type(app)
             if os.getenv('DEPT_MODE', 'FALSE').upper() == 'TRUE':
                 seed_departments()
                 backfill_teacher_departments()
@@ -1417,7 +1575,7 @@ class FeedbackEdit(db.Model):
     detection that fires after each save.
 
     Subject grouping is via JOIN on assignments.subject (case-insensitive)
-    against the canonical-dropdown string. theme_key keeps its WITHIN-
+    against the canonical-dropdown string. mistake_type keeps its WITHIN-
     subject "nature of the mistake" categorisation role
     (config/mistake_themes.py is the single source of truth for keys).
     """
@@ -1429,7 +1587,7 @@ class FeedbackEdit(db.Model):
     original_text = db.Column(db.Text, nullable=False, default='')
     edited_text = db.Column(db.Text, nullable=False, default='')
     edited_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=False, index=True)
-    theme_key = db.Column(db.String(64), nullable=True)
+    mistake_type = db.Column(db.String(64), nullable=True)
     assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)
     rubric_version = db.Column(db.String(64), nullable=False, default='')
     scope = db.Column(db.String(20), nullable=False, default='individual')
@@ -1448,7 +1606,7 @@ class FeedbackEdit(db.Model):
     promoted_to_subject_standard_id = db.Column(db.Integer, nullable=True, index=True)
 
     __table_args__ = (
-        db.Index('ix_feedback_edit_lookup', 'edited_by', 'active', 'theme_key'),
+        db.Index('ix_feedback_edit_lookup', 'edited_by', 'active', 'mistake_type'),
         db.Index('ix_feedback_edit_assignment', 'assignment_id', 'rubric_version'),
     )
 
@@ -1470,7 +1628,7 @@ class SubjectStandard(db.Model):
     subject = db.Column(db.String(80), nullable=False, index=True)
     text = db.Column(db.Text, nullable=False)
     topic_keys = db.Column(db.Text, nullable=False, default='[]')
-    theme_key = db.Column(db.String(64), nullable=True)
+    mistake_type = db.Column(db.String(64), nullable=True)
     reinforcement_count = db.Column(db.Integer, nullable=False, default=1)
     status = db.Column(db.String(20), nullable=False, default='pending_review')
     created_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=False)
@@ -1525,10 +1683,10 @@ class CategorisationCorrection(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     submission_id = db.Column(db.Integer, db.ForeignKey('submissions.id'), nullable=False, index=True)
     criterion_id = db.Column(db.String(64), nullable=False)
-    field = db.Column(db.String(20), nullable=False, default='theme_key')
-    original_theme_key = db.Column(db.String(64), nullable=True)
+    field = db.Column(db.String(20), nullable=False, default='mistake_type')
+    original_mistake_type = db.Column(db.String(64), nullable=True)
     original_specific_label = db.Column(db.String(80), nullable=True)
-    corrected_theme_key = db.Column(db.String(64), nullable=False)
+    corrected_mistake_type = db.Column(db.String(64), nullable=False)
     corrected_specific_label = db.Column(db.String(80), nullable=True)
     corrected_by = db.Column(db.String(36), db.ForeignKey('teachers.id'), nullable=False, index=True)
     assignment_id = db.Column(db.String(36), db.ForeignKey('assignments.id'), nullable=False, index=True)

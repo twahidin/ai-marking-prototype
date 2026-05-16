@@ -89,7 +89,7 @@ def promote_to_subject_standard(feedback_edit_id, provider, model, session_keys)
         question_text=question_text,
         original_feedback=fe.original_text or '',
         edited_feedback=fe.edited_text or '',
-        theme_key=fe.theme_key,
+        mistake_type=fe.mistake_type,
     )
 
     existing = find_similar_standard(subject, topic_keys, fe.edited_text or '')
@@ -109,7 +109,7 @@ def promote_to_subject_standard(feedback_edit_id, provider, model, session_keys)
         subject=subject,
         text=fe.edited_text or '',
         topic_keys=json.dumps(topic_keys),
-        theme_key=fe.theme_key,
+        mistake_type=fe.mistake_type,
         status='pending_review',
         created_by=fe.edited_by,
         source_feedback_edit_ids=json.dumps([fe.id]),

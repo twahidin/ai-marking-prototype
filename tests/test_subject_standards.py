@@ -141,7 +141,7 @@ def test_extract_standard_topic_keys_from_edit(app):
                 question_text='State one factor affecting enzyme activity.',
                 original_feedback='Correct - heat affects enzyme rate.',
                 edited_feedback="Must say 'temperature', not 'heat'.",
-                theme_key='terminology_precision',
+                mistake_type='terminology_precision',
             )
     assert keys == ['enzymes', 'terminology_precision']
 
@@ -185,7 +185,7 @@ def test_promote_creates_new_standard_when_no_similar_exists(app, db_session):
         submission_id=sub.id, criterion_id='1', field='feedback',
         original_text='Correct - heat affects enzyme rate.',
         edited_text="Must say 'temperature', not 'heat'.",
-        edited_by=t.id, theme_key='terminology_precision',
+        edited_by=t.id, mistake_type='terminology_precision',
         assignment_id=asn.id, rubric_version='v1', scope='promoted', active=True,
     )
     db_session.add(fe)
@@ -220,7 +220,7 @@ def test_promote_reinforces_existing_similar_standard(app, db_session):
         subject=unique_subject,
         text="Must say 'temperature', not 'heat'.",
         topic_keys='["enzymes", "terminology_precision"]',
-        theme_key='terminology_precision',
+        mistake_type='terminology_precision',
         status='active', created_by=t.id, reinforcement_count=3,
     )
     db_session.add(pre)
@@ -231,7 +231,7 @@ def test_promote_reinforces_existing_similar_standard(app, db_session):
         submission_id=sub.id, criterion_id='1', field='feedback',
         original_text='Heat is fine.',
         edited_text="Must say temperature, not heat.",
-        edited_by=t.id, theme_key='terminology_precision',
+        edited_by=t.id, mistake_type='terminology_precision',
         assignment_id=asn.id, rubric_version='v1', scope='promoted', active=True,
     )
     db_session.add(fe)
@@ -643,7 +643,7 @@ def test_export_jsonl_streams_active_standards(app, db_session, client):
     subj = 'biology_export_' + _uuid.uuid4().hex[:6]
     db_session.add(SubjectStandard(
         subject=subj, text='Accept temperature', topic_keys='["enzymes"]',
-        theme_key='terminology_precision', status='active', created_by=t.id,
+        mistake_type='terminology_precision', status='active', created_by=t.id,
         reinforcement_count=5,
     ))
     db_session.commit()

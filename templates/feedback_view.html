@@ -343,14 +343,14 @@
                 {% set cprompt = q.get('correction_prompt') or '' %}
                 {% set last_attempt = (prior_attempts | selectattr('question_num', 'equalto', qnum|string) | list | last) if prior_attempts else None %}
                 {% set themed_map = q.get('correction_prompts_by_theme') or {} %}
-                {% set theme_key = q.get('theme_key') or '' %}
-                {% set themed_prompt = themed_map.get(theme_key) if theme_key else '' %}
+                {% set mistake_type = q.get('mistake_type') or '' %}
+                {% set themed_prompt = themed_map.get(mistake_type) if mistake_type else '' %}
                 {% set initial_prompt = themed_prompt if themed_prompt else (cprompt if cprompt else (cname ~ ': Look back at your answer. What specifically does the question ask for that your answer did not address? Rework that part.')) %}
                 <div class="fv-correction-card"
                      data-qnum="{{ qnum }}"
                      data-generic-prompt="{{ cprompt }}"
                      data-themed-prompt="{{ themed_prompt or '' }}"
-                     data-theme-key="{{ theme_key }}">
+                     data-mistake-type="{{ mistake_type }}">
                     <div class="fv-correction-prompt">{{ initial_prompt }}</div>
                     <textarea class="fv-correction-textarea" placeholder="Type your correction here…">{{ last_attempt.text if last_attempt else '' }}</textarea>
                     <button type="button" class="fv-correction-submit" onclick="fvSubmitCorrection(this, '{{ qnum }}')">Submit</button>
@@ -456,15 +456,15 @@ async function fvSubmitCorrection(btn, qnum) {
     var orig = btn.textContent;
     btn.textContent = 'Checking…';
     try {
-        var themeKey = '';
+        var mistakeType = '';
         var mistakeActive = document.getElementById('fvToggleMistake');
         if (mistakeActive && mistakeActive.classList.contains('active')) {
-            themeKey = card.getAttribute('data-theme-key') || '';
+            mistakeType = card.getAttribute('data-mistake-type') || '';
         }
         var res = await fetch('/feedback/' + FV_ASSIGNMENT_ID + '/' + FV_SUBMISSION_ID + '/correction', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ question_num: qnum, text: text, theme_key: themeKey }),
+            body: JSON.stringify({ question_num: qnum, text: text, mistake_type: mistakeType }),
         });
         var data = await res.json();
         if (!data.success) {
@@ -529,7 +529,7 @@ function fvBuildGroupedView(payload) {
 
     var html = progressHtml;
     groups.forEach(function (g, gi) {
-        var themeLabel = fvEscHtml(g.theme_label || (FV_THEMES[g.theme_key] && FV_THEMES[g.theme_key].label) || g.theme_key);
+        var themeLabel = fvEscHtml(g.theme_label || (FV_THEMES[g.mistake_type] && FV_THEMES[g.mistake_type].label) || g.mistake_type);
         var tagHtml = (g.specific_labels || []).map(function (lbl) {
             return '<span class="fv-group-tag">' + fvEscHtml(lbl) + '</span>';
         }).join('');
@@ -537,7 +537,7 @@ function fvBuildGroupedView(payload) {
         var doneBadge = g.reviewed ? '<span class="fv-group-done-badge">Done</span>' : '';
         var leftOff = g.left_off_here ? '<span class="fv-left-off-label">You left off here.</span>' : '';
         html += leftOff +
-            '<div class="fv-group-card' + reviewedCls + '" data-group-idx="' + gi + '" data-theme-key="' + fvEscHtml(g.theme_key) + '" data-reviewed="' + (g.reviewed ? '1' : '0') + '">' +
+            '<div class="fv-group-card' + reviewedCls + '" data-group-idx="' + gi + '" data-mistake-type="' + fvEscHtml(g.mistake_type) + '" data-reviewed="' + (g.reviewed ? '1' : '0') + '">' +
             '<div class="fv-group-head" onclick="fvHandleGroupClick(this.parentElement)">' +
                 '<div class="fv-group-top">' +
                     '<span class="fv-group-label">' + themeLabel + doneBadge + '</span>' +
@@ -548,7 +548,7 @@ function fvBuildGroupedView(payload) {
             '</div>' +
             (g.habit ? '<div class="fv-group-habit"><span class="fv-group-habit-label">Group habit</span>' + fvEscHtml(g.habit) + '</div>' : '') +
             '<div class="fv-group-body">' +
-                (g.criteria || []).map(function (c) { return fvCriterionMiniCard(c, g.theme_key); }).join('') +
+                (g.criteria || []).map(function (c) { return fvCriterionMiniCard(c, g.mistake_type); }).join('') +
             '</div>' +
         '</div>';
     });
@@ -563,7 +563,7 @@ function fvBuildGroupedView(payload) {
                         '<span class="fv-crit-score">' + fvEscHtml(String(c.marks_lost || 0)) + ' marks lost</span>' +
                         '<span class="fv-crit-chev">&#9662;</span>' +
                     '</div>' +
-                    fvCriterionBodyHtml(c, c.theme_key || '') +
+                    fvCriterionBodyHtml(c, c.mistake_type || '') +
                 '</div>';
             }).join('') +
         '</div>';
@@ -573,7 +573,7 @@ function fvBuildGroupedView(payload) {
     if (window.MathJax && MathJax.typesetPromise) MathJax.typesetPromise([container]).catch(function () {});
 }
 
-function fvCriterionMiniCard(c, themeKey) {
+function fvCriterionMiniCard(c, mistakeType) {
     // Used inside a group body. Uses the same .fv-crit-card structure as the
     // by-question view so the two look identical when a group is expanded.
     return '<div class="fv-crit-card" data-qnum="' + fvEscHtml(c.criterion_id) + '" data-idx="g-' + fvEscHtml(c.criterion_id) + '">' +
@@ -584,11 +584,11 @@ function fvCriterionMiniCard(c, themeKey) {
             '<span class="fv-crit-score">' + fvEscHtml(String(c.marks_lost || 0)) + ' marks lost</span>' +
             '<span class="fv-crit-chev">&#9662;</span>' +
         '</div>' +
-        fvCriterionBodyHtml(c, themeKey) +
+        fvCriterionBodyHtml(c, mistakeType) +
     '</div>';
 }
 
-function fvCriterionBodyHtml(c, themeKey) {
+function fvCriterionBodyHtml(c, mistakeType) {
     // Pull the corresponding by-question card's feedback text and improvement
     // string so we never drift — the by-question card carries the canonical
     // server-rendered values; "Next time" comes from the criterion's
@@ -620,8 +620,8 @@ function fvHandleGroupClick(card) {
 }
 
 async function fvMarkReviewed(card) {
-    var themeKey = card.getAttribute('data-theme-key') || '';
-    if (!themeKey) return;
+    var mistakeType = card.getAttribute('data-mistake-type') || '';
+    if (!mistakeType) return;
     // Optimistic UI: dim card, add Done badge, advance "You left off here" label.
     card.classList.add('reviewed');
     var label = card.querySelector('.fv-group-label');
@@ -649,7 +649,7 @@ async function fvMarkReviewed(card) {
         await fetch('/feedback/' + FV_ASSIGNMENT_ID + '/' + FV_SUBMISSION_ID + '/mark-reviewed', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ theme_key: themeKey }),
+            body: JSON.stringify({ mistake_type: mistakeType }),
         });
     } catch (err) { /* silent */ }
 }
@@ -735,7 +735,7 @@ function fvActivateView(which) {
     // whenever available — both in grouped mode and by-question mode —
     // because it's strictly more informative than the marking-time
     // generic. Fall back to generic only when no themed prompt exists for
-    // this criterion's theme_key.
+    // this criterion's mistake_type.
     document.querySelectorAll('.fv-correction-card').forEach(function (card) {
         var p = card.querySelector('.fv-correction-prompt');
         if (!p) return;

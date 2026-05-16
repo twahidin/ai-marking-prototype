@@ -39,7 +39,7 @@ def _make_chain(db_session, *, subject='biology', role='owner', topic_keys_statu
         result_json=json.dumps({
             'questions': [
                 {'question_num': 1, 'feedback': 'Correct.',
-                 'theme_key': 'terminology_precision'},
+                 'mistake_type': 'terminology_precision'},
             ],
         }),
     )
@@ -375,7 +375,7 @@ def test_full_happy_path_amend_then_promote_then_retrieve(app, db_session, clien
     sub = Submission(assignment_id=asn.id, student_id=stu.id,
                      result_json=json.dumps({'questions': [
                          {'question_num': 1, 'feedback': 'Correct - heat affects enzyme rate.',
-                          'theme_key': 'terminology_precision'},
+                          'mistake_type': 'terminology_precision'},
                      ]}))
     db_session.add(sub)
     db_session.commit()

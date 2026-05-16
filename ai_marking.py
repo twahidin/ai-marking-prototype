@@ -1826,7 +1826,7 @@ def _run_feedback_helper(provider, model, session_keys, system_prompt, user_prom
 
 
 def extract_correction_insight(provider, model, session_keys,
-                                subject, theme_key,
+                                subject, mistake_type,
                                 criterion_name, original_text, edited_text):
     """Extract a reusable marking principle from a teacher's correction.
 
@@ -1859,7 +1859,7 @@ def extract_correction_insight(provider, model, session_keys,
     )
     user_prompt = (
         f"Subject: {subject or 'unknown'}\n"
-        f"Theme: {theme_key or 'unknown'}\n"
+        f"Mistake type: {mistake_type or 'unknown'}\n"
         f"Criterion: {criterion_name}\n"
         f"Original AI feedback: {(original_text or '')[:600]}\n"
         f"Teacher's edited feedback: {(edited_text or '')[:600]}\n\n"
@@ -2085,7 +2085,7 @@ def fetch_recent_categorisation_corrections(subject, limit=5):
     matched case-insensitively via JOIN). Joined with the original
     criterion content from the source submission's result_json. Returns
     a list of dicts:
-      {criterion_text, original_theme_key, corrected_theme_key,
+      {criterion_text, original_mistake_type, corrected_mistake_type,
        original_specific_label, corrected_specific_label}
 
     Returns [] when subject is blank OR isn't a canonical-taxonomy entry
@@ -2140,8 +2140,8 @@ def fetch_recent_categorisation_corrections(subject, limit=5):
                 text = text[:400] + '…'
             out.append({
                 'criterion_text': text,
-                'original_theme_key': r.original_theme_key,
-                'corrected_theme_key': r.corrected_theme_key,
+                'original_mistake_type': r.original_mistake_type,
+                'corrected_mistake_type': r.corrected_mistake_type,
                 'original_specific_label': r.original_specific_label,
                 'corrected_specific_label': r.corrected_specific_label,
             })
@@ -2168,8 +2168,8 @@ def format_categorisation_corrections_block(corrections):
     ]
     for c in corrections:
         lines.append(f"- Criterion: \"{c['criterion_text']}\"")
-        lines.append(f"  AI initially said: {c.get('original_theme_key') or '(none)'}")
-        lines.append(f"  Teacher corrected to: {c['corrected_theme_key']}")
+        lines.append(f"  AI initially said: {c.get('original_mistake_type') or '(none)'}")
+        lines.append(f"  Teacher corrected to: {c['corrected_mistake_type']}")
         lines.append("")
     return '\n'.join(lines).strip() + '\n\n'
 
@@ -2178,7 +2178,7 @@ def categorise_mistakes(provider, model, session_keys, subject, themes, question
     """Single-pass categorisation pipeline.
 
     One AI call produces:
-      - Per-criterion theme_key + diagnostic specific_label
+      - Per-criterion mistake_type + diagnostic specific_label
       - Per-group "Next time:" habit (folded into the same JSON)
 
     The diagnose-not-advise discipline lives entirely in the prompt. A
@@ -2192,9 +2192,9 @@ def categorise_mistakes(provider, model, session_keys, subject, themes, question
     marks_awarded, marks_total (or marks_lost).
 
     Returns: {
-        "categorisation": [ {criterion_id, theme_key, specific_label,
+        "categorisation": [ {criterion_id, mistake_type, specific_label,
                              low_confidence, themed_correction_prompt: ""}, ... ],
-        "group_habits":    [ {theme_key, habit}, ... ]
+        "group_habits":    [ {mistake_type, habit}, ... ]
     }
 
     Raises on the single AI call's failure (caller marks the submission
@@ -2215,7 +2215,7 @@ def categorise_mistakes(provider, model, session_keys, subject, themes, question
             + ("  (never_group)" if cfg.get('never_group') else '')
         )
     theme_block = '\n'.join(theme_lines)
-    theme_keys_csv = ', '.join(valid_keys)
+    mistake_types_csv = ', '.join(valid_keys)
 
     crit_lines = []
     for q in questions_data:
@@ -2253,7 +2253,7 @@ Subject: {subject_str}
 Allowed parent themes (use EXACTLY one of these keys — no others):
 {theme_block}
 
-Allowed theme_keys: {theme_keys_csv}
+Allowed mistake_types: {mistake_types_csv}
 
 DISCIPLINE — diagnose, do not advise.
 
@@ -2324,8 +2324,8 @@ PROCESS
 
 1. For each criterion that lost marks, write a one-sentence diagnosis (what went wrong, not what to do).
 2. Find shared causes across diagnoses. A group needs ≥ 2 criteria sharing the same root error.
-3. For each group, generate a 2-4 word diagnostic specific_label, assign ONE theme_key, and write one "Next time:" habit.
-4. Standalone criteria (no shared cause) still get a theme_key and a 2-4 word specific_label, but no group entry and no habit.
+3. For each group, generate a 2-4 word diagnostic specific_label, assign ONE mistake_type, and write one "Next time:" habit.
+4. Standalone criteria (no shared cause) still get a mistake_type and a 2-4 word specific_label, but no group entry and no habit.
 5. For EVERY criterion (grouped or standalone), write a themed_correction_prompt following the rules above.
 
 OUTPUT
@@ -2337,7 +2337,7 @@ FINAL_JSON:
   "categorisation": [
     {{
       "criterion_id": "<copied>",
-      "theme_key": "<one of {theme_keys_csv}>",
+      "mistake_type": "<one of {mistake_types_csv}>",
       "specific_label": "<2-4 words, diagnostic>",
       "themed_correction_prompt": "<scaffolded thinking task — anchored, non-revealing, ≤ 30 words>",
       "low_confidence": false
@@ -2345,7 +2345,7 @@ FINAL_JSON:
   ],
   "groups": [
     {{
-      "theme_key": "<one of {theme_keys_csv}>",
+      "mistake_type": "<one of {mistake_types_csv}>",
       "specific_label": "<2-4 words, diagnostic>",
       "habit": "Next time: <one self-check, ≤ 20 words including 'Next time:'>",
       "criteria_ids": ["<criterion_id>", "<criterion_id>"]
@@ -2376,8 +2376,10 @@ Rules for the JSON:
         raise ValueError(f"Categorisation FINAL_JSON could not be parsed: {e}")
 
     # ---------------------------------------------------------------
-    # Sanitise categorisation: enforce theme_key, fall back to theme
+    # Sanitise categorisation: enforce mistake_type, fall back to theme
     # generic label when the AI emitted advice-style text or left it blank.
+    # Accept legacy 'theme_key' as input for back-compat with any cached
+    # AI responses or older parse paths.
     # ---------------------------------------------------------------
     cats_in = parsed.get('categorisation') or []
     cats_out = []
@@ -2390,15 +2392,15 @@ Rules for the JSON:
         if not cid or cid not in known_ids or cid in seen_ids:
             continue
         seen_ids.add(cid)
-        tk = c.get('theme_key')
-        if tk not in valid_keys_set:
-            tk = 'content_gap'
+        mt = c.get('mistake_type') or c.get('theme_key')
+        if mt not in valid_keys_set:
+            mt = 'content_gap'
         spec = (c.get('specific_label') or '').strip()
         # Python-side guard: when the AI slips an advice-style phrase past
         # the prompt's discipline, fall back to the theme's generic label
         # rather than running another AI round-trip to verify.
         if not spec or _looks_like_advice(spec):
-            spec = (themes.get(tk) or {}).get('label', 'Area for review')
+            spec = (themes.get(mt) or {}).get('label', 'Area for review')
         # Themed correction prompt: scaffolded thinking task that the student
         # sees in their feedback view, anchored in their actual answer and
         # aligned with the diagnosed theme. Reject if it looks like a
@@ -2410,7 +2412,7 @@ Rules for the JSON:
             themed_prompt = ''
         cats_out.append({
             'criterion_id': cid,
-            'theme_key': tk,
+            'mistake_type': mt,
             'specific_label': spec,
             'low_confidence': bool(c.get('low_confidence')),
             'themed_correction_prompt': themed_prompt,
@@ -2424,10 +2426,10 @@ Rules for the JSON:
     for g in (parsed.get('groups') or []):
         if not isinstance(g, dict):
             continue
-        tk = g.get('theme_key')
-        if tk not in valid_keys_set or tk in seen_theme:
+        mt = g.get('mistake_type') or g.get('theme_key')
+        if mt not in valid_keys_set or mt in seen_theme:
             continue
-        if (themes.get(tk) or {}).get('never_group'):
+        if (themes.get(mt) or {}).get('never_group'):
             continue
         cids = [str(c) for c in (g.get('criteria_ids') or [])]
         if len(cids) < 2:
@@ -2437,8 +2439,8 @@ Rules for the JSON:
             continue
         if not habit.lower().startswith('next time'):
             habit = 'Next time: ' + habit
-        seen_theme.add(tk)
-        habits_out.append({'theme_key': tk, 'habit': habit})
+        seen_theme.add(mt)
+        habits_out.append({'mistake_type': mt, 'habit': habit})
 
     return {'categorisation': cats_out, 'group_habits': habits_out}
 
@@ -2624,7 +2626,7 @@ def extract_assignment_topic_keys_from_pdf(provider, model, session_keys, subjec
 
 def extract_standard_topic_keys(provider, model, session_keys, subject,
                                  question_text, original_feedback, edited_feedback,
-                                 theme_key=None, max_retries=3):
+                                 mistake_type=None, max_retries=3):
     """Tag a teacher edit (being promoted) with 1-3 topic keys from the
     controlled vocabulary. Returns [] on failure."""
     from config.subject_topics import get_topics_for_subject, is_known_topic_key
@@ -2641,7 +2643,7 @@ def extract_standard_topic_keys(provider, model, session_keys, subject,
         f'Question being marked: {question_text}\n'
         f'Original AI feedback: {original_feedback}\n'
         f"Teacher's correction: {edited_feedback}\n"
-        f'Theme of mistake: {theme_key or "(not categorised)"}\n\n'
+        f'Mistake type: {mistake_type or "(not categorised)"}\n\n'
         'Tag this correction with 1-3 topic keys that describe the content domain '
         'AND the type of skill the correction targets. Pick from the vocab only.\n\n'
         'Return JSON only: {"topic_keys": ["..."]}'
@@ -2696,7 +2698,7 @@ def _decode_answer_key_text(blob: bytes) -> str:
         return ''
 
 
-def build_calibration_block(teacher_id, asn, subject, theme_keys,
+def build_calibration_block(teacher_id, asn, subject, mistake_types,
                              provider=None, model=None, session_keys=None):
     """[Deprecated 2026-05-13] Returns an empty string. The calibration
     block is now assembled by `app._build_calibration_block_for` using

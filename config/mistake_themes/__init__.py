@@ -98,7 +98,7 @@ def themes_for(subject):
 
 
 # Deprecated keys from the previous (pre-per-subject) taxonomy. Kept ONLY
-# so the renderer can show clean human labels for legacy `theme_key`
+# so the renderer can show clean human labels for legacy `mistake_type`
 # values still living in old FeedbackEdit rows and old Submission
 # result_json blobs. Never injected into the AI prompt and never offered
 # in the teacher-correction dropdown — see themes_for_display below.
@@ -182,7 +182,7 @@ def themes_meta_list(themes):
 
 
 def themes_meta_dict(themes):
-    """Serialise a themes dict as a flat metadata map keyed by theme_key.
+    """Serialise a themes dict as a flat metadata map keyed by mistake_type.
     Used by Jinja templates that inject FV_THEMES for client-side label
     fallback (e.g. the student feedback grouped view)."""
     return {

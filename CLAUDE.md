@@ -36,8 +36,8 @@ gunicorn -w 1 --threads 100 --timeout 300 --bind 0.0.0.0:$PORT app:app
 | `FLASK_ENV` | Set to `development` to disable `SESSION_COOKIE_SECURE` |
 | `DATABASE_URL` | PostgreSQL URL (default: SQLite `marking.db`) |
 | `PORT` | Server port (default: `5000`) |
-| `STUDENT_GROUPING_UI_ENABLED` | `TRUE` un-hides the student-facing "By mistake type" toggle / grouped view. Default `FALSE`. The categorisation pipeline (`theme_key` on `result_json`, calibration Tier 1, propagation) still runs regardless — this flag only controls the student UI surface. |
-| `TEACHER_THEME_UI_ENABLED` | `TRUE` re-enables the teacher-facing inline theme/category dropdown on each marked criterion. Default `FALSE` since categorisation accuracy has proven sufficient. The data pipeline (`theme_key` on criteria, FeedbackEdit inheritance, calibration retrieval) runs regardless — this flag only controls the teacher correction UI surface. Parallel to `STUDENT_GROUPING_UI_ENABLED`. |
+| `STUDENT_GROUPING_UI_ENABLED` | `TRUE` un-hides the student-facing "By mistake type" toggle / grouped view. Default `FALSE`. The categorisation pipeline (`mistake_type` on `result_json`, calibration Tier 1, propagation) still runs regardless — this flag only controls the student UI surface. |
+| `TEACHER_THEME_UI_ENABLED` | `TRUE` re-enables the teacher-facing inline theme/category dropdown on each marked criterion. Default `FALSE` since categorisation accuracy has proven sufficient. The data pipeline (`mistake_type` on criteria, FeedbackEdit inheritance, calibration retrieval) runs regardless — this flag only controls the teacher correction UI surface. Parallel to `STUDENT_GROUPING_UI_ENABLED`. |
 
 At least one AI provider API key must be set. Providers only appear in the UI if their key is configured.
 
@@ -150,7 +150,7 @@ This app is in active use. Any code change that adds or relies on a new column /
 
 **When adding a column that ANY query filters or groups on:**
 
-1. **Lazy-fill at the closest write path.** If the value is derivable (e.g. `Submission.categorisation_status` from a successful theme-key write, or `Assignment.title` from `subject`), compute it inline before the first INSERT/UPDATE that needs it, and persist it back to the parent row too. Never write `NULL` into a column the new feature filters on.
+1. **Lazy-fill at the closest write path.** If the value is derivable (e.g. `Submission.categorisation_status` from a successful mistake_type write, or `Assignment.title` from `subject`), compute it inline before the first INSERT/UPDATE that needs it, and persist it back to the parent row too. Never write `NULL` into a column the new feature filters on.
 2. **Add a one-shot backfill** in the boot path (or as a `flask` CLI command). Idempotent — guard with `WHERE col IS NULL`, safe to re-run on every boot.
 3. **Do NOT add `if row.col is None: skip` branches in readers.** If the reader needs the column populated, the writer + backfill are responsible. Branching in readers is how this gets unmaintainable.
 
@@ -167,7 +167,7 @@ This app is in active use. Any code change that adds or relies on a new column /
 **Currently load-bearing fields** (treat as required, not optional, on writes):
 
 - `Assignment.subject` — drives the canonical subject taxonomy (see `subjects.py`), marking-patterns aggregation grouping, and per-subject calibration lookup. `subject_family` and `subject_bucket` columns were **dropped** (see `db.py:_migrate_add_columns`); do not reintroduce them.
-- `FeedbackEdit.theme_key` — drives Tier-1 calibration retrieval and student-facing "Group by Mistake Type" (UI gated by `STUDENT_GROUPING_UI_ENABLED`, but pipeline always populates).
+- `FeedbackEdit.mistake_type` — drives Tier-1 calibration retrieval and student-facing "Group by Mistake Type" (UI gated by `STUDENT_GROUPING_UI_ENABLED`, but pipeline always populates). Legacy name was `theme_key`; renamed 2026-05-16.
 - `Submission.categorisation_status` — gates UI rendering of the category line.
 - `Assignment.title` — required by the PDF generator's header row (see "load-bearing" note below).
 
@@ -188,7 +188,7 @@ When adding a new parameter to a function called from multiple places (especiall
 `result_json` is the AI-generated marking output. Its shape evolves over time, but **old submissions stay in the DB forever**. Readers must tolerate older shapes.
 
 - Read with `q.get('field', default)` — never `q['field']`. The AI sometimes omits fields entirely; older submissions definitely will.
-- New optional fields (`correction_prompt`, `well_done`, `main_gap`, `theme_key`, etc.) added to one branch should not crash readers on older submissions.
+- New optional fields (`correction_prompt`, `well_done`, `main_gap`, `mistake_type`, etc.) added to one branch should not crash readers on older submissions.
 - The PDF generator has an example to copy: `if not body_rows: body = …(no detail)…` for a question that has no fields populated.
 - If a reader needs a field to be present, **fix the writer** (the AI prompt or the post-processing that fills in defaults). Don't litter readers with `if x.get('field') is None: skip`.
 

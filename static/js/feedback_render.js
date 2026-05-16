@@ -309,7 +309,7 @@
 
         // Pull the student's correction attempts out of the tiered bucket.
         // Stored chronologically as {question_num, text, verdict, message,
-        // theme_key, submitted_at}; we group by question_num for the
+        // mistake_type, submitted_at}; we group by question_num for the
         // teacher-side back-and-forth view (no timestamp shown — keeps the
         // thread readable as a conversation).
         var tieredBucket = (result && result._tiered) || {};
@@ -1208,7 +1208,7 @@
         // Editable mode + lost marks: always visible (so teachers can categorise
         // even when the AI didn't run categorisation, or set a category for a
         // criterion that fell below the worker's 2-criteria threshold).
-        // Read-only mode: only visible when a theme_key is already set.
+        // Read-only mode: only visible when a mistake_type is already set.
         var mtMC = q.marks_total, maMC = q.marks_awarded;
         var lostByMarks = (mtMC != null && maMC != null && mtMC > 0 && maMC < mtMC);
         var lostByStatus = (!lostByMarks && q.status && q.status !== 'correct');
@@ -1217,10 +1217,10 @@
         var catBlock = '';
         var themesByKey = {};
         (state.availableThemes || []).forEach(function (t) { themesByKey[t.key] = t; });
-        var currentThemeMeta = q.theme_key ? themesByKey[q.theme_key] : null;
-        var currentLabel = currentThemeMeta ? currentThemeMeta.label : (q.theme_key || '');
+        var currentThemeMeta = q.mistake_type ? themesByKey[q.mistake_type] : null;
+        var currentLabel = currentThemeMeta ? currentThemeMeta.label : (q.mistake_type || '');
         var specificTxt = q.specific_label ? esc(q.specific_label) : '';
-        var corrMark = q.theme_key_corrected
+        var corrMark = q.mistake_type_corrected
             ? '<span class="fb-cat-corrected" style="color:#8a8db2;margin-left:8px;font-style:normal;" title="Teacher-corrected">✎</span>'
             : '';
 
@@ -1231,7 +1231,7 @@
             // the AI's original specific_label across category changes.
             // §4.9: only rendered when TEACHER_THEME_UI_ENABLED is explicitly true.
             var displayInner;
-            if (q.theme_key) {
+            if (q.mistake_type) {
                 displayInner = '<span class="fb-cat-display-label">' + esc(currentLabel) + '</span>' +
                     (specificTxt ? '<span class="fb-cat-display-specific" style="color:#888;font-style:italic;margin-left:8px;">— ' + specificTxt + '</span>' : '') +
                     corrMark;
@@ -1240,11 +1240,11 @@
             }
             catBlock = '<div class="fb-q-field"><div class="fb-q-field-label">Mistake Category <small style="color:#bbb;font-weight:400;">(click to set)</small></div>' +
                 '<div class="fb-q-field-value mistake-category fb-cat-trigger" data-field="category" tabindex="0" ' +
-                    'data-theme-key="' + esc(q.theme_key || '') + '" ' +
+                    'data-mistake-type="' + esc(q.mistake_type || '') + '" ' +
                     'data-specific-label="' + esc(q.specific_label || '') + '">' +
                     displayInner +
                 '</div></div>';
-        } else if (q.theme_key && window.TEACHER_THEME_UI_ENABLED === true) {
+        } else if (q.mistake_type && window.TEACHER_THEME_UI_ENABLED === true) {
             // Read-only with a category set: show the label inline.
             // §4.9: also gated by TEACHER_THEME_UI_ENABLED so the entire
             // theme/category surface disappears when the flag is off.
@@ -1534,14 +1534,14 @@
         var dropdown = null;
         var highlightIdx = -1;
 
-        function renderTriggerInner(themeKey, specificLabel, corrected) {
-            var meta = themes.find(function (t) { return t.key === themeKey; });
-            var lbl = meta ? meta.label : themeKey;
+        function renderTriggerInner(mistakeType, specificLabel, corrected) {
+            var meta = themes.find(function (t) { return t.key === mistakeType; });
+            var lbl = meta ? meta.label : mistakeType;
             var spec = specificLabel ? esc(specificLabel) : '';
             var corrMark = corrected
                 ? '<span class="fb-cat-corrected" style="color:#8a8db2;margin-left:8px;font-style:normal;" title="Teacher-corrected">✎</span>'
                 : '';
-            if (themeKey) {
+            if (mistakeType) {
                 trigger.innerHTML = '<span class="fb-cat-display-label">' + esc(lbl) + '</span>' +
                     (spec ? '<span class="fb-cat-display-specific" style="color:#888;font-style:italic;margin-left:8px;">— ' + spec + '</span>' : '') +
                     corrMark;
@@ -1586,7 +1586,7 @@
             dropdown.style.left = (rect.left + window.scrollX) + 'px';
 
             // Pre-highlight the current selection.
-            var currentKey = trigger.getAttribute('data-theme-key') || '';
+            var currentKey = trigger.getAttribute('data-mistake-type') || '';
             if (currentKey) {
                 var idx = themes.findIndex(function (t) { return t.key === currentKey; });
                 if (idx >= 0) highlight(idx);
@@ -1618,11 +1618,11 @@
         }
 
         function applyKey(k) {
-            var prevKey = trigger.getAttribute('data-theme-key') || '';
+            var prevKey = trigger.getAttribute('data-mistake-type') || '';
             if (k === prevKey) { hideDropdown(); return; }
             var specificLabel = trigger.getAttribute('data-specific-label') || '';
             // Optimistic update — re-rendered from server response below.
-            trigger.setAttribute('data-theme-key', k);
+            trigger.setAttribute('data-mistake-type', k);
             renderTriggerInner(k, specificLabel, false);
             hideDropdown();
 
@@ -1633,34 +1633,34 @@
             patchResult(state, {
                 questions: [{
                     question_num: savedQNum,
-                    theme_key: k,
+                    mistake_type: k,
                     specific_label: specificLabel,
                 }]
             }).then(function (data) {
                 if (!data || !data.success) {
-                    trigger.setAttribute('data-theme-key', prevKey);
-                    renderTriggerInner(prevKey, specificLabel, !!q.theme_key_corrected);
+                    trigger.setAttribute('data-mistake-type', prevKey);
+                    renderTriggerInner(prevKey, specificLabel, !!q.mistake_type_corrected);
                     return;
                 }
                 var newQ = ((data.result && data.result.questions) || []).find(function (qq) {
                     return String(qq.question_num) === String(savedQNum);
                 });
                 if (!newQ) {
-                    trigger.setAttribute('data-theme-key', prevKey);
-                    renderTriggerInner(prevKey, specificLabel, !!q.theme_key_corrected);
+                    trigger.setAttribute('data-mistake-type', prevKey);
+                    renderTriggerInner(prevKey, specificLabel, !!q.mistake_type_corrected);
                     return;
                 }
-                var serverTk = newQ.theme_key || '';
+                var serverTk = newQ.mistake_type || '';
                 var serverLabel = newQ.specific_label || '';
-                trigger.setAttribute('data-theme-key', serverTk);
+                trigger.setAttribute('data-mistake-type', serverTk);
                 trigger.setAttribute('data-specific-label', serverLabel);
-                renderTriggerInner(serverTk, serverLabel, !!newQ.theme_key_corrected);
-                state.questions[state.currentQ].theme_key = serverTk;
+                renderTriggerInner(serverTk, serverLabel, !!newQ.mistake_type_corrected);
+                state.questions[state.currentQ].mistake_type = serverTk;
                 state.questions[state.currentQ].specific_label = serverLabel;
-                state.questions[state.currentQ].theme_key_corrected = !!newQ.theme_key_corrected;
+                state.questions[state.currentQ].mistake_type_corrected = !!newQ.mistake_type_corrected;
             }).catch(function () {
-                trigger.setAttribute('data-theme-key', prevKey);
-                renderTriggerInner(prevKey, specificLabel, !!q.theme_key_corrected);
+                trigger.setAttribute('data-mistake-type', prevKey);
+                renderTriggerInner(prevKey, specificLabel, !!q.mistake_type_corrected);
             });
         }
 
