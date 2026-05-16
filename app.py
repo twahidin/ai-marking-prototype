@@ -7175,6 +7175,11 @@ def teacher_push_amendments_to_bank(assignment_id):
             client_ts = datetime.fromisoformat(str(client_ts_raw).replace('Z', '+00:00'))
         except ValueError:
             return jsonify({'success': False, 'error': 'invalid timestamp'}), 400
+        # SQLite drops tz info on round-trip, so the isoformat we sent to the
+        # client may have come back naive. Treat naive timestamps as UTC to
+        # match the server-side normalization below.
+        if client_ts.tzinfo is None:
+            client_ts = client_ts.replace(tzinfo=timezone.utc)
 
     server_ts = asn.bank_pushed_at
     if server_ts is not None and server_ts.tzinfo is None:
