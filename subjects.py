@@ -22,8 +22,8 @@ NULL-everywhere columns ahead of time.
 """
 
 # Order: alphabetical by display name. Same order is used in the
-# dropdown UI, the AI classifier prompt, and the marking-patterns page —
-# all derived from this list, so reordering here propagates everywhere.
+# dropdown UI and the AI classifier prompt — both derived from this list,
+# so reordering here propagates everywhere.
 SUBJECTS = [
     {'key': 'art',                     'display': 'Art',
      'aliases': ['art', 'visual art']},
@@ -110,10 +110,9 @@ def canonicalise_subject(text):
     if it resolves to a taxonomy entry; otherwise return the input
     unchanged (just whitespace-stripped). Call at every write site so
     aliases like 'maths', 'hcl', 'phy' all collapse to the canonical
-    display string ('Mathematics', 'Chinese', 'Physics') in the DB —
-    that's what the cross-assignment retrieval / principles cache /
-    marking-patterns page key on. Freeform input ('Sec 3 Maths') falls
-    through unchanged so the freeform-isolation gate still picks it up.
+    display string ('Mathematics', 'Chinese', 'Physics') in the DB.
+    Freeform input ('Sec 3 Maths') falls through unchanged so the
+    freeform-isolation gate still picks it up.
     """
     if text is None:
         return ''

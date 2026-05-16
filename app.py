@@ -1188,36 +1188,6 @@ def run_marking_job(job_id, provider, model, question_paper_pages, answer_key_pa
         _jobs_update(job_id, result={'error': str(e)}, status='error')
 
 
-def _has_conflicts_in_my_subjects(teacher_id):
-    """Return True if any subject the teacher contributes to has has_conflicts=True
-    on its marking_principles_cache row. Single tiny query — safe to call on every
-    hub render."""
-    if not teacher_id:
-        return False
-    try:
-        from db import FeedbackEdit, MarkingPrinciplesCache, Assignment
-        # Distinct subjects (case-insensitive) from this teacher's active
-        # calibration edits, found by JOINing feedback_edit -> assignments.
-        my_subjects_q = (db.session.query(db.func.lower(Assignment.subject))
-                         .join(FeedbackEdit, FeedbackEdit.assignment_id == Assignment.id)
-                         .filter(FeedbackEdit.edited_by == teacher_id,
-                                 FeedbackEdit.active == True,  # noqa: E712
-                                 Assignment.subject.isnot(None),
-                                 Assignment.subject != '')
-                         .distinct())
-        my_subjects = [row[0] for row in my_subjects_q.all() if row[0]]
-        if not my_subjects:
-            return False
-        hit = (MarkingPrinciplesCache.query
-               .filter(MarkingPrinciplesCache.has_conflicts == True,  # noqa: E712
-                       db.func.lower(MarkingPrinciplesCache.subject).in_(my_subjects))
-               .first())
-        return bool(hit)
-    except Exception as e:
-        logger.warning(f"hub conflict nudge query failed: {e}")
-        return False
-
-
 @app.route('/')
 def hub():
     if not _is_setup_complete():
@@ -1233,8 +1203,7 @@ def hub():
                                    authenticated=False,
                                    dept_mode=True,
                                    demo_mode=True,
-                                   teacher=None,
-                                   has_conflicts_in_my_subjects=False)
+                                   teacher=None)
         # Auto-login as demo HOD if not already logged in
         if not session.get('teacher_id'):
             hod = Teacher.query.filter_by(role='hod').first()
@@ -1244,42 +1213,27 @@ def hub():
                 session['teacher_role'] = hod.role
                 session['teacher_name'] = hod.name
         teacher = _current_teacher()
-        has_conflicts_in_my_subjects = False
-        try:
-            if teacher:
-                has_conflicts_in_my_subjects = _has_conflicts_in_my_subjects(teacher.id)
-        except Exception:
-            has_conflicts_in_my_subjects = False
         return render_template('hub.html',
                                authenticated=True,
                                dept_mode=True,
                                demo_mode=True,
-                               teacher=teacher,
-                               has_conflicts_in_my_subjects=has_conflicts_in_my_subjects)
+                               teacher=teacher)
     if _demo and not _dept:
         return render_template('hub.html',
                                authenticated=True,
                                dept_mode=False,
                                demo_mode=True,
-                               teacher=None,
-                               has_conflicts_in_my_subjects=False)
+                               teacher=None)
     if _dept:
         if not Teacher.query.filter_by(role='hod').first():
             return redirect(url_for('department_setup'))
     authenticated = _is_authenticated()
     teacher = _current_teacher()  # works for both dept and normal mode now
-    has_conflicts_in_my_subjects = False
-    try:
-        if teacher:
-            has_conflicts_in_my_subjects = _has_conflicts_in_my_subjects(teacher.id)
-    except Exception:
-        has_conflicts_in_my_subjects = False
     return render_template('hub.html',
                            authenticated=authenticated,
                            dept_mode=_dept,
                            demo_mode=_demo,
-                           teacher=teacher,
-                           has_conflicts_in_my_subjects=has_conflicts_in_my_subjects)
+                           teacher=teacher)
 
 
 @app.route('/logout')
@@ -6641,113 +6595,6 @@ def teacher_page():
     return redirect(url_for('class_page', _anchor='submissions'))
 
 
-@app.route('/teacher/marking-patterns')
-def teacher_marking_patterns():
-    if not _is_authenticated():
-        return redirect(url_for('hub'))
-    teacher = _current_teacher()
-    teacher_id = teacher.id if teacher else None
-    if not teacher_id:
-        return redirect(url_for('hub'))
-
-    from db import FeedbackEdit, MarkingPrinciplesCache
-    from sqlalchemy import func as _func
-    from subjects import is_canonical_subject as _is_canonical
-
-    # Group by canonical assignments.subject (case-insensitive). The
-    # subject string from the dropdown IS the display name. Non-canonical
-    # (freeform-typed) subjects are excluded — their feedback edits are
-    # intra-assignment-only and don't aggregate into shared patterns.
-    subj_lower = _func.lower(Assignment.subject)
-    contributed_rows = (
-        db.session.query(subj_lower.label('subj_lc'),
-                         _func.min(Assignment.subject).label('subj_display'),
-                         _func.count(FeedbackEdit.id).label('my_count'))
-        .join(Assignment, Assignment.id == FeedbackEdit.assignment_id)
-        .filter(FeedbackEdit.edited_by == teacher_id,
-                FeedbackEdit.active == True,  # noqa: E712
-                Assignment.subject.isnot(None),
-                Assignment.subject != '')
-        .group_by(subj_lower)
-        .all()
-    )
-    if not contributed_rows:
-        return render_template('marking_patterns.html',
-                                sections=[], teacher=teacher)
-
-    sections = []
-    for subj_lc, subj_display, my_count in contributed_rows:
-        # Drop freeform subjects — they're intra-assignment-only.
-        if not _is_canonical(subj_display or ''):
-            continue
-        total = (db.session.query(_func.count(FeedbackEdit.id))
-                 .join(Assignment, Assignment.id == FeedbackEdit.assignment_id)
-                 .filter(_func.lower(Assignment.subject) == subj_lc,
-                         FeedbackEdit.active == True)  # noqa: E712
-                 .scalar()) or 0
-        cache = (MarkingPrinciplesCache.query
-                 .filter(_func.lower(MarkingPrinciplesCache.subject) == subj_lc)
-                 .first())
-        threshold_met = total >= 8
-        sections.append({
-            'subject': subj_display,
-            'display_name': subj_display,
-            'my_count': my_count,
-            'total_count': total,
-            'has_principles': bool(cache and cache.markdown_text and threshold_met),
-            'markdown': (cache.markdown_text if cache else '') or '',
-            'has_conflicts': bool(cache and cache.has_conflicts),
-            'threshold_met': threshold_met,
-            'remaining_to_threshold': max(0, 8 - total),
-        })
-    sections.sort(key=lambda s: s['display_name'].lower())
-    return render_template('marking_patterns.html', sections=sections, teacher=teacher)
-
-
-@app.route('/teacher/marking-patterns/dismiss-conflict', methods=['POST'])
-def teacher_marking_patterns_dismiss_conflict():
-    """Soft-suppress the has_conflicts flag for one subject. Re-fires on the
-    next regeneration if the LLM still detects a conflict — purely cosmetic
-    so a teacher can clear the yellow notice when they judge it's noise."""
-    if not _is_authenticated():
-        return redirect(url_for('hub'))
-    teacher = _current_teacher()
-    teacher_id = teacher.id if teacher else None
-    if not teacher_id:
-        return redirect(url_for('hub'))
-
-    subj = (request.form.get('subject') or request.form.get('subject_family') or '').strip()
-    if not subj:
-        return redirect(url_for('teacher_marking_patterns'))
-
-    # Auth: the teacher must contribute at least one active edit to an
-    # assignment with this subject string — i.e. they're part of the
-    # pool whose conflict was flagged.
-    from db import FeedbackEdit, MarkingPrinciplesCache
-    subj_lc = subj.lower()
-    contributor = (FeedbackEdit.query
-                   .join(Assignment, Assignment.id == FeedbackEdit.assignment_id)
-                   .filter(FeedbackEdit.edited_by == teacher_id,
-                           FeedbackEdit.active == True,  # noqa: E712
-                           db.func.lower(Assignment.subject) == subj_lc)
-                   .first())
-    if not contributor:
-        return redirect(url_for('teacher_marking_patterns'))
-
-    cache = (MarkingPrinciplesCache.query
-             .filter(db.func.lower(MarkingPrinciplesCache.subject) == subj_lc)
-             .first())
-    if cache and cache.has_conflicts:
-        cache.has_conflicts = False
-        try:
-            db.session.commit()
-            logger.info(f"has_conflicts dismissed for {subj} by teacher {teacher_id}")
-        except Exception as e:
-            db.session.rollback()
-            logger.warning(f"dismiss-conflict commit failed for {subj}: {e}")
-    return redirect(url_for('teacher_marking_patterns'))
-
-
 @app.route('/teacher/create', methods=['POST'])
 def teacher_create():
     if not _is_authenticated():
@@ -8752,32 +8599,14 @@ def teacher_submission_result_patch(assignment_id, submission_id):
     logger.info(f"Teacher edited feedback for submission {submission_id} on assignment {assignment_id}")
 
     # Calibration follow-ups for fresh FeedbackEdit rows written this request:
-    #   1) Mark subject's marking-principles cache stale so the next render
-    #      regenerates with the new edit included.
-    #   2) Spawn an insight-extraction worker per fresh edit (mistake_pattern,
+    #   1) Spawn an insight-extraction worker per fresh edit (mistake_pattern,
     #      correction_principle, transferability — background, non-blocking).
-    #   3) Auto-fire propagation: same teacher standard applied to every
+    #   2) Auto-fire propagation: same teacher standard applied to every
     #      matching candidate without prompting the teacher (banner UX
     #      deferred). Always echo auto_propagation to the client (even with
     #      0 candidates) so the toast can confirm the save landed.
     auto_propagation = None
     if fresh_calibration_edits:
-        # Mark principles cache stale (case-insensitive subject match).
-        try:
-            from db import MarkingPrinciplesCache
-            subj = (asn.subject or '').strip()
-            if subj:
-                (MarkingPrinciplesCache.query
-                    .filter(db.func.lower(MarkingPrinciplesCache.subject) == subj.lower())
-                    .update({'is_stale': True}, synchronize_session=False))
-                db.session.commit()
-        except Exception as stale_err:
-            logger.warning(f"Could not mark principles cache stale: {stale_err}")
-            try:
-                db.session.rollback()
-            except Exception:
-                pass
-
         # Spawn one insight worker per fresh edit. UP-16: bounded pool.
         for fe in fresh_calibration_edits:
             try:

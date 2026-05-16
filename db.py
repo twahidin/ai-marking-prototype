@@ -472,31 +472,6 @@ def _migrate_add_columns(app):
                     db.session.rollback()
                     logger.warning(f'feedback_edit lookup index create skipped: {_e}')
 
-        # marking_principles_cache rekey. Old: `subject_family` slug
-        # (UNIQUE NOT NULL). New: `subject` (the canonical display string
-        # from the assignment dropdown — case-insensitive matching is in
-        # the SQL). The user opted into clearing the principles cache
-        # during this migration; cleanest path is to drop the legacy
-        # table entirely and let SQLAlchemy's create_all rebuild it on
-        # the next ensure pass. SQLite won't DROP COLUMN on a UNIQUE
-        # column without a full table rebuild — drop+recreate is simpler.
-        if 'marking_principles_cache' in inspector.get_table_names():
-            mpc_cols = {c['name'] for c in inspector.get_columns('marking_principles_cache')}
-            if 'subject_family' in mpc_cols:
-                try:
-                    db.session.execute(text('DROP TABLE marking_principles_cache'))
-                    db.session.commit()
-                    logger.info('Dropped legacy marking_principles_cache table (subject taxonomy migration)')
-                except Exception as _e:
-                    db.session.rollback()
-                    logger.warning(f'marking_principles_cache DROP TABLE skipped: {_e}')
-                # Recreate the table with the current model schema.
-                try:
-                    MarkingPrinciplesCache.__table__.create(db.engine)
-                    logger.info('Recreated marking_principles_cache with new schema')
-                except Exception as _e:
-                    logger.warning(f'marking_principles_cache recreate skipped: {_e}')
-
         # categorisation_correction: drop subject_family — no replacement
         # needed, callers JOIN on assignment_id -> assignments.subject.
         if 'categorisation_correction' in inspector.get_table_names():
@@ -910,6 +885,37 @@ def _migrate_drop_subject_standards(_app, force=False):
             db.session.commit()
 
 
+_DROP_MARKING_PRINCIPLES_CACHE_MIGRATION_NAME = 'drop_marking_principles_cache_2026_05_16'
+
+
+def _migrate_drop_marking_principles_cache(_app, force=False):
+    """Drop the marking_principles_cache table. Sibling to
+    _migrate_drop_subject_standards: the table was the visible-side cache
+    for the now-removed cross-teacher "Department Standards" page. No
+    writers and no readers remain after that page was deleted.
+
+    Idempotent via MigrationFlag. force=True bypasses (tests only).
+    """
+    with _app.app_context():
+        marker = MigrationFlag.query.filter_by(
+            name=_DROP_MARKING_PRINCIPLES_CACHE_MIGRATION_NAME
+        ).first()
+        if marker is not None and not force:
+            return
+
+        from sqlalchemy import text as _text
+        try:
+            db.session.execute(_text('DROP TABLE IF EXISTS marking_principles_cache'))
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f'DROP TABLE marking_principles_cache skipped: {e}')
+
+        if marker is None:
+            db.session.add(MigrationFlag(name=_DROP_MARKING_PRINCIPLES_CACHE_MIGRATION_NAME))
+            db.session.commit()
+
+
 _CALIBRATION_RUNTIME_MIGRATION_NAME = 'calibration_runtime_2026_05_13'
 
 
@@ -917,9 +923,8 @@ def _migrate_calibration_runtime(_app, force=False):
     """Backfills amend_answer_key=1 on every active FeedbackEdit except
     promoted-only rows (scope='promoted', amend_answer_key=0), which are
     left for _migrate_drop_subject_standards to deactivate. Also deactivates
-    orphan FeedbackEdits whose parent assignment no longer exists, and marks
-    all MarkingPrinciplesCache rows stale. Uses a column-existence check so
-    it works on both pre-drop and post-drop schemas.
+    orphan FeedbackEdits whose parent assignment no longer exists. Uses a
+    column-existence check so it works on both pre-drop and post-drop schemas.
 
     Idempotent via MigrationFlag. force=True bypasses idempotency (tests only).
     """
@@ -976,10 +981,6 @@ def _migrate_calibration_runtime(_app, force=False):
             ))
         except Exception as e:
             logger.warning(f'orphan FeedbackEdit deactivation skipped: {e}')
-
-        # Deactivate MarkingPrinciplesCache — mark all stale so the old
-        # principles file stops being applied.
-        db.session.query(MarkingPrinciplesCache).update({'is_stale': True})
 
         db.session.commit()
 
@@ -1190,6 +1191,7 @@ def init_db(app):
             _migrate_calibration_runtime(app)
             _migrate_result_json_theme_to_mistake_type(app)
             _migrate_drop_subject_standards(app)
+            _migrate_drop_marking_principles_cache(app)
             if os.getenv('DEPT_MODE', 'FALSE').upper() == 'TRUE':
                 seed_departments()
                 backfill_teacher_departments()
@@ -1758,19 +1760,6 @@ class MigrationFlag(db.Model):
     applied_at = db.Column(db.DateTime(timezone=True),
                            default=lambda: datetime.now(timezone.utc),
                            nullable=False)
-
-
-class MarkingPrinciplesCache(db.Model):
-    __tablename__ = 'marking_principles_cache'
-    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    # Canonical Assignment.subject string (e.g. 'Physics', 'Higher Chinese').
-    # Case-insensitive matching is in the SQL — values are stored as-typed.
-    subject = db.Column(db.String(80), nullable=False, unique=True)
-    markdown_text = db.Column(db.Text, nullable=False, default='')
-    generated_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    is_stale = db.Column(db.Boolean, nullable=False, default=False)
-    edit_count_at_gen = db.Column(db.Integer, nullable=False, default=0)
-    has_conflicts = db.Column(db.Boolean, nullable=False, default=False)
 
 
 class CategorisationCorrection(db.Model):
