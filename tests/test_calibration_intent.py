@@ -1,4 +1,4 @@
-"""UP-: two-checkbox intent (Amend answer key / Update subject standards)."""
+"""Calibration intent: amend-answer-key FeedbackEdits and build_effective_answer_key."""
 
 import json
 import uuid as _uuid
@@ -11,7 +11,7 @@ def _make_chain(db_session, *, subject='biology', role='owner', topic_keys_statu
     """Build Teacher → Assignment → Student → Submission chain.
 
     Defaults to a canonical subject, owner role, tagged status so that
-    both intent checkboxes are accepted. Override per-test as needed.
+    the amend checkbox is accepted. Override per-test as needed.
     """
     tid = 't-' + _uuid.uuid4().hex[:8]
     aid = 'a-' + _uuid.uuid4().hex[:8]
@@ -84,61 +84,20 @@ def test_amend_answer_key_only_writes_feedback_edit_with_flag(app, db_session, c
     assert fe is not None
     assert fe.amend_answer_key is True
     assert fe.scope == 'amendment'
-    assert fe.promoted_to_subject_standard_id is None
-
-
-def test_update_subject_standards_only_triggers_promotion(app, db_session, client):
-    t, asn, _stu, sub = _make_chain(db_session)
-    _login(client, t.id)
-
-    with patch('subject_standards.extract_standard_topic_keys',
-              return_value=['enzymes', 'terminology_precision']):
-        rv = client.patch(
-            f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
-            json={'questions': [{'question_num': 1, 'feedback': "Must say 'temperature'",
-                                  'amend_answer_key': False, 'update_subject_standards': True}]},
-        )
-    assert rv.status_code == 200
-    fe = FeedbackEdit.query.filter_by(submission_id=sub.id).first()
-    assert fe is not None
-    assert fe.amend_answer_key is False
-    assert fe.scope == 'promoted'
-    assert fe.promoted_to_subject_standard_id is not None
-
-
-def test_both_boxes_ticked_writes_scope_both(app, db_session, client):
-    t, asn, _stu, sub = _make_chain(db_session)
-    _login(client, t.id)
-
-    with patch('subject_standards.extract_standard_topic_keys',
-              return_value=['enzymes']):
-        rv = client.patch(
-            f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
-            json={'questions': [{'question_num': 1, 'feedback': 'Both flags edit',
-                                  'amend_answer_key': True, 'update_subject_standards': True}]},
-        )
-    assert rv.status_code == 200
-    fe = FeedbackEdit.query.filter_by(submission_id=sub.id).first()
-    assert fe is not None
-    assert fe.amend_answer_key is True
-    assert fe.scope == 'both'
-    assert fe.promoted_to_subject_standard_id is not None
 
 
 def test_uncheck_both_without_text_edit_deactivates_prior(app, db_session, client):
-    """Teacher saves with both boxes ticked, then re-opens and unchecks both
+    """Teacher saves with amend box ticked, then re-opens and unchecks it
     without editing the text. The prior FeedbackEdit must be deactivated so
     the calibration is fully removed."""
     t, asn, _stu, sub = _make_chain(db_session)
     _login(client, t.id)
 
-    with patch('subject_standards.extract_standard_topic_keys',
-              return_value=['enzymes']):
-        client.patch(
-            f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
-            json={'questions': [{'question_num': 1, 'feedback': 'Calibrated text',
-                                  'amend_answer_key': True, 'update_subject_standards': True}]},
-        )
+    client.patch(
+        f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
+        json={'questions': [{'question_num': 1, 'feedback': 'Calibrated text',
+                              'amend_answer_key': True, 'update_subject_standards': False}]},
+    )
     active_before = FeedbackEdit.query.filter_by(
         submission_id=sub.id, assignment_id=asn.id, active=True).count()
     assert active_before == 1
@@ -151,89 +110,6 @@ def test_uncheck_both_without_text_edit_deactivates_prior(app, db_session, clien
     assert rv.status_code == 200
     assert FeedbackEdit.query.filter_by(
         submission_id=sub.id, assignment_id=asn.id, active=True).count() == 0
-
-
-def test_uncheck_one_without_text_edit_updates_prior_flags(app, db_session, client):
-    """Teacher saves with both boxes ticked, then re-opens and unchecks only
-    'Update subject standards' (keeps Amend). The previous re-affirm
-    short-circuit ignored flag changes when text was unchanged — this guards
-    that regression: prior is deactivated and a new row reflects the new
-    flag state."""
-    t, asn, _stu, sub = _make_chain(db_session)
-    _login(client, t.id)
-
-    with patch('subject_standards.extract_standard_topic_keys',
-              return_value=['enzymes']):
-        client.patch(
-            f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
-            json={'questions': [{'question_num': 1, 'feedback': 'Same text',
-                                  'amend_answer_key': True, 'update_subject_standards': True}]},
-        )
-    initial = FeedbackEdit.query.filter_by(
-        submission_id=sub.id, assignment_id=asn.id, active=True).first()
-    assert initial.scope == 'both'
-
-    rv = client.patch(
-        f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
-        json={'questions': [{'question_num': 1, 'feedback': 'Same text',
-                              'amend_answer_key': True, 'update_subject_standards': False}]},
-    )
-    assert rv.status_code == 200
-    actives = FeedbackEdit.query.filter_by(
-        submission_id=sub.id, assignment_id=asn.id, active=True).all()
-    assert len(actives) == 1
-    assert actives[0].amend_answer_key is True
-    assert actives[0].scope == 'amendment'
-
-
-def test_toggle_promote_on_without_text_edit_creates_new_row(app, db_session, client):
-    """Symmetric to the uncheck case: teacher saves with only Amend, then
-    re-opens and adds Update subject standards on the same text. The new
-    flag state must replace the prior row."""
-    t, asn, _stu, sub = _make_chain(db_session)
-    _login(client, t.id)
-
-    client.patch(
-        f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
-        json={'questions': [{'question_num': 1, 'feedback': 'Same text',
-                              'amend_answer_key': True, 'update_subject_standards': False}]},
-    )
-    initial = FeedbackEdit.query.filter_by(
-        submission_id=sub.id, assignment_id=asn.id, active=True).first()
-    assert initial.scope == 'amendment'
-
-    with patch('subject_standards.extract_standard_topic_keys',
-              return_value=['enzymes']):
-        rv = client.patch(
-            f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
-            json={'questions': [{'question_num': 1, 'feedback': 'Same text',
-                                  'amend_answer_key': True, 'update_subject_standards': True}]},
-        )
-    assert rv.status_code == 200
-    actives = FeedbackEdit.query.filter_by(
-        submission_id=sub.id, assignment_id=asn.id, active=True).all()
-    assert len(actives) == 1
-    assert actives[0].scope == 'both'
-
-
-def test_legacy_assignment_drops_update_subject_standards(app, db_session, client):
-    """Per spec §4.1: on legacy assignments, the 'Update subject standards'
-    intent is hidden and must not promote. 'Amend answer key' still works."""
-    t, asn, _stu, sub = _make_chain(db_session, topic_keys_status='legacy')
-    _login(client, t.id)
-
-    rv = client.patch(
-        f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
-        json={'questions': [{'question_num': 1, 'feedback': 'Legacy edit',
-                              'amend_answer_key': True, 'update_subject_standards': True}]},
-    )
-    assert rv.status_code == 200
-    fe = FeedbackEdit.query.filter_by(submission_id=sub.id).first()
-    assert fe is not None
-    assert fe.amend_answer_key is True
-    # On legacy, promotion was silently dropped → scope='amendment' (not 'both')
-    assert fe.scope == 'amendment'
-    assert fe.promoted_to_subject_standard_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -297,8 +173,8 @@ def test_effective_answer_key_no_amendments_returns_original(app, db_session):
 
 
 def test_effective_answer_key_only_active_amend_edits_included(app, db_session):
-    """Edits with active=False or amend_answer_key=False (e.g. pure promotions)
-    must be ignored when building the effective answer key."""
+    """Edits with active=False or amend_answer_key=False must be ignored
+    when building the effective answer key."""
     from subject_standards import build_effective_answer_key
     from ai_marking import _rubric_version_hash
     import uuid as _uuid
@@ -337,82 +213,3 @@ def test_effective_answer_key_only_active_amend_edits_included(app, db_session):
     assert 'AMEND TEXT INCLUDED' in merged
     assert 'INACTIVE TEXT EXCLUDED' not in merged
     assert 'PROMOTION ONLY TEXT EXCLUDED' not in merged
-
-
-# ---------------------------------------------------------------------------
-# Phase 16 Task 16.1 — end-to-end happy path integration test
-# ---------------------------------------------------------------------------
-
-def test_full_happy_path_amend_then_promote_then_retrieve(app, db_session, client):
-    """End-to-end: tagged assignment → teacher edits with both intents →
-    promotion (mocked tagger) → approved → retrieval pulls it on next marking.
-
-    Uses canonical subject='biology' so server-side promote-suppression
-    doesn't fire. Asserts on SubjectStandard.created_by=t.id to stay isolated
-    from other tests' biology rows.
-    """
-    from unittest.mock import patch
-    from db import Teacher, Assignment, Student, Submission, SubjectStandard
-    from subject_standards import retrieve_subject_standards
-    import json
-    import uuid as _uuid
-
-    tid = 't-' + _uuid.uuid4().hex[:8]
-    aid = 'e2e-' + _uuid.uuid4().hex[:8]
-    t = Teacher(id=tid, name='Joe', code='C' + _uuid.uuid4().hex[:6].upper(), role='hod')
-    asn = Assignment(id=aid, classroom_code='C' + _uuid.uuid4().hex[:6].upper(),
-                     subject='biology', title='Bio E2E',
-                     teacher_id=t.id,
-                     topic_keys=json.dumps([['enzymes', 'terminology_precision']]),
-                     topic_keys_status='tagged',
-                     provider='anthropic',
-                     model='claude-sonnet-4-6')
-    db_session.add_all([t, asn])
-    db_session.commit()
-    stu = Student(assignment_id=asn.id, index_number='1', name='Stu')
-    db_session.add(stu)
-    db_session.commit()
-    sub = Submission(assignment_id=asn.id, student_id=stu.id,
-                     result_json=json.dumps({'questions': [
-                         {'question_num': 1, 'feedback': 'Correct - heat affects enzyme rate.',
-                          'mistake_type': 'terminology_precision'},
-                     ]}))
-    db_session.add(sub)
-    db_session.commit()
-
-    with client.session_transaction() as s:
-        s['teacher_id'] = t.id
-        s['authenticated'] = True
-
-    # 1. Teacher saves edit with BOTH intents.
-    unique_text = "Must say 'temperature', not 'heat'. (e2e marker " + _uuid.uuid4().hex[:6] + ')'
-    with patch('subject_standards.extract_standard_topic_keys',
-               return_value=['enzymes', 'terminology_precision']):
-        rv = client.patch(
-            f'/teacher/assignment/{asn.id}/submission/{sub.id}/result',
-            json={'questions': [{'question_num': 1,
-                                  'feedback': unique_text,
-                                  'amend_answer_key': True,
-                                  'update_subject_standards': True}]},
-        )
-    assert rv.status_code == 200
-
-    # 2. SubjectStandard inserted as pending_review under this teacher.
-    ss = SubjectStandard.query.filter_by(subject='biology', created_by=t.id).first()
-    assert ss is not None
-    assert ss.status == 'pending_review'
-
-    # 3. HOD approves it.
-    rv = client.post(f'/api/subject_standards/{ss.id}/approve')
-    assert rv.status_code == 200
-    db_session.refresh(ss)
-    assert ss.status == 'active'
-
-    # 4. Retrieval pulls the now-active standard on the next marking.
-    out = retrieve_subject_standards(
-        subject='biology',
-        per_question_topic_keys=[['enzymes']],
-    )
-    # The standard with our unique marker must be in the retrieved set.
-    assert any(unique_text in s.text for s in out), \
-        f'Expected promoted standard with marker in retrieval; got texts: {[s.text for s in out]}'
