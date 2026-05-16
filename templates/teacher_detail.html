@@ -107,13 +107,8 @@
         </div>
 
         <style>
-            /* space-between distributes the three columns evenly across the row
-               so the toggle no longer sits isolated on the far right with a
-               single big gap in the middle — the gap is split between cols
-               and the row reads as balanced. */
             .details-actions { margin-top:14px; padding-top:14px; border-top:1px solid #eee;
-                display:flex; flex-wrap:wrap; gap:10px 16px; align-items:flex-start;
-                justify-content:space-between; }
+                display:flex; flex-wrap:wrap; gap:10px 16px; align-items:flex-start; }
             .details-actions .action-col { display:flex; flex-direction:column; gap:6px; min-width:0; }
             /* Share/Update bank column — both buttons stretch to the wider of the two
                so the rename and the share button share the same footprint. */
@@ -122,32 +117,30 @@
             .details-actions .upload-btn { padding:6px 14px; font-size:12.5px; line-height:1.2; white-space:nowrap; }
             .details-actions .danger-btn { background:#fff; color:#c0392b; border-color:#c0392b; }
             .details-actions .success-btn { background:#28a745; color:#fff; border-color:#28a745; }
-            /* View column: segmented toggle on top, paired row of buttons
-               below where Issue AI Feedback sits under "Breakdown + corrections"
-               and Delete Assignment sits under "Feedback only". The save-status
-               indicator floats above the toggle without claiming layout space. */
-            .details-actions .view-col { gap:6px; position:relative; }
+            /* View column: segmented toggle on top (aligned with Edit/Share),
+               then a paired row of buttons where Issue AI Feedback sits under
+               "Breakdown + corrections" and Delete Assignment sits under
+               "Feedback only". The save-status indicator floats above the
+               toggle without claiming layout space, so removing the
+               "Student view:" label doesn't shift anything. */
+            .details-actions .view-col { margin-left:auto; gap:6px; position:relative; }
             .view-col-status {
                 position:absolute; top:-14px; right:0; font-size:11px; color:#888;
                 pointer-events:none; white-space:nowrap;
             }
-            /* Segmented toggle — visually matches the upload-btn family
-               (Edit Assignment, Share, etc.): purple border, purple text on
-               white, purple fill on active. 2 equal halves so the row below
-               can grid-align. */
+            /* Segmented toggle — 2 equal halves so the row below can grid-align. */
             .view-mode-toggle {
                 display:grid; grid-template-columns:1fr 1fr;
-                border:1px solid #667eea; border-radius:8px;
-                overflow:hidden; background:#fff;
+                border:1px solid #d0d4dc; border-radius:8px;
+                overflow:hidden; background:#f6f7fb;
             }
             .view-mode-toggle button {
                 appearance:none; -webkit-appearance:none; border:0; background:transparent;
-                padding:6px 14px; font-size:12.5px; line-height:1.2; color:#667eea;
-                cursor:pointer; font-weight:600; white-space:nowrap;
-                transition:background 0.2s, color 0.2s;
+                padding:6px 16px; font-size:12.5px; line-height:1.2; color:#4a4f5a;
+                cursor:pointer; font-weight:500; white-space:nowrap;
             }
-            .view-mode-toggle button + button { border-left:1px solid #667eea; }
-            .view-mode-toggle button:hover { background:#eef0fb; }
+            .view-mode-toggle button + button { border-left:1px solid #d0d4dc; }
+            .view-mode-toggle button:hover { background:#e9ecf3; }
             .view-mode-toggle button.active { background:#667eea; color:#fff; }
             .view-mode-toggle button.active:hover { background:#5a6fd6; }
             .view-mode-toggle button[disabled] { opacity:0.6; cursor:wait; }
@@ -206,7 +199,7 @@
                 </div>
             </div>
             {% else %}
-            <div class="action-col" style="align-items:flex-end;">
+            <div class="action-col" style="margin-left:auto;align-items:flex-end;">
                 <button class="upload-btn danger-btn" type="button" onclick="deleteAssignment()">Delete Assignment</button>
                 {% if not assignment.show_results %}
                 <button class="upload-btn success-btn" type="button" onclick="issueAiFeedback()">Issue AI Feedback</button>
