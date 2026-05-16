@@ -108,32 +108,48 @@
 
         <style>
             .details-actions { margin-top:14px; padding-top:14px; border-top:1px solid #eee;
-                display:flex; flex-wrap:wrap; gap:8px 12px; align-items:flex-start; }
+                display:flex; flex-wrap:wrap; gap:10px 16px; align-items:flex-start; }
             .details-actions .action-col { display:flex; flex-direction:column; gap:6px; min-width:0; }
-            .details-actions .action-col.right { margin-left:auto; align-items:flex-end; }
+            /* Share/Update bank column — both buttons stretch to the wider of the two
+               so the rename and the share button share the same footprint. */
+            .details-actions .share-stack { width:max-content; }
+            .details-actions .share-stack .upload-btn { width:100%; }
             .details-actions .upload-btn { padding:6px 14px; font-size:12.5px; line-height:1.2; white-space:nowrap; }
             .details-actions .danger-btn { background:#fff; color:#c0392b; border-color:#c0392b; }
             .details-actions .success-btn { background:#28a745; color:#fff; border-color:#28a745; }
-            /* Inline pair: Share button + view-mode toggle ride the same row. */
-            .share-pair { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
-            /* Segmented toggle — large hit area, clearly two clickable halves. */
+            /* View column: segmented toggle on top (aligned with Edit/Share),
+               then a paired row of buttons where Issue AI Feedback sits under
+               "Breakdown + corrections" and Delete Assignment sits under
+               "Feedback only". The save-status indicator floats above the
+               toggle without claiming layout space, so removing the
+               "Student view:" label doesn't shift anything. */
+            .details-actions .view-col { margin-left:auto; gap:6px; position:relative; }
+            .view-col-status {
+                position:absolute; top:-14px; right:0; font-size:11px; color:#888;
+                pointer-events:none; white-space:nowrap;
+            }
+            /* Segmented toggle — 2 equal halves so the row below can grid-align. */
             .view-mode-toggle {
-                display:inline-flex; border:1px solid #d0d4dc; border-radius:8px;
+                display:grid; grid-template-columns:1fr 1fr;
+                border:1px solid #d0d4dc; border-radius:8px;
                 overflow:hidden; background:#f6f7fb;
             }
             .view-mode-toggle button {
                 appearance:none; -webkit-appearance:none; border:0; background:transparent;
-                padding:6px 14px; font-size:12.5px; line-height:1.2; color:#4a4f5a;
-                cursor:pointer; font-weight:500;
+                padding:6px 16px; font-size:12.5px; line-height:1.2; color:#4a4f5a;
+                cursor:pointer; font-weight:500; white-space:nowrap;
             }
             .view-mode-toggle button + button { border-left:1px solid #d0d4dc; }
             .view-mode-toggle button:hover { background:#e9ecf3; }
             .view-mode-toggle button.active { background:#667eea; color:#fff; }
             .view-mode-toggle button.active:hover { background:#5a6fd6; }
             .view-mode-toggle button[disabled] { opacity:0.6; cursor:wait; }
-            .view-mode-label {
-                font-size:11px; color:#888; margin-right:2px; align-self:center; white-space:nowrap;
-            }
+            /* The under-row mirrors the toggle's 2-column grid so each button
+               sits flush under its corresponding toggle half. When show_results
+               is true (Issue button hidden), the left cell is an invisible
+               placeholder so Delete stays on the right side. */
+            .under-toggle-row { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+            .under-toggle-row .upload-btn { width:100%; }
         </style>
         <div class="details-actions">
             <div class="action-col">
@@ -141,48 +157,55 @@
                 <button type="button" class="upload-btn" data-action="toggle-answer-key-amendments"
                         aria-expanded="false" aria-controls="answer-key-amendments-panel">Answer key amendments</button>
             </div>
-            <div class="action-col">
-                <div class="share-pair">
-                    <button class="upload-btn" onclick="openShareModal()">Share to Assignment Bank</button>
-                    {% if assignment.assign_type != 'rubrics' %}
-                    <span class="view-mode-label">Student view:</span>
-                    <div class="view-mode-toggle"
-                         id="studentViewToggle"
-                         role="tablist"
-                         aria-label="Student feedback layout"
-                         data-current-mode="{{ assignment.student_view_mode or 'breakdown' }}">
-                        <button type="button"
-                                role="tab"
-                                data-mode="breakdown"
-                                aria-selected="{{ 'true' if (assignment.student_view_mode or 'breakdown') == 'breakdown' else 'false' }}"
-                                class="{% if (assignment.student_view_mode or 'breakdown') == 'breakdown' %}active{% endif %}"
-                                title="Question-by-question breakdown with practice corrections (current view)">
-                            Breakdown + corrections
-                        </button>
-                        <button type="button"
-                                role="tab"
-                                data-mode="modal"
-                                aria-selected="{{ 'true' if (assignment.student_view_mode or 'breakdown') == 'modal' else 'false' }}"
-                                class="{% if (assignment.student_view_mode or 'breakdown') == 'modal' %}active{% endif %}"
-                                title="Single-page view identical to the teacher feedback modal">
-                            Feedback only
-                        </button>
-                    </div>
-                    <span id="studentViewToggleStatus" aria-live="polite"
-                          style="font-size:11px;color:#888;"></span>
-                    {% endif %}
-                </div>
+            <div class="action-col share-stack">
+                <button class="upload-btn" onclick="openShareModal()">Share to Assignment Bank</button>
                 {% if linked_bank_id %}
                 <button type="button" class="upload-btn" data-action="push-amendments-to-bank">Update bank answer key</button>
                 <p id="bank-push-status" hidden style="color:#888;font-size:12px;margin:0;"></p>
                 {% endif %}
             </div>
-            <div class="action-col right">
+            {% if assignment.assign_type != 'rubrics' %}
+            <div class="action-col view-col">
+                <span id="studentViewToggleStatus" class="view-col-status" aria-live="polite"></span>
+                <div class="view-mode-toggle"
+                     id="studentViewToggle"
+                     role="tablist"
+                     aria-label="Student feedback layout"
+                     data-current-mode="{{ assignment.student_view_mode or 'breakdown' }}">
+                    <button type="button"
+                            role="tab"
+                            data-mode="breakdown"
+                            aria-selected="{{ 'true' if (assignment.student_view_mode or 'breakdown') == 'breakdown' else 'false' }}"
+                            class="{% if (assignment.student_view_mode or 'breakdown') == 'breakdown' %}active{% endif %}"
+                            title="Question-by-question breakdown with practice corrections (current view)">
+                        Breakdown + corrections
+                    </button>
+                    <button type="button"
+                            role="tab"
+                            data-mode="modal"
+                            aria-selected="{{ 'true' if (assignment.student_view_mode or 'breakdown') == 'modal' else 'false' }}"
+                            class="{% if (assignment.student_view_mode or 'breakdown') == 'modal' %}active{% endif %}"
+                            title="Single-page view identical to the teacher feedback modal">
+                        Feedback only
+                    </button>
+                </div>
+                <div class="under-toggle-row">
+                    {% if not assignment.show_results %}
+                    <button class="upload-btn success-btn" type="button" onclick="issueAiFeedback()">Issue AI Feedback</button>
+                    {% else %}
+                    <span></span>
+                    {% endif %}
+                    <button class="upload-btn danger-btn" type="button" onclick="deleteAssignment()">Delete Assignment</button>
+                </div>
+            </div>
+            {% else %}
+            <div class="action-col" style="margin-left:auto;align-items:flex-end;">
                 <button class="upload-btn danger-btn" type="button" onclick="deleteAssignment()">Delete Assignment</button>
                 {% if not assignment.show_results %}
                 <button class="upload-btn success-btn" type="button" onclick="issueAiFeedback()">Issue AI Feedback</button>
                 {% endif %}
             </div>
+            {% endif %}
         </div>
 
         <div id="answer-key-amendments-panel" hidden style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;">
