@@ -43,11 +43,12 @@ At least one AI provider API key must be set. Providers only appear in the UI if
 
 ## Branch workflow
 
-`staging` and the `sandbox_*` branches have **parallel cherry-picked histories** that have diverged intentionally. Treat them as separate trunks:
+As of 2026-05-17 the branches are a single trunk. `sandbox_testing` is the working surface; `master` and `staging` are exact mirrors maintained by fast-forward push. The old cherry-pick-only rule between `staging` and the sandbox branches is retired — the parallel histories were collapsed and `sandbox_upgraded` was deleted.
 
-- **Never `git merge` between `staging` and any `sandbox_*` branch.** Cherry-pick individual commits across when needed.
-- **Never push to `staging` without explicit confirmation from the user.** Sandbox branches are the working surface for upgrade work; `staging` is closer to production.
-- When in doubt about which branch a change belongs on, ask before pushing.
+- **Default branch for new work:** `sandbox_testing`.
+- **Promoting to `master` / `staging`:** fast-forward push (`git push origin sandbox_testing:master`, same for `staging`). No cherry-picks, no merges.
+- **Always confirm before pushing to `master` or `staging`.** Railway auto-deploys from `master` (per `railway.json`); staging is closer to production. The destructive-history risk is gone, the deploy-blast-radius risk is not.
+- **If `master` or `staging` ever diverges from `sandbox_testing`** (someone pushed directly, or a hotfix landed there), stop and ask before reconciling — the old cherry-pick mechanics may need to come back temporarily.
 
 ## Three Operating Modes
 
