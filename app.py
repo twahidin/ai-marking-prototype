@@ -936,6 +936,24 @@ def _get_final_submission(student_id, assignment_id):
     ).first()
 
 
+def _purge_feedback_log_refs(submission_ids):
+    """Clear retired-table FK rows that block submission deletes.
+
+    `feedback_log` is a retired model whose Postgres table is still live in
+    production from the calibration-bank rollout. Its `submission_id` FK
+    prevents `DELETE FROM submissions` until the referencing rows are gone.
+    Call this immediately before any submission delete path.
+    """
+    if not submission_ids:
+        return
+    from sqlalchemy import inspect as sa_inspect, text, bindparam
+    if 'feedback_log' not in sa_inspect(db.engine).get_table_names():
+        return
+    stmt = text('DELETE FROM feedback_log WHERE submission_id IN :sids') \
+        .bindparams(bindparam('sids', expanding=True))
+    db.session.execute(stmt, {'sids': list(submission_ids)})
+
+
 def _count_drafts(student_id, assignment_id):
     """Return total draft count for a (student, assignment)."""
     return Submission.query.filter_by(
@@ -983,6 +1001,7 @@ def _prepare_new_submission(student, assignment):
     if not assignment.allow_drafts:
         existing = _get_final_submission(student.id, assignment.id)
         if existing:
+            _purge_feedback_log_refs([existing.id])
             db.session.delete(existing)
             db.session.flush()
         new_sub = Submission(
@@ -2089,6 +2108,9 @@ def dept_purge_teacher(teacher_id):
         # Delete teacher's assignments and their submissions
         assignments = Assignment.query.filter_by(teacher_id=t.id).all()
         for asn in assignments:
+            sub_ids = [sid for (sid,) in db.session.query(Submission.id)
+                       .filter_by(assignment_id=asn.id).all()]
+            _purge_feedback_log_refs(sub_ids)
             Submission.query.filter_by(assignment_id=asn.id).delete()
             db.session.delete(asn)
     else:
@@ -2129,6 +2151,12 @@ def dept_delete_class(class_id):
         return err
 
     cls = Class.query.get_or_404(class_id)
+    # Class→Student→Submission cascades will DELETE submission rows; clear the
+    # retired feedback_log FK refs first or Postgres will reject the cascade.
+    sub_ids = [sid for (sid,) in db.session.query(Submission.id)
+               .join(Student, Submission.student_id == Student.id)
+               .filter(Student.class_id == class_id).all()]
+    _purge_feedback_log_refs(sub_ids)
     TeacherClass.query.filter_by(class_id=class_id).delete()
     db.session.delete(cls)
     db.session.commit()
@@ -2319,6 +2347,12 @@ def delete_my_class(class_id):
             return jsonify({'success': False, 'error': 'Not your class'}), 403
 
     # Delete associated data
+    # Class→Student→Submission cascades will DELETE submission rows; clear the
+    # retired feedback_log FK refs first or Postgres will reject the cascade.
+    sub_ids = [sid for (sid,) in db.session.query(Submission.id)
+               .join(Student, Submission.student_id == Student.id)
+               .filter(Student.class_id == class_id).all()]
+    _purge_feedback_log_refs(sub_ids)
     TeacherClass.query.filter_by(class_id=class_id).delete()
     # Students cascade-delete via relationship
     db.session.delete(cls)
@@ -8089,6 +8123,7 @@ def teacher_delete_draft(assignment_id, submission_id):
         return jsonify({'success': False, 'error': 'Invalid submission'}), 400
     was_final = sub.is_final
     student_id = sub.student_id
+    _purge_feedback_log_refs([sub.id])
     db.session.delete(sub)
     db.session.flush()
     if was_final:
@@ -9106,23 +9141,17 @@ def teacher_submission_review(assignment_id, submission_id):
 @app.route('/teacher/assignment/<assignment_id>/delete', methods=['POST'])
 def teacher_delete_assignment(assignment_id):
     from db import FeedbackEdit
-    from sqlalchemy import inspect as sa_inspect, text, bindparam
     asn = Assignment.query.get_or_404(assignment_id)
     err = _check_assignment_ownership(asn)
     if err:
         return err
     # Two FK rabbit holes block the Assignment.submissions cascade-delete:
     #   1. feedback_edit.assignment_id  — model exists, no cascade rule.
-    #   2. feedback_log.submission_id   — model retired but table is still
-    #      live in production with rows from the calibration-bank rollout.
-    # Clear both before the cascade fires.
+    #   2. feedback_log.submission_id   — handled by _purge_feedback_log_refs.
     FeedbackEdit.query.filter_by(assignment_id=asn.id).delete(synchronize_session=False)
     sub_ids = [sid for (sid,) in db.session.query(Submission.id)
                .filter_by(assignment_id=asn.id).all()]
-    if sub_ids and 'feedback_log' in sa_inspect(db.engine).get_table_names():
-        stmt = text('DELETE FROM feedback_log WHERE submission_id IN :sids') \
-            .bindparams(bindparam('sids', expanding=True))
-        db.session.execute(stmt, {'sids': sub_ids})
+    _purge_feedback_log_refs(sub_ids)
     db.session.delete(asn)
     db.session.commit()
     return jsonify({'success': True})
@@ -10917,6 +10946,8 @@ def settings_go_live():
         return jsonify({'success': False, 'error': 'Name and access code are required'}), 400
 
     # --- Purge all user data ---
+    all_sub_ids = [sid for (sid,) in db.session.query(Submission.id).all()]
+    _purge_feedback_log_refs(all_sub_ids)
     Submission.query.delete()
     Student.query.delete()
     Assignment.query.delete()
